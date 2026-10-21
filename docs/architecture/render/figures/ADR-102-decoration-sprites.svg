@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="384" height="638" viewBox="0 0 384 638" font-family="DejaVu Sans Mono, monospace" font-size="13">
+<rect width="384" height="638" rx="8" fill="#f8fafc"/>
+<text x="130" y="22" fill="#1a1a1a">three cells, one sprite each</text>
+<text x="16" y="81" fill="#1a1a1a">single</text>
+<rect x="130" y="40" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(130,40)" fill="#1d4ed8"><rect x="0" y="54" width="48" height="4"/></g>
+<rect x="178" y="40" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(178,40)" fill="#1d4ed8"><rect x="0" y="54" width="48" height="4"/></g>
+<rect x="226" y="40" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(226,40)" fill="#1d4ed8"><rect x="0" y="54" width="48" height="4"/></g>
+<text x="16" y="179" fill="#1a1a1a">double</text>
+<rect x="130" y="138" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(130,138)" fill="#1d4ed8"><rect x="0" y="54" width="48" height="4"/><rect x="0" y="62" width="48" height="4"/></g>
+<rect x="178" y="138" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(178,138)" fill="#1d4ed8"><rect x="0" y="54" width="48" height="4"/><rect x="0" y="62" width="48" height="4"/></g>
+<rect x="226" y="138" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(226,138)" fill="#1d4ed8"><rect x="0" y="54" width="48" height="4"/><rect x="0" y="62" width="48" height="4"/></g>
+<text x="16" y="277" fill="#1a1a1a">curly</text>
+<rect x="130" y="236" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(130,236)" fill="#1d4ed8"><polyline points="0,56.00 2,57.29 4,58.50 6,59.54 8,60.33 10,60.83 12,61.00 14,60.83 16,60.33 18,59.54 20,58.50 22,57.29 24,56.00 26,54.71 28,53.50 30,52.46 32,51.67 34,51.17 36,51.00 38,51.17 40,51.67 42,52.46 44,53.50 46,54.71 48,56.00" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-linecap="butt"/></g>
+<rect x="178" y="236" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(178,236)" fill="#1d4ed8"><polyline points="0,56.00 2,57.29 4,58.50 6,59.54 8,60.33 10,60.83 12,61.00 14,60.83 16,60.33 18,59.54 20,58.50 22,57.29 24,56.00 26,54.71 28,53.50 30,52.46 32,51.67 34,51.17 36,51.00 38,51.17 40,51.67 42,52.46 44,53.50 46,54.71 48,56.00" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-linecap="butt"/></g>
+<rect x="226" y="236" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(226,236)" fill="#1d4ed8"><polyline points="0,56.00 2,57.29 4,58.50 6,59.54 8,60.33 10,60.83 12,61.00 14,60.83 16,60.33 18,59.54 20,58.50 22,57.29 24,56.00 26,54.71 28,53.50 30,52.46 32,51.67 34,51.17 36,51.00 38,51.17 40,51.67 42,52.46 44,53.50 46,54.71 48,56.00" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-linecap="butt"/></g>
+<text x="16" y="375" fill="#1a1a1a">dotted</text>
+<rect x="130" y="334" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(130,334)" fill="#1d4ed8"><rect x="2" y="54" width="4" height="4"/><rect x="10" y="54" width="4" height="4"/><rect x="18" y="54" width="4" height="4"/><rect x="26" y="54" width="4" height="4"/><rect x="34" y="54" width="4" height="4"/><rect x="42" y="54" width="4" height="4"/></g>
+<rect x="178" y="334" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(178,334)" fill="#1d4ed8"><rect x="2" y="54" width="4" height="4"/><rect x="10" y="54" width="4" height="4"/><rect x="18" y="54" width="4" height="4"/><rect x="26" y="54" width="4" height="4"/><rect x="34" y="54" width="4" height="4"/><rect x="42" y="54" width="4" height="4"/></g>
+<rect x="226" y="334" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(226,334)" fill="#1d4ed8"><rect x="2" y="54" width="4" height="4"/><rect x="10" y="54" width="4" height="4"/><rect x="18" y="54" width="4" height="4"/><rect x="26" y="54" width="4" height="4"/><rect x="34" y="54" width="4" height="4"/><rect x="42" y="54" width="4" height="4"/></g>
+<text x="16" y="473" fill="#1a1a1a">dashed</text>
+<rect x="130" y="432" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(130,432)" fill="#1d4ed8"><rect x="8" y="54" width="32" height="4"/></g>
+<rect x="178" y="432" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(178,432)" fill="#1d4ed8"><rect x="8" y="54" width="32" height="4"/></g>
+<rect x="226" y="432" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(226,432)" fill="#1d4ed8"><rect x="8" y="54" width="32" height="4"/></g>
+<text x="16" y="571" fill="#1a1a1a">strike</text>
+<rect x="130" y="530" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(130,530)" fill="#d97706"><rect x="0" y="36" width="48" height="4"/></g>
+<rect x="178" y="530" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(178,530)" fill="#d97706"><rect x="0" y="36" width="48" height="4"/></g>
+<rect x="226" y="530" width="48" height="72" fill="none" stroke="#94a3b8" stroke-dasharray="3 3"/>
+<g transform="translate(226,530)" fill="#d97706"><rect x="0" y="36" width="48" height="4"/></g>
+</svg>

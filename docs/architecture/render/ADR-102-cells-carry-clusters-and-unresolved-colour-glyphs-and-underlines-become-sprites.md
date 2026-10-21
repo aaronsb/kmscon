@@ -30,7 +30,7 @@ basis:
   - standard: Unicode UAX #29 (grapheme clusters), UAX #11 (East Asian Width), UTS #51 (emoji presentation and variation sequences)
   - standard: kitty underlines documentation, https://sw.kovidgoyal.net/kitty/underlines/ (SGR 4:0-4:5, 58, 59); ECMA-48 8.3.117 (SGR 21); ITU T.416 (colon sub-parameters)
   - standard: "terminal-unicode-core draft (DEC mode 2027), https://github.com/contour-terminal/terminal-unicode-core"
-  - evidence: "Code map of libtsm c2feb28 and kmscon f8a1a8e, 2026-10-21: tsm_screen_write drops zero-width codepoints (tsm-screen.c:1107); nothing calls tsm_symbol_append; colon sends the parser to CSI_IGNORE (tsm-vte.c:2559); colours are resolved in the parser (to_rgb, tsm-vte.c:445); glyphs are one byte of alpha (video.h:90); the font backend draws underlines into glyphs (font_freetype.c:324); FT_LOAD_COLOR appears nowhere; Noto Color Emoji reports spacing 100 and passes the monospace filter"
+  - evidence: "Code map of libtsm c2feb28 and kmscon f8a1a8e, 2026-10-21: tsm_screen_write drops zero-width codepoints (tsm-screen.c:1107); nothing calls tsm_symbol_append; colon sends the parser to CSI_IGNORE (tsm-vte.c:2559); colours are resolved in the parser (to_rgb, tsm-vte.c:445); glyphs are one byte of alpha (src/video/video.h:90); the font backend draws underlines into glyphs (font_freetype.c:324); FT_LOAD_COLOR appears nowhere; Noto Color Emoji reports spacing 100 and passes the monospace filter"
   - evidence: "Survey of Ghostty 521cf2c, WezTerm e2a98e1, foot cb27717 and fcft 1ff7e79 (all MIT), 2026-10-21: cell layouts, cluster storage, segmentation and width, SGR underline parsing, underline drawing, colour glyph loading and atlases, emoji fallback, cache keys"
 agent:
   name: claude
@@ -79,12 +79,12 @@ considered:
 ADR-101 decided that the screen model and render path are rebuilt, and that step 2 delivers colour emoji, grapheme clusters and underline styles. It left the concrete shapes open. The code as it stands (libtsm c2feb28, kmscon f8a1a8e) blocks each feature at a specific point:
 
 - **Clusters never form.** `tsm_screen_write` returns early for a codepoint of width 0, so combining marks, ZWJ and variation selectors are dropped. The symbol table can hold sequences, but nothing appends to it. Width comes from the first codepoint's `wcwidth`.
-- **Colour is resolved too early.** The parser turns palette indices into RGB (`to_rgb`) before the screen stores them. The renderer receives only final RGB, so there is nowhere to keep an underline colour that follows the foreground through reverse video.
+- **Colour is resolved too early.** The parser reduces palette indices 16-255 to RGB (`to_rgb`, `lookup_color`) before the screen stores them, keeping only the 16 base colours as indices, and the draw call hands the renderer final RGB for every cell, so there is nowhere to keep an underline colour that follows the foreground through reverse video.
 - **Sub-parameters void the sequence.** A colon puts the parser in its ignore state, so `SGR 4:3` and `58:2::r:g:b` discard the whole SGR. A semicolon `4;58;5;196` sets blink, because 58 is unhandled and the 5 that follows reads as blink. SGR 21, 58 and 59 are unhandled. There is no strike-through attribute. ADR-101 lists strike among the existing bits; it is not there and is added here.
 - **Glyphs are alpha only.** A glyph is one byte of alpha per pixel, the blend in drm2d and fbdev mixes foreground over background by that alpha, and the GL atlas is `GL_ALPHA`. The font backend draws the underline into the glyph. `FT_LOAD_COLOR` is never used, so Noto Color Emoji's 109-pixel colour strike is flattened to grey and cropped.
 - **The emoji font is reachable.** Noto Color Emoji reports monospace spacing, so kmscon's monospace filter does not exclude it. The missing piece is colour loading.
 
-The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 960x135, about 130,000 cells; a thousand lines of scrollback at that width are 960,000 more.
+The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 960x135, about 130,000 cells; a thousand lines of scrollback at that width are 960,000 more. Upstream's internal cell is 32 bytes on 64-bit systems: codepoint, width, a 12-byte attribute struct and an 8-byte age (`uint_fast32_t`).
 
 ## Decision
 
@@ -92,16 +92,17 @@ The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 96
 
 - CSI parameters keep colon sub-parameters, up to 8 per parameter, beside the existing 16 parameters. A colon no longer sends the sequence to the ignore state.
 - SGR reads its parameters with their sub-parameters:
-  - `4` single underline; `4:0` none; `4:1` single, `4:2` double, `4:3` curly, `4:4` dotted, `4:5` dashed; any other `4:n` gives single. `21` double underline. `24` no underline.
+  - `4` single underline; `4:0` none; `4:1` single, `4:2` double, `4:3` curly, `4:4` dotted, `4:5` dashed; any other `4:n` gives single, as Ghostty does (foot turns underline off instead; single keeps the program's evident intent visible). `21` double underline. `24` no underline.
   - `9` strike-through, `29` not strike-through.
-  - `38`, `48` and `58` take a colour in any of these forms: `:5:n`, `;5;n`, `:2:r:g:b`, `:2::r:g:b` (the empty colour-space slot of ITU T.416), `:2:cs:r:g:b`, and `;2;r;g;b`. The semicolon form always takes exactly three values. `58` sets the underline colour, and `59` returns it to following the foreground.
+  - `38`, `48` and `58` take a colour in any of these forms: `:5:n`, `;5;n`, `:2:r:g:b`, `:2::r:g:b` (the empty colour-space slot of ITU T.416), `:2:cs:r:g:b`, and `;2;r;g;b`. The semicolon form always takes exactly three values, as xterm documents it. Sub-parameters after `b` in the colon forms (T.416's unused, tolerance and tolerance colour space fields) are accepted and ignored. `:2:r:g:b` is not in T.416; foot and Ghostty accept it, and so does this fork. `58` sets the underline colour, and `59` returns it to following the foreground.
   - A parameter with sub-parameters SGR does not know is skipped on its own. The rest of the sequence still applies.
 - The Linux VT once read SGR 21 as normal intensity. This fork follows ECMA-48 and every current terminal: 21 is double underline.
 
 ### Colour (libtsm)
 
 - A colour is stored as one of: default, palette index (0-255), or RGB. The cell holds three: foreground, background and underline. Underline's default means "whatever kmscon is configured to use", which is the foreground unless kmscon.conf says otherwise (see Underline and strike).
-- Resolution moves to the draw path. Palette lookup, bold-as-bright, dim, reverse video (cell, screen and selection) and the cursor are applied when the renderer asks for a frame. Reverse video swaps foreground and background. An underline colour that was set explicitly stays as set, and one that follows the foreground follows the swapped foreground (kitty underlines doc).
+- Resolution moves to the draw path. Palette lookup, bold-as-bright, dim, reverse video (cell, screen and selection) and the cursor are applied when the renderer asks for a frame. Reverse video swaps foreground and background.
+- The kitty underlines doc says an underline colour that was set stays the same under reverse video, and one that was not follows the foreground. libtsm reports the underline colour as set (resolved to RGB) or default (a flag, with the resolved foreground beside it). kmscon decides what a default underline draws in: the foreground, or its configured `underline-color`, which is a set colour for this purpose and does not swap under reverse video.
 
 ### Cells and clusters (libtsm)
 
@@ -111,13 +112,13 @@ The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 96
   - the three colours;
   - the attribute bits: bold, italic, dim, blink, inverse, protect, strike, and a 3-bit underline style;
   - its age.
-  Attributes stay inline, with no interned style table. About 24 bytes per cell is the size upstream's cell already has, so the screen and scrollback cost what they cost today.
+  Attributes stay inline, with no interned style table. The cell packs into 32 bytes, the size upstream's cell already has on 64-bit systems, so the screen and scrollback cost what they cost today.
 - A glyph key below 2^21 is a codepoint. Above that, it is a cluster id into a table of codepoint sequences, interned by content, at most 32 codepoints each (extenders past 32 are dropped).
   - Each table entry counts the cells that reference it. Writing, erasing, scrolling out of the scrollback limit, resizing or resetting a cell releases its reference, and an entry at zero is freed and its id reused.
   - The table therefore holds only what is on screen or in scrollback, however long the console runs.
 - Segmentation follows UAX #29 extended grapheme clusters, applied as text is printed.
   - A printed codepoint joins the cell the previous print wrote when the break rules say the cluster continues.
-  - Any cursor movement, control character or escape sequence in between ends the cluster, as in foot. A program that moves the cursor and then prints a combining mark starts a new cell.
+  - Cursor movement and control characters reset the segmentation state, as foot does; SGR and other sequences that do not move the cursor leave it alone, so a colour change inside a cluster does not split it. After a reset, a zero-width codepoint (a combining mark, ZWJ or variation selector) still joins the cell before the cursor rather than being dropped, which is also foot's behaviour; any other codepoint starts a new cell.
 - The break properties, Extended_Pictographic, East Asian Width, Emoji_Presentation and the emoji variation sequences come from tables generated from the Unicode Character Database.
   - The generator script is committed, and its Unicode version is pinned. The pin and the regenerated tables change only in their own commit.
   - No runtime Unicode library is added.
@@ -127,25 +128,28 @@ The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 96
 - **Two methods.**
   - `unicode`, the default:
     - a cluster's width comes from its first codepoint by East Asian Width and Emoji_Presentation;
-    - VS16 makes a cluster wide and VS15 makes it narrow, when the base is listed in the emoji variation sequences;
-    - a regional-indicator pair, and a ZWJ sequence that begins with a pictograph, is wide.
+    - VS16 makes a cluster wide when its base is listed in the emoji variation sequences; for any other base it is kept in the cluster and changes nothing;
+    - VS15 never changes width, as the mode 2027 draft specifies; it changes only presentation;
+    - a ZWJ sequence takes the width of its first codepoint, which for emoji sequences is wide. Regional indicators have Emoji_Presentation, so a flag is wide by the first-codepoint rule.
   - `wcwidth`:
     - only zero-width codepoints join the cell before them (combining marks, ZWJ, variation selectors);
-    - every codepoint with width starts its own cell, at the width `wcwidth` gives it;
-    - the cursor therefore lands where programs that count with `wcwidth` expect it.
+    - every codepoint with width starts its own cell, at its per-codepoint width (East Asian Width and Emoji_Presentation, from the same pinned tables as the `unicode` method);
+    - the cursor lands where programs that count per codepoint expect it. A program's libc may carry a different Unicode version than the tables, so agreement is close but not guaranteed; the bundled wcwidth table libtsm carries today is replaced by the generated tables, so one build has one Unicode version.
 - `grapheme-width=unicode|wcwidth` in kmscon.conf chooses the method a new terminal starts with.
-- DEC private mode 2027 switches it while the terminal runs (set is `unicode`, reset is `wcwidth`). DECRQM reports the current method, and a full reset returns to the configured one.
-- **A VS16 that widens a placed cell** widens it in place. When the cell sat in the last column, the cluster moves to the start of the next line, and the cell it left is cleared, as a wide character at the margin is placed today. A VS15 that narrows a cell clears its trailing half.
+- DEC private mode 2027 switches it while the terminal runs (set is `unicode`, reset is `wcwidth`). DECRQM replies 1 (set) or 2 (reset) for the current method; the draft leaves the values to DECRQM's own definition.
+- The draft has a soft reset (DECSTR) and a hard reset (RIS) return the mode to undefined, that is, off. This fork deviates on purpose: both resets return to the method kmscon.conf configures, because that setting is the reader's choice for their fonts and programs (operator, on the config option). The deviation ends if the fork drops the setting.
+- **A VS16 that widens a placed cell** widens it in place. When the cell sat in the last column, the cluster moves to the start of the next line, and the cell it left is cleared, as a wide character at the margin is placed today. VS15 never narrows a placed cell.
 
 ### Drawing interface (libtsm to kmscon)
 
 - `tsm_screen_draw2` is replaced by a frame call. It returns, per visible cell:
   - the glyph key and width;
-  - resolved foreground, background and underline colour;
+  - resolved foreground and background, and the underline colour as set (RGB) or default;
   - the attribute bits;
   - whether the cell changed since the last frame.
   It also gives a way to read a cluster key's codepoints. The cursor is part of the frame, and kmscon no longer builds the cursor cell itself.
 - The age machinery inside libtsm stays the source of "changed".
+- `tsm_screen_draw`, the callback API that `tsm-replay` and other programs use, is kept. For the attributes upstream has, it reports what it reports today, including palette indices 16-255 as RGB with code -1. The new attributes reach it through the attribute struct's added fields, which callers built against upstream never read.
 
 ### Glyphs (kmscon)
 
@@ -153,7 +157,7 @@ The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 96
 - **Glyph cache key.** The cache is keyed by the codepoint sequence, not the cluster id, plus bold, italic and width. Cluster ids are reused, so a key built from an id could return the wrong glyph.
 - **Loading.**
   - A single codepoint is loaded by glyph index, as today. A cluster of more than one codepoint is shaped with HarfBuzz on the chosen face, and its glyphs are drawn into one sprite.
-  - Shaping only clusters keeps HarfBuzz off the path that draws plain text. HarfBuzz is already present on any system with kmscon's pango backend.
+  - Shaping only clusters keeps HarfBuzz off the path that draws plain text. Shaping is required for correctness: Noto Color Emoji reaches its ZWJ, flag and keycap glyphs only through OpenType substitutions, which FreeType does not apply. HarfBuzz becomes a required dependency of the freetype backend. pango already depends on it, and Arch's freetype2 lists it as optional, so most systems have it, but a freetype-only build gains it.
   - Faces with colour load with `FT_LOAD_COLOR`. A bitmap-only face uses its fixed strike nearest the cell height. The strike is scaled once, with a box filter, into a box of one or two cells: fit to the height, then shrunk to the width if it is wider. The scaled sprite is cached, never the strike.
   - Glyphs follow the font library pipeline, with no painter of the fork's own:
     - fontconfig chooses the face.
@@ -162,7 +166,7 @@ The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 96
     - For COLRv1 FreeType supplies only the paint data, and for SVG it hands the document to a registered renderer. Those glyphs go through cairo's FreeType font support, which renders them to premultiplied ARGB. Cairo 1.18 on the build host carries a COLRv1 renderer. Its SVG support is to be confirmed when the work lands.
     - Cairo is an optional build feature (`font_color_cairo`). Without it, COLRv1 and SVG glyphs load as outlines and draw as masks.
 - **Presentation and fallback.**
-  - A cluster is emoji presentation when it carries VS16, or when its first codepoint has Emoji_Presentation and it carries no VS15.
+  - A cluster is emoji presentation when it carries VS16 on a base listed in the emoji variation sequences, or when its first codepoint has Emoji_Presentation and it carries no VS15. The same table gates width and presentation, so a colour glyph is never squeezed into a narrow cell by an unlisted VS16.
   - For an emoji-presentation cluster the fallback search asks fontconfig for a colour face covering the codepoint first. That one query bypasses the monospace filter.
   - Text-presentation clusters prefer faces without colour.
   - The primary font list keeps the monospace filter.
@@ -202,11 +206,12 @@ The figure shows each underline style as one cell-wide sprite repeated across th
 Each item lands behind the conformance harness (ADR-301), with goldens changed only in their own commits:
 
 1. **Parser.** Sub-parameters, SGR 4:x, 9, 21, 29, 58, 59, colon colour forms.
-   - `tsm-replay` prints underline style, underline colour and strike only when they are set. Upstream never sets them, so goldens taken from upstream are unchanged.
+   - `tsm-replay` prints underline style, underline colour and strike only when they are set, and reads them only where the fork's headers declare them (a feature macro), so it still builds against upstream v4.8.0 and `make golden REF=v4.8.0` keeps working. That rebuild is a gate of this step: the goldens it writes for the preserved cases must equal the committed ones.
+   - `tsm-replay` raises its codepoints per cell from 8 to 32, to match the cluster limit, and fails loudly if a cluster is longer than it can print.
    - `sgr-underline-extended` changes deliberately: no blink; curly, double, dotted and dashed styles; an underline colour.
    - New cases cover each colour form and the skipped unknown sub-parameter.
 2. **Colour as references.** No golden changes. Tier 1 and tier 2 stay exact while resolution moves to the draw path.
-3. **Clusters and width.** The `combining` and `emoji` goldens change deliberately. New cases cover VS16 widening at the margin, VS15 narrowing, both width methods, mode 2027 with DECRQM, cluster reuse after erase, and scrollback release.
+3. **Clusters and width.** The `combining` and `emoji` goldens change deliberately. New cases cover VS16 widening at the margin, VS16 on an unlisted base, VS15 leaving width alone, both width methods, mode 2027 with DECRQM and both resets, a combining mark after cursor movement, cluster reuse after erase, and scrollback release.
 4. **kmscon glyph format, RGBA blend and decoration sprites.**
    - New tier 2 screens: each underline style and colour, strike, combining marks, a colour emoji, a ZWJ sequence, a flag, and VS16 and VS15 pairs.
    - Tier 2 pins a colour emoji font in the tree: a subset of Noto Color Emoji (SIL OFL 1.1) holding the test's glyphs, like the CJK subset it already carries.
@@ -231,7 +236,7 @@ Each step's code reads the specifications and the MIT references above. Anything
 ### Negative
 
 - Programs that count with `wcwidth` drift on lines with VS16 or ZWJ emoji under the default. The config setting and mode 2027 are the remedy, and they have to be documented.
-- The freetype backend links HarfBuzz.
+- The freetype backend requires HarfBuzz, a new dependency for builds without pango.
 - Glyph caches hold larger colour sprites. A wide emoji at 8K font sizes is twice a cell of ARGB.
 - The tier 1 goldens for the touched cases stop matching upstream by design, so the record of what changed deliberately has to be kept carefully.
 - Cairo, where it is built in, adds the libraries it links to the console's footprint. On Arch that includes the X11 client libraries. Builds without it draw COLRv1-only and SVG-only colour fonts as outlines.
@@ -247,7 +252,8 @@ Each step's code reads the specifications and the MIT references above. Anything
 - **Interned style table per page (Ghostty).** It saves memory per cell, but needs reference counting on every attribute change. Inline attributes cost what the upstream cell costs today, and the console's cell count is small enough not to need it.
 - **Per-row underline ranges (foot).** These keep the cell small, but every write and erase has to split and merge ranges. Underline style is 3 bits in the cell.
 - **Clusters interned forever (foot), or per-page arenas (Ghostty).** Interning forever grows without bound over a long-lived console. Per-page arenas fit Ghostty's page allocator, which libtsm does not have. Reference counts on a single table fit libtsm's line and scrollback structure.
-- **Merge clusters across cursor movement (Ghostty).** This needs the previous cell's break state rebuilt after any movement, for a case programs rarely produce. Ending the cluster on movement is simpler, and it is what foot does.
+- **Keep full segmentation across cursor movement (Ghostty).** This needs the previous cell's break state rebuilt after any movement, for a case programs rarely produce. foot's rule, reset segmentation on movement but still attach zero-width codepoints, keeps combining marks with their base at less cost.
+- **Narrow a cell on VS15 (Ghostty).** The mode 2027 draft says VS15 changes presentation and not width, and narrowing reflows a line programs have already laid out.
 - **Never widen a placed cell (WezTerm at its Unicode-9 default).** This leaves a VS16 heart in one cell. The `wcwidth` method covers anyone who wants that.
 - **wcwidth as the default.** Considered and offered. The operator chose a kmscon.conf setting, with Unicode rules as its default.
 - **A COLRv1 painter of the fork's own (WezTerm), or rejecting COLRv1 (fcft).** The operator asked to follow the font library pipeline instead. Cairo already renders COLRv1 for the desktop stack, so the fork gains every format without maintaining a painter.

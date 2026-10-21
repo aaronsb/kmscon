@@ -3,27 +3,35 @@
 
 Stdlib only. QEMU runs headless as the invoking user and is driven over QMP on
 a unix socket: keys go in with send-key, screens come back with screendump.
-One VM runs at a time, and every VM this script starts is shut down by the
-PID it was started with.
+Every VM this script starts is shut down by the PID it was started with.
 
 The GL variant is the exception for captures: once virgl owns the scanout,
 QEMU's screendump reports "no surface", so that variant pairs egl-headless
 with a VNC server on a unix socket and reads the screen over RFB instead.
 
-    t3.py provision             build fork/vm/base.qcow2 from the pinned image
-    t3.py run [VARIANT ...]     install the package, run the scenario, compare
-                                (default: the 2D variants)
-    t3.py bless [VARIANT ...]   copy the last run's captures over the goldens
+Variants run one at a time, or with --jobs N up to N at once, each in its own
+worker process. GL variants share the host's render node and never run
+together. A lock on fork/build/tier3.lock refuses a second concurrent run.
+
+    t3.py provision                       build fork/vm/base.qcow2 from the pinned image
+    t3.py run [--jobs N] [VARIANT ...]    install the package, run the scenario, compare
+                                          (default: the 2D variants)
+    t3.py bless [VARIANT ...]             copy the last run's captures over the goldens
 
 Paths are relative to the repository root, which is two levels above this file.
 """
 
 import argparse
 import base64
+import concurrent.futures
+import contextlib
+import fcntl
 import glob
 import hashlib
 import json
+import multiprocessing
 import os
+import re
 import shutil
 import signal
 import socket
@@ -43,6 +51,7 @@ VM = os.path.join(ROOT, "fork", "vm")
 PKGOUT = os.path.join(ROOT, "fork", "build", "pkg")
 RUNDIR = os.path.join(ROOT, "fork", "build", "tier3")
 REPORT = os.path.join(ROOT, "fork", "build", "tier3-report.json")
+LOCK = os.path.join(ROOT, "fork", "build", "tier3.lock")
 BASE = os.path.join(VM, "base.qcow2")
 
 MEMORY = "4096"
@@ -88,8 +97,24 @@ SCREENS = ["sgr", "boxdraw", "cjk"]
 CASES = SCREENS + ["vt-switch", "vt-restore"]
 
 
+# Every log line carries the seconds since the run started and, inside a
+# variant's job, the variant's name, so lines from concurrent variants can be
+# told apart and phases timed from the log alone.
+_T0 = time.time()
+_LABEL = ""
+
+# A unix socket path, with its terminating NUL, must fit sun_path (108 bytes).
+SUN_PATH_MAX = 107
+
+# CSI and OSC sequences, which systemd's colored status lines carry.
+_ESCAPES = re.compile(r"\x1b\[[0-9;?!]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
 def log(msg):
-    print("[t3] " + msg, file=sys.stderr, flush=True)
+    tag = "t3 +%.1fs" % (time.time() - _T0)
+    if _LABEL:
+        tag += " " + _LABEL
+    print("[%s] %s" % (tag, msg), file=sys.stderr, flush=True)
 
 
 # --- QEMU and QMP -----------------------------------------------------------
@@ -104,15 +129,24 @@ class Qemu:
         self.capture = capture
         self.sock_path = os.path.join(workdir, "qmp.sock")
         self.vnc_path = os.path.join(workdir, "vnc.sock")
+        # ttyS0 is the guest's console. ttyS1 carries the scenario's events
+        # (guest/setup), so the driver can wait for a login or a drawn screen.
         self.serial = os.path.join(workdir, "serial.log")
-        for p in (self.sock_path, self.vnc_path, self.serial):
+        self.events = os.path.join(workdir, "events.log")
+        for p in (self.sock_path, self.vnc_path):
+            if len(os.fsencode(p)) > SUN_PATH_MAX:
+                raise RuntimeError("socket path is %d bytes, over the %d a unix "
+                                   "socket allows; use a checkout with a shorter "
+                                   "path: %s" % (len(os.fsencode(p)), SUN_PATH_MAX, p))
+        for p in (self.sock_path, self.vnc_path, self.serial, self.events):
             if os.path.exists(p):
                 os.unlink(p)
         args = ["qemu-system-x86_64", "-machine", "q35,accel=kvm", "-cpu", "host",
                 "-smp", CPUS, "-m", MEMORY, "-no-reboot",
                 "-display", display, "-device", device,
                 "-qmp", "unix:%s,server=on,wait=off" % self.sock_path,
-                "-serial", "file:%s" % self.serial]
+                "-serial", "file:%s" % self.serial,
+                "-serial", "file:%s" % self.events]
         for path, fmt, ro in disks:
             args += ["-drive", "file=%s,if=virtio,format=%s%s"
                      % (path, fmt, ",readonly=on" if ro else "")]
@@ -167,6 +201,11 @@ class Qemu:
     def keys(self, *qcodes):
         """Press qcodes together, as one chord."""
         self.cmd("send-key", keys=[{"type": "qcode", "data": k} for k in qcodes])
+        # A fixed pause, kept: QEMU queues each chord's release behind a hold
+        # time and drops key events while its bounded input queue is full,
+        # and nothing outside QEMU shows how full the queue is. Pacing the
+        # chords keeps it short. A dropped key shows on the screen, so it
+        # fails the case.
         time.sleep(0.05)
 
     def type(self, text):
@@ -191,18 +230,25 @@ class Qemu:
                 time.sleep(0.1)
         raise RuntimeError("screendump did not produce a readable image")
 
-    def wait_serial(self, marker, timeout):
+    def wait_serial(self, marker, timeout, log_path=None):
+        """Wait for a line holding `marker` on the console log (or on
+        `log_path`), terminal escape sequences left out, and return it."""
+        log_path = log_path or self.serial
         deadline = time.time() + timeout
-        while time.time() < deadline:
-            with open(self.serial, "rb") as f:
-                data = f.read()
-            for line in data.splitlines():
-                if marker.encode() in line:
-                    return line.decode(errors="replace").strip()
-            if self.proc.poll() is not None:
+        while True:
+            with open(log_path, "rb") as f:
+                text = _ESCAPES.sub("", f.read().decode(errors="replace"))
+            for line in text.splitlines():
+                if marker in line:
+                    return line.strip()
+            if self.proc.poll() is not None or time.time() > deadline:
                 break
-            time.sleep(0.5)
-        raise RuntimeError("no %r on the serial console; see %s" % (marker, self.serial))
+            time.sleep(0.2)
+        raise RuntimeError("no %r within %d s; see %s" % (marker, timeout, rel(log_path)))
+
+    def wait_event(self, marker, timeout):
+        """Wait for the guest to report `marker` on its event port."""
+        return self.wait_serial(marker, timeout, log_path=self.events)
 
     def wait_exit(self, timeout):
         try:
@@ -349,13 +395,22 @@ def not_blank(img):
 
 
 def make_iso(srcdir, label, out):
-    subprocess.run(["xorriso", "-as", "mkisofs", "-quiet", "-V", label, "-J", "-r",
-                    "-o", out, srcdir], check=True)
+    # xorriso prints a banner even with -quiet; it is kept out of the log,
+    # whose lines each name their variant, and shown only on failure.
+    r = subprocess.run(["xorriso", "-as", "mkisofs", "-quiet", "-V", label, "-J", "-r",
+                        "-o", out, srcdir], capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError("xorriso exited with %d: %s" % (r.returncode, r.stderr.strip()))
 
 
 # --- provisioning -----------------------------------------------------------
 
 def provision(args):
+    with run_lock():
+        return _provision(args)
+
+
+def _provision(args):
     pristine = os.path.join(VM, "images", args.image)
     work = os.path.join(VM, "provision")
     shutil.rmtree(work, ignore_errors=True)
@@ -432,14 +487,28 @@ def kmscon_displays(serial):
                    if "Display " in line and "text renderer [" in line})
 
 
-def run_variant(variant):
+def run_variant(variant, timing):
     """Boot one variant and drive the scenario.
 
     Returns ({case: capture path}, metadata). A scenario that fails part way
     keeps the captures taken before the failure; metadata carries the error,
-    and per-case errors under "errors". If kmscon drew with a renderer other than the one the variant
-    tests, no capture is returned: they show the wrong path.
+    and per-case errors under "errors". If kmscon drew with a renderer other
+    than the one the variant tests, no capture is returned: they show the
+    wrong path. `timing` gets the seconds from the start of the variant to the
+    end of each phase.
+
+    Each step waits for state it can observe, never for a fixed time: lines
+    on the console, events the guest reports on its event port (guest/setup),
+    and a screen that has changed and then settled. Every wait has a timeout
+    that fails the case, so a slow host gives a failure, never a capture
+    taken too early.
     """
+    start = time.time()
+
+    def phase(name):
+        timing[name] = round(time.time() - start, 1)
+        log("phase %s done at %.1f s" % (name, timing[name]))
+
     work = os.path.join(RUNDIR, variant)
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
@@ -454,23 +523,43 @@ def run_variant(variant):
     caps, errors, error = {}, {}, None
     try:
         log(vm.wait_serial("TIER3-INSTALL-OK", timeout=180))
-        time.sleep(3)
+        phase("install")
+        # The VT switch spawns kmscon only once logind is up and the boot
+        # has reached its login prompts; systemd reports both on the console.
+        vm.wait_serial("Started User Login Management", timeout=120)
+        vm.wait_serial("Reached target Login Prompts", timeout=120)
+        phase("boot")
         # tty1 runs getty; switching to tty2 makes logind spawn autovt@tty2,
-        # which is kmsconvt@tty2.
+        # which is kmsconvt@tty2. Nothing starts it earlier: a boot without
+        # the keypress has no kmscon on tty2.
         vm.keys("ctrl", "alt", "f2")
+        vm.wait_serial("vt: using tty /dev/tty2", timeout=60)
         tmp = os.path.join(work, "wait.ppm")
-        wait_stable(vm, tmp, settle=2.0, timeout=90, want=not_blank)
+        prompt = wait_stable(vm, tmp, settle=2.0, timeout=90, want=not_blank)
+        phase("kmscon")
         vm.type("tester\n")
-        time.sleep(2)
+        # The user name echoes; then login asks for the password.
+        wait_stable(vm, tmp, want=lambda img: img.data != prompt.data)
         vm.type("tester\n")
-        time.sleep(3)
+        try:
+            vm.wait_event("T3-LOGIN", timeout=20)
+        except RuntimeError:
+            # PAM discards typed-ahead input when it turns echo off for the
+            # password, so a password typed before the prompt is lost. Typing
+            # it again is harmless otherwise: the shell runs it as a command,
+            # and every screen clears before it draws.
+            log("no login yet; typing the password again")
+            vm.type("tester\n")
+            vm.wait_event("T3-LOGIN", timeout=60)
         wait_stable(vm, tmp)
+        phase("login")
         for name in SCREENS:
             vm.type("t3 %s\n" % name)
-            time.sleep(2)
+            vm.wait_event("T3-DONE %s" % name, timeout=60)
             path = os.path.join(work, name + ".ppm")
             last = wait_stable(vm, path)
             caps[name] = path
+            phase(name)
         # VT switch away and back. vt-switch: logind starts a second kmscon
         # on tty3, which must draw a screen (its login prompt). vt-restore:
         # back on tty2, the screen must be exactly as it was left. A switch
@@ -478,20 +567,26 @@ def run_variant(variant):
         # pass alone without testing anything.
         vm.keys("ctrl", "alt", "f3")
         path = os.path.join(work, "vt-switch.ppm")
+        away = None
         try:
-            wait_stable(vm, path, settle=2.0, timeout=60,
-                        want=lambda img: not_blank(img) and img.data != last.data)
+            vm.wait_serial("vt: using tty /dev/tty3", timeout=60)
+            away = wait_stable(vm, path, settle=2.0, timeout=60,
+                               want=lambda img: not_blank(img) and img.data != last.data)
             caps["vt-switch"] = path
         except RuntimeError as e:
             errors["vt-switch"] = "no new kmscon screen on tty3: %s" % e
+        phase("vt-switch")
         vm.keys("ctrl", "alt", "f2")
-        time.sleep(2)
         path = os.path.join(work, "vt-restore.ppm")
-        wait_stable(vm, path)
+        # Back on tty2 the screen leaves tty3's, so a capture of tty3 is
+        # never taken as the restored screen.
+        left_tty3 = None if away is None else (lambda img: img.data != away.data)
+        wait_stable(vm, path, want=left_tty3)
         caps["vt-restore"] = path
+        phase("vt-restore")
     except Exception as e:  # reported per case; the captures so far still count
         error = str(e)
-        log("%s: %s" % (variant, error))
+        log(error)
     finally:
         vm.stop()
         if os.path.exists(disk):
@@ -572,20 +667,99 @@ def evaluate(variant, case, ppm, meta):
     return entry
 
 
+def variant_job(variant, t0):
+    """Drive and evaluate one variant: (its case entries, its metadata).
+
+    Runs in a worker process when variants run concurrently. A variant that
+    cannot run is reported, not fatal: each of its cases fails with the error.
+    """
+    global _T0, _LABEL
+    _T0, _LABEL = t0, variant
+    timing = {}
+    try:
+        caps, meta = run_variant(variant, timing)
+    except Exception as e:
+        log(str(e))
+        caps, meta = {}, {"error": str(e)}
+    start = time.time()
+    cases = [evaluate(variant, case, caps.get(case), meta) for case in CASES]
+    timing["evaluate"] = round(time.time() - start, 1)
+    log("phase evaluate took %.1f s" % timing["evaluate"])
+    meta["timing"] = timing
+    return cases, meta
+
+
+def uses_virgl(variant):
+    return VARIANTS[variant]["device"].startswith("virtio-vga-gl")
+
+
+def run_concurrently(variants, jobs):
+    """{variant: variant_job's result}, at most `jobs` variants at once.
+
+    Each variant runs in its own process, so one variant's compare (pure
+    Python, holding the GIL) never stalls another's captures. Variants on
+    virgl share the host's render node, so at most one of them runs at a
+    time. They start in the requested order.
+    """
+    results, pending, running = {}, list(variants), {}
+    ctx = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(jobs, mp_context=ctx) as pool:
+        while pending or running:
+            for variant in list(pending):
+                if len(running) >= jobs:
+                    break
+                if uses_virgl(variant) and any(map(uses_virgl, running.values())):
+                    continue
+                pending.remove(variant)
+                running[pool.submit(variant_job, variant, _T0)] = variant
+            done, _ = concurrent.futures.wait(
+                running, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                variant = running.pop(future)
+                try:
+                    results[variant] = future.result()
+                except Exception as e:  # the worker itself died
+                    log("%s: worker failed: %s" % (variant, e))
+                    meta = {"error": "worker failed: %s" % e}
+                    results[variant] = ([evaluate(variant, case, None, meta)
+                                         for case in CASES], meta)
+    return results
+
+
+@contextlib.contextmanager
+def run_lock():
+    """Hold fork/build/tier3.lock, or exit if another run holds it: two runs
+    would share the work directory, the report and the render node."""
+    os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+    with open(LOCK, "a+") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            f.seek(0)
+            raise SystemExit("another tier 3 run (pid %s) holds %s"
+                             % (f.read().strip() or "unknown", rel(LOCK)))
+        f.truncate(0)
+        f.write("%d\n" % os.getpid())
+        f.flush()
+        yield
+
+
 def run(args):
     if not os.path.exists(BASE):
         raise SystemExit("no base image at %s; run `make tier3-image`" % BASE)
+    global _LABEL
     variants = args.variants or DEFAULT_VARIANTS
-    cases, meta = [], {}
-    for variant in variants:
-        try:
-            caps, meta[variant] = run_variant(variant)
-        except Exception as e:  # a variant that cannot run is reported, not fatal
-            log("%s: %s" % (variant, e))
-            caps = {}
-            meta[variant] = {"error": str(e)}
-        for case in CASES:
-            cases.append(evaluate(variant, case, caps.get(case), meta[variant]))
+    with run_lock():
+        if args.jobs == 1:
+            results = {v: variant_job(v, _T0) for v in variants}
+        else:
+            results = run_concurrently(variants, args.jobs)
+    _LABEL = ""
+    log("%d variant(s) done, %d at a time" % (len(variants), args.jobs))
+    # The report lists variants in the requested order, whatever order they
+    # finished in, so a concurrent run's report matches a serial one's.
+    cases = [c for v in variants for c in results[v][0]]
+    meta = {v: results[v][1] for v in variants}
     report = {"tier": 3, "cases": cases, "variants": meta}
     os.makedirs(os.path.dirname(REPORT), exist_ok=True)
     with open(REPORT, "w") as f:
@@ -599,7 +773,7 @@ def run(args):
 
 
 def bless(args):
-    with open(REPORT) as f:
+    with run_lock(), open(REPORT) as f:
         report = json.load(f)
     for c in report["cases"]:
         variant, case = c["name"].split("/", 1)
@@ -621,6 +795,8 @@ def main(argv=None):
     p.add_argument("--image", required=True, help="pristine image file in fork/vm/images")
     p.add_argument("--archive", required=True, help="Arch Linux Archive date, YYYY/MM/DD")
     r = sub.add_parser("run")
+    r.add_argument("--jobs", type=int, default=1, metavar="N",
+                   help="run up to N variants at once (default 1)")
     r.add_argument("variants", nargs="*", help="any of: " + ", ".join(VARIANTS))
     b = sub.add_parser("bless")
     b.add_argument("variants", nargs="*")
@@ -628,6 +804,11 @@ def main(argv=None):
     unknown = set(getattr(args, "variants", [])) - set(VARIANTS)
     if unknown:
         ap.error("unknown variant(s): " + ", ".join(sorted(unknown)))
+    named = getattr(args, "variants", [])
+    if len(set(named)) != len(named):
+        ap.error("a variant is named twice; each has one work directory")
+    if getattr(args, "jobs", 1) < 1:
+        ap.error("--jobs must be at least 1")
     return {"provision": provision, "run": run, "bless": bless}[args.cmd](args)
 
 

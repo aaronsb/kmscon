@@ -252,9 +252,7 @@ def render(reports, args):
 
 LEDGER_HEAD = """# Conformance ledger
 
-One row per committed contact sheet, oldest first. Each sheet is drawn from a
-single run of the harness (ADR-301): `make sheet NOTE="..."` runs the tiers,
-writes the sheet under `sheets/`, and appends its row here.
+One row per committed contact sheet, oldest first. Each sheet is drawn from a single run of the harness (ADR-301): `make sheet NOTE="..."` runs the tiers, writes the sheet under `sheets/`, and appends its row here. The kmscon and libtsm columns name the commits that run measured.
 
 | Date | Note | kmscon | libtsm | Tier 1 | Tier 2 | Tier 3 | Sheet |
 |---|---|---|---|---|---|---|---|

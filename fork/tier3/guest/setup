@@ -1,0 +1,18 @@
+#!/bin/sh
+# Per-run guest setup, run as root at boot from the T3PKG disc mounted at $1:
+# installs the package under test, the variant's kmscon config and the
+# scenario screens.
+set -eu
+disc=$1
+pacman -U --noconfirm "$disc"/pkg/*.pkg.tar.zst
+install -Dm644 "$disc"/kmscon.conf /etc/kmscon/kmscon.conf
+# kmscon's log also goes to the console (the serial port), so the harness can
+# record which video backend and text renderer drew the screens.
+mkdir -p /etc/systemd/system/kmsconvt@.service.d
+printf '[Service]\nStandardOutput=journal+console\nStandardError=journal+console\n' \
+    > /etc/systemd/system/kmsconvt@.service.d/tier3.conf
+systemctl daemon-reload
+rm -rf /usr/local/share/tier3
+cp -r "$disc"/screens /usr/local/share/tier3
+install -m755 "$disc"/t3 /usr/local/bin/t3
+echo "TIER3-INSTALL-OK $(pacman -Q kmscon-aaronsb)" > /dev/ttyS0

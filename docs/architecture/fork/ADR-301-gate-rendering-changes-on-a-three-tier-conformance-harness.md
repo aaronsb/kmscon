@@ -94,3 +94,11 @@ The fork is also meant to show, over time, that it builds and works against upst
 - **Unit tests only.** Rejected: unit tests check what their authors thought of, and the risk in a rewrite is behaviour nobody thought of.
 - **Manual testing on the console.** Rejected as a gate: it cannot be repeated per change or per upstream sync, and it produces no evidence anyone else can read. It remains how a person accepts a golden.
 - **The VM tier alone.** Rejected: too slow to run on every change, and a failing screenshot says little about where the fault is. The cheaper tiers localise faults; the VM tier proves the assembled package.
+
+## Amendment, 2026-10-21: three verdicts and marked differences
+
+The operator asked that the record of each run "circle/mark" the areas that do not conform and allow "a bit of stretch if it's not pixel identical". This amends the rules for tiers 2 and 3; tier 1 compares text and stays exact.
+
+- A pixel comparison has three verdicts: **pass** (identical outside masks), **near** (differs, but within the case's tolerance; the gate passes), and **fail** (beyond tolerance). A missing golden also fails.
+- A case's tolerance and masks live in a committed sidecar beside its golden: the largest per-channel difference allowed, the number of pixels allowed to differ, and rectangles excluded from comparison. No sidecar means exact. A sidecar change is reviewed and committed on its own, like a golden, so the allowance cannot widen unnoticed.
+- Each comparison reports the regions that differ as a short list of clustered rectangles, and the contact sheet (`make sheet`, ledger in `docs/conformance/`) outlines those regions on the golden and the actual image. For tier 1 the sheet outlines the cells that differ.

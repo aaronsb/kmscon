@@ -35,7 +35,7 @@ GAP = 16                # space between tiles
 COLUMNS = 3             # tile columns on the sheet
 SHEET_BG = "#1b1d23"
 INK = "#d8dee9"
-STATUS_COLOR = {"pass": "#3fa34d", "fail": "#d1453b", "missing": "#d99a1e"}
+STATUS_COLOR = {"pass": "#3fa34d", "near": "#d99a1e", "fail": "#d1453b", "missing": "#8b93a1"}
 
 # xterm's 16 colours, then the default foreground and background (codes 16, 17).
 PALETTE = ["#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
@@ -119,12 +119,63 @@ def cell_style(attrs, col):
 
 # ---------------------------------------------------------------- drawing
 
-def draw_grid(out, screen, cols, rows, x0, y0, changed_rows=()):
-    """Draw one screen's cells at (x0, y0)."""
+def cell_map(screen, cols):
+    """{(row, col): (string, style)} for every non-blank or styled cell."""
+    cells = {}
+    for r, text in screen["rows"].items():
+        attrs = screen["attrs"].get(r, [])
+        for col, ch in cells_of(text):
+            if col < cols:
+                cells[(r, col)] = (ch, tuple(sorted(cell_style(attrs, col).items())))
+    for r, runs in screen["attrs"].items():
+        for a, b, attr in runs:
+            for col in range(a, min(b, cols - 1) + 1):
+                cells.setdefault((r, col), (" ", tuple(sorted(attr.items()))))
+    return cells
+
+
+def changed_regions(want, got, cols, rows):
+    """Rectangles (c0, r0, c1, r1), inclusive, around every cell that differs.
+
+    Changed cells on a row are joined into spans, and spans that overlap or
+    touch on adjacent rows are merged, so a reader sees a few marked regions
+    rather than one mark per cell. A moved cursor marks both positions.
+    """
+    a, b = cell_map(want, cols), cell_map(got, cols)
+    diff = {k for k in set(a) | set(b) if a.get(k, (" ", ())) != b.get(k, (" ", ()))}
+    if want["cursor"] != got["cursor"]:
+        for cx, cy in (want["cursor"], got["cursor"]):
+            if cx < cols and cy < rows:
+                diff.add((cy, cx))
+    spans = []
+    for r in range(rows):
+        cs = sorted(c for (rr, c) in diff if rr == r)
+        for c in cs:
+            if spans and spans[-1][1] == r and spans[-1][3] == r and c <= spans[-1][2] + 2:
+                spans[-1][2] = c
+            else:
+                spans.append([c, r, c, r])
+    regions = []
+    for c0, r0, c1, r1 in spans:
+        for reg in regions:
+            if r0 <= reg[3] + 1 and c0 <= reg[2] + 2 and c1 >= reg[0] - 2:
+                reg[0], reg[2], reg[3] = min(reg[0], c0), max(reg[2], c1), max(reg[3], r1)
+                break
+        else:
+            regions.append([c0, r0, c1, r1])
+    return [tuple(r) for r in regions]
+
+
+def draw_marks(out, regions, x0, y0, color):
+    for c0, r0, c1, r1 in regions:
+        out.append(f'<rect x="{x0 + c0 * CW - 3}" y="{y0 + r0 * CH - 2}" width="{(c1 - c0 + 1) * CW + 6}" '
+                   f'height="{(r1 - r0 + 1) * CH + 4}" rx="4" fill="none" stroke="{color}" stroke-width="2"/>')
+
+
+def draw_grid(out, screen, cols, rows, x0, y0, marks=()):
+    """Draw one screen's cells at (x0, y0), then outline the marked regions."""
     w, h = cols * CW, rows * CH
     out.append(f'<rect x="{x0}" y="{y0}" width="{w}" height="{h}" fill="{PALETTE[17]}"/>')
-    for r in sorted(changed_rows):
-        out.append(f'<rect x="{x0 - 3}" y="{y0 + r * CH}" width="2" height="{CH}" fill="{STATUS_COLOR["fail"]}"/>')
     for r in range(rows):
         text = screen["rows"].get(r, "")
         attrs = screen["attrs"].get(r, [])
@@ -161,6 +212,7 @@ def draw_grid(out, screen, cols, rows, x0, y0, changed_rows=()):
     if cx < cols and cy < rows:
         out.append(f'<rect x="{x0 + cx * CW}" y="{y0 + cy * CH}" width="{CW}" height="{CH}" '
                    f'fill="none" stroke="#ebcb8b" stroke-width="1"/>')
+    draw_marks(out, marks, x0, y0, STATUS_COLOR["fail"])
     return w, h
 
 
@@ -191,7 +243,7 @@ def render(reports, args):
     counts = []
     for rep in reports:
         n = len(rep["cases"])
-        ok = sum(1 for c in rep["cases"] if c["status"] == "pass")
+        ok = sum(1 for c in rep["cases"] if c["status"] in ("pass", "near"))
         counts.append((rep["tier"], ok, n))
         if rep["tier"] == 1:
             tiles.extend(tiles_for_tier1(rep))
@@ -232,15 +284,11 @@ def render(reports, args):
         gy = ty + LABEL + PAD - 4
         if t["status"] == "fail":
             want = t["golden"]
-            changed = set()
+            regions = changed_regions(want, t["actual"], t["cols"], t["rows"]) if want else []
             if want:
-                for r in range(t["rows"]):
-                    if (want["rows"].get(r) != t["actual"]["rows"].get(r)
-                            or want["attrs"].get(r) != t["actual"]["attrs"].get(r)):
-                        changed.add(r)
-                draw_grid(out, want, t["cols"], t["rows"], tx + PAD, gy)
+                draw_grid(out, want, t["cols"], t["rows"], tx + PAD, gy, regions)
             w = t["cols"] * CW + 2 * PAD
-            draw_grid(out, t["actual"], t["cols"], t["rows"], tx + w + PAD, gy, changed)
+            draw_grid(out, t["actual"], t["cols"], t["rows"], tx + w + PAD, gy, regions)
             for caption, cx in (("golden", tx + w // 2), ("actual", tx + w + PAD + w // 2)):
                 out.append(f'<text x="{cx}" y="{ty + 13}" fill="#8b93a1" font-size="10" '
                            f'text-anchor="middle">{caption}</text>')

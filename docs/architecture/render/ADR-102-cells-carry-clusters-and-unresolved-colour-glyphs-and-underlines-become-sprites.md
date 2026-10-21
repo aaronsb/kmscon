@@ -9,6 +9,14 @@ basis:
     said: "Config option"
     via: Claude Code session, choosing between Unicode grapheme rules and wcwidth as the default way to measure emoji and combined characters; the option offered was a kmscon.conf setting with Unicode rules as its default
   - operator: aaronsb
+    level: guided
+    said: "lets make sure they can accept a color configuration"
+    via: Claude Code session, after reviewing the decoration-sprite figure; read as the underline and strike sprites taking colours from kmscon.conf
+  - operator: aaronsb
+    level: guided
+    said: "for accessibility reasons, it might be necessary to change the colors"
+    via: Claude Code session, following the request for configurable decoration colours
+  - operator: aaronsb
     level: directed
     said: "I think it might be time to introduce some new capabilities to test?"
     via: Claude Code session, after the three-tier harness was complete
@@ -84,7 +92,7 @@ The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 96
 
 ### Colour (libtsm)
 
-- A colour is stored as one of: default, palette index (0-255), or RGB. The cell holds three: foreground, background and underline. Underline's default means "same as the foreground".
+- A colour is stored as one of: default, palette index (0-255), or RGB. The cell holds three: foreground, background and underline. Underline's default means "whatever kmscon is configured to use", which is the foreground unless kmscon.conf says otherwise (see Underline and strike).
 - Resolution moves to the draw path. Palette lookup, bold-as-bright, dim, reverse video (cell, screen and selection) and the cursor are applied when the renderer asks for a frame. Reverse video swaps foreground and background. An underline colour that was set explicitly stays as set, and one that follows the foreground follows the swapped foreground (kitty underlines doc).
 
 ### Cells and clusters (libtsm)
@@ -152,7 +160,16 @@ The figure shows each underline style as one cell-wide sprite repeated across th
 
 ![The five underline styles and strike-through, each drawn as a one-cell sprite repeated across three cells with the cell boundaries marked; the curly wave completes one period per cell and meets its neighbour at the same height](figures/ADR-102-decoration-sprites.svg)
 
-- **Decoration sprites.** Underline styles (single, double, curly, dotted, dashed) and strike-through are A8 decoration sprites, one cell wide. They are generated per style, cell size and font metrics, and tinted with the underline colour, or for strike, the foreground.
+- **Decoration sprites.** Underline styles (single, double, curly, dotted, dashed) and strike-through are A8 decoration sprites, one cell wide. They are generated per style, cell size and font metrics, and tinted at draw time, so any colour applies without a new sprite.
+- **Decoration colours.**
+  - kmscon.conf sets the colour each decoration takes when no program has chosen one: `underline-color` and `strike-color`. Each takes `fg` (the default: follow the cell's foreground), a palette index 0-255, or `#rrggbb`.
+  - A palette index resolves through the palette in use, so it follows a palette change.
+  - For underlines, SGR 58 overrides the configured colour on the cells it applies to, and SGR 59 returns them to it.
+  - No escape sequence sets a strike colour, so strike always takes the configured one.
+  - `force-decoration-colors=on` makes the configured colours win over SGR 58. It exists for accessibility: a reader who cannot distinguish the colour a program picked, or who runs a high-contrast palette, can make every underline and strike the colour they can see. Programs are not told; the cells keep the colour the program set, and only the drawing changes.
+- **Colour emoji under accessibility settings.**
+  - `emoji-color=off` draws every cluster in text presentation: from a face without colour, as a mask tinted with the foreground, so it follows the palette and the reader's colour settings like any other text.
+  - A codepoint no face covers in text presentation still draws from the colour face, as a mask taken from the colour glyph's alpha.
 - **Joining across cells.** Every sprite tiles: curly is one period per cell starting and ending at the same height, dotted and dashed divide the cell so neighbours join, and a wide cell takes the sprite twice.
 - **Metrics.**
   - Position and thickness come from the font's underline position and thickness (the `post` table). When the thickness is zero it is estimated from the cell height, and the result is clamped inside the cell.
@@ -193,6 +210,7 @@ Each step's code reads the specifications and the MIT references above. Anything
 - Emoji draw in colour at the right size, and ZWJ sequences, flags and keycaps draw as one glyph.
 - Combining marks stay with their base instead of disappearing.
 - Underline colour follows reverse video correctly, because colours resolve at render time.
+- A reader can set underline, strike and emoji colours for accessibility, including over colours programs choose, without programs knowing.
 - The ASCII path never shapes and never touches the cluster table.
 - The cluster table cannot grow without bound on a console that runs for months.
 - The sprite cache and the two glyph formats are the structures step 3 (images) composites with.

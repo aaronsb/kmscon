@@ -11,7 +11,7 @@ pixels (--max-pixels) allowed, with mask rectangles excluded from the
 comparison; both default to 0, an exact comparison. A .tol sidecar holds the
 same as key=value lines (max_delta=, max_pixels=, mask=x0,y0,x1,y1).
 
-Prints the differing-pixel count, the clustered bounding boxes (at most 16)
+Prints the differing-pixel count, the clustered bounding boxes (at most 16, tile-based)
 of the changed regions and the largest per-channel delta. --diff writes a PPM
 that shows unchanged pixels as dim grey and changed pixels as red.
 
@@ -22,8 +22,9 @@ import argparse
 import json
 import sys
 
-# Differing pixels closer than this (pixels, both axes) share one bounding box.
-MERGE_GAP = 8
+# Differing pixels are grouped by the TILE x TILE tiles they fall in; touching
+# dirty tiles form one region.
+TILE = 8
 # Most regions reported; the closest are merged beyond this.
 MAX_BOXES = 16
 
@@ -102,73 +103,58 @@ def _masked(x, y, masks):
     return False
 
 
-def _row_runs(a, b, w, y, masks):
-    """Runs [x0, x1] of differing pixels in row y, with count and max delta."""
+def _row_diffs(a, b, w, y, masks):
+    """x positions of differing pixels in row y, with their count and max delta."""
     ra = a[y * w * 3 : (y + 1) * w * 3]
     rb = b[y * w * 3 : (y + 1) * w * 3]
-    runs = []
-    count = 0
+    xs = []
     top = 0
     for x in range(w):
         i = x * 3
         d = max(abs(ra[i] - rb[i]), abs(ra[i + 1] - rb[i + 1]), abs(ra[i + 2] - rb[i + 2]))
         if d and not _masked(x, y, masks):
-            count += 1
+            xs.append(x)
             top = max(top, d)
-            if runs and x - runs[-1][1] <= MERGE_GAP:
-                runs[-1][1] = x
-            else:
-                runs.append([x, x])
-    return runs, count, top
+    return xs, top
 
 
-def _near(b, o):
-    return (
-        b[0] <= o[2] + MERGE_GAP
-        and o[0] <= b[2] + MERGE_GAP
-        and b[1] <= o[3] + MERGE_GAP
-        and o[1] <= b[3] + MERGE_GAP
-    )
+def _regions(tiles, cap=MAX_BOXES):
+    """Connected components of dirty tiles -> bounding boxes of their pixels.
 
-
-def _union(o, b):
-    return [min(o[0], b[0]), min(o[1], b[1]), max(o[2], b[2]), max(o[3], b[3])]
-
-
-def _gap(a, b):
-    dx = max(a[0] - b[2], b[0] - a[2], 0)
-    dy = max(a[1] - b[3], b[1] - a[3], 0)
-    return dx + dy
-
-
-def _merge_boxes(boxes, cap=MAX_BOXES):
-    """Cluster boxes within MERGE_GAP of each other, then merge the closest
-    pairs until at most `cap` remain."""
-    boxes = [list(b) for b in boxes]
-    merged = True
-    while merged:
-        merged = False
-        out = []
-        for b in boxes:
-            for i, o in enumerate(out):
-                if _near(b, o):
-                    out[i] = _union(o, b)
-                    merged = True
-                    break
-            else:
-                out.append(b)
-        boxes = out
-    while len(boxes) > cap:
-        best = None
-        for i in range(len(boxes)):
-            for j in range(i + 1, len(boxes)):
-                g = _gap(boxes[i], boxes[j])
-                if best is None or g < best[0]:
-                    best = (g, i, j)
-        _, i, j = best
-        boxes[i] = _union(boxes[i], boxes[j])
-        del boxes[j]
-    return sorted(boxes, key=lambda b: (b[1], b[0]))
+    tiles maps (tx, ty) to the pixel extent [x0, y0, x1, y1] inside it. While
+    there are more than `cap` components the tile size doubles. Linear in the
+    number of dirty tiles per pass.
+    """
+    shift = 0
+    while True:
+        seen = set()
+        boxes = []
+        for start in tiles:
+            if start in seen:
+                continue
+            seen.add(start)
+            stack = [start]
+            box = list(tiles[start])
+            while stack:
+                tx, ty = stack.pop()
+                e = tiles[(tx, ty)]
+                box = [min(box[0], e[0]), min(box[1], e[1]), max(box[2], e[2]), max(box[3], e[3])]
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        n = (tx + dx, ty + dy)
+                        if n in tiles and n not in seen:
+                            seen.add(n)
+                            stack.append(n)
+            boxes.append(box)
+        if len(boxes) <= cap:
+            return sorted(boxes, key=lambda b: (b[1], b[0]))
+        coarse = {}
+        for (tx, ty), e in tiles.items():
+            k = (tx >> 1, ty >> 1)
+            c = coarse.get(k)
+            coarse[k] = list(e) if c is None else [min(c[0], e[0]), min(c[1], e[1]), max(c[2], e[2]), max(c[3], e[3])]
+        tiles = coarse
+        shift += 1
 
 
 def compare(golden, actual, tol=None, diff_path=None):
@@ -195,18 +181,23 @@ def compare(golden, actual, tol=None, diff_path=None):
             "note": "size differs: golden %dx%d, actual %dx%d" % (gw, gh, aw, ah),
         }
 
-    boxes = []
+    tiles = {}
     pixels = 0
     top = 0
     diff = bytearray(len(ap)) if diff_path else None
     for y in range(gh):
         lo, hi = y * gw * 3, (y + 1) * gw * 3
-        runs = []
         if gp[lo:hi] != ap[lo:hi]:
-            runs, n, t = _row_runs(gp, ap, gw, y, masks)
-            pixels += n
+            xs, t = _row_diffs(gp, ap, gw, y, masks)
+            pixels += len(xs)
             top = max(top, t)
-            boxes.extend([r[0], y, r[1], y] for r in runs)
+            for x in xs:
+                k = (x // TILE, y // TILE)
+                e = tiles.get(k)
+                if e is None:
+                    tiles[k] = [x, y, x, y]
+                else:
+                    e[0], e[1], e[2], e[3] = min(e[0], x), min(e[1], y), max(e[2], x), max(e[3], y)
         if diff is not None:
             for x in range(gw):
                 i = lo + x * 3
@@ -227,7 +218,7 @@ def compare(golden, actual, tol=None, diff_path=None):
         "status": status,
         "match": status != "fail",
         "pixels": pixels,
-        "bbox": _merge_boxes(boxes),
+        "bbox": _regions(tiles),
         "max_delta": top,
     }
 

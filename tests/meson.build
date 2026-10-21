@@ -102,7 +102,8 @@ test_conf = executable(
 test('test_conf', test_conf)
 
 
-if enable_font_freetype
+python = find_program('python3')
+if enable_font_freetype and enable_video_drm2d
     test_pixels = executable(
         'test_pixels',
         'test_pixels.c',
@@ -111,12 +112,12 @@ if enable_font_freetype
             libtsm_deps,
             freetype_deps,
             fontconfig_deps,
+            libdrm_deps,
             threads_deps,
             shl_deps,
             htable_deps,
         ],
     )
-    python = find_program('python3')
     test(
         'tier2_pixels',
         python,
@@ -128,6 +129,16 @@ if enable_font_freetype
             '--out', meson.project_build_root() / 'tier2',
             '--report', meson.project_build_root() / 'tier2-report.json',
             '--root', meson.project_source_root(),
+        ],
+    )
+else
+    # Visible as SKIP, not a silent absence, when the renderer pieces are off.
+    test(
+        'tier2_pixels',
+        python,
+        args: [
+            files('tier2/run.py'),
+            '--skip', 'tier 2 needs the freetype font backend and the drm2d video backend',
         ],
     )
 endif

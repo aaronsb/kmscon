@@ -12,9 +12,11 @@
  * The pipeline is the production one: libtsm parses bytes into a screen,
  * kmscon_text_draw() reads it, the bbulk renderer asks the freetype backend
  * for glyph masks and hands them to display_blend(). Only the display is
- * replaced, by a blend that matches src/video/drm2d_render.c.
+ * replaced, by a fake struct display that the real drm2d blend and clear
+ * draw into.
  */
 
+#undef NDEBUG
 #include <assert.h>
 #include <errno.h>
 #include <fontconfig/fontconfig.h>
@@ -23,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <libtsm.h>
+#include <limits.h>
 
 #include "../src/font/font.c"
 #undef LOG_SUBSYSTEM
@@ -31,6 +34,8 @@
 #include "../src/render/text.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/bbulk.c"
+#undef LOG_SUBSYSTEM
+#include "../src/video/drm2d_render.c"
 
 void shl_module_ref(struct shl_module *module) {}
 void shl_module_unref(struct shl_module *module) {}
@@ -65,73 +70,33 @@ bool display_supports_damage(struct display *disp)
 void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages) {}
 void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y) {}
 
-int display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b)
-{
-	uint32_t v = ((uint32_t)r << 16) | (g << 8) | b;
+/*
+ * The real drm2d blend and clear run against a fake display whose back
+ * buffer is fb: display_blend() and display_clear() forward to
+ * drm2d_display_blend() and drm2d_display_clear() from
+ * src/video/drm2d_render.c, which is compiled into this test.
+ */
+static struct drm2d_display fake_d2d;
+static struct display fake_disp;
 
-	for (size_t i = 0; i < (size_t)fb_w * fb_h; i++)
-		fb[i] = v;
-	return 0;
+static void fake_display_init(void)
+{
+	fake_disp.width = fb_w;
+	fake_disp.height = fb_h;
+	fake_disp.data = &fake_d2d;
+	fake_d2d.current_rb = 0;
+	fake_d2d.rb[1].map = fb;
+	fake_d2d.rb[1].stride = fb_w * 4;
 }
 
-/* Same clipping and arithmetic as drm2d_display_blend(). */
+int display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b)
+{
+	return drm2d_display_clear(disp, r, g, b);
+}
+
 int display_blend(struct display *disp, const struct video_blend_req *req)
 {
-	unsigned int tmp, width, height, i;
-	uint_fast32_t r, g, b, out;
-	const uint8_t *src;
-	uint32_t *dst;
-
-	if (!req || !req->buf)
-		return -EINVAL;
-
-	width = min(req->w, req->buf->width);
-	tmp = req->x + width;
-	if (tmp < req->x || req->x >= fb_w)
-		return -EINVAL;
-	if (tmp > fb_w)
-		width = fb_w - req->x;
-
-	height = min(req->h, req->buf->height);
-	tmp = req->y + height;
-	if (tmp < req->y || req->y >= fb_h)
-		return -EINVAL;
-	if (tmp > fb_h)
-		height = fb_h - req->y;
-
-	dst = &fb[req->y * fb_w + req->x];
-	src = req->buf->data;
-
-	while (height--) {
-		for (i = 0; i < width; ++i) {
-			if (src[i] == 0) {
-				r = req->br;
-				g = req->bg;
-				b = req->bb;
-			} else if (src[i] == 255) {
-				r = req->fr;
-				g = req->fg;
-				b = req->fb;
-			} else {
-				r = req->fr * src[i] + req->br * (255 - src[i]);
-				r += 0x80;
-				r = (r + (r >> 8)) >> 8;
-
-				g = req->fg * src[i] + req->bg * (255 - src[i]);
-				g += 0x80;
-				g = (g + (g >> 8)) >> 8;
-
-				b = req->fb * src[i] + req->bb * (255 - src[i]);
-				b += 0x80;
-				b = (b + (b >> 8)) >> 8;
-			}
-			out = (r << 16) | (g << 8) | b;
-			dst[i] = out;
-		}
-		dst += fb_w;
-		src += req->buf->width;
-	}
-	return 0;
+	return drm2d_display_blend(disp, req);
 }
 
 /* ---- screens ---- */
@@ -242,7 +207,7 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	tsm_vte_input(vte, ESC "[?25l", 6);
 	tsm_vte_input(vte, s->bytes, strlen(s->bytes));
 
-	ret = kmscon_text_new(&txt, "bbulk", OR_NORMAL, (struct display *)1);
+	ret = kmscon_text_new(&txt, "bbulk", OR_NORMAL, &fake_disp);
 	assert(ret == 0);
 	ret = kmscon_text_set(txt, font);
 	assert(ret == 0);
@@ -267,6 +232,8 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	return ret;
 }
 
+static void check_font_files(struct kmscon_font *font, const char *font_dir);
+
 /* Replace the process's fontconfig with one that knows only the pinned files. */
 static void pin_fonts(const char *font_dir)
 {
@@ -283,7 +250,37 @@ static void pin_fonts(const char *font_dir)
 			exit(2);
 		}
 	}
-	assert(FcConfigSetCurrent(cfg));
+	if (!FcConfigSetCurrent(cfg)) {
+		fprintf(stderr, "test_pixels: cannot install the font configuration\n");
+		exit(2);
+	}
+}
+
+/* Every font the backend can draw from, regular and bold, must be a pinned file. */
+static void check_font_files(struct kmscon_font *font, const char *font_dir)
+{
+	struct ft_data *ftd = font->data;
+	FcFontSet *sets[2] = {ftd->regular.fc, ftd->bold.fc};
+	char dir[PATH_MAX], file[PATH_MAX];
+
+	if (!realpath(font_dir, dir)) {
+		fprintf(stderr, "test_pixels: bad font dir %s\n", font_dir);
+		exit(2);
+	}
+	for (int k = 0; k < 2; k++) {
+		assert(sets[k] && sets[k]->nfont > 0);
+		for (int i = 0; i < sets[k]->nfont; i++) {
+			FcChar8 *path = NULL;
+
+			if (FcPatternGetString(sets[k]->fonts[i], FC_FILE, 0, &path) != FcResultMatch ||
+			    !realpath((char *)path, file) || strncmp(file, dir, strlen(dir)) != 0 ||
+			    file[strlen(dir)] != '/') {
+				fprintf(stderr, "test_pixels: font %s is not under %s\n",
+					path ? (char *)path : "(none)", dir);
+				exit(2);
+			}
+		}
+	}
 }
 
 int main(int argc, char **argv)
@@ -313,6 +310,8 @@ int main(int argc, char **argv)
 	fb_h = ROWS * font->height;
 	fb = calloc((size_t)fb_w * fb_h, sizeof(*fb));
 	assert(fb);
+	fake_display_init();
+	check_font_files(font, argv[1]);
 
 	for (size_t i = 0; i < sizeof(screens) / sizeof(screens[0]); i++)
 		failed |= !!render_screen(font, &screens[i], argv[2]);

@@ -1,16 +1,27 @@
 #!/usr/bin/env python3
-"""Image I/O and masked exact comparison for the tier 3 harness (stdlib only).
+"""Image I/O and masked comparison with tolerances for the tier 3 harness.
 
-Reads binary PPM (P6, what QEMU's screendump writes) and 8-bit RGB/RGBA PNG;
-writes PNG through zlib, so goldens of very large screens stay small enough to
-commit. Comparison is exact: any channel difference outside a mask rectangle
-is a differing pixel.
+Stdlib only. Reads binary PPM (P6, what QEMU's screendump writes) and 8-bit
+RGB/RGBA PNG; writes PNG through zlib, so goldens of very large screens stay
+small enough to commit.
 
-Tier 2 is building its own compare tool, pixcmp, in parallel. This module is
-deliberately minimal; the two should be merged once both exist.
+A golden may have a tolerance sidecar beside it, `<screen>.tol`, of key=value
+lines (`#` starts a comment):
+
+    max_delta=1          largest per-channel difference allowed
+    max_pixels=200       how many pixels may differ
+    mask=0,780,1280,800  a rectangle x0,y0,x1,y1 (end-exclusive) left out of
+                         the comparison; repeat for more
+
+No sidecar means exact. An absent max_delta or max_pixels is 0. The verdict is
+"pass" when nothing differs outside the masks, "near" when something does but
+within both limits, and "fail" otherwise.
+
+Tier 2 is building its own compare tool, pixcmp, in parallel. The two should
+be merged once both exist.
 
 Usage:
-    t3img.py compare ACTUAL GOLDEN [--mask MASK.json] [--diff OUT.png]
+    t3img.py compare ACTUAL GOLDEN [--tol FILE] [--diff OUT.png]
     t3img.py topng IN OUT.png
 """
 
@@ -19,6 +30,9 @@ import json
 import struct
 import sys
 import zlib
+
+MAX_REGIONS = 16
+THUMB_WIDTH = 480
 
 
 class Image:
@@ -35,6 +49,8 @@ class Image:
         stride = self.width * 3
         return self.data[y * stride:(y + 1) * stride]
 
+
+# --- reading and writing ----------------------------------------------------
 
 def _ppm_tokens(buf, count):
     """Return `count` header tokens of a PPM and the offset after them."""
@@ -143,20 +159,92 @@ def write_png(path, img):
         f.write(chunk(b"IEND", b""))
 
 
-def load_mask(path):
-    """Mask rectangles [[x0, y0, x1, y1], ...], end-exclusive, from JSON."""
+def thumbnail(img, width=THUMB_WIDTH):
+    """Downscale by an integer step, keeping one pixel per step (nearest)."""
+    step = max(1, -(-img.width // width))
+    if step == 1:
+        return img
+    rows = []
+    for y in range(0, img.height, step):
+        row = img.row(y)
+        rows.append(b"".join(row[x:x + 3] for x in range(0, len(row), step * 3)))
+    return Image(len(rows[0]) // 3, len(rows), b"".join(rows))
+
+
+def diff_thumbnail(actual, points, width=THUMB_WIDTH):
+    """Thumbnail of a diff: the actual screen dimmed, with every block that
+    holds a differing pixel in red, so a one-pixel difference stays visible."""
+    step = max(1, -(-actual.width // width))
+    thumb = thumbnail(actual, width)
+    out = bytearray(b // 3 for b in thumb.data)
+    for x, y in points:
+        i = ((y // step) * thumb.width + x // step) * 3
+        out[i:i + 3] = b"\xff\x00\x00"
+    return Image(thumb.width, thumb.height, bytes(out))
+
+
+# --- tolerance sidecars -----------------------------------------------------
+
+def load_tol(path):
+    """The tolerance in a sidecar, or None (exact) when there is none.
+
+    Returns {"max_delta": int, "max_pixels": int, "masks": [[x0,y0,x1,y1]]}.
+    """
     if not path:
-        return []
+        return None
     try:
         with open(path) as f:
-            doc = json.load(f)
+            lines = f.read().splitlines()
     except FileNotFoundError:
-        return []
-    return [tuple(r) for r in doc.get("rects", [])]
+        return None
+    tol = {"max_delta": 0, "max_pixels": 0, "masks": []}
+    for n, line in enumerate(lines, 1):
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        key, sep, value = (p.strip() for p in line.partition("="))
+        try:
+            if not sep:
+                raise ValueError("expected key=value")
+            if key in ("max_delta", "max_pixels"):
+                tol[key] = int(value)
+            elif key == "mask":
+                rect = [int(v) for v in value.split(",")]
+                if len(rect) != 4 or rect[0] >= rect[2] or rect[1] >= rect[3]:
+                    raise ValueError("mask needs x0,y0,x1,y1 with x0<x1, y0<y1")
+                tol["masks"].append(rect)
+            else:
+                raise ValueError("unknown key %r" % key)
+        except ValueError as e:
+            raise ValueError("%s:%d: %s" % (path, n, e))
+    return tol
 
 
-def _bboxes(points, cell=16):
-    """Group differing pixels into bounding boxes of touching cell-sized tiles."""
+def verdict(stats, tol):
+    """pass, near or fail for comparison stats under a tolerance (or None)."""
+    if not stats["pixels"]:
+        return "pass"
+    if (tol and "size_mismatch" not in stats and stats["pixels"] <= tol["max_pixels"]
+            and stats["max_delta"] <= tol["max_delta"]):
+        return "near"
+    return "fail"
+
+
+# --- comparison -------------------------------------------------------------
+
+def _gap(a, b):
+    """Chebyshev distance between two boxes; 0 when they touch or overlap."""
+    dx = max(0, max(a[0], b[0]) - min(a[2], b[2]))
+    dy = max(0, max(a[1], b[1]) - min(a[3], b[3]))
+    return max(dx, dy)
+
+
+def _union(a, b):
+    return [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+
+
+def _cluster(points, cell):
+    """Boxes of 8-connected components of the cell-sized tiles holding points."""
     tiles = {}
     for x, y in points:
         key = (x // cell, y // cell)
@@ -164,19 +252,16 @@ def _bboxes(points, cell=16):
         if b is None:
             tiles[key] = [x, y, x + 1, y + 1]
         else:
-            b[0], b[1] = min(b[0], x), min(b[1], y)
-            b[2], b[3] = max(b[2], x + 1), max(b[3], y + 1)
+            tiles[key] = _union(b, [x, y, x + 1, y + 1])
     seen, boxes = set(), []
     for start in tiles:
         if start in seen:
             continue
         seen.add(start)
-        stack, box = [start], list(tiles[start])
+        stack, box = [start], tiles[start]
         while stack:
             tx, ty = stack.pop()
-            t = tiles[(tx, ty)]
-            box = [min(box[0], t[0]), min(box[1], t[1]),
-                   max(box[2], t[2]), max(box[3], t[3])]
+            box = _union(box, tiles[(tx, ty)])
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
                     n = (tx + dx, ty + dy)
@@ -184,20 +269,39 @@ def _bboxes(points, cell=16):
                         seen.add(n)
                         stack.append(n)
         boxes.append(box)
+    return boxes
+
+
+def regions(points, cell=16, limit=MAX_REGIONS):
+    """At most `limit` boxes around the differing pixels, for a contact sheet
+    to outline. Pixels in touching cell-sized tiles share a box; coarser cells
+    are used while there are many clusters, then the closest boxes merge."""
+    if not points:
+        return []
+    boxes = _cluster(points, cell)
+    while len(boxes) > 4 * limit:
+        cell *= 2
+        boxes = _cluster(points, cell)
+    while len(boxes) > limit:
+        _, i, j = min((_gap(boxes[i], boxes[j]), i, j)
+                      for i in range(len(boxes)) for j in range(i + 1, len(boxes)))
+        boxes[i] = _union(boxes[i], boxes[j])
+        del boxes[j]
     return sorted(boxes, key=lambda b: (b[1], b[0]))
 
 
-def compare(actual, golden, mask=()):
+def compare(actual, golden, masks=()):
     """Compare two images exactly outside the mask rectangles.
 
-    Returns (stats, diff_image_or_None). stats has pixels, bbox and max_delta;
-    a size mismatch counts every pixel and boxes the whole larger frame.
+    Returns (stats, diff_image_or_None, points). stats has pixels, bbox (the
+    clustered regions) and max_delta; a size mismatch counts every pixel and
+    boxes the whole larger frame.
     """
     if (actual.width, actual.height) != (golden.width, golden.height):
         w, h = max(actual.width, golden.width), max(actual.height, golden.height)
         return {"pixels": w * h, "bbox": [[0, 0, w, h]], "max_delta": 255,
                 "size_mismatch": [[actual.width, actual.height],
-                                  [golden.width, golden.height]]}, None
+                                  [golden.width, golden.height]]}, None, []
     w = actual.width
     points, max_delta = [], 0
     for y in range(actual.height):
@@ -209,33 +313,33 @@ def compare(actual, golden, mask=()):
             pa, pg = ra[i:i + 3], rg[i:i + 3]
             if pa == pg:
                 continue
-            if any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in mask):
+            if any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in masks):
                 continue
             points.append((x, y))
             max_delta = max(max_delta, *(abs(a - b) for a, b in zip(pa, pg)))
-    stats = {"pixels": len(points), "bbox": _bboxes(points), "max_delta": max_delta}
+    stats = {"pixels": len(points), "bbox": regions(points), "max_delta": max_delta}
     if not points:
-        return stats, None
+        return stats, None, points
     # The diff shows the actual screen dimmed, differing pixels in red and
     # mask rectangles tinted blue.
     out = bytearray(b // 3 for b in actual.data)
-    for x0, y0, x1, y1 in mask:
+    for x0, y0, x1, y1 in masks:
         for y in range(max(0, y0), min(actual.height, y1)):
             for x in range(max(0, x0), min(w, x1)):
                 out[(y * w + x) * 3 + 2] = min(255, out[(y * w + x) * 3 + 2] + 96)
     for x, y in points:
         i = (y * w + x) * 3
         out[i:i + 3] = b"\xff\x00\x00"
-    return stats, Image(w, actual.height, bytes(out))
+    return stats, Image(w, actual.height, bytes(out)), points
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("compare", help="compare ACTUAL with GOLDEN; exit 1 on difference")
+    c = sub.add_parser("compare", help="compare ACTUAL with GOLDEN; exit 1 on fail")
     c.add_argument("actual")
     c.add_argument("golden")
-    c.add_argument("--mask")
+    c.add_argument("--tol", help="tolerance sidecar (default: none, exact)")
     c.add_argument("--diff")
     t = sub.add_parser("topng", help="convert a PPM or PNG to PNG")
     t.add_argument("src")
@@ -244,12 +348,15 @@ def main(argv=None):
     if args.cmd == "topng":
         write_png(args.dst, read(args.src))
         return 0
-    stats, diff = compare(read(args.actual), read(args.golden), load_mask(args.mask))
+    tol = load_tol(args.tol)
+    stats, diff, _ = compare(read(args.actual), read(args.golden),
+                             tol["masks"] if tol else ())
     if diff is not None and args.diff:
         write_png(args.diff, diff)
+    stats["status"] = verdict(stats, tol)
     json.dump(stats, sys.stdout)
     print()
-    return 1 if stats["pixels"] else 0
+    return 1 if stats["status"] == "fail" else 0
 
 
 if __name__ == "__main__":

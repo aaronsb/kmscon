@@ -49,17 +49,33 @@ Two findings shaped this table:
 - At 7680x2160 each XRGB buffer is 63 MiB. With the default `max_hostmem` (256 MiB) the second kmscon on tty3 fails to create its buffers (`virtio_gpu ... response 0x1201`, out of memory). 1 GiB clears it.
 - Once virgl owns the scanout, QMP `screendump` fails with "no surface". egl-headless reads the scanout back into a surface for a paired VNC server, so the GL variant captures over RFB (raw encoding, implemented in `t3.py`). Captures are byte-identical across boots, like the 2D ones.
 
-## Goldens and masks
+## Goldens, tolerances and masks
 
-Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all nine come to about 300 KB, the 7680x2160 ones included). Comparison is exact. A mask for regions that legitimately vary sits beside its golden as `<screen>.mask.json`:
+Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all nine come to about 300 KB, the 7680x2160 ones included).
 
-```json
-{"rects": [[x0, y0, x1, y1]], "why": "cursor cell"}
+Comparison is exact unless a tolerance sidecar `golden/<variant>/<screen>.tol` sits beside the golden. It holds `key=value` lines; `#` starts a comment:
+
+```
+# cursor cell blinks; antialiasing differs by one level on the GL path
+max_delta=1          largest per-channel difference allowed
+max_pixels=200       how many pixels may differ
+mask=0,780,10,800    x0,y0,x1,y1, end-exclusive, left out of the comparison; repeat for more
 ```
 
-Rectangles are end-exclusive. No golden needs one today: the guest config turns blinking off, the prompt is fixed and no screen shows a clock.
+An absent `max_delta` or `max_pixels` is 0, and a malformed sidecar fails its case. No golden has a sidecar today: the guest config turns blinking off, the prompt is fixed and no screen shows a clock.
 
-`make tier3-bless` copies the last run's captures over the goldens. Per ADR-301 a golden change lands in its own reviewed commit, never with the code that produced it, and each new golden is looked at before it is committed.
+Each case gets one of four verdicts:
+
+| Status | Meaning | Gate |
+|---|---|---|
+| `pass` | identical outside the masks | passes |
+| `near` | differs, within both limits of the case's sidecar | passes |
+| `fail` | differs beyond the tolerance, or the case could not run | fails |
+| `missing` | no golden yet | fails |
+
+The tier exits non-zero on any `fail` or `missing`.
+
+`make tier3-bless` copies the last run's captures over the goldens. Per ADR-301 a golden or sidecar change lands in its own reviewed commit, never with the code that produced it, and each new golden is looked at before it is committed.
 
 ## Report
 
@@ -67,23 +83,36 @@ Rectangles are end-exclusive. No golden needs one today: the guest config turns 
 
 ```json
 {"tier": 3,
- "cases": [{"name": "2d-1280x800/sgr", "status": "pass", "golden": "fork/tier3/golden/2d-1280x800/sgr.png",
-            "actual": "fork/build/tier3/2d-1280x800/sgr.png", "diff": null,
-            "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}],
- "variants": {"2d-1280x800": {"packages": ["..."], "kmscon": ["Display ... text renderer [bbulk] ..."]}}}
+ "cases": [{"name": "2d-1280x800/sgr", "status": "near",
+            "golden": "fork/tier3/golden/2d-1280x800/sgr.png",
+            "actual": "fork/build/tier3/2d-1280x800/sgr.png",
+            "diff": "fork/build/tier3/2d-1280x800/sgr.diff.png",
+            "tolerance": {"max_delta": 1, "max_pixels": 1, "masks": []},
+            "stats": {"pixels": 1, "bbox": [[1000, 700, 1001, 701]], "max_delta": 1},
+            "thumb_actual": "fork/build/tier3/2d-1280x800/sgr.thumb.png",
+            "thumb_golden": "fork/build/tier3/2d-1280x800/sgr.golden.thumb.png",
+            "thumb_diff": "fork/build/tier3/2d-1280x800/sgr.diff.thumb.png"}],
+ "variants": {"2d-1280x800": {"packages": ["..."], "kmscon": ["Display ... text renderer [bbulk] ..."],
+                              "errors": {}}}}
 ```
 
-`status` is `pass`, `fail` or `missing` (no golden yet). `vt-switch` has no golden (`"golden": null`); it is a check. `actual` and `diff` are PNGs so a contact sheet can show them; the raw PPM captures sit beside them. `bbox` groups differing pixels into boxes of touching 16-pixel tiles. A variant that cannot boot or drive reports each of its cases as `fail` with an `error`.
+- `tolerance` is `null` for an exact case.
+- `vt-switch` has no golden (`"golden": null`); it is a check.
+- `actual`, `diff` and the thumbnails are PNGs, so a contact sheet can show them. The raw PPM captures sit beside them.
+- Thumbnails are at most 480 pixels wide, nearest-neighbour. In the diff thumbnail, any block holding a differing pixel is red, so a one-pixel difference stays visible. Fields are `null` where there is nothing to show.
+- `bbox` is a list of at most 16 regions for outlining. Differing pixels in touching 16-pixel tiles share a region, coarser tiles are used while there are many clusters, and then the closest regions merge.
+- A variant that cannot boot or drive reports each of its cases as `fail` with an `error`.
 
 ## The gate has been seen red
 
 - Guest config: `palette=solarized` appended to `guest/kmscon.conf` turned the four golden cases of `2d-1280x800` red (929 760 to 1 024 000 pixels; `vt-switch`, a check, stayed green); restoring the file turned them green.
 - Code: offsetting double-width glyphs by one pixel in `src/render/bbulk.c` (rebuilt with `make pkg`) turned `cjk` and `vt-restore` red (1 870 and 1 852 pixels, all within the CJK lines) and left `sgr` and `boxdraw` green; restoring the file and rebuilding turned them green.
+- Tolerance: a golden altered by one channel level at one pixel, with a sidecar `max_delta=1`, `max_pixels=1`, gave `near` and exit 0; without the sidecar the same run gave `fail` and exit 2. The golden was then restored.
 
 ## Known failure: the GL renderer under virgl, intermittently
 
-In 5 of 15 runs of `gl-1280x800` on this host, one kmscon instance drew nothing: every glyph upload failed with `text_gltex: cannot load glyph data into OpenGL texture (1282: <INVALID_OPERATION>)` (21 504 times per failing run, on the serial log), and the screen stayed black. Four times it was the second instance (tty3, so `vt-switch` failed), once the first (tty2, so every case failed). The 2D variants have not failed in any run. Whether the fault is in kmscon's gltex atlas code, guest Mesa's virgl driver or the host's virglrenderer is not established; the variant stays in the default run because the failure is real and a user on virgl would see a blank console.
+In 6 of 16 runs of `gl-1280x800` on this host, one kmscon instance drew nothing: every glyph upload failed with `text_gltex: cannot load glyph data into OpenGL texture (1282: <INVALID_OPERATION>)` (21 504 times per failing run, on the serial log), and the screen stayed black. Four times it was the second instance (tty3, so `vt-switch` failed), twice the first (tty2, so every case failed). The 2D variants have not failed in any run. Whether the fault is in kmscon's gltex atlas code, guest Mesa's virgl driver or the host's virglrenderer is not established; the variant stays in the default run because the failure is real and a user on virgl would see a blank console.
 
 ## Compare tool
 
-`t3img.py` reads PPM and PNG and compares with masks, stdlib only (`t3img.py compare ACTUAL GOLDEN [--mask M] [--diff D]`, exit 1 on difference). Tier 2's `pixcmp` covers the same ground and was built in parallel; the two should be merged.
+`t3img.py` reads PPM and PNG and compares with a tolerance sidecar, stdlib only (`t3img.py compare ACTUAL GOLDEN [--tol FILE] [--diff D]`, exit 1 on `fail`). Tier 2's `pixcmp` covers the same ground and was built in parallel; the two should be merged.

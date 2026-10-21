@@ -502,17 +502,63 @@ def run_variant(variant):
 
 
 def golden_for(variant, case):
-    """(golden, mask) paths for a case, or (None, None) for vt-switch."""
+    """(golden, tolerance sidecar) paths for a case, or (None, None) for
+    vt-switch, which is a check without a golden."""
     if case == "vt-switch":
         return None, None
     # vt-restore must reproduce the last screen drawn before the switch.
     base = SCREENS[-1] if case == "vt-restore" else case
     return (os.path.join(GOLDEN, variant, base + ".png"),
-            os.path.join(GOLDEN, variant, base + ".mask.json"))
+            os.path.join(GOLDEN, variant, base + ".tol"))
+
+
+def write_thumb(img, path):
+    t3img.write_png(path, img)
+    return rel(path)
 
 
 def rel(path):
     return os.path.relpath(path, ROOT) if path else None
+
+
+def evaluate(variant, case, ppm, meta):
+    """The report entry for one case, from its capture (or None)."""
+    golden, tolpath = golden_for(variant, case)
+    entry = {"name": "%s/%s" % (variant, case), "golden": rel(golden),
+             "actual": None, "diff": None, "tolerance": None,
+             "thumb_actual": None, "thumb_golden": None, "thumb_diff": None,
+             "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}
+    try:
+        tol = entry["tolerance"] = t3img.load_tol(tolpath)
+    except ValueError as e:  # a malformed sidecar fails its case, loudly
+        entry["status"], entry["error"] = "fail", str(e)
+        return entry
+    if ppm is None:
+        entry["status"] = "fail"
+        entry["error"] = meta.get("errors", {}).get(case) or meta.get("error", "no capture")
+        return entry
+    stem = os.path.splitext(ppm)[0]
+    img = t3img.read(ppm)
+    t3img.write_png(stem + ".png", img)
+    entry["actual"] = rel(stem + ".png")
+    entry["thumb_actual"] = write_thumb(t3img.thumbnail(img), stem + ".thumb.png")
+    if golden is None:  # a check, passed when the capture was taken
+        entry["status"] = "pass"
+        return entry
+    if not os.path.exists(golden):
+        entry["status"] = "missing"
+        return entry
+    gimg = t3img.read(golden)
+    entry["thumb_golden"] = write_thumb(t3img.thumbnail(gimg), stem + ".golden.thumb.png")
+    stats, diff, points = t3img.compare(img, gimg, tol["masks"] if tol else ())
+    entry["stats"] = stats
+    if diff is not None:
+        t3img.write_png(stem + ".diff.png", diff)
+        entry["diff"] = rel(stem + ".diff.png")
+        entry["thumb_diff"] = write_thumb(t3img.diff_thumbnail(img, points),
+                                          stem + ".diff.thumb.png")
+    entry["status"] = t3img.verdict(stats, tol)
+    return entry
 
 
 def run(args):
@@ -528,37 +574,7 @@ def run(args):
             caps = {}
             meta[variant] = {"error": str(e)}
         for case in CASES:
-            golden, mask = golden_for(variant, case)
-            entry = {"name": "%s/%s" % (variant, case), "golden": rel(golden),
-                     "actual": None, "diff": None,
-                     "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}
-            ppm = caps.get(case)
-            if ppm is None:
-                entry["status"] = "fail"
-                entry["error"] = (meta[variant].get("errors", {}).get(case)
-                                  or meta[variant].get("error", "no capture"))
-                cases.append(entry)
-                continue
-            actual = os.path.splitext(ppm)[0] + ".png"
-            img = t3img.read(ppm)
-            t3img.write_png(actual, img)
-            entry["actual"] = rel(actual)
-            if golden is None:  # a check, passed when the capture was taken
-                entry["status"] = "pass"
-                cases.append(entry)
-                continue
-            if not os.path.exists(golden):
-                entry["status"] = "missing"
-                cases.append(entry)
-                continue
-            stats, diff = t3img.compare(img, t3img.read(golden), t3img.load_mask(mask))
-            entry["stats"] = stats
-            if diff is not None:
-                dpath = os.path.splitext(ppm)[0] + ".diff.png"
-                t3img.write_png(dpath, diff)
-                entry["diff"] = rel(dpath)
-            entry["status"] = "fail" if stats["pixels"] else "pass"
-            cases.append(entry)
+            cases.append(evaluate(variant, case, caps.get(case), meta[variant]))
     report = {"tier": 3, "cases": cases, "variants": meta}
     os.makedirs(os.path.dirname(REPORT), exist_ok=True)
     with open(REPORT, "w") as f:
@@ -567,7 +583,8 @@ def run(args):
     for c in cases:
         print("%-8s %s  (%d px)" % (c["status"], c["name"], c["stats"]["pixels"]))
     print("report: %s" % rel(REPORT))
-    return 0 if all(c["status"] == "pass" for c in cases) else 1
+    # "near" is a difference within the case's reviewed tolerance: it passes.
+    return 0 if all(c["status"] in ("pass", "near") for c in cases) else 1
 
 
 def bless(args):

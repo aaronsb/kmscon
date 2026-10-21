@@ -81,14 +81,14 @@ class Io(unittest.TestCase):
 
 class Compare(unittest.TestCase):
     def test_identical_images_pass(self):
-        stats, diff = t3img.compare(gradient(20, 10), gradient(20, 10))
+        stats, diff, _ = t3img.compare(gradient(20, 10), gradient(20, 10))
         self.assertEqual(stats, {"pixels": 0, "bbox": [], "max_delta": 0})
         self.assertIsNone(diff)
 
     def test_one_pixel_difference_is_found(self):
         a = solid(64, 32)
         b = with_pixel(a, 40, 20, (0, 3, 0))
-        stats, diff = t3img.compare(b, a)
+        stats, diff, _ = t3img.compare(b, a)
         self.assertEqual(stats["pixels"], 1)
         self.assertEqual(stats["bbox"], [[40, 20, 41, 21]])
         self.assertEqual(stats["max_delta"], 3)
@@ -97,20 +97,36 @@ class Compare(unittest.TestCase):
     def test_separate_regions_get_separate_boxes(self):
         a = solid(128, 64)
         b = with_pixel(with_pixel(a, 2, 2, (9, 9, 9)), 120, 60, (9, 9, 9))
-        stats, _ = t3img.compare(b, a)
+        stats, _, _ = t3img.compare(b, a)
         self.assertEqual(stats["bbox"], [[2, 2, 3, 3], [120, 60, 121, 61]])
 
     def test_mask_hides_difference_inside_only(self):
         a = solid(64, 32)
         b = with_pixel(with_pixel(a, 10, 10, (255, 255, 255)), 50, 10, (255, 255, 255))
-        stats, _ = t3img.compare(b, a, [(8, 8, 16, 16)])
+        stats, _, _ = t3img.compare(b, a, [(8, 8, 16, 16)])
         self.assertEqual(stats["bbox"], [[50, 10, 51, 11]])
 
     def test_size_mismatch_fails(self):
-        stats, diff = t3img.compare(solid(10, 10), solid(10, 12))
+        stats, diff, _ = t3img.compare(solid(10, 10), solid(10, 12))
         self.assertEqual(stats["pixels"], 120)
         self.assertIn("size_mismatch", stats)
         self.assertIsNone(diff)
+
+    def test_nearby_pixels_share_a_region(self):
+        a = solid(64, 32)
+        b = a
+        for x in (3, 5, 9, 14):
+            b = with_pixel(b, x, 4, (1, 1, 1))
+        stats, _, _ = t3img.compare(b, a)
+        self.assertEqual(stats["bbox"], [[3, 4, 15, 5]])
+
+    def test_regions_are_capped(self):
+        # 100 isolated pixels far apart: clustering alone gives 100 boxes.
+        points = [(x * 40, y * 40) for x in range(10) for y in range(10)]
+        boxes = t3img.regions(points)
+        self.assertLessEqual(len(boxes), t3img.MAX_REGIONS)
+        for x, y in points:  # every pixel is still inside some region
+            self.assertTrue(any(b[0] <= x < b[2] and b[1] <= y < b[3] for b in boxes))
 
     def test_cli_exit_status(self):
         with tempfile.TemporaryDirectory() as d:
@@ -119,6 +135,64 @@ class Compare(unittest.TestCase):
             t3img.write_png(b, with_pixel(solid(8, 8), 1, 1, (1, 0, 0)))
             self.assertEqual(t3img.main(["compare", a, a]), 0)
             self.assertEqual(t3img.main(["compare", b, a]), 1)
+            tol = os.path.join(d, "b.tol")
+            with open(tol, "w") as f:
+                f.write("max_delta=1\nmax_pixels=1\n")
+            self.assertEqual(t3img.main(["compare", b, a, "--tol", tol]), 0)
+
+
+class Tolerance(unittest.TestCase):
+    def write(self, text):
+        fd, path = tempfile.mkstemp(suffix=".tol")
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_no_sidecar_is_exact(self):
+        self.assertIsNone(t3img.load_tol(None))
+        self.assertIsNone(t3img.load_tol("/nonexistent/x.tol"))
+        self.assertEqual(t3img.verdict({"pixels": 1, "max_delta": 1}, None), "fail")
+
+    def test_parse(self):
+        tol = t3img.load_tol(self.write(
+            "# cursor cell\nmax_delta = 2\nmask=0,780,10,800\nmask=5,5,6,6 # dot\n"))
+        self.assertEqual(tol, {"max_delta": 2, "max_pixels": 0,
+                               "masks": [[0, 780, 10, 800], [5, 5, 6, 6]]})
+
+    def test_malformed_sidecar_is_an_error(self):
+        for text in ("max_delta\n", "colour=3\n", "mask=1,2,3\n", "mask=5,0,1,9\n"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                t3img.load_tol(self.write(text))
+
+    def test_verdicts(self):
+        tol = {"max_delta": 2, "max_pixels": 10, "masks": []}
+        self.assertEqual(t3img.verdict({"pixels": 0, "max_delta": 0}, tol), "pass")
+        self.assertEqual(t3img.verdict({"pixels": 10, "max_delta": 2}, tol), "near")
+        self.assertEqual(t3img.verdict({"pixels": 11, "max_delta": 2}, tol), "fail")
+        self.assertEqual(t3img.verdict({"pixels": 1, "max_delta": 3}, tol), "fail")
+        self.assertEqual(t3img.verdict({"pixels": 1, "max_delta": 1,
+                                        "size_mismatch": []}, tol), "fail")
+
+    def test_mask_only_sidecar_still_exact_outside(self):
+        tol = t3img.load_tol(self.write("mask=0,0,4,4\n"))
+        a = solid(8, 8)
+        stats, _, _ = t3img.compare(with_pixel(a, 1, 1, (9, 9, 9)), a, tol["masks"])
+        self.assertEqual(t3img.verdict(stats, tol), "pass")
+        stats, _, _ = t3img.compare(with_pixel(a, 6, 6, (9, 9, 9)), a, tol["masks"])
+        self.assertEqual(t3img.verdict(stats, tol), "fail")
+
+
+class Thumbnails(unittest.TestCase):
+    def test_large_frame_is_downscaled(self):
+        t = t3img.thumbnail(solid(7680, 40))
+        self.assertLessEqual(t.width, t3img.THUMB_WIDTH)
+        self.assertEqual((t.width, t.height), (480, 3))
+
+    def test_one_pixel_difference_survives_in_diff_thumbnail(self):
+        img = solid(7680, 32)
+        t = t3img.diff_thumbnail(img, [(7679, 31)])
+        self.assertIn(b"\xff\x00\x00", t.data)
 
 
 if __name__ == "__main__":

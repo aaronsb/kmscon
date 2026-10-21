@@ -1,0 +1,5 @@
+#!/bin/sh
+# Draws one scenario screen: clears, then runs the named screen script, so the
+# captured screen holds the script's output and the next prompt only.
+clear
+exec bash /usr/local/share/tier3/"$1".sh

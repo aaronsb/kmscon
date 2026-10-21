@@ -1,0 +1,104 @@
+# kmscon fork, packaged from a working checkout
+#
+# Builds the checkout at $KMSCON_SRC (the repository root when built through
+# `make pkg`, see fork/tier3.mk), not a release tarball, so the package is
+# exactly the tree under test, uncommitted changes included. The libtsm fork is
+# a static meson subproject, as in the root Makefile, and nothing from it is
+# installed. The split mirrors Arch's kmscon package: the terminfo entry lives
+# in its own package so other systems' terminals can install it alone.
+#
+# The options match Arch's arch-meson wrapper except --wrap-mode: arch-meson
+# forbids downloads, and the libtsm subproject is fetched from its wrap when
+# the checkout has no local clone in subprojects/.
+
+pkgbase=kmscon-aaronsb
+pkgname=(
+  kmscon-aaronsb
+  kmscon-aaronsb-terminfo
+)
+pkgver=${KMSCON_PKGVER:-10.0.4}
+pkgrel=1
+arch=('x86_64')
+pkgdesc='Kernel Mode Setting (KMS) and DRM based virtual Console Emulator (aaronsb fork)'
+url='https://github.com/aaronsb/kmscon'
+license=('MIT')
+depends=(
+  bash
+  dbus
+  glib2
+  glibc
+  libdrm
+  libxkbcommon
+  systemd-libs
+  zlib
+)
+makedepends=(
+  check
+  docbook-xsl
+  freetype2
+  git
+  libxslt
+  linux-api-headers
+  libglvnd
+  meson
+  pango
+)
+optdepends=(
+  'fontconfig: for freetype font rendering'
+  'inotify-tools: for kmscon-launch-gui waiting mechanism'
+  'libglvnd: for accelerated video output'
+  'libx11: for XKB compose support'
+  'pango: for pango font rendering'
+)
+options=(!debug)
+source=()
+
+_src=${KMSCON_SRC:-$startdir/../..}
+
+prepare() {
+  rm -rf kmscon
+  mkdir kmscon
+  # The checkout's build trees and VM images are not sources.
+  tar -C "$_src" \
+    --exclude=./.git --exclude=./fork/build --exclude=./fork/vm \
+    --exclude=./subprojects/packagecache \
+    -cf - . | tar -C kmscon -xf -
+}
+
+build() {
+  meson setup kmscon build \
+    --prefix /usr \
+    --libexecdir lib \
+    --sbindir bin \
+    --buildtype plain \
+    --auto-features enabled \
+    -D b_pie=true \
+    -D python.bytecompile=1 \
+    --force-fallback-for=libtsm \
+    -D libtsm:default_library=static
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs
+}
+
+package_kmscon-aaronsb() {
+  depends+=(kmscon-aaronsb-terminfo)
+  provides=(kmscon)
+  conflicts=(kmscon)
+  meson install -C build --destdir="$pkgdir" --skip-subprojects
+  install -Dm644 kmscon/COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+  rm -r "$pkgdir"/usr/share/terminfo
+}
+
+package_kmscon-aaronsb-terminfo() {
+  pkgdesc='Terminfo for kmscon (aaronsb fork)'
+  depends=()
+  optdepends=()
+  provides=(kmscon-terminfo)
+  conflicts=(kmscon-terminfo)
+  mkdir -p "$pkgdir/usr/share/terminfo"
+  tic -x kmscon/scripts/terminfo/kmscon.ti -o "$pkgdir/usr/share/terminfo/"
+  install -Dm644 kmscon/COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+}

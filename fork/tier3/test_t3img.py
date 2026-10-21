@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Self-test for t3img: image I/O and masked exact comparison.
+
+    python3 -I fork/tier3/test_t3img.py
+"""
+
+import os
+import struct
+import sys
+import tempfile
+import unittest
+import zlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import t3img  # noqa: E402
+
+
+def solid(w, h, rgb=(0, 0, 0)):
+    return t3img.Image(w, h, bytes(rgb) * (w * h))
+
+
+def with_pixel(img, x, y, rgb):
+    data = bytearray(img.data)
+    i = (y * img.width + x) * 3
+    data[i:i + 3] = bytes(rgb)
+    return t3img.Image(img.width, img.height, bytes(data))
+
+
+def png_with_filter(img, ftype):
+    """Encode `img` as an RGB PNG with every row using filter `ftype`."""
+    stride, bpp = img.width * 3, 3
+    prev = bytes(stride)
+    raw = bytearray()
+    for y in range(img.height):
+        row = img.row(y)
+        out = bytearray(stride)
+        for i in range(stride):
+            left = row[i - bpp] if i >= bpp else 0
+            up = prev[i]
+            upleft = prev[i - bpp] if i >= bpp else 0
+            pred = {0: 0, 1: left, 2: up, 3: (left + up) >> 1,
+                    4: t3img._paeth(left, up, upleft)}[ftype]
+            out[i] = (row[i] - pred) & 0xFF
+        raw += bytes([ftype]) + out
+        prev = row
+
+    def chunk(kind, payload):
+        return (struct.pack(">I", len(payload)) + kind + payload +
+                struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", struct.pack(">IIBBBBB", img.width, img.height, 8, 2, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(bytes(raw))) + chunk(b"IEND", b""))
+
+
+def gradient(w, h):
+    return t3img.Image(w, h, bytes((x * 7 + y * 13 + c * 50) & 0xFF
+                                   for y in range(h) for x in range(w) for c in range(3)))
+
+
+class Io(unittest.TestCase):
+    def test_png_round_trip(self):
+        img = gradient(37, 11)
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "a.png")
+            t3img.write_png(p, img)
+            self.assertEqual(t3img.read(p).data, img.data)
+
+    def test_png_filters_decode(self):
+        img = gradient(19, 7)
+        for ftype in range(5):
+            with self.subTest(filter=ftype):
+                self.assertEqual(t3img.read_png(png_with_filter(img, ftype)).data, img.data)
+
+    def test_ppm_with_comment(self):
+        img = gradient(4, 3)
+        buf = b"P6\n# made by a test\n4 3\n255\n" + img.data
+        got = t3img.read_ppm(buf)
+        self.assertEqual((got.width, got.height, got.data), (4, 3, img.data))
+
+
+class Compare(unittest.TestCase):
+    def test_identical_images_pass(self):
+        stats, diff = t3img.compare(gradient(20, 10), gradient(20, 10))
+        self.assertEqual(stats, {"pixels": 0, "bbox": [], "max_delta": 0})
+        self.assertIsNone(diff)
+
+    def test_one_pixel_difference_is_found(self):
+        a = solid(64, 32)
+        b = with_pixel(a, 40, 20, (0, 3, 0))
+        stats, diff = t3img.compare(b, a)
+        self.assertEqual(stats["pixels"], 1)
+        self.assertEqual(stats["bbox"], [[40, 20, 41, 21]])
+        self.assertEqual(stats["max_delta"], 3)
+        self.assertEqual(diff.data[(20 * 64 + 40) * 3:(20 * 64 + 40) * 3 + 3], b"\xff\x00\x00")
+
+    def test_separate_regions_get_separate_boxes(self):
+        a = solid(128, 64)
+        b = with_pixel(with_pixel(a, 2, 2, (9, 9, 9)), 120, 60, (9, 9, 9))
+        stats, _ = t3img.compare(b, a)
+        self.assertEqual(stats["bbox"], [[2, 2, 3, 3], [120, 60, 121, 61]])
+
+    def test_mask_hides_difference_inside_only(self):
+        a = solid(64, 32)
+        b = with_pixel(with_pixel(a, 10, 10, (255, 255, 255)), 50, 10, (255, 255, 255))
+        stats, _ = t3img.compare(b, a, [(8, 8, 16, 16)])
+        self.assertEqual(stats["bbox"], [[50, 10, 51, 11]])
+
+    def test_size_mismatch_fails(self):
+        stats, diff = t3img.compare(solid(10, 10), solid(10, 12))
+        self.assertEqual(stats["pixels"], 120)
+        self.assertIn("size_mismatch", stats)
+        self.assertIsNone(diff)
+
+    def test_cli_exit_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, b = os.path.join(d, "a.png"), os.path.join(d, "b.png")
+            t3img.write_png(a, solid(8, 8))
+            t3img.write_png(b, with_pixel(solid(8, 8), 1, 1, (1, 0, 0)))
+            self.assertEqual(t3img.main(["compare", a, a]), 0)
+            self.assertEqual(t3img.main(["compare", b, a]), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

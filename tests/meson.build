@@ -101,3 +101,33 @@ test_conf = executable(
 )
 test('test_conf', test_conf)
 
+
+if enable_font_freetype
+    test_pixels = executable(
+        'test_pixels',
+        'test_pixels.c',
+        include_directories: src_inc,
+        dependencies: [
+            libtsm_deps,
+            freetype_deps,
+            fontconfig_deps,
+            threads_deps,
+            shl_deps,
+            htable_deps,
+        ],
+    )
+    python = find_program('python3')
+    test(
+        'tier2_pixels',
+        python,
+        args: [
+            files('tier2/run.py'),
+            '--render', test_pixels,
+            '--fonts', meson.current_source_dir() / 'fonts',
+            '--goldens', meson.current_source_dir() / 'goldens/tier2',
+            '--out', meson.project_build_root() / 'tier2',
+            '--report', meson.project_build_root() / 'tier2-report.json',
+            '--root', meson.project_source_root(),
+        ],
+    )
+endif

@@ -7,7 +7,9 @@
 Runs the render executable into OUT/actual, compares every golden-named case
 with pixcmp, writes diffs to OUT/diff and the machine-readable report to
 FILE, and exits 1 if any case fails or is missing (a case missing a golden,
-or a golden no screen produced). With --update the rendered images are
+or a golden no screen produced). Statuses: pass (identical), near
+(different, within the case's NAME.tol sidecar; the run still passes), fail,
+missing. With --update the rendered images are
 copied over the goldens instead and nothing is compared.
 
 Report paths are relative to --root (default: the current directory).
@@ -65,7 +67,7 @@ def main():
     for name in names:
         golden = os.path.join(args.goldens, name + ".ppm")
         actual = os.path.join(actual_dir, name + ".ppm")
-        case = {"name": name, "golden": rel(golden), "actual": rel(actual), "diff": None,
+        case = {"name": name, "golden": rel(golden), "actual": rel(actual), "diff": None, "tolerance": None,
                 "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}
         if not os.path.exists(golden) or not os.path.exists(actual):
             case["status"] = "missing"
@@ -73,12 +75,20 @@ def main():
             print("MISSING %s: %s" % (name, case["note"]))
         else:
             diff = os.path.join(diff_dir, name + ".ppm")
-            res = pixcmp.compare(golden, actual, diff_path=diff)
+            tolfile = os.path.join(args.goldens, name + ".tol")
+            tol = pixcmp.read_tol(tolfile) if os.path.exists(tolfile) else None
+            case["tolerance"] = tol
+            res = pixcmp.compare(golden, actual, tol, diff_path=diff)
             case["stats"] = {"pixels": res["pixels"], "bbox": res["bbox"], "max_delta": res["max_delta"]}
-            if res["match"]:
+            if res["status"] == "identical":
                 case["status"] = "pass"
                 os.remove(diff)
                 print("pass    %s" % name)
+            elif res["match"]:
+                case["status"] = "near"
+                case["diff"] = rel(diff)
+                print("near    %s: %d pixel(s) differ, max channel delta %d, within tolerance"
+                      % (name, res["pixels"], res["max_delta"]))
             else:
                 case["status"] = "fail"
                 case["diff"] = rel(diff)
@@ -86,7 +96,7 @@ def main():
                     case["note"] = res["note"]
                 print("FAIL    %s: %d pixel(s) differ, max channel delta %d, regions %s"
                       % (name, res["pixels"], res["max_delta"], res["bbox"]))
-        bad += case["status"] != "pass"
+        bad += case["status"] not in ("pass", "near")
         cases.append(case)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.report)), exist_ok=True)

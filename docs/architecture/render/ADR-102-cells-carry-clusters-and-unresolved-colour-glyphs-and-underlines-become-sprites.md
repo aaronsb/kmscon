@@ -29,6 +29,10 @@ deciders:
   - aaronsb
 related: []
 extends: ADR-101
+considered:
+  - operator: aaronsb
+    said: "I think these graphics make complete sense for the text"
+    via: Claude Code session, after being shown the decoration-sprite figure rendered from figures/ADR-102-decoration-sprites.svg, before the probes were answered
 ---
 
 # ADR-102: Cells carry clusters and unresolved colour; glyphs and underlines become sprites

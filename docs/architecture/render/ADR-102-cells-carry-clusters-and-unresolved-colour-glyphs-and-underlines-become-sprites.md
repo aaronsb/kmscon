@@ -21,6 +21,10 @@ basis:
     said: "how do the characters get generated from a font library? I'd rather we follow that pipeline"
     via: Claude Code session, on how colour emoji fonts in COLRv1 and SVG formats should be drawn
   - operator: aaronsb
+    level: guided
+    said: "yes lets do that"
+    via: Claude Code session, agreeing to paint COLRv1 glyphs with HarfBuzz's rasteriser instead of cairo, after asking "is cairo mature?"
+  - operator: aaronsb
     level: directed
     said: "I think it might be time to introduce some new capabilities to test?"
     via: Claude Code session, after the three-tier harness was complete
@@ -49,6 +53,10 @@ considered:
     said: "yes - this allows one to decide based on their font and usability reasons. (for instance maybe they want a retro bitmapped font)"
     via: Claude Code session, answering whether Unicode width rules by default with grapheme-width=wcwidth in kmscon.conf is what the config option meant
     covers: [width-default]
+  - operator: aaronsb
+    said: "yes lets do that"
+    via: Claude Code session, on painting COLRv1 with HarfBuzz's rasteriser instead of cairo, after comparing the two on maturity, licence and dependencies
+    covers: [colour-formats]
 ---
 
 # ADR-102: Cells carry clusters and unresolved colour; glyphs and underlines become sprites
@@ -59,15 +67,15 @@ considered:
   - **Cells:** a cell holds a glyph key (one codepoint, or a cluster from a reference-counted table), its width, and colours kept as references until render time.
   - **Parser:** reads colon sub-parameters, underline styles, underline colour and strike-through.
   - **Width rules:** grapheme width follows the Unicode rules by default, chosen in kmscon.conf and switched at runtime by DEC mode 2027.
-  - **Rendering:** kmscon draws every cell from mask or colour glyph sprites plus one-cell decoration sprites for underline and strike. Colour emoji come from FreeType's colour bitmaps, scaled once into the cell box.
+  - **Rendering:** kmscon draws every cell from mask or colour glyph sprites plus one-cell decoration sprites for underline and strike. Colour emoji come through the font library pipeline: FreeType for colour bitmaps and COLRv0, HarfBuzz's rasteriser for COLRv1, scaled once into the cell box.
 - **Trades away:**
   - libtsm's draw API and cell layout as upstream ships them.
   - Byte-for-byte agreement with upstream on the tier 1 cases these features touch. Those goldens change deliberately, each in its own commit.
-  - A new build dependency on HarfBuzz in the freetype font backend, used for multi-codepoint clusters only, and an optional one on cairo, for the colour glyph formats FreeType does not draw itself.
+  - A new build dependency on HarfBuzz in the freetype font backend: its shaper for multi-codepoint clusters, and its rasteriser (`libharfbuzz-raster`) for COLRv1 colour glyphs, which FreeType does not draw itself.
 - **One-way?** No. Each part lands behind the harness and can be reverted. The cost of reversing grows as later steps (images, the kitty protocol) build on the cell and sprite structures.
 - **Probes:**
   - *Confident (width-default):* the default is Unicode rules (a heart with VS16 takes two cells, a ZWJ family is one two-cell glyph), with `grapheme-width=wcwidth` in kmscon.conf for anyone whose programs drift on those lines.
-  - *Not confident (colour-formats):* that cairo is acceptable as an optional dependency of a console. With it, every colour emoji format draws in colour. Without it, COLRv1 and SVG emoji draw as one-colour shapes.
+  - *Not confident (colour-formats):* that HarfBuzz's rasteriser, a recent addition to a mature library, is the right painter for COLRv1, and that SVG-only emoji fonts may draw as one-colour shapes. Bitmap, COLRv0 and COLRv1 fonts all draw in colour.
 - **Inversion:** Between "port one reference terminal's design" and "invent a new one". The answer takes each part from whichever MIT reference fits a C console with a CPU renderer:
   - foot's per-parameter sub-parameters and its shaping of clusters only;
   - Ghostty's reflow of a cell widened by VS16, and its one-curl-per-cell underline;
@@ -163,8 +171,8 @@ The cell counts set the budget. At 7680x2160 with an 8x16 cell, the screen is 96
     - fontconfig chooses the face.
     - HarfBuzz chooses the glyphs for a cluster.
     - FreeType draws what it draws itself: outlines as masks, colour bitmaps, and COLRv0 layers.
-    - For COLRv1 FreeType supplies only the paint data, and for SVG it hands the document to a registered renderer. Those glyphs go through cairo's FreeType font support, which renders them to premultiplied ARGB. Cairo 1.18 on the build host carries a COLRv1 renderer. Its SVG support is to be confirmed when the work lands.
-    - Cairo is an optional build feature (`font_color_cairo`). Without it, COLRv1 and SVG glyphs load as outlines and draw as masks.
+    - For COLRv1, FreeType supplies only the paint data. Those glyphs are painted by HarfBuzz's rasteriser (`hb_raster_paint`, in `libharfbuzz-raster`), which renders COLRv0 and COLRv1 into BGRA32 with the cell's foreground available for glyphs that use it. HarfBuzz is MIT-licensed and already required for shaping, so this adds no new project.
+    - SVG glyphs are not rendered: FreeType hands SVG documents to a renderer the program registers, and this record registers none. An SVG-only emoji font (Twemoji Mozilla is the common one) draws as outlines in a mask.
 - **Presentation and fallback.**
   - A cluster is emoji presentation when it carries VS16 on a base listed in the emoji variation sequences, or when its first codepoint has Emoji_Presentation and it carries no VS15. The same table gates width and presentation, so a colour glyph is never squeezed into a narrow cell by an unlisted VS16.
   - For an emoji-presentation cluster the fallback search asks fontconfig for a colour face covering the codepoint first. That one query bypasses the monospace filter.
@@ -239,7 +247,8 @@ Each step's code reads the specifications and the MIT references above. Anything
 - The freetype backend requires HarfBuzz, a new dependency for builds without pango.
 - Glyph caches hold larger colour sprites. A wide emoji at 8K font sizes is twice a cell of ARGB.
 - The tier 1 goldens for the touched cases stop matching upstream by design, so the record of what changed deliberately has to be kept carefully.
-- Cairo, where it is built in, adds the libraries it links to the console's footprint. On Arch that includes the X11 client libraries. Builds without it draw COLRv1-only and SVG-only colour fonts as outlines.
+- HarfBuzz's rasteriser is recent, though HarfBuzz itself is the shaper Chrome, Firefox and Android use. A fault in its COLRv1 painting would show in the tier 2 screens, which pin a colour font.
+- SVG-only colour fonts draw as outlines.
 
 ### Neutral
 
@@ -256,7 +265,8 @@ Each step's code reads the specifications and the MIT references above. Anything
 - **Narrow a cell on VS15 (Ghostty).** The mode 2027 draft says VS15 changes presentation and not width, and narrowing reflows a line programs have already laid out.
 - **Never widen a placed cell (WezTerm at its Unicode-9 default).** This leaves a VS16 heart in one cell. The `wcwidth` method covers anyone who wants that.
 - **wcwidth as the default.** Considered and offered. The operator chose a kmscon.conf setting, with Unicode rules as its default.
-- **A COLRv1 painter of the fork's own (WezTerm), or rejecting COLRv1 (fcft).** The operator asked to follow the font library pipeline instead. Cairo already renders COLRv1 for the desktop stack, so the fork gains every format without maintaining a painter.
+- **A COLRv1 painter of the fork's own (WezTerm), or rejecting COLRv1 (fcft).** The operator asked to follow the font library pipeline instead, and HarfBuzz's rasteriser paints COLRv1 from inside that pipeline.
+- **cairo's FreeType font support.** It renders COLRv1, and possibly SVG, and is two decades mature. Rejected: it is a new dependency (LGPL or MPL), pulls in the X11 client libraries on Arch, which is heavy for a recovery console, and its colour glyph renderer is its newest part. HarfBuzz's rasteriser covers the same COLR formats with a dependency the backend already has. The operator agreed to the switch.
 - **Shape every run with HarfBuzz (Ghostty, WezTerm).** This costs shaping on every frame and needs a shaping cache. Only clusters need shaping for correctness.
 - **A runtime Unicode library (utf8proc, libunistring).** Either adds a dependency to a console that runs before most of userspace. Generated tables are small, versioned and reviewed like goldens.
 - **Draw underlines as geometry (foot).** This avoids an atlas on the CPU path, but gltex would then need a second path. Sprites serve both renderers.

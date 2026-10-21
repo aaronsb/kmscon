@@ -14,14 +14,19 @@ Usage:
            [--ledger LEDGER.md --note TEXT] REPORT.json...
 
 Tier 1 reports (from libtsm's check.py --report) carry screen dumps as text;
-they are drawn as character grids. Reports from other tiers are counted in the
-header and ledger; their image tiles are not drawn yet.
+they are drawn as character grids. Tier 2 and 3 reports name PPM images; they
+are drawn as thumbnails embedded in the SVG (golden, actual and diff for a
+failure), with the reported regions outlined. Image paths are read relative to
+the current directory, which is the repository root under `make`.
 
 SPDX-License-Identifier: MIT
 """
 
 import argparse
+import base64
 import json
+import struct
+import zlib
 import sys
 import unicodedata
 from pathlib import Path
@@ -35,6 +40,8 @@ GAP = 16                # space between tiles
 COLUMNS = 3             # tile columns on the sheet
 SHEET_BG = "#1b1d23"
 INK = "#d8dee9"
+THUMB_MAX_W = 384      # image tiles are scaled down to at most this width
+
 STATUS_COLOR = {"pass": "#3fa34d", "near": "#d99a1e", "fail": "#d1453b", "missing": "#8b93a1"}
 
 # xterm's 16 colours, then the default foreground and background (codes 16, 17).
@@ -216,9 +223,100 @@ def draw_grid(out, screen, cols, rows, x0, y0, marks=()):
     return w, h
 
 
-def tile_size(cols, rows, failing):
-    w = cols * CW + 2 * PAD
-    return (2 * w + PAD if failing else w), rows * CH + 2 * PAD + LABEL
+def tile_size(t):
+    if t.get("kind") == "image":
+        w = t["tw"] + 2 * PAD
+        panes = 3 if t["status"] == "fail" else 1
+        return panes * w + (panes - 1) * PAD, t["th"] + 2 * PAD + LABEL
+    w = t["cols"] * CW + 2 * PAD
+    return (2 * w + PAD if t["status"] == "fail" else w), t["rows"] * CH + 2 * PAD + LABEL
+
+
+# ---------------------------------------------------------------- image tiles
+
+def read_ppm(path):
+    """(width, height, rgb bytes) of a binary P6 PPM with maxval 255."""
+    data = Path(path).read_bytes()
+    fields, i = [], 0
+    while len(fields) < 4:
+        while data[i:i + 1].isspace():
+            i += 1
+        if data[i:i + 1] == b"#":
+            while data[i:i + 1] not in (b"\n", b""):
+                i += 1
+            continue
+        j = i
+        while not data[j:j + 1].isspace():
+            j += 1
+        fields.append(data[i:j])
+        i = j
+    if fields[0] != b"P6" or fields[3] != b"255":
+        raise ValueError(f"{path}: not an 8-bit P6 PPM")
+    w, h = int(fields[1]), int(fields[2])
+    return w, h, data[i + 1:i + 1 + w * h * 3]
+
+
+def thumbnail(w, h, rgb):
+    """Scale down by an integer step (nearest pixel) to at most THUMB_MAX_W wide."""
+    step = max(1, -(-w // THUMB_MAX_W))
+    tw, th = w // step, h // step
+    rows = []
+    for y in range(th):
+        line = rgb[(y * step) * w * 3:(y * step + 1) * w * 3]
+        rows.append(b"".join(line[x * step * 3:x * step * 3 + 3] for x in range(tw)) if step > 1 else line)
+    return tw, th, step, rows
+
+
+def png_uri(tw, th, rows):
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    raw = b"".join(b"\x00" + r for r in rows)
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", tw, th, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+    return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+def tiles_for_images(report):
+    tiles = []
+    for case in report["cases"]:
+        panes = {}
+        for key in ("golden", "actual", "diff"):
+            path = case.get(key)
+            if path and Path(path).exists():
+                w, h, rgb = read_ppm(path)
+                tw, th, step, rows = thumbnail(w, h, rgb)
+                panes[key] = (png_uri(tw, th, rows), tw, th, step)
+        if not panes:
+            continue
+        tw = max(p[1] for p in panes.values())
+        th = max(p[2] for p in panes.values())
+        step = next(iter(panes.values()))[3]
+        regions = [tuple(b) for b in (case.get("stats") or {}).get("bbox", [])]
+        tiles.append({"kind": "image", "label": f"tier {report['tier']}: {case['name']}",
+                      "status": case["status"] if case["status"] in STATUS_COLOR else "fail",
+                      "panes": panes, "tw": tw, "th": th, "step": step, "regions": regions})
+    return tiles
+
+
+def draw_image_tile(out, t, tx, gy):
+    order = ("golden", "actual", "diff") if t["status"] == "fail" else ("actual",)
+    color = STATUS_COLOR["near"] if t["status"] == "near" else STATUS_COLOR["fail"]
+    w = t["tw"] + 2 * PAD
+    for i, key in enumerate(order):
+        if key not in t["panes"]:
+            continue
+        uri, pw, ph, step = t["panes"][key]
+        x0 = tx + PAD + i * (w + PAD)
+        out.append(f'<image x="{x0}" y="{gy}" width="{pw}" height="{ph}" href="{uri}" '
+                   f'style="image-rendering:pixelated"/>')
+        if len(order) > 1:
+            out.append(f'<text x="{x0 + pw // 2}" y="{gy - 6}" fill="#8b93a1" font-size="10" '
+                       f'text-anchor="middle">{key}</text>')
+        if t["status"] in ("fail", "near"):
+            for x1, y1, x2, y2 in t["regions"]:
+                out.append(f'<rect x="{x0 + x1 // step - 2}" y="{gy + y1 // step - 2}" '
+                           f'width="{(x2 - x1) // step + 5}" height="{(y2 - y1) // step + 5}" rx="3" '
+                           f'fill="none" stroke="{color}" stroke-width="2"/>')
 
 
 def tiles_for_tier1(report):
@@ -247,6 +345,8 @@ def render(reports, args):
         counts.append((rep["tier"], ok, n))
         if rep["tier"] == 1:
             tiles.extend(tiles_for_tier1(rep))
+        else:
+            tiles.extend(tiles_for_images(rep))
 
     # Lay tiles out in rows of COLUMNS, each grid row as tall as its tallest tile.
     layout, x, y, row_h, col = [], GAP, 0, 0, 0
@@ -254,7 +354,7 @@ def render(reports, args):
     y = header
     width = GAP
     for t in tiles:
-        tw, th = tile_size(t["cols"], t["rows"], t["status"] == "fail")
+        tw, th = tile_size(t)
         if col == COLUMNS:
             x, y, col, row_h = GAP, y + row_h + GAP, 0, 0
         layout.append((t, x, y, tw, th))
@@ -282,7 +382,9 @@ def render(reports, args):
         out.append(f'<text x="{tx + tw - PAD}" y="{ty + 13}" fill="{sc}" font-size="11" font-weight="bold" '
                    f'text-anchor="end">{t["status"].upper()}</text>')
         gy = ty + LABEL + PAD - 4
-        if t["status"] == "fail":
+        if t.get("kind") == "image":
+            draw_image_tile(out, t, tx, gy)
+        elif t["status"] == "fail":
             want = t["golden"]
             regions = changed_regions(want, t["actual"], t["cols"], t["rows"]) if want else []
             if want:

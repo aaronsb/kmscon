@@ -14,6 +14,9 @@
 #   make build   configure and compile into fork/build
 #   make test    build, then run kmscon's and libtsm's test suites
 #   make clean   remove fork/build
+#
+# Further targets (conformance tiers, packaging) live in fork/*.mk, one file
+# per concern, so they can be added without editing this file.
 
 IMAGE  ?= kmscon-dev
 BUILD  := fork/build
@@ -49,3 +52,5 @@ test: build ## Run kmscon's and libtsm's test suites
 .PHONY: clean
 clean: ## Remove fork/build
 	rm -rf $(BUILD)
+
+-include fork/*.mk

@@ -4,7 +4,8 @@
 #
 #   make pkg            build the package from this checkout -> fork/build/pkg
 #   make tier3-image    fetch, verify and provision the guest base image
-#   make tier3          install the package in a guest and run every scenario
+#   make tier3          install the package in a guest and run the 2D variants
+#   make tier3-gl       the same for the GL (virgl) variant, see #17
 #   make tier3-bless    rewrite the goldens from the last run's captures
 #
 # Everything the guest needs lives in fork/vm (gitignored). QEMU runs headless
@@ -51,8 +52,12 @@ $(T3_BASE): $(T3_VM)/images/$(T3_IMAGE) $(T3_GUEST)
 tier3-image: $(T3_BASE) ## Fetch, verify and provision the tier 3 guest base image
 
 .PHONY: tier3
-tier3: pkg $(T3_BASE) ## Tier 3: run the scenario in the guest (VARIANTS="2d-1280x800 ...")
+tier3: pkg $(T3_BASE) ## Tier 3: the 2D variants, or VARIANTS="2d-1280x800 gl-1280x800 ..."
 	$(T3_PY) $(T3_DIR)/t3.py run $(VARIANTS)
+
+.PHONY: tier3-gl
+tier3-gl: pkg $(T3_BASE) ## Tier 3 on the GL variant (virgl), outside the default run: #17
+	$(T3_PY) $(T3_DIR)/t3.py run gl-1280x800
 
 .PHONY: tier3-run
 tier3-run: ## Tier 3 without rebuilding the package

@@ -12,6 +12,7 @@ with a VNC server on a unix socket and reads the screen over RFB instead.
 
     t3.py provision             build fork/vm/base.qcow2 from the pinned image
     t3.py run [VARIANT ...]     install the package, run the scenario, compare
+                                (default: the 2D variants)
     t3.py bless [VARIANT ...]   copy the last run's captures over the goldens
 
 Paths are relative to the repository root, which is two levels above this file.
@@ -74,6 +75,11 @@ VARIANTS = {
         "capture": "vnc",
     },
 }
+
+# What `t3.py run` runs when no variant is named. gl-1280x800 runs only when
+# named (`make tier3-gl`) until its intermittent black screen is resolved:
+# aaronsb/kmscon#17.
+DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160"]
 
 # Screens drawn by `t3 NAME` in the guest (fork/tier3/guest/screens/NAME.sh).
 SCREENS = ["sgr", "boxdraw", "cjk"]
@@ -564,7 +570,7 @@ def evaluate(variant, case, ppm, meta):
 def run(args):
     if not os.path.exists(BASE):
         raise SystemExit("no base image at %s; run `make tier3-image`" % BASE)
-    variants = args.variants or list(VARIANTS)
+    variants = args.variants or DEFAULT_VARIANTS
     cases, meta = [], {}
     for variant in variants:
         try:

@@ -7,8 +7,10 @@ Tier 3 of the conformance harness (ADR-301). The fork is packaged the way a user
 ```sh
 make pkg            # build kmscon-aaronsb from this checkout -> fork/build/pkg
 make tier3-image    # once: fetch, verify and provision fork/vm/base.qcow2
-make tier3          # pkg, then every variant; report in fork/build/tier3-report.json
-make tier3-run VARIANTS=2d-1280x800     # one variant, without rebuilding the package
+make tier3          # pkg, then the 2D variants; report in fork/build/tier3-report.json
+make tier3-gl       # pkg, then the GL variant, which is outside the default run (#17)
+make tier3 VARIANTS="2d-1280x800 2d-7680x2160 gl-1280x800"   # any set of variants
+make tier3-run VARIANTS=2d-1280x800     # without rebuilding the package
 make tier3-selftest # unit tests of the compare module
 ```
 
@@ -111,8 +113,8 @@ The tier exits non-zero on any `fail` or `missing`.
 
 ## Known failure: the GL renderer under virgl, intermittently
 
-In 6 of 16 runs of `gl-1280x800` on this host, one kmscon instance drew nothing: every glyph upload failed with `text_gltex: cannot load glyph data into OpenGL texture (1282: <INVALID_OPERATION>)` (21 504 times per failing run, on the serial log), and the screen stayed black. Four times it was the second instance (tty3, so `vt-switch` failed), twice the first (tty2, so every case failed). The 2D variants have not failed in any run. Whether the fault is in kmscon's gltex atlas code, guest Mesa's virgl driver or the host's virglrenderer is not established; the variant stays in the default run because the failure is real and a user on virgl would see a blank console.
+In 6 of 16 runs of `gl-1280x800` on this host, one kmscon instance drew nothing: every glyph upload failed with `text_gltex: cannot load glyph data into OpenGL texture (1282: <INVALID_OPERATION>)` (21 504 times per failing run, on the serial log), and the screen stayed black. Four times it was the second instance (tty3, so `vt-switch` failed), twice the first (tty2, so every case failed). The 2D variants have not failed in any run. Whether the fault is in kmscon's gltex atlas code, guest Mesa's virgl driver or the host's virglrenderer is not established; it is tracked in aaronsb/kmscon#17, with versions and a reproduction. Until it is resolved the variant is outside the default `make tier3` and runs with `make tier3-gl`.
 
 ## Compare tool
 
-`t3img.py` reads PPM and PNG and compares with a tolerance sidecar, stdlib only (`t3img.py compare ACTUAL GOLDEN [--tol FILE] [--diff D]`, exit 1 on `fail`). Tier 2's `pixcmp` covers the same ground and was built in parallel; the two should be merged.
+`t3img.py` reads PPM and PNG and compares with a tolerance sidecar, stdlib only (`t3img.py compare ACTUAL GOLDEN [--tol FILE] [--diff D]`, exit 1 on `fail`). Tier 2's `pixcmp` covers the same ground and was built in parallel; merging them is aaronsb/kmscon#18.

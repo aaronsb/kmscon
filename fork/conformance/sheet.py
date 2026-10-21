@@ -227,7 +227,7 @@ def draw_grid(out, screen, cols, rows, x0, y0, marks=()):
 def tile_size(t):
     if t.get("kind") == "image":
         w = t["tw"] + 2 * PAD
-        panes = 3 if t["status"] == "fail" else 1
+        panes = 3 if t["status"] == "fail" and t["panes"] else 1
         return panes * w + (panes - 1) * PAD, t["th"] + 2 * PAD + LABEL
     w = t["cols"] * CW + 2 * PAD
     return (2 * w + PAD if t["status"] == "fail" else w), t["rows"] * CH + 2 * PAD + LABEL
@@ -292,29 +292,35 @@ def tiles_for_images(report):
         for key in ("golden", "actual", "diff"):
             path = case.get(key)
             thumb = case.get(f"thumb_{key}")
-            if thumb and Path(thumb).exists():
+            if thumb and path and Path(thumb).exists() and Path(path).exists():
                 # Tier 3 writes PNGs and its own thumbnails; embed them as they are.
                 tw, th = png_size(thumb)
                 step = -(-png_size(path)[0] // tw)
                 uri = "data:image/png;base64," + base64.b64encode(Path(thumb).read_bytes()).decode()
                 panes[key] = (uri, tw, th, step)
-            elif path and Path(path).exists():
+            elif path and path.endswith(".ppm") and Path(path).exists():
                 w, h, rgb = read_ppm(path)
                 tw, th, step, rows = thumbnail(w, h, rgb)
                 panes[key] = (png_uri(tw, th, rows), tw, th, step)
-        if not panes:
-            continue
-        tw = max(p[1] for p in panes.values())
-        th = max(p[2] for p in panes.values())
-        step = next(iter(panes.values()))[3]
+        if panes:
+            tw = max(p[1] for p in panes.values())
+            th = max(p[2] for p in panes.values())
+            step = next(iter(panes.values()))[3]
+        else:  # nothing captured and nothing to compare with: the tile carries the error
+            tw, th, step = THUMB_MAX_W, CH * 2, 1
         regions = [tuple(b) for b in (case.get("stats") or {}).get("bbox", [])]
         tiles.append({"kind": "image", "label": f"tier {report['tier']}: {case['name']}",
                       "status": case["status"] if case["status"] in STATUS_COLOR else "fail",
-                      "panes": panes, "tw": tw, "th": th, "step": step, "regions": regions})
+                      "panes": panes, "tw": tw, "th": th, "step": step, "regions": regions,
+                      "error": case.get("error")})
     return tiles
 
 
 def draw_image_tile(out, t, tx, gy):
+    if not t["panes"]:
+        out.append(f'<text x="{tx + PAD}" y="{gy + CH}" fill="{INK}" font-size="11">'
+                   f'{escape(t["error"] or "no image")}</text>')
+        return
     order = ("golden", "actual", "diff") if t["status"] == "fail" else ("actual",)
     color = STATUS_COLOR["near"] if t["status"] == "near" else STATUS_COLOR["fail"]
     w = t["tw"] + 2 * PAD

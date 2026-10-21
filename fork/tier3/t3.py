@@ -530,10 +530,18 @@ def rel(path):
 def evaluate(variant, case, ppm, meta):
     """The report entry for one case, from its capture (or None)."""
     golden, tolpath = golden_for(variant, case)
+    stem = os.path.join(RUNDIR, variant, case)
     entry = {"name": "%s/%s" % (variant, case), "golden": rel(golden),
              "actual": None, "diff": None, "tolerance": None,
              "thumb_actual": None, "thumb_golden": None, "thumb_diff": None,
              "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}
+    # The golden's thumbnail comes first, so a case that fails without a
+    # capture still shows on the contact sheet what it should have drawn.
+    gimg = None
+    if golden is not None and os.path.exists(golden):
+        gimg = t3img.read(golden)
+        os.makedirs(os.path.dirname(stem), exist_ok=True)
+        entry["thumb_golden"] = write_thumb(t3img.thumbnail(gimg), stem + ".golden.thumb.png")
     try:
         tol = entry["tolerance"] = t3img.load_tol(tolpath)
     except ValueError as e:  # a malformed sidecar fails its case, loudly
@@ -543,7 +551,6 @@ def evaluate(variant, case, ppm, meta):
         entry["status"] = "fail"
         entry["error"] = meta.get("errors", {}).get(case) or meta.get("error", "no capture")
         return entry
-    stem = os.path.splitext(ppm)[0]
     img = t3img.read(ppm)
     t3img.write_png(stem + ".png", img)
     entry["actual"] = rel(stem + ".png")
@@ -551,11 +558,9 @@ def evaluate(variant, case, ppm, meta):
     if golden is None:  # a check, passed when the capture was taken
         entry["status"] = "pass"
         return entry
-    if not os.path.exists(golden):
+    if gimg is None:
         entry["status"] = "missing"
         return entry
-    gimg = t3img.read(golden)
-    entry["thumb_golden"] = write_thumb(t3img.thumbnail(gimg), stem + ".golden.thumb.png")
     stats, diff, points = t3img.compare(img, gimg, tol["masks"] if tol else ())
     entry["stats"] = stats
     if diff is not None:

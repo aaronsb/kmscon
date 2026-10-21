@@ -1,5 +1,7 @@
 # KMSCON
 
+> **This is a fork** working toward images, colour emoji and styled underlines on the console. See [docs/fork/](docs/fork/README.md) for its goal, its relationship to upstream, how to build it and how it is tested. The requirements and build steps below are upstream's: this fork builds in a container with `make test` and never uses a system libtsm.
+
 ![Build Status](https://github.com/kmscon/kmscon/actions/workflows/meson.yml/badge.svg?branch=main)
 
 Kmscon is a simple terminal emulator based on linux kernel mode setting (KMS).

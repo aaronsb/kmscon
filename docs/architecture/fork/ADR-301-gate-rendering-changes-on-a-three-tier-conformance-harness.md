@@ -95,7 +95,7 @@ The fork is also meant to show, over time, that it builds and works against upst
 - **Manual testing on the console.** Rejected as a gate: it cannot be repeated per change or per upstream sync, and it produces no evidence anyone else can read. It remains how a person accepts a golden.
 - **The VM tier alone.** Rejected: too slow to run on every change, and a failing screenshot says little about where the fault is. The cheaper tiers localise faults; the VM tier proves the assembled package.
 
-## Amendment, 2026-10-21: three verdicts and marked differences
+## Amendment, 2026-10-20: three verdicts and marked differences
 
 The operator asked that the record of each run "circle/mark" the areas that do not conform and allow "a bit of stretch if it's not pixel identical". This amends the rules for tiers 2 and 3; tier 1 compares text and stays exact.
 

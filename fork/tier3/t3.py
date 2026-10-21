@@ -567,21 +567,21 @@ def run_variant(variant, timing):
         # pass alone without testing anything.
         vm.keys("ctrl", "alt", "f3")
         path = os.path.join(work, "vt-switch.ppm")
-        away = None
         try:
             vm.wait_serial("vt: using tty /dev/tty3", timeout=60)
-            away = wait_stable(vm, path, settle=2.0, timeout=60,
-                               want=lambda img: not_blank(img) and img.data != last.data)
+            wait_stable(vm, path, settle=2.0, timeout=60,
+                        want=lambda img: not_blank(img) and img.data != last.data)
             caps["vt-switch"] = path
         except RuntimeError as e:
             errors["vt-switch"] = "no new kmscon screen on tty3: %s" % e
         phase("vt-switch")
+        # The restored screen must differ from the one shown before the
+        # switch back, so tty3's screen, drawn or blank, is never taken for
+        # tty2's. A switch to tty3 that never happened fails vt-restore too.
+        away = vm.screendump(tmp)
         vm.keys("ctrl", "alt", "f2")
         path = os.path.join(work, "vt-restore.ppm")
-        # Back on tty2 the screen leaves tty3's, so a capture of tty3 is
-        # never taken as the restored screen.
-        left_tty3 = None if away is None else (lambda img: img.data != away.data)
-        wait_stable(vm, path, want=left_tty3)
+        wait_stable(vm, path, want=lambda img: img.data != away.data)
         caps["vt-restore"] = path
         phase("vt-restore")
     except Exception as e:  # reported per case; the captures so far still count

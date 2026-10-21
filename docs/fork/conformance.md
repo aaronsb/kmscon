@@ -25,7 +25,7 @@ The corpus has two kinds of stream:
 
 ### Tier 2: pixels in memory
 
-Lives in kmscon under `tests/`. The renderer draws real screens through libtsm and the freetype backend into an XRGB buffer that blends exactly as the DRM backend does. The fonts are committed in `tests/fonts/`, so a font update on the build machine cannot move the results. `pixcmp.py` compares images and reports the number of differing pixels, the largest per-channel difference, and the regions that differ.
+Lives in kmscon under `tests/` (`test_pixels.c`, `tier2/`). The bbulk renderer draws real screens through libtsm and the freetype backend, and the real DRM backend (`drm2d_render.c`) blends them into an in-memory XRGB buffer. Tier 2 covers bbulk on drm2d only; the fbdev and OpenGL paths are left to tier 3. The fonts are committed in `tests/fonts/`, so a font update on the build machine cannot move the results. `pixcmp.py` compares images and reports the number of differing pixels, the largest per-channel difference, and the regions that differ.
 
 ### Tier 3: end to end
 
@@ -58,7 +58,7 @@ Today's tier 1 goldens record upstream's behaviour as it is, including two defec
 
 ## Contact sheets and the ledger
 
-Each recorded run produces a contact sheet: one SVG with a tile for every case and checkpoint. A passing tile shows the screen; a failing tile shows the golden beside the actual result with every region that differs outlined. The sheet is drawn from the same report the verdict came from, so the two cannot disagree, and the same run always draws the same bytes.
+Each recorded run produces a contact sheet: one SVG with a tile for every case and checkpoint. A passing tile shows the screen; a failing tile shows the golden beside the actual result with every region that differs outlined. Image tiers add the diff image, and a within-tolerance case is framed and outlined in amber. The sheet is drawn from the same report the verdict came from, so the two cannot disagree, and the same run always draws the same bytes.
 
 Milestones commit their sheet under `docs/conformance/sheets/` and add a row to [the ledger](../conformance/LEDGER.md): the date (UTC), what the run marks, the kmscon and libtsm commits measured, and the pass count of each tier. Over time the ledger shows the fork building and conforming against upstream as both move.
 
@@ -69,18 +69,15 @@ In the kmscon fork:
 ```sh
 make test                      # all suites, including tiers 1 and 2
 make test LIBTSM=../libtsm     # against a local libtsm checkout
+make tier2                     # tier 2 only, with its report
+make tier2-golden              # regenerate tier 2 goldens (review, then commit on their own)
 make sheet-preview             # draw this run's contact sheet into fork/build/sheet.svg
 make sheet NOTE="what it marks"   # commit-ready sheet and ledger row; refuses uncommitted changes
 ```
 
-Tier 2 adds, when aaronsb/kmscon#5 merges:
-
-```sh
-make tier2                     # tier 2 only, with its report
-make tier2-golden              # regenerate tier 2 goldens (review, then commit on their own)
-```
-
 Tier 3's commands arrive with its pull request.
+
+kmscon builds against a pinned commit of the libtsm fork (`revision` in `subprojects/libtsm.wrap`), so the goldens cannot drift with libtsm. A change in libtsm reaches kmscon by moving that pin, in its own commit, with the harness run against the new commit.
 
 In the libtsm fork:
 
@@ -96,6 +93,6 @@ make golden REF=v4.8.0         # rewrite tier 1 goldens from upstream at REF
 | Tier | State |
 |---|---|
 | 1 | Running: 26 cases (22 synthetic, 4 recorded programs with 27 checkpoints between them), all matching upstream |
-| 2 | In review (aaronsb/kmscon#5): six screens, pixel-exact |
+| 2 | Running: six screens (ASCII, bold, palette, inverse, CJK, box drawing), pixel-exact; coverage gaps tracked in #8 |
 | 3 | In progress |
 | CI | Not wired yet. ADR-301 has tiers 1 and 2 running in CI on every change; until then they run locally through `make test`, and the repository's GitHub workflow is upstream's plain build. |

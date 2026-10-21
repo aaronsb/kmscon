@@ -5,3 +5,4 @@ One row per committed contact sheet, oldest first. Each sheet is drawn from a si
 | Date (UTC) | Note | kmscon | libtsm | Tier 1 | Tier 2 | Tier 3 | Sheet |
 |---|---|---|---|---|---|---|---|
 | 2026-10-21 | Baseline: tier 1 harness against upstream libtsm v4.8.0 behaviour | `84135a3` | `c2feb28` | 26/26 | — | — | [2026-10-21-84135a3-c2feb28.svg](sheets/2026-10-21-84135a3-c2feb28.svg) |
+| 2026-10-21 | Tier 2 joins: renderer pixels in memory through the real drm2d blend | `9cf178b` | `c2feb28` | 26/26 | 6/6 | — | [2026-10-21-9cf178b-c2feb28.svg](sheets/2026-10-21-9cf178b-c2feb28.svg) |

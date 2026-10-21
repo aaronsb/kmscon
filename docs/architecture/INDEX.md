@@ -18,13 +18,13 @@ _Glyphs, images and cells to pixels - fonts, text renderers, video backends_
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-100](./render/ADR-100-kmscon-render-pipeline-as-of-upstream-6c03eb4.md) | kmscon render pipeline as of upstream 6c03eb4 | proposed |
-| [ADR-101](./render/ADR-101-rebuild-the-screen-model-and-render-path-around-sprites-and-an-image-layer.md) | Rebuild the screen model and render path around sprites and an image layer | proposed |
+| [ADR-100](./render/ADR-100-kmscon-render-pipeline-as-of-upstream-6c03eb4.md) | kmscon render pipeline as of upstream 6c03eb4 | accepted |
+| [ADR-101](./render/ADR-101-rebuild-the-screen-model-and-render-path-around-sprites-and-an-image-layer.md) | Rebuild the screen model and render path around sprites and an image layer | accepted |
 
 ## Fork
 _Carrying this fork - upstream tracking, packaging, contribution back_
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-300](./fork/ADR-300-write-from-protocol-specs-and-permissive-sources-never-from-kitty-s-code.md) | Write from protocol specs and permissive sources, never from kitty's code | proposed |
-| [ADR-301](./fork/ADR-301-gate-rendering-changes-on-a-three-tier-conformance-harness.md) | Gate rendering changes on a three-tier conformance harness | proposed |
+| [ADR-300](./fork/ADR-300-write-from-protocol-specs-and-permissive-sources-never-from-kitty-s-code.md) | Write from protocol specs and permissive sources, never from kitty's code | accepted |
+| [ADR-301](./fork/ADR-301-gate-rendering-changes-on-a-three-tier-conformance-harness.md) | Gate rendering changes on a three-tier conformance harness | accepted |

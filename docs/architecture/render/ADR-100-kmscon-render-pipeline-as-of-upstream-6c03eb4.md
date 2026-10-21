@@ -2,7 +2,7 @@
 contract: adr/v1
 kind: evidence
 capability: renderer
-status: proposed
+status: accepted
 date: 2026-10-20
 deciders:
   - aaronsb

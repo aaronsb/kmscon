@@ -17,7 +17,11 @@ basis:
 agent:
   name: claude
   model: claude-opus-5-5
-status: proposed
+considered:
+  - operator: aaronsb
+    said: "I read through the ADRs and they make sense to me and line up with what we discussed. I don't see any surprise decisions"
+    via: Claude Code session, reviewing PR aaronsb/kmscon#1
+status: accepted
 date: 2026-10-20
 deciders:
   - aaronsb

@@ -14,9 +14,10 @@ Usage:
            [--ledger LEDGER.md --note TEXT] REPORT.json...
 
 Tier 1 reports (from libtsm's check.py --report) carry screen dumps as text;
-they are drawn as character grids. Tier 2 and 3 reports name PPM images; they
-are drawn as thumbnails embedded in the SVG (golden, actual and diff for a
-failure), with the reported regions outlined. Image paths are read relative to
+they are drawn as character grids. Tier 2 reports name PPM images and tier 3
+reports name PNGs with thumbnails beside them; both are drawn as thumbnails
+embedded in the SVG (golden, actual and diff for a failure), with the reported
+regions outlined. Image paths are read relative to
 the current directory, which is the repository root under `make`.
 
 SPDX-License-Identifier: MIT
@@ -276,13 +277,28 @@ def png_uri(tw, th, rows):
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
+def png_size(path):
+    """(width, height) from a PNG's IHDR chunk."""
+    head = Path(path).read_bytes()[:24]
+    if head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        raise ValueError(f"{path}: not a PNG")
+    return struct.unpack(">II", head[16:24])
+
+
 def tiles_for_images(report):
     tiles = []
     for case in report["cases"]:
         panes = {}
         for key in ("golden", "actual", "diff"):
             path = case.get(key)
-            if path and Path(path).exists():
+            thumb = case.get(f"thumb_{key}")
+            if thumb and Path(thumb).exists():
+                # Tier 3 writes PNGs and its own thumbnails; embed them as they are.
+                tw, th = png_size(thumb)
+                step = -(-png_size(path)[0] // tw)
+                uri = "data:image/png;base64," + base64.b64encode(Path(thumb).read_bytes()).decode()
+                panes[key] = (uri, tw, th, step)
+            elif path and Path(path).exists():
                 w, h, rgb = read_ppm(path)
                 tw, th, step, rows = thumbnail(w, h, rgb)
                 panes[key] = (png_uri(tw, th, rows), tw, th, step)

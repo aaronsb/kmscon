@@ -75,7 +75,18 @@ make sheet-preview             # draw this run's contact sheet into fork/build/s
 make sheet NOTE="what it marks"   # commit-ready sheet and ledger row; refuses uncommitted changes
 ```
 
-Tier 3's commands arrive with its pull request.
+Tier 3 needs KVM and QEMU on the host besides docker; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements, pins and variants:
+
+```sh
+make pkg                       # build the kmscon-aaronsb package from this checkout
+make tier3-image               # once: fetch, verify and provision the guest base image
+make tier3                     # pkg, then the 2D variants; report in fork/build/tier3-report.json
+make tier3-gl                  # pkg, then the GL variant, outside the default run (#17)
+make tier3-bless               # copy the last run's captures over the goldens (review, then commit on their own)
+make tier3-selftest            # unit tests of the tier 3 image compare module
+```
+
+`make sheet` includes tier 3 when a tier 3 run has written its report to `fork/build`, so run `make tier3` first at the same commit.
 
 kmscon builds against a pinned commit of the libtsm fork (`revision` in `subprojects/libtsm.wrap`), so the goldens cannot drift with libtsm. A change in libtsm reaches kmscon by moving that pin, in its own commit, with the harness run against the new commit.
 
@@ -94,5 +105,5 @@ make golden REF=v4.8.0         # rewrite tier 1 goldens from upstream at REF
 |---|---|
 | 1 | Running: 26 cases (22 synthetic, 4 recorded programs with 27 checkpoints between them), all matching upstream |
 | 2 | Running: six screens (ASCII, bold, palette, inverse, CJK, box drawing), pixel-exact; coverage gaps tracked in #8 |
-| 3 | In progress |
+| 3 | Running: two 2D variants (virtio-vga at 1280x800 and 7680x2160, drm2d + bbulk), five cases each (SGR, box drawing, CJK, the switch to another VT, the screen restored on switching back), all pixel-exact. The GL variant (drm3d + gltex under virgl) has goldens but is outside the default run: it intermittently draws a black screen, #17. Runs locally only. |
 | CI | Not wired yet. ADR-301 has tiers 1 and 2 running in CI on every change; until then they run locally through `make test`, and the repository's GitHub workflow is upstream's plain build. |

@@ -6,3 +6,4 @@ One row per committed contact sheet, oldest first. Each sheet is drawn from a si
 |---|---|---|---|---|---|---|---|
 | 2026-10-21 | Baseline: tier 1 harness against upstream libtsm v4.8.0 behaviour | `84135a3` | `c2feb28` | 26/26 | — | — | [2026-10-21-84135a3-c2feb28.svg](sheets/2026-10-21-84135a3-c2feb28.svg) |
 | 2026-10-21 | Tier 2 joins: renderer pixels in memory through the real drm2d blend | `9cf178b` | `c2feb28` | 26/26 | 6/6 | — | [2026-10-21-9cf178b-c2feb28.svg](sheets/2026-10-21-9cf178b-c2feb28.svg) |
+| 2026-10-21 | Tier 3 joins: installed package in a KVM guest, 2D variants | `2862aeb` | `c2feb28` | 26/26 | 6/6 | 10/10 | [2026-10-21-2862aeb-c2feb28.svg](sheets/2026-10-21-2862aeb-c2feb28.svg) |

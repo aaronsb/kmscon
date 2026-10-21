@@ -41,6 +41,10 @@ considered:
   - operator: aaronsb
     said: "I think these graphics make complete sense for the text"
     via: Claude Code session, after being shown the decoration-sprite figure rendered from figures/ADR-102-decoration-sprites.svg, before the probes were answered
+  - operator: aaronsb
+    said: "yes - this allows one to decide based on their font and usability reasons. (for instance maybe they want a retro bitmapped font)"
+    via: Claude Code session, answering whether Unicode width rules by default with grapheme-width=wcwidth in kmscon.conf is what the config option meant
+    covers: [width-default]
 ---
 
 # ADR-102: Cells carry clusters and unresolved colour; glyphs and underlines become sprites
@@ -58,8 +62,8 @@ considered:
   - A new build dependency on HarfBuzz in the freetype font backend, used for multi-codepoint clusters only.
 - **One-way?** No. Each part lands behind the harness and can be reverted. The cost of reversing grows as later steps (images, the kitty protocol) build on the cell and sprite structures.
 - **Probes:**
-  - *Confident:* the default is Unicode rules (a heart with VS16 takes two cells, a ZWJ family is one two-cell glyph), with `grapheme-width=wcwidth` in kmscon.conf for anyone whose programs drift on those lines.
-  - *Not confident:* that colour emoji fonts in the newer COLRv1 or SVG formats can wait. This record supports the bitmap kind Arch ships as Noto Color Emoji, plus COLRv0. A COLRv1-only font would draw its glyphs as plain outlines until a later record adds a painter.
+  - *Confident (width-default):* the default is Unicode rules (a heart with VS16 takes two cells, a ZWJ family is one two-cell glyph), with `grapheme-width=wcwidth` in kmscon.conf for anyone whose programs drift on those lines.
+  - *Not confident (colour-formats):* that colour emoji fonts in the newer COLRv1 or SVG formats can wait. This record supports the bitmap kind Arch ships as Noto Color Emoji, plus COLRv0. A COLRv1-only font would draw its glyphs as plain outlines until a later record adds a painter.
 - **Inversion:** Between "port one reference terminal's design" and "invent a new one". The answer takes each part from whichever MIT reference fits a C console with a CPU renderer:
   - foot's per-parameter sub-parameters and its shaping of clusters only;
   - Ghostty's reflow of a cell widened by VS16, and its one-curl-per-cell underline;

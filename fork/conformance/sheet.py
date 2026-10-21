@@ -316,16 +316,25 @@ def tiles_for_images(report):
     return tiles
 
 
+def draw_error(out, x, y, width, text):
+    """One line of text cut to fit `width` pixels, so it stays inside its tile."""
+    room = width // CW
+    if len(text) > room:
+        text = text[:room - 1] + "…"
+    out.append(f'<text x="{x}" y="{y}" fill="{INK}" font-size="11">{escape(text)}</text>')
+
+
 def draw_image_tile(out, t, tx, gy):
     if not t["panes"]:
-        out.append(f'<text x="{tx + PAD}" y="{gy + CH}" fill="{INK}" font-size="11">'
-                   f'{escape(t["error"] or "no image")}</text>')
+        draw_error(out, tx + PAD, gy + CH, t["tw"], t["error"] or "no image")
         return
     order = ("golden", "actual", "diff") if t["status"] == "fail" else ("actual",)
     color = STATUS_COLOR["near"] if t["status"] == "near" else STATUS_COLOR["fail"]
     w = t["tw"] + 2 * PAD
     for i, key in enumerate(order):
         if key not in t["panes"]:
+            if key == "actual" and t["error"]:  # no capture: say why in its place
+                draw_error(out, tx + PAD + i * (w + PAD), gy + CH, t["tw"], t["error"])
             continue
         uri, pw, ph, step = t["panes"][key]
         x0 = tx + PAD + i * (w + PAD)

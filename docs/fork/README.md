@@ -57,11 +57,12 @@ Kitty is GPL-3.0. This fork takes kitty's published protocols and its architectu
 
 ## How the work is produced
 
-Much of the code and documentation in this fork is written by AI coding agents under the maintainer's direction. The decisions are the maintainer's and are recorded in the decision records in the maintainer's own words. The code is judged by the conformance harness rather than by its author: every change is measured against goldens produced from upstream behaviour, and every check has been seen to fail before it is trusted.
+Much of the code and documentation in this fork is written by AI coding agents under the maintainer's direction. The decisions are the maintainer's and are recorded in the decision records in the maintainer's own words. The code is judged by the conformance harness rather than by its author: every change is measured against goldens produced from upstream behaviour, and every check has been seen to fail before it is trusted. [Development process](development.md) gives the loop each change goes through, from decision to merge, and who verifies it.
 
 ## Where to read next
 
 - [Conformance harness](conformance.md): how the fork is tested and how to run it.
+- [Development process](development.md): how a change is decided, branched, verified, reviewed and merged, and how a libtsm change reaches kmscon.
 - [Local VT demo](demo.md): a development build on one of this machine's VTs, with a paged demonstration of what it draws.
 - [Decision records](../architecture/INDEX.md): the evidence, the decisions and their reasons.
 - [Conformance ledger](../conformance/LEDGER.md): one row per recorded run, with its contact sheet.

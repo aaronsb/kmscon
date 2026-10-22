@@ -3,12 +3,12 @@
 
 Stdlib only. The work is split across the modules beside this one:
 
-    common.py     paths and the logger
-    qemu.py       one headless QEMU: QMP, VNC captures, key mapping
-    scenario.py   the variants and the scenario each runs
-    evaluate.py   the cases, their screen text and the compare with a golden
-    runner.py     the worker pool, the run lock and the report
-    t3img.py      PNG/PPM reading and writing and the image compare
+    t3_common.py     paths and the logger
+    t3_qemu.py       one headless QEMU: QMP, VNC captures, key mapping
+    t3_scenario.py   the variants and the scenario each runs
+    t3_evaluate.py   the cases, their screen text and the compare with a golden
+    t3_runner.py     the worker pool, the run lock and the report
+    t3img.py         PNG/PPM reading and writing and the image compare
 
 Variants run one at a time, or with --jobs N up to N at once, each in its own
 worker process.
@@ -31,17 +31,17 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import runner  # noqa: E402
-import scenario  # noqa: E402
-from common import BASE, GUEST, REPORT, ROOT, VM, Logger, rel  # noqa: E402
-from evaluate import SCREENS, golden_for  # noqa: E402
-from qemu import Qemu, make_iso  # noqa: E402
+import t3_runner  # noqa: E402
+import t3_scenario  # noqa: E402
+from t3_common import BASE, GUEST, REPORT, ROOT, VM, Logger, rel  # noqa: E402
+from t3_evaluate import SCREENS, golden_for  # noqa: E402
+from t3_qemu import Qemu, make_iso  # noqa: E402
 
 
 # --- provisioning -----------------------------------------------------------
 
 def provision(args, log):
-    with runner.run_lock():
+    with t3_runner.run_lock():
         return _provision(args, log)
 
 
@@ -91,19 +91,19 @@ def _provision(args, log):
 def run(args, log):
     if not os.path.exists(BASE):
         raise SystemExit("no base image at %s; run `make tier3-image`" % BASE)
-    variants = args.variants or scenario.DEFAULT_VARIANTS
-    runner.raise_on_sigterm(log)
-    with runner.run_lock():
+    variants = args.variants or t3_scenario.DEFAULT_VARIANTS
+    t3_runner.raise_on_sigterm(log)
+    with t3_runner.run_lock():
         if args.pkg_target:
             log("building the package: make %s" % args.pkg_target)
             r = subprocess.run(["make", "--no-print-directory", args.pkg_target], cwd=ROOT)
             if r.returncode:
                 raise SystemExit("package build failed with exit code %d" % r.returncode)
-        pkgs = scenario.newest_packages()
+        pkgs = t3_scenario.newest_packages()
         log("packages: %s" % ", ".join(map(os.path.basename, pkgs)))
-        results, interrupted = runner.run_variants(variants, args.jobs, pkgs,
+        results, interrupted = t3_runner.run_variants(variants, args.jobs, pkgs,
                                                    args.deadline, log)
-        cases = runner.write_report(variants, results)
+        cases = t3_runner.write_report(variants, results)
     for c in cases:
         print("%-8s %s  (%d px)" % (c["status"], c["name"], c["stats"]["pixels"]))
     print("report: %s" % rel(REPORT))
@@ -114,7 +114,7 @@ def run(args, log):
 
 
 def bless(args, log):
-    with runner.run_lock():
+    with t3_runner.run_lock():
         return _bless(args, log)
 
 
@@ -146,14 +146,14 @@ def main(argv=None):
                    help="run up to N variants at once (default 1)")
     r.add_argument("--pkg-target", metavar="TARGET",
                    help="make target that builds the package, run under the lock first")
-    r.add_argument("--deadline", type=int, default=runner.VARIANT_DEADLINE, metavar="SECONDS",
+    r.add_argument("--deadline", type=int, default=t3_runner.VARIANT_DEADLINE, metavar="SECONDS",
                    help="with --jobs above 1, stop a variant still running after this "
-                        "(default %d)" % runner.VARIANT_DEADLINE)
-    r.add_argument("variants", nargs="*", help="any of: " + ", ".join(scenario.VARIANTS))
+                        "(default %d)" % t3_runner.VARIANT_DEADLINE)
+    r.add_argument("variants", nargs="*", help="any of: " + ", ".join(t3_scenario.VARIANTS))
     b = sub.add_parser("bless")
     b.add_argument("variants", nargs="*")
     args = ap.parse_args(argv)
-    unknown = set(getattr(args, "variants", [])) - set(scenario.VARIANTS)
+    unknown = set(getattr(args, "variants", [])) - set(t3_scenario.VARIANTS)
     if unknown:
         ap.error("unknown variant(s): " + ", ".join(sorted(unknown)))
     named = getattr(args, "variants", [])

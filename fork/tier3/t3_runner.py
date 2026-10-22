@@ -16,9 +16,9 @@ import sys
 import time
 import uuid
 
-import qemu
-import scenario
-from common import LOCK, REPORT, RUNDIR, rel
+import t3_qemu
+import t3_scenario
+from t3_common import LOCK, REPORT, RUNDIR, rel
 
 # Default seconds a variant's worker may run before it is stopped (--deadline).
 # Every wait in the scenario has its own timeout well inside this; it catches
@@ -43,9 +43,9 @@ def _worker(variant, pkgs, log, conn):
     """A worker process: reports each QEMU it starts and stops, then its
     result."""
     raise_on_sigterm(log.labelled(variant))
-    qemu.on_qemu = lambda event, pid: conn.send((event, pid))
+    t3_qemu.on_qemu = lambda event, pid: conn.send((event, pid))
     try:
-        conn.send(("result", scenario.variant_job(variant, pkgs, log)))
+        conn.send(("result", t3_scenario.variant_job(variant, pkgs, log)))
     except Terminated:
         sys.exit(128 + signal.SIGTERM)
     finally:
@@ -128,8 +128,8 @@ def run_concurrently(variants, jobs, pkgs, deadline, results, log):
             for variant in list(pending):
                 if len(running) >= jobs:
                     break
-                if (scenario.uses_virgl(variant)
-                        and any(scenario.uses_virgl(j.variant) for j in running)):
+                if (t3_scenario.uses_virgl(variant)
+                        and any(t3_scenario.uses_virgl(j.variant) for j in running)):
                     continue
                 pending.remove(variant)
                 running.append(Job(ctx, variant, pkgs, log))
@@ -148,11 +148,11 @@ def run_concurrently(variants, jobs, pkgs, deadline, results, log):
                 if job.result is not None:
                     results[job.variant] = job.result
                 elif overdue:
-                    results[job.variant] = scenario.failed_variant(
+                    results[job.variant] = t3_scenario.failed_variant(
                         job.variant, "no result within the %d s deadline; worker stopped"
                         % deadline, pkgs, log)
                 else:
-                    results[job.variant] = scenario.failed_variant(
+                    results[job.variant] = t3_scenario.failed_variant(
                         job.variant, "worker exited with code %s before reporting"
                         % job.proc.exitcode, pkgs, log)
     finally:
@@ -175,14 +175,19 @@ def run_variants(variants, jobs, pkgs, deadline, log):
     try:
         if jobs == 1:
             for v in variants:
-                results[v] = scenario.variant_job(v, pkgs, log)
+                # A signal during a variant is logged with its name, as a
+                # worker's is.
+                raise_on_sigterm(log.labelled(v))
+                results[v] = t3_scenario.variant_job(v, pkgs, log)
         else:
             run_concurrently(variants, jobs, pkgs, deadline, results, log)
     except (Terminated, KeyboardInterrupt) as e:
         interrupted = e
+    if jobs == 1:
+        raise_on_sigterm(log)
     for v in variants:
         if v not in results:
-            results[v] = scenario.failed_variant(
+            results[v] = t3_scenario.failed_variant(
                 v, "run interrupted: %s" % (interrupted or "no result"), pkgs, log)
     log("%d variant(s) done, %d at a time" % (len(variants), jobs))
     return results, interrupted

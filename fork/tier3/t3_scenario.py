@@ -8,9 +8,9 @@ import shutil
 import subprocess
 import time
 
-from common import BASE, GUEST, PKGOUT, RUNDIR, rel
-from evaluate import CASES, SCREENS, evaluate
-from qemu import Qemu, make_iso, not_blank, wait_stable
+from t3_common import BASE, GUEST, PKGOUT, RUNDIR, rel
+from t3_evaluate import CASES, SCREENS, evaluate
+from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
 # Display variants. Each boots its own guest from the base image; the 2D
 # variants draw through drm2d and bbulk, the GL variant through drm3d and

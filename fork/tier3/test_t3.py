@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Self-test for the parts of tier 3 that run on the host without a guest:
-the screen text a case's report carries (evaluate.py).
+the screen text a case's report carries (t3_evaluate.py) and the logger a
+worker process receives (t3_common.py).
 
     python3 -I fork/tier3/test_t3.py
 """
@@ -8,13 +9,14 @@ the screen text a case's report carries (evaluate.py).
 import contextlib
 import io
 import os
+import pickle
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import evaluate  # noqa: E402
-from common import Logger  # noqa: E402
+import t3_evaluate  # noqa: E402
+from t3_common import Logger  # noqa: E402
 
 LOG = Logger()
 
@@ -32,23 +34,24 @@ SCRIPTS = {
 
 class ScreenTextTest(unittest.TestCase):
     def test_real_screens(self):
-        self.assertTrue(evaluate.screen_text("sgr", LOG)[2].startswith("bold underline reverse "))
-        self.assertEqual(evaluate.screen_text("cjk", LOG)[2], "|一|二|三|四|五|")
-        self.assertEqual(evaluate.screen_text("vt-restore", LOG),
-                         evaluate.screen_text(evaluate.SCREENS[-1], LOG))
-        self.assertIsNone(evaluate.screen_text("vt-switch", LOG))
+        self.assertTrue(t3_evaluate.screen_text("sgr", LOG)[2]
+                        .startswith("bold underline reverse "))
+        self.assertEqual(t3_evaluate.screen_text("cjk", LOG)[2], "|一|二|三|四|五|")
+        self.assertEqual(t3_evaluate.screen_text("vt-restore", LOG),
+                         t3_evaluate.screen_text(t3_evaluate.SCREENS[-1], LOG))
+        self.assertIsNone(t3_evaluate.screen_text("vt-switch", LOG))
 
     def text(self, name):
         with tempfile.TemporaryDirectory() as guest, contextlib.redirect_stderr(io.StringIO()):
             os.mkdir(os.path.join(guest, "screens"))
             with open(os.path.join(guest, "screens", name + ".sh"), "w") as f:
                 f.write(SCRIPTS[name] + "\n")
-            saved = evaluate.GUEST, evaluate.SCREENS, evaluate.SCREEN_TIMEOUT
-            evaluate.GUEST, evaluate.SCREENS, evaluate.SCREEN_TIMEOUT = guest, [name], 1
+            saved = t3_evaluate.GUEST, t3_evaluate.SCREENS, t3_evaluate.SCREEN_TIMEOUT
+            t3_evaluate.GUEST, t3_evaluate.SCREENS, t3_evaluate.SCREEN_TIMEOUT = guest, [name], 1
             try:
-                return evaluate.screen_text(name, LOG)
+                return t3_evaluate.screen_text(name, LOG)
             finally:
-                evaluate.GUEST, evaluate.SCREENS, evaluate.SCREEN_TIMEOUT = saved
+                t3_evaluate.GUEST, t3_evaluate.SCREENS, t3_evaluate.SCREEN_TIMEOUT = saved
 
     def test_colours_removed(self):
         self.assertEqual(self.text("colours"), ["red plain", "next"])
@@ -78,6 +81,25 @@ class ScreenTextTest(unittest.TestCase):
         for name in ("moves", "tab", "charset", "title"):
             with self.subTest(name):
                 self.assertIsNone(self.text(name))
+
+
+class LoggerTest(unittest.TestCase):
+    def line(self, log):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            log("hello")
+        return err.getvalue()
+
+    def test_labelled(self):
+        log = Logger(t0=0)
+        self.assertRegex(self.line(log), r"^\[t3 \+[0-9.]+s\] hello\n$")
+        self.assertRegex(self.line(log.labelled("2d-1280x800")),
+                         r"^\[t3 \+[0-9.]+s 2d-1280x800\] hello\n$")
+
+    def test_pickles(self):
+        # A worker process receives the run's logger by pickle.
+        log = pickle.loads(pickle.dumps(Logger(t0=123.5).labelled("v")))
+        self.assertEqual((log.t0, log.label), (123.5, "v"))
 
 
 if __name__ == "__main__":

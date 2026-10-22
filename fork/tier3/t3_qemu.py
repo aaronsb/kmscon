@@ -19,7 +19,7 @@ import subprocess
 import time
 
 import t3img
-from common import rel
+from t3_common import rel
 
 MEMORY = "4096"
 CPUS = "4"

@@ -6,7 +6,7 @@ import re
 import subprocess
 
 import t3img
-from common import GOLDEN, GUEST, RUNDIR, rel
+from t3_common import GOLDEN, GUEST, RUNDIR, rel
 
 # Screens drawn by `t3 NAME` in the guest (fork/tier3/guest/screens/NAME.sh).
 SCREENS = ["sgr", "boxdraw", "cjk"]

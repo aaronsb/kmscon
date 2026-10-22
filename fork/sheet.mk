@@ -63,7 +63,7 @@ sheet-save: ## Save the last run's reports and screens to SAVE=<dir in the check
 
 COMPARE_OUT ?= $(or $(OUT),$(BUILD)/compare)
 COMPARE_CMD  = make sheet-compare A=$(A) B=$(B)$(if $(A2), A2=$(A2))$(if $(B2), B2=$(B2)) \
-	LABEL_A=$(LABEL_A) LABEL_B=$(LABEL_B)$(if $(VERDICTS), VERDICTS=$(VERDICTS))
+	LABEL_A='$(LABEL_A)' LABEL_B='$(LABEL_B)'$(if $(VERDICTS), VERDICTS=$(VERDICTS))
 LABEL_A     ?= A
 LABEL_B     ?= B
 

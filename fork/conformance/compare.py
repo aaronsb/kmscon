@@ -38,6 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pageimg import crop, crop_box, diff_image, outline, step_for, strip, t3img, write_png  # noqa: E402
 
 REPO = "https://github.com/aaronsb/kmscon"
+KINDS = {2: "screens rendered in memory without a display (tier 2)",
+         3: "screens captured from the virtual machine's display (tier 3)"}
 
 
 # ---------------------------------------------------------------- saved runs
@@ -177,22 +179,35 @@ class Page:
     def w(self, *lines):
         self.lines.extend(lines)
 
+    def tiers(self):
+        """Kinds of screen both runs hold; a kind one run lacks entirely is
+        named once rather than listed screen by screen."""
+        ta, tb = {r["tier"] for r in self.a.reports}, {r["tier"] for r in self.b.reports}
+        return ta & tb, sorted((ta ^ tb))
+
     def keys(self):
-        order = list(self.a.cases) + [k for k in self.b.cases if k not in self.a.cases]
+        common = self.tiers()[0]
+        order = [k for k in list(self.a.cases) + [k for k in self.b.cases if k not in self.a.cases]
+                 if k[0] in common]
         return [k for k in order if k in self.a.cases and k in self.b.cases], \
             [k for k in order if (k in self.a.cases) != (k in self.b.cases)]
 
     def display(self, key, run):
-        """"1280×800" for a screen, from its capture."""
+        """Where a screen was drawn: "1280×800, bbulk" for a display, from
+        its capture and kmscon's log, or "384×160 in memory"."""
         img = run.image(key)
-        return "%d×%d" % (img.width, img.height) if img else "?"
+        size = "%d×%d" % (img.width, img.height) if img else "?"
+        if key[0] == 2:
+            return size + " in memory"
+        found = re.findall(r"text renderer \[([^\]]*)\]", " ".join(run.meta(key).get("kmscon") or []))
+        return size + (", %s" % found[0] if found else "")
 
     def screen_name(self, key):
         return key[1].split("/")[-1]
 
     def heading(self, key):
         # A plain x: GitHub's heading anchors drop some symbols.
-        return "`%s` at %s" % (self.screen_name(key), self.display(key, self.a).replace("×", "x"))
+        return "`%s`, %s" % (self.screen_name(key), self.display(key, self.a).replace("×", "x"))
 
     def render(self):
         both, one = self.keys()
@@ -202,6 +217,9 @@ class Page:
         self.w("## The screens", "")
         for k in both:
             self.screen(k, results[k])
+        for tier in self.tiers()[1]:
+            side = self.la if any(r["tier"] == tier for r in self.a.reports) else self.lb
+            self.w("Only %s's run includes %s, so those are not compared." % (side, KINDS[tier]), "")
         if one:
             self.w("## Screens only one build drew", "", "| Screen | Drawn by | Not drawn by |", "|---|---|---|")
             for k in one:
@@ -237,11 +255,16 @@ class Page:
 
     def header(self, both, results):
         self.w("# kmscon: %s and %s drawing the same screens" % (self.la, self.lb), "")
-        self.w("Two builds of kmscon were installed in the same virtual machine, one at a time. Each "
-               "drew the same screens on the same virtual display, and each screen was captured "
-               "from the display, pixel for pixel. This page sets the two captures of each screen "
-               "side by side and marks every pixel where they differ. How the screens were made "
-               "is at the end.", "")
+        common = self.tiers()[0]
+        how = {3: "For screens on a display, each build was installed in the same virtual machine, "
+                  "one at a time, drew each screen on the same virtual display, and the display was "
+                  "captured pixel for pixel.",
+               2: "For screens in memory, kmscon's renderer drew each screen into a buffer with "
+                  "pinned fonts, with no display involved."}
+        self.w("This page compares two builds of kmscon, %s and %s, drawing the same screens. %s "
+               "The two captures of each screen are set side by side, and every pixel where they "
+               "differ is marked. How the screens were made is at the end." % (
+                   self.la, self.lb, " ".join(how[t] for t in sorted(common, reverse=True))), "")
         self.w("| | %s | %s |" % (self.la, self.lb), "|---|---|---|")
         for label, key in (("kmscon commit", "kmscon"), ("libtsm commit", "libtsm")):
             self.w("| %s | %s | %s |" % (label, self.commit(self.a, key), self.commit(self.b, key)))
@@ -375,9 +398,16 @@ class Page:
                 name, meta.get("device", "not recorded"),
                 ", ".join("`%s`" % c for c in meta.get("config", [])) or "not recorded",
                 " Character cell %d×%d pixels." % tuple(cell) if cell else ""))
-        self.w("- **Screens:** for each screen the console is cleared and a shell script prints it; "
-               "the display is captured once two captures a second apart are identical. The scripts "
-               "and the driver are in %s of the repository that made this page." % where)
+        common = self.tiers()[0]
+        if 3 in common:
+            self.w("- **Screens on a display:** for each screen the console is cleared and a shell "
+                   "script prints it; the display is captured once two captures a second apart are "
+                   "identical. The scripts and the driver are in %s of the repository that made "
+                   "this page." % where)
+        if 2 in common:
+            self.w("- **Screens in memory:** `tests/test_pixels.c` feeds each screen's bytes to the "
+                   "terminal emulator and draws the result with kmscon's renderer into a buffer, "
+                   "using the fonts in `tests/fonts`.")
         self.w("- **Builds:** each package was built in the container image `%s`, with packages "
                "from the Arch Linux Archive snapshot of %s." % (
                    t.get("image_base") or "not recorded", t.get("archive_date") or "not recorded"))

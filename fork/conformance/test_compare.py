@@ -88,8 +88,8 @@ class CompareTest(unittest.TestCase):
 
     def test_pairs(self):
         page = self.page()
-        self.assertIn("| [`same`](#same-at-200x60) | 200×60 | identical |", page)
-        self.assertIn("| [`curly`](#curly-at-200x60) | 200×60 | differ: 105 pixels in 2 regions |", page)
+        self.assertIn("| [`same`](#same-200x60-bbulk) | 200×60, bbulk | identical |", page)
+        self.assertIn("| [`curly`](#curly-200x60-bbulk) | 200×60, bbulk | differ: 105 pixels in 2 regions |", page)
         self.assertIn("Of the 2 screens both builds drew: 1 identical, 1 different.", page)
         self.assertIn("| `v/onlya` | upstream | fork |", page)
         self.assertIn("| `v/onlyb` | fork | upstream |", page)
@@ -114,8 +114,8 @@ class CompareTest(unittest.TestCase):
     def test_reproducibility(self):
         page = self.page("out", "--a2", "a2", "--b2", "b2")
         self.assertIn("| Screen | Display | upstream: run 1 vs run 2 | fork: run 1 vs run 2 |", page)
-        self.assertIn("| `same` | 200×60 | identical (0 px) | **3 px differ** |", page)
-        self.assertIn("| `curly` | 200×60 | identical (0 px) | identical (0 px) |", page)
+        self.assertIn("| `same` | 200×60, bbulk | identical (0 px) | **3 px differ** |", page)
+        self.assertIn("| `curly` | 200×60, bbulk | identical (0 px) | identical (0 px) |", page)
         self.assertIn("Each build was captured once.", self.page())
 
     def test_header_and_footer(self):

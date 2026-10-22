@@ -136,6 +136,10 @@ git fetch --prune
 
 `fork/build` is gitignored, so `git worktree remove` takes it with the worktree.
 
+### 10. Close the session
+
+When the session's last increment has merged, the session closes with one ledger run on `main`: see [The conformance record](#the-conformance-record).
+
 ## Verification before merge
 
 Verification is done by whoever merges, not by the PR's author, in the PR's own tree (a worktree at the PR's head). The author's gate list in the PR body says what to expect; the verifier runs the gates again and compares.
@@ -228,7 +232,20 @@ A change that adds something visible adds its demo section in the same PR. [demo
 
 ## The conformance record
 
-The [ledger](../conformance/LEDGER.md) records conformance runs at milestones; so far, each tier joining the harness. `make sheet NOTE="what this run marks"` runs tiers 1 and 2, draws the contact sheet and adds the ledger entry; it refuses a tree with uncommitted changes, so every entry names commits. Run `make tier3` first at the same commit to include tier 3. The ledger's format is being changed to one markdown page per run; [conformance.md](conformance.md) describes the format in use.
+The [ledger](../conformance/LEDGER.md) records the fork's conformance at milestones. A working session runs as a loop: increments merge one by one, then the session reaches its bring-home point, then the ledger run, then the handoff to the next session.
+
+The bring-home point is reached when every workstream and branch the session opened has merged and `main` is green. The committed ledger run happens then, once per session: it is the first thing done on `main` after the last merge, and it is not part of any PR. It is never made mid-session or per PR.
+
+```sh
+make tier3                              # at the same main commit, to include tier 3
+make sheet NOTE="what this run marks"
+```
+
+`make sheet` runs tiers 1 and 2, draws the contact sheet and adds the ledger entry. It refuses a tree with uncommitted changes, so every entry names the commits it measured.
+
+The one exception is comparative analysis that ongoing branch work needs, such as a before-and-after of a renderer change. For that, `make sheet-preview` draws the run under `fork/build/`, uncommitted, as often as the analysis needs.
+
+The ledger's format is being changed to one markdown page per run; [conformance.md](conformance.md) describes the format in use.
 
 ## Conventions
 

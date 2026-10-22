@@ -127,6 +127,11 @@ def main():
         actual = os.path.join(actual_dir, name + ".ppm")
         case = {"name": name, "golden": rel(golden), "actual": rel(actual), "diff": None, "tolerance": None,
                 "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}
+        # The screen's caption, which the renderer writes beside its image.
+        desc = os.path.join(actual_dir, name + ".txt")
+        if os.path.exists(desc):
+            with open(desc) as f:
+                case["description"] = f.read().strip()
         cases.append(case)
         if not os.path.exists(golden) or not os.path.exists(actual):
             case["status"] = "missing"

@@ -95,6 +95,7 @@ The tier exits non-zero on any `fail` or `missing`.
 ```json
 {"tier": 3,
  "cases": [{"name": "2d-1280x800/sgr", "status": "near",
+            "description": "SGR attributes and colours: ...",
             "golden": "fork/tier3/golden/2d-1280x800/sgr.png",
             "actual": "fork/build/tier3/2d-1280x800/sgr.png",
             "diff": "fork/build/tier3/2d-1280x800/sgr.diff.png",
@@ -109,7 +110,8 @@ The tier exits non-zero on any `fail` or `missing`.
 
 - `tolerance` is `null` for an exact case.
 - `vt-switch` has no golden (`"golden": null`); it is a check.
-- `actual`, `diff` and the thumbnails are PNGs, so a contact sheet can show them. The raw PPM captures sit beside them.
+- `description` is the caption on the run page: the header comment of the screen's script, or for `vt-switch` and `vt-restore` their entry in `CHECKS` in `t3.py`.
+- `actual`, `diff` and the thumbnails are PNGs, so the run page can show them. The raw PPM captures sit beside them.
 - Thumbnails are at most 480 pixels wide, nearest-neighbour. In the diff thumbnail, any block holding a differing pixel is red, so a one-pixel difference stays visible. Fields are `null` where there is nothing to show.
 - `timing` under each variant holds the seconds from the variant's start to the end of each phase (`install`, `boot`, `kmscon`, `login`, each screen, `vt-switch`, `vt-restore`) and the seconds `evaluate` took.
 - `bbox` is a list of at most 16 regions for outlining. Differing pixels in touching 16-pixel tiles share a region, coarser tiles are used while there are many clusters, and then the closest regions merge.

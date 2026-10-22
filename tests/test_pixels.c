@@ -111,6 +111,9 @@ int display_blend(struct display *disp, const struct video_blend_req *req)
 
 struct screen {
 	const char *name;
+	/* what the screen shows and what correct looks like: the caption on
+	 * the conformance run page, written beside the image as NAME.txt */
+	const char *desc;
 	const char *bytes;
 	/* optional: the bytes of a second frame; frames 2 and 4 repeat the
 	 * one before, so the result is the 4th frame's buffer */
@@ -150,6 +153,9 @@ static const struct kmscon_conf_t conf_deco_force = {
 
 static const struct screen screens[] = {
 	{"ascii",
+	 "Printable ASCII in the regular face: a pangram in both cases, digits and punctuation, "
+	 "runs of narrow and wide letters, and a line of code. Correct: every glyph whole and "
+	 "inside its own cell, with columns aligned down the screen.",
 	 "The quick brown fox jumps over the lazy dog.\r\n"
 	 "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG.\r\n"
 	 "0123456789 !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~\r\n"
@@ -157,11 +163,17 @@ static const struct screen screens[] = {
 	 "func main() { return 0; }  // 80x24 \r\n"},
 
 	{"bold",
+	 "Bold beside regular, a bold pangram over two lines, and bold in red, green and blue. "
+	 "Correct: the bold text drawn in the bold face at the same cell width, the coloured words"
+	 " in their colours.",
 	 "regular " ESC "[1mbold" ESC "[0m regular\r\n" ESC "[1mThe quick brown fox jumps over\r\n"
 	 "the lazy dog 0123456789 !@#$%^&*()" ESC "[0m\r\n" ESC "[1;31mbold red" ESC
 	 "[0m " ESC "[1;32mbold green" ESC "[0m " ESC "[1;34mbold blue" ESC "[0m\r\n"},
 
 	{"palette",
+	 "The 16 ANSI background colours, the 16 foreground colours on letter pairs, a ramp "
+	 "through the 256-colour palette, and a 24-bit gradient from red to green. Correct: each "
+	 "block filled edge to edge in its own colour, with no gaps between cells.",
 	 /* 16 ANSI backgrounds, then foregrounds, then a 256-colour ramp and a
 	  * truecolour gradient */
 	 ESC "[40m  " ESC "[41m  " ESC "[42m  " ESC "[43m  " ESC "[44m  " ESC "[45m  " ESC
@@ -180,11 +192,17 @@ static const struct screen screens[] = {
 	 "[48;2;0;255;0m  " ESC "[0m\r\n"},
 
 	{"inverse",
+	 "Reverse video (SGR 7): one word, a whole line, red on green swapped, and bold with "
+	 "reverse. Correct: foreground and background exchanged, so the swapped word is green on "
+	 "red.",
 	 "normal " ESC "[7minverse" ESC "[0m normal\r\n" ESC "[7mWhole line inverted" ESC
 	 "[0m\r\n" ESC "[31;42mred on green " ESC "[7mswapped" ESC "[0m\r\n" ESC
 	 "[1;7mbold inverse" ESC "[0m\r\n"},
 
 	{"cjk",
+	 "Double-width Japanese, Chinese and Korean, full-width Latin, narrow letters between wide"
+	 " characters, and wide text in bold and in reverse. Correct: each wide character takes "
+	 "two cells and the narrow letters between them keep their own columns.",
 	 "日本語の端末表示 テスト\r\n"
 	 "中文字符 漢字 ひらがな カタカナ\r\n"
 	 "한글 테스트\r\n"
@@ -193,6 +211,9 @@ static const struct screen screens[] = {
 	 ESC "[1m日本語 bold" ESC "[0m " ESC "[7m日本語 inverse" ESC "[0m\r\n"},
 
 	{"box",
+	 "Box drawing in light and double lines, shades and block elements, eighth blocks, and "
+	 "rounded, heavy and diagonal pieces. Correct: lines join from cell to cell with no gaps, "
+	 "and blocks fill their cells.",
 	 "┌──────┬──────┐ ╔══════╦══════╗\r\n"
 	 "│ cell │ cell │ ║ cell ║ cell ║\r\n"
 	 "├──────┼──────┤ ╠══════╬══════╣\r\n"
@@ -204,6 +225,10 @@ static const struct screen screens[] = {
 	/* ADR-102: each underline style in the foreground and in an SGR 58
 	 * colour, over descenders */
 	{"underline",
+	 "Each underline style (single, double, curly, dotted, dashed) in the text colour and in "
+	 "an SGR 58 colour, over descenders; a red curl ended by SGR 59; underlines on a "
+	 "background, in reverse and in bold. Correct: the five styles distinct, the coloured ones"
+	 " in their SGR 58 colour, and the line after SGR 59 in the text colour.",
 	 ESC "[4mSingle gjpqy" ESC "[0m  " ESC "[4;58:5:196mSingle gjpqy" ESC "[0m\r\n" ESC
 	 "[4:2mDouble gjpqy" ESC "[0m  " ESC "[4:2;58:2::0:200:255mDouble gjpqy" ESC "[0m\r\n" ESC
 	 "[4:3mCurly  gjpqy" ESC "[0m  " ESC "[4:3;58:5:46mCurly  gjpqy" ESC "[0m\r\n" ESC
@@ -214,18 +239,32 @@ static const struct screen screens[] = {
 	 "[0m\r\n"},
 
 	{"strike",
+	 "Strike-through (SGR 9) alone, in colour, on a background, with straight and curly "
+	 "underlines, in bold, in reverse, and over spaces. Correct: a line through the middle of "
+	 "every struck cell, the spaces included.",
 	 ESC "[9mstruck through gjpqy" ESC "[0m plain\r\n" ESC "[9;31mred strike" ESC "[0m " ESC
 	 "[9;42mstrike on green" ESC "[0m\r\n" ESC "[9;4mstrike and underline" ESC "[0m " ESC
 	 "[9;4:3;58:5:51mcurly too" ESC "[0m\r\n" ESC "[1;9mbold struck" ESC "[0m " ESC
 	 "[7;9minverse struck" ESC "[0m\r\n" ESC "[9m      " ESC "[0m struck spaces\r\n"},
 
 	/* underline-color=196, strike-color=#00c0ff */
-	{"deco-config", DECO_CONFIG_BYTES, NULL, &conf_deco},
+	{"deco-config",
+	 "Underline and strike with the configured colours (underline-color=196, "
+	 "strike-color=#00c0ff), beside SGR 58 colours and coloured text. Correct: underlines and "
+	 "strikes without an SGR 58 colour take the configured colours; an SGR 58 colour still "
+	 "applies.",
+	 DECO_CONFIG_BYTES, NULL, &conf_deco},
 	/* the same, with force-decoration-colors */
-	{"deco-force", DECO_CONFIG_BYTES, NULL, &conf_deco_force},
+	{"deco-force",
+	 "The deco-config screen with force-decoration-colors set. Correct: every underline and "
+	 "strike in the configured colour, the SGR 58 ones included.",
+	 DECO_CONFIG_BYTES, NULL, &conf_deco_force},
 
 	/* clusters shaped by HarfBuzz: decomposed against precomposed */
 	{"combining",
+	 "Accented letters precomposed and as a base letter with combining marks, in words, "
+	 "underlined, struck and in bold, shaped by HarfBuzz. Correct: each mark sits on its base "
+	 "letter in one cell, matching the precomposed form.",
 	 "precomposed: " E_ACUTE " " A_TILDE " " N_TILDE "\r\n"
 	 "decomposed:  e" COMB_ACUTE " a" COMB_TILDE COMB_GRAVE " n" COMB_DIAER "\r\n"
 	 "in words: cafe" COMB_ACUTE " na" COMB_TILDE COMB_GRAVE "o n" COMB_DIAER "ice\r\n" ESC
@@ -236,6 +275,9 @@ static const struct screen screens[] = {
 	/* a heart with VS16 takes two cells; until colour glyphs (step 4c) it
 	 * draws as the text heart, centred in them */
 	{"vs16",
+	 "A heart with VS16 (two cells), with no selector and with VS15 (one cell each), and the "
+	 "VS16 heart underlined. Correct: the b after the VS16 heart one column further right; "
+	 "until colour glyphs land, that heart is the text glyph centred in its two cells.",
 	 "a" HEART VS16 "b  VS16, wide\r\n"
 	 "a" HEART "b  no selector, narrow\r\n"
 	 "a" HEART VS15 "b  VS15, narrow\r\n" ESC "[4ma" HEART VS16 "b" ESC "[0m  underlined\r\n"},
@@ -243,6 +285,10 @@ static const struct screen screens[] = {
 	/* decorated wide cells take each sprite twice; the last one is cut at
 	 * the margin */
 	{"wide-deco",
+	 "Wide characters under each underline style and under strike, a decorated run mixing "
+	 "narrow and wide, and a decorated wide character placed in the last column. Correct: "
+	 "every decoration spans both cells of its wide character; the one in the last column is "
+	 "cut at the edge.",
 	 ESC "[4m日本語" ESC "[0m " ESC "[4:3m漢字" ESC "[0m " ESC "[4:4;58:5:196mカタカナ" ESC
 	 "[0m\r\n" ESC "[4:2m한글" ESC "[0m " ESC "[4:5m中文" ESC "[0m " ESC "[9m日本語" ESC
 	 "[0m\r\n" ESC "[4ma日b本c" ESC "[0m\r\n" ESC "[5;48H" ESC "[4;9m語" ESC "[0m"},
@@ -250,6 +296,9 @@ static const struct screen screens[] = {
 	/* frame N changes cells that frame N+1 must draw again into the other
 	 * buffer */
 	{"redraw",
+	 "Two frames into the double-buffered display: the second rewrites line 2 and adds a "
+	 "struck line 4, and both buffers must then hold it. Correct: line 2 reads 'line 2 CHANGED"
+	 " curly' with nothing left of the first frame's text.",
 	 "unchanged line\r\n"
 	 "line two, before\r\n"
 	 "line three stays\r\n",
@@ -275,6 +324,16 @@ static int write_ppm(const char *path)
 			fwrite(rgb, 1, 3, f);
 		}
 	}
+	return fclose(f) ? -errno : 0;
+}
+
+static int write_text(const char *path, const char *text)
+{
+	FILE *f = fopen(path, "w");
+
+	if (!f)
+		return -errno;
+	fprintf(f, "%s\n", text);
 	return fclose(f) ? -errno : 0;
 }
 
@@ -353,6 +412,12 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	if (ret)
 		fprintf(stderr, "test_pixels: cannot write %s: %s\n", path, strerror(-ret));
 	fb = fake_d2d.rb[1].map;
+
+	snprintf(path, sizeof(path), "%s/%s.txt", out_dir, s->name);
+	if (!ret)
+		ret = write_text(path, s->desc);
+	if (ret)
+		fprintf(stderr, "test_pixels: cannot write %s: %s\n", path, strerror(-ret));
 
 	kmscon_text_unref(txt);
 	tsm_vte_unref(vte);

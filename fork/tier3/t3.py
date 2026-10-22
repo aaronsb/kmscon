@@ -95,6 +95,15 @@ SCREENS = ["sgr", "boxdraw", "cjk"]
 # Every case of a variant: each screen, then the VT switch (a check without a
 # golden) and the restore after it (compared with the last screen's golden).
 CASES = SCREENS + ["vt-switch", "vt-restore"]
+# What each check shows and what correct looks like, for the conformance run
+# page; a screen's description is the header comment of its script.
+CHECKS = {
+    "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
+                 "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
+                 "screen just left.",
+    "vt-restore": "Back on tty2 after Ctrl+Alt+F2, the cjk screen redrawn by the first "
+                  "instance. Correct: identical to the cjk golden.",
+}
 
 
 # Every log line carries the seconds since the run started and, inside a
@@ -651,6 +660,20 @@ def run_variant(variant, timing, pkgs):
     return caps, meta
 
 
+def describe(case):
+    """The caption of a case: its check's description, or the leading
+    comment lines of its screen script."""
+    if case in CHECKS:
+        return CHECKS[case]
+    lines = []
+    with open(os.path.join(GUEST, "screens", case + ".sh")) as f:
+        for line in f:
+            if not line.startswith("#"):
+                break
+            lines.append(line[1:].strip())
+    return " ".join(lines)
+
+
 def golden_for(variant, case):
     """(golden, tolerance sidecar) paths for a case, or (None, None) for
     vt-switch, which is a check without a golden."""
@@ -675,7 +698,8 @@ def evaluate(variant, case, ppm, meta):
     """The report entry for one case, from its capture (or None)."""
     golden, tolpath = golden_for(variant, case)
     stem = os.path.join(RUNDIR, variant, case)
-    entry = {"name": "%s/%s" % (variant, case), "golden": rel(golden),
+    entry = {"name": "%s/%s" % (variant, case), "description": describe(case),
+             "golden": rel(golden),
              "actual": None, "diff": None, "tolerance": None,
              "thumb_actual": None, "thumb_golden": None, "thumb_diff": None,
              "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}

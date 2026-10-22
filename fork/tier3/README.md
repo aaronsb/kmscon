@@ -110,6 +110,8 @@ The tier exits non-zero on any `fail` or `missing`.
 
 - `tolerance` is `null` for an exact case.
 - `vt-switch` has no golden (`"golden": null`); it is a check.
+- `tools` names what the run measured and ran on: the kmscon and libtsm commits (`+dirty` with uncommitted changes), the dev image and archive snapshot the package was built from, and the guest image, its SHA-256 and the guest's archive snapshot. `fork/tier3.mk` passes them; a field is `null` when the driver ran without them.
+- Under `variants`, each display also records its QEMU `device`, the kmscon `config` lines, and the character `cell` size in pixels from kmscon's font log line (`null` if kmscon logged none). Each screen case carries `text`: the lines its script prints, escape sequences removed, so a comparison page can name the text at a differing cell.
 - `description` is the caption on the run page: the header comment of the screen's script, or for `vt-switch` and `vt-restore` their entry in `CHECKS` in `t3.py`.
 - `actual`, `diff` and the thumbnails are PNGs, so the run page can show them. The raw PPM captures sit beside them.
 - Thumbnails are at most 480 pixels wide, nearest-neighbour. In the diff thumbnail, any block holding a differing pixel is red, so a one-pixel difference stays visible. Fields are `null` where there is nothing to show.

@@ -25,7 +25,20 @@ basis:
 agent:
   name: claude
   model: claude-opus-5-5
-status: proposed
+considered:
+  - operator: aaronsb
+    said: "yes"
+    via: chat with the team lead, 2026-10-22
+    covers: [cadence]
+  - operator: aaronsb
+    said: "we can drop them. they're an older evolution of the same thing"
+    via: chat with the team lead, 2026-10-22
+    covers: [old sheets]
+  - operator: aaronsb
+    said: "yes"
+    via: chat with the team lead, 2026-10-22
+    covers: [old sheets]
+status: accepted
 date: 2026-10-22
 deciders:
   - aaronsb
@@ -38,8 +51,8 @@ related: []
 
 - **Decided:** A conformance run is recorded as a generated markdown page with small images beside it, replacing the single SVG contact sheet. The page is written for a reader who was not there: what the run marks, the commits it measured, what changed since the previous recorded run, and for each case what it checks and its verdict. A committed record, a page plus its ledger row, is made once per working session, on main, after the session's branches have merged. Pages for comparing runs during work on a branch are generated as often as needed and never committed.
 - **Trades away:** The ledger no longer records every notable run, only one per session; a regression that appears and is fixed within a session leaves no committed page. The tooling is bigger than a sheet drawer: it reads git history for golden changes and keeps a per-case record for the next run.
-- **One-way?** No. The pages are generated from reports, the three committed SVG sheets stay as they are, and the cadence is a convention backed by one check in `make sheet`.
-- **Probes:** *Confident (cadence):* one committed record per session at bring-home is what you want, with previews and comparison pages covering in-session needs. *Not confident (old sheets):* leaving the three SVG sheets as they are, with no pages generated for them, is acceptable.
+- **One-way?** No. The pages are generated from reports, the three SVG sheets removed from the tree stay in git history at `627f3d1`, and the cadence is a convention backed by one check in `make sheet`.
+- **Probes:** *Confident (cadence):* one committed record per session at bring-home is what you want, with previews and comparison pages covering in-session needs. *Not confident (old sheets):* leaving the three SVG sheets as they are, with no pages generated for them, is acceptable. Both are answered: the operator confirmed the cadence, and chose to drop the sheets from the tree while their ledger rows keep links to them at their last commit.
 - **Inversion:** Between "commit a record of every run" (the ledger and the repository grow with every change, and most records are noise) and "commit nothing until a release" (no trail of how conformance moved). The answer sits between: one record per session, at the point where the session's work has landed.
 
 ## Context
@@ -51,6 +64,7 @@ ADR-301's amendment of 2026-10-20 made the run record a contact sheet: one SVG w
 - **The run record is a markdown page.** `make sheet` writes `docs/conformance/runs/<date>-<kmscon>-<libtsm>/README.md` and its PNGs. Images are cropped to the drawn part of each screen and kept small; tier 1 is shown as text. A failing case, or one whose golden changed since the previous recorded run, shows golden, actual and difference. The page is generated from the run's reports alone, the same reports give the same bytes, and captions come from where each case is defined.
 - **Differences are marked as the reader needs them.** On the run page a difference image shows each differing pixel in red. On a comparison page between two runs, each differing region is outlined, numbered, and named by terminal row, column and the text drawn there. This replaces the amended rule that the contact sheet outlines regions on the golden and actual images, and that tier 1 outlines cells; tier 1 failures are shown as a text diff.
 - **A committed record is made at bring-home.** Once per working session, after the session's branches have merged and main is green, `make sheet NOTE="..."` is the first thing run on main. It refuses a tree with uncommitted changes, a HEAD that is not `origin/main`, and a tier report that measured other commits than the page names; `SHEET_ANY_COMMIT=1` overrides the HEAD check.
+- **The SVG contact sheets leave the tree.** The three runs drawn as SVG contact sheets are an earlier form of the run page, and no pages are generated for them. Their LEDGER.md rows stay, as the ledger is append-only, and each links to its sheet at commit `627f3d1` on GitHub.
 - **Comparative analysis is never committed.** `make sheet-preview` writes the run page under `fork/build/`. `make sheet-save` keeps a run, and `make sheet-compare` pairs two saved runs screen by screen. Both run as often as work on a branch needs.
 
 ## Consequences
@@ -69,6 +83,7 @@ ADR-301's amendment of 2026-10-20 made the run record a contact sheet: one SVG w
 ### Neutral
 
 - Each page writes a `cases.json` that the next run compares against. The three earlier SVG runs have none, so the first page judges their verdicts from their pass counts.
+- The SVG sheets are read on GitHub at a pinned commit; a checkout no longer holds them.
 
 ## Alternatives Considered
 

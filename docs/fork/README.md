@@ -62,6 +62,7 @@ Much of the code and documentation in this fork is written by AI coding agents u
 ## Where to read next
 
 - [Conformance harness](conformance.md): how the fork is tested and how to run it.
+- [Local VT demo](demo.md): a development build on one of this machine's VTs, with a paged demonstration of what it draws.
 - [Decision records](../architecture/INDEX.md): the evidence, the decisions and their reasons.
 - [Conformance ledger](../conformance/LEDGER.md): one row per recorded run, with its contact sheet.
 
@@ -72,6 +73,7 @@ Every build step runs in a container as the invoking user; the host needs only `
 ```sh
 make test                    # build and run kmscon's and libtsm's test suites, including the harness
 make test LIBTSM=../libtsm   # the same, against a local checkout of the libtsm fork
+make demo                    # stage the package for a VT demo: sudo fork/demo/run-vt.sh (see demo.md)
 make help                    # every target
 ```
 

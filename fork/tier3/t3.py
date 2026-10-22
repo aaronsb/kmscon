@@ -212,14 +212,18 @@ class Qemu:
         msg = {"execute": name}
         if arguments:
             msg["arguments"] = arguments
-        self.sock.sendall(json.dumps(msg).encode() + b"\n")
-        while True:
-            reply = self._recv()
-            if "event" in reply:
-                continue
-            if "error" in reply:
-                raise RuntimeError("QMP %s: %s" % (name, reply["error"]))
-            return reply.get("return")
+        try:
+            self.sock.sendall(json.dumps(msg).encode() + b"\n")
+            while True:
+                reply = self._recv()
+                if "event" not in reply:
+                    break
+        except TimeoutError:
+            raise RuntimeError("QMP %s: no reply within %d s; QEMU pid %d is wedged"
+                               % (name, QMP_TIMEOUT, self.proc.pid)) from None
+        if "error" in reply:
+            raise RuntimeError("QMP %s: %s" % (name, reply["error"]))
+        return reply.get("return")
 
     def keys(self, *qcodes):
         """Press qcodes together, as one chord."""

@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pixcmp  # noqa: E402
@@ -57,7 +58,10 @@ def write_report(path, cases, libtsm=None):
     with open(path, "w") as f:
         tools = tool_versions()
         tools["libtsm"] = libtsm
-        json.dump({"tier": 2, "tools": tools, "cases": cases}, f, indent=2)
+        # A fresh id per run lets a comparison tell two runs from one run
+        # saved twice.
+        json.dump({"tier": 2, "run_id": uuid.uuid4().hex, "tools": tools, "cases": cases},
+                  f, indent=2)
         f.write("\n")
 
 
@@ -127,6 +131,11 @@ def main():
         actual = os.path.join(actual_dir, name + ".ppm")
         case = {"name": name, "golden": rel(golden), "actual": rel(actual), "diff": None, "tolerance": None,
                 "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}
+        # The screen's caption, which the renderer writes beside its image.
+        desc = os.path.join(actual_dir, name + ".txt")
+        if os.path.exists(desc):
+            with open(desc) as f:
+                case["description"] = f.read().strip()
         cases.append(case)
         if not os.path.exists(golden) or not os.path.exists(actual):
             case["status"] = "missing"

@@ -65,7 +65,7 @@ Much of the code and documentation in this fork is written by AI coding agents u
 - [Development process](development.md): how a change is decided, branched, verified, reviewed and merged, and how a libtsm change reaches kmscon.
 - [Local VT demo](demo.md): a development build on one of this machine's VTs, with a paged demonstration of what it draws.
 - [Decision records](../architecture/INDEX.md): the evidence, the decisions and their reasons.
-- [Conformance ledger](../conformance/LEDGER.md): one row per recorded run, with its contact sheet.
+- [Conformance ledger](../conformance/LEDGER.md): one row per recorded run, with a link to its run page.
 
 ## Building
 

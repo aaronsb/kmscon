@@ -93,8 +93,9 @@ The tier exits non-zero on any `fail` or `missing`.
 `fork/build/tier3-report.json`, one case per variant and screen:
 
 ```json
-{"tier": 3,
+{"tier": 3, "run_id": "3f2a...",
  "cases": [{"name": "2d-1280x800/sgr", "status": "near",
+            "description": "SGR attributes and colours: ...",
             "golden": "fork/tier3/golden/2d-1280x800/sgr.png",
             "actual": "fork/build/tier3/2d-1280x800/sgr.png",
             "diff": "fork/build/tier3/2d-1280x800/sgr.diff.png",
@@ -107,9 +108,13 @@ The tier exits non-zero on any `fail` or `missing`.
                               "errors": {}}}}
 ```
 
+- `run_id` is fresh for every run, so a comparison can tell two runs from one run saved twice.
 - `tolerance` is `null` for an exact case.
 - `vt-switch` has no golden (`"golden": null`); it is a check.
-- `actual`, `diff` and the thumbnails are PNGs, so a contact sheet can show them. The raw PPM captures sit beside them.
+- `tools` names what the run measured and ran on: the kmscon and libtsm commits (`+dirty` with uncommitted changes), the dev image and archive snapshot the package was built from, and the guest image, its SHA-256 and the guest's archive snapshot. `fork/tier3.mk` passes them; a field is `null` when the driver ran without them.
+- Under `variants`, each display also records its QEMU `device`, the kmscon `config` lines, and the character `cell` size in pixels from kmscon's font log line (`null` if kmscon logged none). Each screen case carries `text`: the lines its script prints, colours removed, so a comparison page can name the text at a differing cell. It is `null` when the script prints any other control, fails, reads input or runs over 10 seconds (see `guest/screens/README.md`).
+- `description` is the caption on the run page: the header comment of the screen's script, or for `vt-switch` and `vt-restore` their entry in `CHECKS` in `t3.py`.
+- `actual`, `diff` and the thumbnails are PNGs, so the run page can show them. The raw PPM captures sit beside them.
 - Thumbnails are at most 480 pixels wide, nearest-neighbour. In the diff thumbnail, any block holding a differing pixel is red, so a one-pixel difference stays visible. Fields are `null` where there is nothing to show.
 - `timing` under each variant holds the seconds from the variant's start to the end of each phase (`install`, `boot`, `kmscon`, `login`, each screen, `vt-switch`, `vt-restore`) and the seconds `evaluate` took.
 - `bbox` is a list of at most 16 regions for outlining. Differing pixels in touching 16-pixel tiles share a region, coarser tiles are used while there are many clusters, and then the closest regions merge.

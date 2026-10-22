@@ -290,6 +290,12 @@ def regions(points, cell=16, limit=MAX_REGIONS):
     return sorted(boxes, key=lambda b: (b[1], b[0]))
 
 
+def regions_merged(points, cell=16, limit=MAX_REGIONS):
+    """Whether regions() joins separate clusters to stay within `limit`
+    boxes, so that a box can hold pixels that did not differ."""
+    return len(_cluster(points, cell)) > limit
+
+
 def compare(actual, golden, masks=()):
     """Compare two images exactly outside the mask rectangles.
 

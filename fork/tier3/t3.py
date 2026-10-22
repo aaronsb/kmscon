@@ -39,6 +39,7 @@ import struct
 import subprocess
 import sys
 import time
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3img  # noqa: E402
@@ -95,6 +96,15 @@ SCREENS = ["sgr", "boxdraw", "cjk"]
 # Every case of a variant: each screen, then the VT switch (a check without a
 # golden) and the restore after it (compared with the last screen's golden).
 CASES = SCREENS + ["vt-switch", "vt-restore"]
+# What each check shows and what correct looks like, for the conformance run
+# page; a screen's description is the header comment of its script.
+CHECKS = {
+    "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
+                 "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
+                 "screen just left.",
+    "vt-restore": "Back on tty2 after Ctrl+Alt+F2, the cjk screen redrawn by the first "
+                  "instance. Correct: identical to the cjk golden.",
+}
 
 
 # Every log line carries the seconds since the run started and, inside a
@@ -533,6 +543,14 @@ def kmscon_displays(serial):
                    if "Display " in line and "text renderer [" in line})
 
 
+def kmscon_cell(serial):
+    """The [width, height] of a character cell, from the font engine's
+    "cell size WxH" log line, or None when kmscon logged none."""
+    with open(serial, "rb") as f:
+        m = re.search(rb"cell size (\d+)x(\d+)", f.read())
+    return [int(m.group(1)), int(m.group(2))] if m else None
+
+
 def run_variant(variant, timing, pkgs):
     """Boot one variant with the packages `pkgs` and drive the scenario.
 
@@ -640,8 +658,11 @@ def run_variant(variant, timing, pkgs):
         if os.path.exists(disk):
             os.unlink(disk)
     displays = kmscon_displays(vm.serial)
+    with open(os.path.join(GUEST, v["conf"])) as f:
+        conf = [line.strip() for line in f if line.strip() and not line.startswith("#")]
     meta = {"packages": [os.path.basename(p) for p in pkgs], "kmscon": displays,
-            "errors": errors}
+            "errors": errors, "device": v["device"], "config": conf,
+            "cell": kmscon_cell(vm.serial)}
     want = "text renderer [%s]" % v["renderer"]
     if not displays or not all(want in d for d in displays):
         caps = {}
@@ -649,6 +670,50 @@ def run_variant(variant, timing, pkgs):
     if error:
         meta["error"] = error
     return caps, meta
+
+
+def describe(case):
+    """The caption of a case: its check's description, or the leading
+    comment lines of its screen script."""
+    if case in CHECKS:
+        return CHECKS[case]
+    lines = []
+    with open(os.path.join(GUEST, "screens", case + ".sh")) as f:
+        for line in f:
+            if not line.startswith("#"):
+                break
+            lines.append(line[1:].strip())
+    return " ".join(lines)
+
+
+# Seconds a screen script may run on the host before its text is given up.
+SCREEN_TIMEOUT = 10
+
+
+def screen_text(case):
+    """The lines a case's screen script prints, colours removed, so a region
+    of the screen can be named by the text drawn there. The guest clears the
+    screen first, so line N is the screen's row N. Any other control in the
+    output (a cursor move, a tab, a character-set switch) would break that
+    mapping, so such output gives None, as do a check that draws no script
+    and a script that fails, hangs or reads its input: the text only
+    captions a region, and losing it must never cost a case its verdict."""
+    base = SCREENS[-1] if case == "vt-restore" else case
+    if base not in SCREENS:
+        return None
+    try:
+        out = subprocess.run(["bash", os.path.join(GUEST, "screens", base + ".sh")],
+                             stdin=subprocess.DEVNULL, capture_output=True, check=True,
+                             timeout=SCREEN_TIMEOUT,
+                             env=dict(os.environ, LC_ALL="C.UTF-8")).stdout.decode()
+    except Exception as e:
+        log("%s: no screen text: %s" % (case, e))
+        return None
+    text = re.sub(r"\x1b\[[0-9;:]*m", "", out)
+    if re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", text):
+        log("%s: no screen text: the script prints controls other than colours" % case)
+        return None
+    return text.rstrip("\n").split("\n")
 
 
 def golden_for(variant, case):
@@ -675,7 +740,8 @@ def evaluate(variant, case, ppm, meta):
     """The report entry for one case, from its capture (or None)."""
     golden, tolpath = golden_for(variant, case)
     stem = os.path.join(RUNDIR, variant, case)
-    entry = {"name": "%s/%s" % (variant, case), "golden": rel(golden),
+    entry = {"name": "%s/%s" % (variant, case), "description": describe(case),
+             "text": screen_text(case), "golden": rel(golden),
              "actual": None, "diff": None, "tolerance": None,
              "thumb_actual": None, "thumb_golden": None, "thumb_diff": None,
              "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}
@@ -907,6 +973,17 @@ def run_lock():
         yield
 
 
+# What a run was built from and ran on, passed by fork/tier3.mk.
+TOOL_ENV = {"kmscon": "T3_KMSCON_REV", "libtsm": "T3_LIBTSM_REV", "image_base": "DEV_IMAGE_BASE",
+            "archive_date": "DEV_ARCHIVE_DATE", "guest_image": "T3_IMAGE",
+            "guest_image_sha256": "T3_IMAGE_SHA256", "guest_archive": "T3_ARCHIVE"}
+
+
+def run_tools():
+    """The commits and pins behind a run; null where the caller gave none."""
+    return {k: os.environ.get(v) or None for k, v in TOOL_ENV.items()}
+
+
 def run(args):
     if not os.path.exists(BASE):
         raise SystemExit("no base image at %s; run `make tier3-image`" % BASE)
@@ -943,7 +1020,10 @@ def run(args):
         # they finished in, so a concurrent run's report matches a serial one's.
         cases = [c for v in variants for c in results[v][0]]
         meta = {v: results[v][1] for v in variants}
-        report = {"tier": 3, "cases": cases, "variants": meta}
+        # A fresh id per run lets a comparison tell two runs from one run
+        # saved twice.
+        report = {"tier": 3, "run_id": uuid.uuid4().hex, "tools": run_tools(),
+                  "cases": cases, "variants": meta}
         os.makedirs(os.path.dirname(REPORT), exist_ok=True)
         with open(REPORT, "w") as f:
             json.dump(report, f, indent=2)

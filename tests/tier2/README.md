@@ -17,3 +17,8 @@ The goldens depend on the pinned fonts (`tests/fonts`), the libtsm commit in
 `max_pixels=`, `mask=x0,y0,x1,y1`); no sidecar means exact. Statuses in
 `fork/build/tier2-report.json`: pass, near, fail, missing, error. The report
 is deleted at the start of each run and always rewritten.
+
+Each screen in `tests/test_pixels.c` carries a `desc`: what it shows and what
+correct looks like. The renderer writes it beside the image as `NAME.txt`, and
+the report carries it as the case's `description`, the caption on the
+conformance run page. A new screen gets one.

@@ -41,16 +41,61 @@
 
 #define LOG_SUBSYSTEM "drm2d_render"
 
+/* t / 255 rounded, exact for t up to 255 * 255, without a division (~20%
+ * faster): t += 0x80; t = (t + (t >> 8)) >> 8 */
+static inline uint_fast32_t div255(uint_fast32_t t)
+{
+	t += 0x80;
+	return (t + (t >> 8)) >> 8;
+}
+
+/* @fg painted over @bg through mask value @a */
+static inline uint32_t blend_mask(const struct video_blend_req *req, uint8_t a)
+{
+	uint_fast32_t r, g, b;
+
+	if (a == 0)
+		return (req->br << 16) | (req->bg << 8) | req->bb;
+	if (a == 255)
+		return (req->fr << 16) | (req->fg << 8) | req->fb;
+
+	r = div255(req->fr * a + req->br * (255 - a));
+	g = div255(req->fg * a + req->bg * (255 - a));
+	b = div255(req->fb * a + req->bb * (255 - a));
+	return (r << 16) | (g << 8) | b;
+}
+
+/*
+ * Premultiplied @src over the request's background (ADR-102):
+ * out = src + bg * (255 - a) / 255. The renderer fills the cell's own
+ * background in the same request, so the destination is never read back.
+ */
+static inline uint32_t blend_argb(const struct video_blend_req *req, uint32_t src)
+{
+	uint_fast32_t a = src >> 24, na = 255 - a;
+	uint_fast32_t r, g, b;
+
+	if (a == 0)
+		return (req->br << 16) | (req->bg << 8) | req->bb;
+	if (a == 255)
+		return src & 0xffffff;
+
+	r = ((src >> 16) & 0xff) + div255(req->br * na);
+	g = ((src >> 8) & 0xff) + div255(req->bg * na);
+	b = (src & 0xff) + div255(req->bb * na);
+	return (r << 16) | (g << 8) | b;
+}
+
 int drm2d_display_blend(struct display *disp, const struct video_blend_req *req)
 {
 	unsigned int tmp;
 	uint8_t *dst;
 	const uint8_t *src;
-	unsigned int width, height, i;
+	unsigned int width, height, i, src_stride;
 	unsigned int sw, sh;
-	uint_fast32_t r, g, b, out;
 	struct drm2d_rb *rb;
 	struct drm2d_display *d2d = disp->data;
+	bool argb;
 
 	if (!req || !req->buf)
 		return -EINVAL;
@@ -73,46 +118,23 @@ int drm2d_display_blend(struct display *disp, const struct video_blend_req *req)
 	if (tmp > sh)
 		height = sh - req->y;
 
+	argb = req->buf->format == VIDEO_FORMAT_ARGB32;
+	src_stride = req->buf->width * (argb ? 4 : 1);
+
 	dst = rb->map;
 	dst = &dst[req->y * rb->stride + req->x * 4];
 	src = req->buf->data;
 
 	while (height--) {
-		for (i = 0; i < width; ++i) {
-			/* Division by 255 (t /= 255) is done with:
-			 *   t += 0x80
-			 *   t = (t + (t >> 8)) >> 8
-			 * This speeds up the computation by ~20% as the
-			 * division is not needed. */
-			if (src[i] == 0) {
-				r = req->br;
-				g = req->bg;
-				b = req->bb;
-				out = (r << 16) | (g << 8) | b;
-			} else if (src[i] == 255) {
-				r = req->fr;
-				g = req->fg;
-				b = req->fb;
-				out = (r << 16) | (g << 8) | b;
-			} else {
-				r = req->fr * src[i] + req->br * (255 - src[i]);
-				r += 0x80;
-				r = (r + (r >> 8)) >> 8;
-
-				g = req->fg * src[i] + req->bg * (255 - src[i]);
-				g += 0x80;
-				g = (g + (g >> 8)) >> 8;
-
-				b = req->fb * src[i] + req->bb * (255 - src[i]);
-				b += 0x80;
-				b = (b + (b >> 8)) >> 8;
-				out = (r << 16) | (g << 8) | b;
-			}
-
-			((uint32_t *)dst)[i] = out;
+		if (argb) {
+			for (i = 0; i < width; ++i)
+				((uint32_t *)dst)[i] = blend_argb(req, ((const uint32_t *)src)[i]);
+		} else {
+			for (i = 0; i < width; ++i)
+				((uint32_t *)dst)[i] = blend_mask(req, src[i]);
 		}
 		dst += rb->stride;
-		src += req->buf->width;
+		src += src_stride;
 	}
 	return 0;
 }

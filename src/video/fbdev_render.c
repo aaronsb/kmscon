@@ -113,18 +113,88 @@ static void write_24bit(uint8_t *dst, uint_fast32_t value)
 #endif
 }
 
+/*
+ * Division by 256 instead of 255 increases speed by like 20% on slower
+ * machines. Downside is, full white is 254/254/254 instead of 255/255/255.
+ * Mask values 0 and 255, and alpha 0 and 255, are exact.
+ */
+
+/* @fg painted over @bg through mask value @a, as XRGB32 */
+static inline uint32_t blend_mask(const struct video_blend_req *req, uint8_t a)
+{
+	unsigned int r, g, b;
+
+	if (a == 0)
+		return (req->br << 16) | (req->bg << 8) | req->bb;
+	if (a == 255)
+		return (req->fr << 16) | (req->fg << 8) | req->fb;
+
+	r = (req->fr * a + req->br * (255 - a)) / 256;
+	g = (req->fg * a + req->bg * (255 - a)) / 256;
+	b = (req->fb * a + req->bb * (255 - a)) / 256;
+	return (r << 16) | (g << 8) | b;
+}
+
+/*
+ * Premultiplied @src over the request's background (ADR-102), as XRGB32:
+ * out = src + bg * (255 - a) / 256. The renderer fills the cell's own
+ * background in the same request, so the destination is never read back.
+ */
+static inline uint32_t blend_argb(const struct video_blend_req *req, uint32_t src)
+{
+	unsigned int a = src >> 24, na = 255 - a;
+	unsigned int r, g, b;
+
+	if (a == 0)
+		return (req->br << 16) | (req->bg << 8) | req->bb;
+	if (a == 255)
+		return src & 0xffffff;
+
+	r = ((src >> 16) & 0xff) + req->br * na / 256;
+	g = ((src >> 8) & 0xff) + req->bg * na / 256;
+	b = (src & 0xff) + req->bb * na / 256;
+	return (r << 16) | (g << 8) | b;
+}
+
+/* pixel @i of a source row, blended */
+static inline uint32_t blend_px(const struct video_blend_req *req, const uint8_t *src,
+				unsigned int i)
+{
+	if (req->buf->format == VIDEO_FORMAT_ARGB32)
+		return blend_argb(req, ((const uint32_t *)src)[i]);
+	return blend_mask(req, src[i]);
+}
+
+/* write XRGB32 @val as pixel @i of a device row */
+static inline void write_px(struct display *disp, uint8_t *dst, unsigned int i, uint32_t val)
+{
+	struct fbdev_display *fbdev = disp->data;
+
+	if (fbdev->xrgb32)
+		((uint32_t *)dst)[i] = val;
+	else if (fbdev->Bpp == 2)
+		((uint16_t *)dst)[i] = xrgb32_to_device(disp, val);
+	else if (fbdev->Bpp == 3)
+		write_24bit(&dst[i * 3], xrgb32_to_device(disp, val));
+	else
+		((uint32_t *)dst)[i] = xrgb32_to_device(disp, val);
+}
+
 int fbdev_display_blend(struct display *disp, const struct video_blend_req *req)
 {
 	unsigned int tmp;
 	uint8_t *dst;
 	const uint8_t *src;
-	unsigned int width, height, i;
-	unsigned int r, g, b;
-	uint32_t val;
+	unsigned int width, height, i, src_stride;
 	struct fbdev_display *fbdev = disp->data;
 
 	if (!req || !req->buf)
 		return -EINVAL;
+
+	if (!fbdev->xrgb32 && (fbdev->Bpp < 2 || fbdev->Bpp > 4)) {
+		log_warning("invalid Bpp");
+		return 0;
+	}
 
 	width = min(req->w, req->buf->width);
 	tmp = req->x + width;
@@ -146,114 +216,13 @@ int fbdev_display_blend(struct display *disp, const struct video_blend_req *req)
 		dst = &fbdev->map[fbdev->yres * fbdev->stride];
 	dst = &dst[req->y * fbdev->stride + req->x * fbdev->Bpp];
 	src = req->buf->data;
+	src_stride = req->buf->width * (req->buf->format == VIDEO_FORMAT_ARGB32 ? 4 : 1);
 
-	/* Division by 256 instead of 255 increases
-	 * speed by like 20% on slower machines.
-	 * Downside is, full white is 254/254/254
-	 * instead of 255/255/255. */
-	if (fbdev->xrgb32) {
-		while (height--) {
-			for (i = 0; i < width; ++i) {
-				if (src[i] == 0) {
-					r = req->br;
-					g = req->bg;
-					b = req->bb;
-				} else if (src[i] == 255) {
-					r = req->fr;
-					g = req->fg;
-					b = req->fb;
-				} else {
-					r = req->fr * src[i] + req->br * (255 - src[i]);
-					r /= 256;
-					g = req->fg * src[i] + req->bg * (255 - src[i]);
-					g /= 256;
-					b = req->fb * src[i] + req->bb * (255 - src[i]);
-					b /= 256;
-				}
-				val = (r << 16) | (g << 8) | b;
-				((uint32_t *)dst)[i] = val;
-			}
-			dst += fbdev->stride;
-			src += req->buf->width;
-		}
-	} else if (fbdev->Bpp == 2) {
-		while (height--) {
-			for (i = 0; i < width; ++i) {
-				if (src[i] == 0) {
-					r = req->br;
-					g = req->bg;
-					b = req->bb;
-				} else if (src[i] == 255) {
-					r = req->fr;
-					g = req->fg;
-					b = req->fb;
-				} else {
-					r = req->fr * src[i] + req->br * (255 - src[i]);
-					r /= 256;
-					g = req->fg * src[i] + req->bg * (255 - src[i]);
-					g /= 256;
-					b = req->fb * src[i] + req->bb * (255 - src[i]);
-					b /= 256;
-				}
-				val = (r << 16) | (g << 8) | b;
-				((uint16_t *)dst)[i] = xrgb32_to_device(disp, val);
-			}
-			dst += fbdev->stride;
-			src += req->buf->width;
-		}
-	} else if (fbdev->Bpp == 3) {
-		while (height--) {
-			for (i = 0; i < width; ++i) {
-				if (src[i] == 0) {
-					r = req->br;
-					g = req->bg;
-					b = req->bb;
-				} else if (src[i] == 255) {
-					r = req->fr;
-					g = req->fg;
-					b = req->fb;
-				} else {
-					r = req->fr * src[i] + req->br * (255 - src[i]);
-					r /= 256;
-					g = req->fg * src[i] + req->bg * (255 - src[i]);
-					g /= 256;
-					b = req->fb * src[i] + req->bb * (255 - src[i]);
-					b /= 256;
-				}
-				val = (r << 16) | (g << 8) | b;
-				uint_fast32_t full = xrgb32_to_device(disp, val);
-				write_24bit(&dst[i * 3], full);
-			}
-			dst += fbdev->stride;
-			src += req->buf->width;
-		}
-	} else if (fbdev->Bpp == 4) {
-		while (height--) {
-			for (i = 0; i < width; ++i) {
-				if (src[i] == 0) {
-					r = req->br;
-					g = req->bg;
-					b = req->bb;
-				} else if (src[i] == 255) {
-					r = req->fr;
-					g = req->fg;
-					b = req->fb;
-				} else {
-					r = req->fr * src[i] + req->br * (255 - src[i]);
-					r /= 256;
-					g = req->fg * src[i] + req->bg * (255 - src[i]);
-					g /= 256;
-					b = req->fb * src[i] + req->bb * (255 - src[i]);
-					b /= 256;
-				}
-				val = (r << 16) | (g << 8) | b;
-				((uint32_t *)dst)[i] = xrgb32_to_device(disp, val);
-			}
-			dst += fbdev->stride;
-			src += req->buf->width;
-		}
-	} else {
-		log_warning("invalid Bpp");
+	while (height--) {
+		for (i = 0; i < width; ++i)
+			write_px(disp, dst, i, blend_px(req, src, i));
+		dst += fbdev->stride;
+		src += src_stride;
 	}
 
 	return 0;

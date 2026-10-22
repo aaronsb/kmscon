@@ -87,13 +87,24 @@ struct video_cb {
 	video_remove_display_cb remove_disp;
 };
 
-/* All font rendering uses 1 byte of alpha per pixel
- * It is then used to blend foreground and background colors
- * So the stride is always equal to width
+/*
+ * Pixel formats of a video_buffer (ADR-102). Rows are packed, so the stride is
+ * width times the pixel size.
+ * VIDEO_FORMAT_A8: 1 byte of alpha per pixel. The blend paints the request's
+ * foreground over its background through it.
+ * VIDEO_FORMAT_ARGB32: a native-endian uint32_t per pixel, 0xAARRGGBB,
+ * premultiplied. The blend draws it over the request's background and ignores
+ * the foreground.
  */
+enum video_format {
+	VIDEO_FORMAT_A8 = 0,
+	VIDEO_FORMAT_ARGB32 = 1,
+};
+
 struct video_buffer {
 	unsigned int width;
 	unsigned int height;
+	uint32_t format; /* enum video_format; 0, the calloc default, is A8 */
 	uint8_t data[];
 };
 

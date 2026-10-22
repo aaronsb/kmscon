@@ -48,6 +48,16 @@ test_bbulk = executable(
 )
 test('test_bbulk', test_bbulk)
 
+if enable_video_drm2d
+    test_blend = executable(
+        'test_blend',
+        'test_blend.c',
+        include_directories: src_inc,
+        dependencies: [libdrm_deps, shl_deps, htable_deps],
+    )
+    test('test_blend', test_blend)
+endif
+
 test_asciinema = executable(
     'test_asciinema',
     'test_asciinema.c',

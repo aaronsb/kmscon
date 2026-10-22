@@ -368,6 +368,31 @@ static struct kmscon_glyph *kmscon_font_pango_render(struct kmscon_font *font,
 	return get_glyph(font, font->data, attr, cps, len, cwidth);
 }
 
+/*
+ * Pango's metrics give the top of each line as a distance above the baseline,
+ * negative below it.
+ */
+static void kmscon_font_pango_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out)
+{
+	struct face *face = font->data;
+	PangoFontMetrics *m;
+	int ul_pos, ul_thick, st_pos, st_thick;
+
+	manager_lock();
+	m = pango_context_get_metrics(face->ctx, NULL, NULL);
+	ul_pos = pango_font_metrics_get_underline_position(m);
+	ul_thick = pango_font_metrics_get_underline_thickness(m);
+	st_pos = pango_font_metrics_get_strikethrough_position(m);
+	st_thick = pango_font_metrics_get_strikethrough_thickness(m);
+	pango_font_metrics_unref(m);
+	manager_unlock();
+
+	out->ul_thick = PANGO_PIXELS(ul_thick);
+	out->ul_pos = MAX(0, (int)face->baseline - PANGO_PIXELS(ul_pos));
+	out->strike_thick = PANGO_PIXELS(st_thick);
+	out->strike_pos = MAX(0, (int)face->baseline - PANGO_PIXELS(st_pos));
+}
+
 struct kmscon_font_ops kmscon_font_pango_ops = {
 	.name = "pango",
 	.owner = NULL,
@@ -375,4 +400,5 @@ struct kmscon_font_ops kmscon_font_pango_ops = {
 	.destroy = kmscon_font_pango_destroy,
 	.has_glyph = kmscon_font_pango_has_glyph,
 	.render = kmscon_font_pango_render,
+	.get_deco = kmscon_font_pango_get_deco,
 };

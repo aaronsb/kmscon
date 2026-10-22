@@ -85,5 +85,6 @@ tier3-bless: ## Copy the last tier 3 run's captures over the goldens
 	$(T3_PY) $(T3_DIR)/t3.py bless $(VARIANTS)
 
 .PHONY: tier3-selftest
-tier3-selftest: ## Self-test the tier 3 image compare module
+tier3-selftest: ## Self-test tier 3's image compare module and screen text
 	$(T3_PY) $(T3_DIR)/test_t3img.py
+	$(T3_PY) $(T3_DIR)/test_t3.py

@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Self-test for the parts of t3.py that run on the host without a guest:
+the screen text a case's report carries.
+
+    python3 -I fork/tier3/test_t3.py
+"""
+
+import contextlib
+import io
+import os
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import t3  # noqa: E402
+
+SCRIPTS = {
+    "colours": r"printf '\033[1;31mred\033[0m plain\nnext\n'",
+    "fails": "echo partial; exit 3",
+    "hangs": "sleep 5; echo late",
+    "reads": 'read -r x; echo "got:$x"',
+    "moves": r"printf 'a\033[2;5Hb\n'",
+    "tab": r"printf 'a\tb\n'",
+    "charset": r"printf '\033(0q\033(B\n'",
+    "title": r"printf '\033]0;title\007x\n'",
+}
+
+
+class ScreenTextTest(unittest.TestCase):
+    def test_real_screens(self):
+        self.assertTrue(t3.screen_text("sgr")[2].startswith("bold underline reverse "))
+        self.assertEqual(t3.screen_text("cjk")[2], "|一|二|三|四|五|")
+        self.assertEqual(t3.screen_text("vt-restore"), t3.screen_text(t3.SCREENS[-1]))
+        self.assertIsNone(t3.screen_text("vt-switch"))
+
+    def text(self, name):
+        with tempfile.TemporaryDirectory() as guest, contextlib.redirect_stderr(io.StringIO()):
+            os.mkdir(os.path.join(guest, "screens"))
+            with open(os.path.join(guest, "screens", name + ".sh"), "w") as f:
+                f.write(SCRIPTS[name] + "\n")
+            saved = t3.GUEST, t3.SCREENS, t3.SCREEN_TIMEOUT
+            t3.GUEST, t3.SCREENS, t3.SCREEN_TIMEOUT = guest, [name], 1
+            try:
+                return t3.screen_text(name)
+            finally:
+                t3.GUEST, t3.SCREENS, t3.SCREEN_TIMEOUT = saved
+
+    def test_colours_removed(self):
+        self.assertEqual(self.text("colours"), ["red plain", "next"])
+
+    def test_failure_gives_none(self):
+        self.assertIsNone(self.text("fails"))
+
+    def test_hang_gives_none(self):
+        self.assertIsNone(self.text("hangs"))
+
+    def test_input_not_inherited(self):
+        # The run's own stdin carries a line the script must not see.
+        r, w = os.pipe()
+        os.write(w, b"secret\n")
+        os.close(w)
+        saved = os.dup(0)
+        os.dup2(r, 0)
+        try:
+            self.assertEqual(self.text("reads"), ["got:"])
+        finally:
+            os.dup2(saved, 0)
+            os.close(saved)
+            os.close(r)
+
+    def test_other_controls_give_none(self):
+        # Each would make line N of the output something other than row N.
+        for name in ("moves", "tab", "charset", "title"):
+            with self.subTest(name):
+                self.assertIsNone(self.text(name))
+
+
+if __name__ == "__main__":
+    unittest.main()

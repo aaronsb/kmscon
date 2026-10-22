@@ -686,18 +686,33 @@ def describe(case):
     return " ".join(lines)
 
 
+# Seconds a screen script may run on the host before its text is given up.
+SCREEN_TIMEOUT = 10
+
+
 def screen_text(case):
-    """The lines a case's screen script prints, escape sequences removed, so
-    a region of the screen can be named by the text drawn there. The guest
-    clears the screen first, so line N is the screen's row N. None for a
-    check that draws no script."""
+    """The lines a case's screen script prints, colours removed, so a region
+    of the screen can be named by the text drawn there. The guest clears the
+    screen first, so line N is the screen's row N. Any other control in the
+    output (a cursor move, a tab, a character-set switch) would break that
+    mapping, so such output gives None, as do a check that draws no script
+    and a script that fails, hangs or reads its input: the text only
+    captions a region, and losing it must never cost a case its verdict."""
     base = SCREENS[-1] if case == "vt-restore" else case
     if base not in SCREENS:
         return None
-    out = subprocess.run(["bash", os.path.join(GUEST, "screens", base + ".sh")],
-                         capture_output=True, check=True,
-                         env=dict(os.environ, LC_ALL="C.UTF-8")).stdout
-    text = re.sub(r"\x1b\[[0-9;:?]*[A-Za-z]", "", out.decode())
+    try:
+        out = subprocess.run(["bash", os.path.join(GUEST, "screens", base + ".sh")],
+                             stdin=subprocess.DEVNULL, capture_output=True, check=True,
+                             timeout=SCREEN_TIMEOUT,
+                             env=dict(os.environ, LC_ALL="C.UTF-8")).stdout.decode()
+    except Exception as e:
+        log("%s: no screen text: %s" % (case, e))
+        return None
+    text = re.sub(r"\x1b\[[0-9;:]*m", "", out)
+    if re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", text):
+        log("%s: no screen text: the script prints controls other than colours" % case)
+        return None
     return text.rstrip("\n").split("\n")
 
 

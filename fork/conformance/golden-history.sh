@@ -12,7 +12,8 @@
 #
 # Runs on the host: a worktree's .git does not resolve inside the dev image.
 # kmscon is compared against its working tree, so a preview shows goldens
-# not yet committed; libtsm against the subproject's HEAD. The subproject is
+# not yet committed, untracked ones included; libtsm against the
+# subproject's HEAD. The subproject is
 # a shallow clone, so the previous libtsm commit, named in full by the
 # libtsm.wrap of the previous kmscon commit, is fetched when it is missing.
 #
@@ -26,7 +27,8 @@ mkdir -p "$out"
 tsv=$out/changes.tsv
 : > "$tsv"
 
-row=$(grep '^| [0-9]' "$ledger" | tail -n 1 || true)
+# A note may hold an escaped \|, which is no column boundary.
+row=$(grep '^| [0-9]' "$ledger" | tail -n 1 | sed 's/\\|//g' || true)
 [ -n "$row" ] || exit 0
 pk=$(printf '%s\n' "$row" | awk -F'|' '{gsub(/[ `]/, "", $4); print $4}')
 pl=$(printf '%s\n' "$row" | awk -F'|' '{gsub(/[ `]/, "", $5); print $5}')
@@ -34,11 +36,21 @@ printf 'previous\t%s\t%s\n' "$pk" "$pl" >> "$tsv"
 
 # changes REPO GITDIR FROM TO PATH...: one line per changed file, and the
 # previous copy of each modified or deleted one. An empty TO is the working
-# tree.
+# tree. A git command that fails marks the repository's history unreadable
+# rather than reading as no change.
 changes() {
 	repo=$1 dir=$2 from=$3 to=$4
 	shift 4
-	git -C "$dir" diff --no-renames --name-status "$from" ${to:+"$to"} -- "$@" |
+	list=$out/$repo.list new=$out/$repo.untracked
+	: > "$new"
+	if ! git -C "$dir" diff --no-renames --name-status "$from" ${to:+"$to"} -- "$@" > "$list" ||
+	   { [ -z "$to" ] && ! git -C "$dir" ls-files --others --exclude-standard -- "$@" > "$new"; }; then
+		printf '%s\t?\tgit cannot list the changes since %s\n' "$repo" "$from" >> "$tsv"
+		rm -f "$list" "$new"
+		return 0
+	fi
+	awk '{ print "A\t" $0 }' "$new" >> "$list"
+	rm -f "$new"
 	while IFS="$(printf '\t')" read -r status path; do
 		printf '%s\t%s\t%s\n' "$repo" "$status" "$path" >> "$tsv"
 		case $status in
@@ -46,7 +58,8 @@ changes() {
 			mkdir -p "$out/$repo/$(dirname "$path")"
 			git -C "$dir" show "$from:$path" > "$out/$repo/$path" ;;
 		esac
-	done
+	done < "$list"
+	rm -f "$list"
 }
 
 if git cat-file -e "$pk^{commit}" 2>/dev/null; then

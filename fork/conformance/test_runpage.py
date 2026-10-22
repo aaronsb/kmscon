@@ -13,6 +13,7 @@ import io
 import json
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -249,6 +250,58 @@ class RunPageTest(unittest.TestCase):
         img, n = pageimg.diff_image(want, got, box, step)
         self.assertEqual(n, 1)
         self.assertLessEqual(img.width, pageimg.MAX_W)
+
+
+class GoldenHistoryTest(unittest.TestCase):
+    """golden-history.sh in a scratch repository: the previous run's commit
+    read from a ledger row whose note holds an escaped |, a modified and an
+    untracked golden, and a failing git diff."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.git("init", "-q")
+        golden = self.root / "tests/goldens/tier2"
+        golden.mkdir(parents=True)
+        (golden / "a.ppm").write_text("one\n")
+        self.git("add", ".")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "goldens")
+        self.prev = self.git("rev-parse", "--short", "HEAD").strip()
+        (golden / "a.ppm").write_text("two\n")
+        (golden / "new.ppm").write_text("new\n")
+        (self.root / "LEDGER.md").write_text(runpage.LEDGER_HEAD + (
+            "| 2026-10-20 | a \\| b | `%s` | `1234567` | 1/1 | 1/1 | — | [r](r/README.md) |\n" % self.prev))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True,
+                              text=True).stdout
+
+    def history(self, env=None):
+        subprocess.run(["sh", str(HERE / "golden-history.sh"), "LEDGER.md", "hist"], cwd=self.root,
+                       check=True, capture_output=True, env=env)
+        return (self.root / "hist/changes.tsv").read_text().splitlines()
+
+    def test_changes(self):
+        lines = self.history()
+        self.assertEqual(lines[0], "previous\t%s\t1234567" % self.prev)
+        self.assertIn("kmscon\tM\ttests/goldens/tier2/a.ppm", lines)
+        self.assertIn("kmscon\tA\ttests/goldens/tier2/new.ppm", lines)
+        self.assertEqual((self.root / "hist/kmscon/tests/goldens/tier2/a.ppm").read_text(), "one\n")
+
+    def test_failing_diff_is_not_no_change(self):
+        # A git whose diff fails: the history is unreadable, not unchanged.
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        real = subprocess.run(["sh", "-c", "command -v git"], capture_output=True, text=True).stdout.strip()
+        (bin_dir / "git").write_text('#!/bin/sh\ncase " $* " in *" diff "*) exit 128;; esac\nexec %s "$@"\n' % real)
+        (bin_dir / "git").chmod(0o755)
+        env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]))
+        lines = self.history(env)
+        self.assertIn("kmscon\t?\tgit cannot list the changes since %s" % self.prev, lines)
+        self.assertFalse(any(line.startswith("kmscon\tM") for line in lines))
 
 
 if __name__ == "__main__":

@@ -33,21 +33,21 @@ META = {"v": {"cell": [10, 20], "device": "virtio-vga,xres=200", "config": ["fon
 TEXT = ["hello world", "", "the 4:3 curly line"]
 
 
-def screen(paint=()):
+def screen(paint=(), w=W, h=H):
     """A screen with a line of text-coloured pixels, then each (x, y, rgb)."""
-    data = bytearray(BG * (W * H))
+    data = bytearray(BG * (w * h))
     for x in range(0, 110):
-        data[(10 * W + x) * 3:(10 * W + x) * 3 + 3] = FG
+        data[(10 * w + x) * 3:(10 * w + x) * 3 + 3] = FG
     for x, y, rgb in paint:
-        data[(y * W + x) * 3:(y * W + x) * 3 + 3] = rgb
-    return t3img.Image(W, H, bytes(data))
+        data[(y * w + x) * 3:(y * w + x) * 3 + 3] = rgb
+    return t3img.Image(w, h, bytes(data))
 
 
 # Two separate differences: row 1, columns 1-2, and row 3 over "4:3 curly".
 CHANGED = [(x, 5, RED) for x in range(15)] + [(x, 45, RED) for x in range(40, 130)]
 
 
-def write_run(path, screens, tools=TOOLS):
+def write_run(path, screens, tools=TOOLS, meta=META):
     """A saved run: one tier 3 report and its PNGs, as compare.py save writes."""
     path = Path(path)
     (path / "t3").mkdir(parents=True)
@@ -58,7 +58,7 @@ def write_run(path, screens, tools=TOOLS):
         cases.append({"name": name, "status": "pass", "actual": rel, "text": TEXT,
                       "description": "A screen of text. Correct: every glyph in its cell.",
                       "stats": {"pixels": 0, "bbox": [], "max_delta": 0}})
-    report = {"tier": 3, "tools": tools, "variants": META, "cases": cases}
+    report = {"tier": 3, "tools": tools, "variants": meta, "cases": cases}
     (path / "tier3-report.json").write_text(json.dumps(report))
 
 
@@ -157,7 +157,21 @@ class CompareTest(unittest.TestCase):
         rows = compare.screen_rows(["a日b", "0123456789abc"], 10)
         self.assertEqual(rows[0], [(0, "a"), (1, "日"), (3, "b")])
         self.assertEqual(rows[2], [(0, "a"), (1, "b"), (2, "c")])     # wrapped at 10 cells
-        self.assertEqual(compare.cells((10, 0, 30, 20), (10, 20), rows), ("row 1, cols 2-3", "日"))
+        self.assertEqual(compare.cells((10, 0, 30, 20), (10, 20), rows, (100, 40)), ("row 1, cols 2-3", "日"))
+
+    def test_grid_offset(self):
+        # kmscon centres the grid: 205×63 in 10×19 cells is 20 columns by 3
+        # rows, starting at pixel 2,3. A change at the foot of row 3, as an
+        # underline would make, is in row 3, not row 4.
+        meta = {"v": dict(META["v"], cell=[10, 19])}
+        under = [(x, 3 + 2 * 19 + 17, RED) for x in range(2 + 40, 2 + 130)]
+        write_run("ga", {"v/curly": screen(w=205, h=63)}, meta=meta)
+        write_run("gb", {"v/curly": screen(under, w=205, h=63)}, meta=meta)
+        page = self.page("out", "--a", "ga", "--b", "gb")
+        self.assertIn("| 1 | row 3, cols 5-13 | 90 | 192 | `4:3 curly` |", page)
+        self.assertIn("offset 2,3 here", page)
+        self.assertEqual(compare.cells((0, 0, 2, 63), (10, 19), [], (205, 63)),
+                         ("the margin around the character grid", ""))
 
 
 if __name__ == "__main__":

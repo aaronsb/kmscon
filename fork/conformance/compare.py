@@ -136,12 +136,24 @@ def screen_rows(text, cols):
     return rows
 
 
-def cells(region, cell, rows):
-    """A region as terminal cells, rows and columns counted from 1, with the
-    text printed there: ("row 3, cols 10-24", "the text")."""
+def grid_offset(size, cell):
+    """The pixel where the character grid starts: bbulk and gltex centre the
+    whole cells that fit in the screen and leave the rest as a margin."""
+    (w, h), (cw, ch) = size, cell
+    return (w - w // cw * cw) // 2, (h - h // ch * ch) // 2
+
+
+def cells(region, cell, rows, size):
+    """A region of a `size` screen as terminal cells, rows and columns
+    counted from 1, with the text printed there: ("row 3, cols 10-24",
+    "the text")."""
     cw, ch = cell
-    c0, r0 = region[0] // cw, region[1] // ch
-    c1, r1 = (region[2] - 1) // cw, (region[3] - 1) // ch
+    ox, oy = grid_offset(size, cell)
+    x0, y0, x1, y1 = region
+    c0, r0 = max((x0 - ox) // cw, 0), max((y0 - oy) // ch, 0)
+    c1, r1 = min((x1 - 1 - ox) // cw, size[0] // cw - 1), min((y1 - 1 - oy) // ch, size[1] // ch - 1)
+    if c0 > c1 or r0 > r1:
+        return "the margin around the character grid", ""
     where = ("row %d" % (r0 + 1) if r0 == r1 else "rows %d-%d" % (r0 + 1, r1 + 1)) + ", " + \
         ("col %d" % (c0 + 1) if c0 == c1 else "cols %d-%d" % (c0 + 1, c1 + 1))
     texts = []
@@ -366,14 +378,15 @@ class Page:
         self.w("| # | Where | Pixels | Max delta | Text drawn there |", "|---|---|---|---|---|")
         for n, (region, (px, delta)) in enumerate(zip(regions, per), 1):
             if cell:
-                where, text = cells(region, cell, rows)
+                where, text = cells(region, cell, rows, (a.width, a.height))
             else:
                 where, text = "pixels %d,%d to %d,%d" % tuple(region), ""
             self.w("| %d | %s | %d | %d | %s |" % (n, where, px, delta, code(text) if text else "—"))
         self.w("")
         if cell:
-            self.w("*Rows and columns count from 1 at the top left, in %d×%d-pixel character cells.*"
-                   % tuple(cell), "")
+            self.w("*Rows and columns count from 1 at the top left of the character grid, in "
+                   "%d×%d-pixel cells; kmscon centres the grid on the screen, offset %d,%d here.*"
+                   % (tuple(cell) + grid_offset((a.width, a.height), cell)), "")
 
     def crop_note(self, img, box, step):
         if box == (0, 0, img.width, img.height) and step == 1:

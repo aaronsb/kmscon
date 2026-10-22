@@ -108,14 +108,15 @@ SUN_PATH_MAX = 107
 
 # Seconds a QMP command may take before QEMU counts as wedged.
 QMP_TIMEOUT = 30
-# Seconds a variant's worker may run before it is stopped. Every wait in the
-# scenario has its own timeout well inside this; it catches a hang nothing
-# else does.
+# Default seconds a variant's worker may run before it is stopped (--deadline).
+# Every wait in the scenario has its own timeout well inside this; it catches
+# a hang nothing else does.
 VARIANT_DEADLINE = 1800
 
-# Called with the PID of each QEMU this process starts; a worker reports them
-# to the parent, which kills any that outlive the worker.
-_on_qemu_start = None
+# Called as _on_qemu("start" or "stop", pid) for each QEMU this process starts
+# and stops; a worker reports them to the parent, which kills any that outlive
+# the worker.
+_on_qemu = None
 
 # CSI and OSC sequences, which systemd's colored status lines carry.
 _ESCAPES = re.compile(r"\x1b\[[0-9;?!]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
@@ -169,14 +170,15 @@ class Qemu:
         self.proc = subprocess.Popen(args, stdout=self.qemu_log,
                                      stderr=subprocess.STDOUT)
         log("qemu pid %d" % self.proc.pid)
-        if _on_qemu_start:
-            _on_qemu_start(self.proc.pid)
+        if _on_qemu:
+            _on_qemu("start", self.proc.pid)
         self.sock = None
         self.buf = b""
         try:
             self._connect()
         except BaseException:  # a QEMU that cannot be driven is not left running
             self._kill()
+            self._stopped()
             self.qemu_log.close()
             raise
 
@@ -288,6 +290,11 @@ class Qemu:
             self.proc.kill()
             self.proc.wait()
 
+    def _stopped(self):
+        log("qemu pid %d stopped" % self.proc.pid)
+        if _on_qemu:
+            _on_qemu("stop", self.proc.pid)
+
     def stop(self):
         """Power the guest off, then make sure the process we started is gone."""
         if self.proc.poll() is None:
@@ -302,6 +309,7 @@ class Qemu:
                 if self.wait_exit(10) is None:
                     log("qemu pid %d did not exit; sending SIGKILL" % self.proc.pid)
                     self._kill()
+        self._stopped()
         if self.sock:
             self.sock.close()
         self.qemu_log.close()
@@ -743,35 +751,32 @@ def variant_job(variant, t0, pkgs):
     return cases, meta
 
 
-def _exit_on_sigterm(signum, frame):
-    # The default SIGTERM action skips finally blocks, which stop the VM.
-    raise SystemExit("terminated by signal %d" % signum)
+class Terminated(BaseException):
+    """Raised by SIGTERM, so finally blocks stop the VMs. Not an Exception:
+    nothing that reports a variant's own failure may swallow it."""
+
+
+def _terminate(signum, frame):
+    log("received signal %d" % signum)
+    raise Terminated("terminated by signal %d" % signum)
 
 
 def _worker(variant, t0, pkgs, conn):
-    """A worker process: reports each QEMU it starts, then its result."""
-    global _on_qemu_start
-    signal.signal(signal.SIGTERM, _exit_on_sigterm)
-    _on_qemu_start = lambda pid: conn.send(("qemu", pid))
-    conn.send(("result", variant_job(variant, t0, pkgs)))
-    conn.close()
+    """A worker process: reports each QEMU it starts and stops, then its
+    result."""
+    global _on_qemu
+    signal.signal(signal.SIGTERM, _terminate)
+    _on_qemu = lambda event, pid: conn.send((event, pid))
+    try:
+        conn.send(("result", variant_job(variant, t0, pkgs)))
+    except Terminated:
+        sys.exit(128 + signal.SIGTERM)
+    finally:
+        conn.close()
 
 
 def uses_virgl(variant):
     return VARIANTS[variant]["device"].startswith("virtio-vga-gl")
-
-
-def kill_leftover_qemu(pids):
-    """SIGKILL each QEMU in `pids` that outlived the worker that started it."""
-    for pid in pids:
-        try:
-            with open("/proc/%d/cmdline" % pid, "rb") as f:
-                if not f.read().startswith(b"qemu-system"):
-                    continue  # gone, or the PID now names another process
-            log("killing qemu pid %d, left by its worker" % pid)
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 class Job:
@@ -785,76 +790,102 @@ class Job:
         self.proc.start()
         child.close()
         self.start = time.time()
-        self.qemu = []
+        self.qemu = set()  # QEMUs started and not yet reported stopped
         self.result = None
 
     def drain(self):
         try:
             while self.conn.poll():
                 kind, value = self.conn.recv()
-                if kind == "qemu":
-                    self.qemu.append(value)
+                if kind == "start":
+                    self.qemu.add(value)
+                elif kind == "stop":
+                    self.qemu.discard(value)
                 else:
                     self.result = value
         except (EOFError, OSError):  # the worker is gone
             pass
 
-    def stop(self):
-        """Stop an overdue worker: SIGTERM lets it stop its VM first."""
-        self.proc.terminate()
-        self.proc.join(60)
+    def stop(self, why):
+        """Stop the worker: SIGTERM lets it stop its VM first."""
         if self.proc.is_alive():
+            log("%s: %s; sending SIGTERM to worker pid %d"
+                % (self.variant, why, self.proc.pid))
+            self.proc.terminate()
+            self.proc.join(60)
+        if self.proc.is_alive():
+            log("%s: worker pid %d did not exit; sending SIGKILL"
+                % (self.variant, self.proc.pid))
             self.proc.kill()
 
     def finish(self):
+        """Reap the worker and SIGKILL any QEMU of this variant it left."""
         self.proc.join()
         self.drain()
         self.conn.close()
-        kill_leftover_qemu(self.qemu)
+        sock = os.fsencode(os.path.join(RUNDIR, self.variant, "qmp.sock"))
+        for pid in self.qemu:
+            try:
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    if sock not in f.read():
+                        continue  # gone, or the PID now names another process
+                log("%s: killing qemu pid %d, left by its worker" % (self.variant, pid))
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
-def run_concurrently(variants, jobs, pkgs):
-    """{variant: variant_job's result}, at most `jobs` variants at once.
+def run_concurrently(variants, jobs, pkgs, deadline, results):
+    """Fill `results` with {variant: variant_job's result}, running at most
+    `jobs` variants at once.
 
     Each variant runs in its own process, so one variant's compare (pure
     Python, holding the GIL) never stalls another's captures, and a worker
-    that dies fails its own variant only. Variants on virgl share the host's
+    that dies fails its own variant only. A worker still running `deadline`
+    seconds after it started is stopped. Variants on virgl share the host's
     render node, so at most one of them runs at a time. They start in the
-    requested order.
+    requested order. If this process is interrupted, every worker is stopped
+    before the interruption goes on.
     """
     ctx = multiprocessing.get_context("spawn")
-    results, pending, running = {}, list(variants), []
-    while pending or running:
-        for variant in list(pending):
-            if len(running) >= jobs:
-                break
-            if uses_virgl(variant) and any(uses_virgl(j.variant) for j in running):
-                continue
-            pending.remove(variant)
-            running.append(Job(ctx, variant, pkgs))
-        multiprocessing.connection.wait(
-            [j.conn for j in running] + [j.proc.sentinel for j in running], timeout=5)
-        for job in list(running):
-            alive = job.proc.is_alive()
-            job.drain()
-            overdue = alive and time.time() - job.start > VARIANT_DEADLINE
-            if alive and not overdue:
-                continue
-            if overdue:
-                job.stop()
+    pending, running = list(variants), []
+    try:
+        while pending or running:
+            for variant in list(pending):
+                if len(running) >= jobs:
+                    break
+                if uses_virgl(variant) and any(uses_virgl(j.variant) for j in running):
+                    continue
+                pending.remove(variant)
+                running.append(Job(ctx, variant, pkgs))
+            multiprocessing.connection.wait(
+                [j.conn for j in running] + [j.proc.sentinel for j in running], timeout=5)
+            for job in list(running):
+                alive = job.proc.is_alive()
+                job.drain()
+                overdue = alive and time.time() - job.start > deadline
+                if alive and not overdue:
+                    continue
+                if overdue:
+                    job.stop("no result within the %d s deadline" % deadline)
+                job.finish()
+                running.remove(job)
+                if job.result is not None:
+                    results[job.variant] = job.result
+                elif overdue:
+                    results[job.variant] = failed_variant(
+                        job.variant, "no result within the %d s deadline; worker stopped"
+                        % deadline, pkgs)
+                else:
+                    results[job.variant] = failed_variant(
+                        job.variant, "worker exited with code %s before reporting"
+                        % job.proc.exitcode, pkgs)
+    finally:
+        if running:  # interrupted: a second SIGTERM must not cut the cleanup short
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        for job in running:
+            job.stop("run interrupted")
             job.finish()
-            running.remove(job)
-            if job.result is not None:
-                results[job.variant] = job.result
-            elif overdue:
-                results[job.variant] = failed_variant(
-                    job.variant, "no result within %d s; worker stopped" % VARIANT_DEADLINE,
-                    pkgs)
-            else:
-                results[job.variant] = failed_variant(
-                    job.variant, "worker exited with code %s before reporting"
-                    % job.proc.exitcode, pkgs)
-    return results
 
 
 @contextlib.contextmanager
@@ -879,22 +910,34 @@ def run_lock():
 def run(args):
     if not os.path.exists(BASE):
         raise SystemExit("no base image at %s; run `make tier3-image`" % BASE)
+    global _LABEL
     variants = args.variants or DEFAULT_VARIANTS
-    signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    signal.signal(signal.SIGTERM, _terminate)
     with run_lock():
-        if args.pkg_cmd:
-            log("building the package: %s" % args.pkg_cmd)
-            r = subprocess.run(args.pkg_cmd, shell=True)
+        if args.pkg_target:
+            log("building the package: make %s" % args.pkg_target)
+            r = subprocess.run(["make", "--no-print-directory", args.pkg_target], cwd=ROOT)
             if r.returncode:
                 raise SystemExit("package build failed with exit code %d" % r.returncode)
         pkgs = newest_packages()
         log("packages: %s" % ", ".join(map(os.path.basename, pkgs)))
-        if args.jobs == 1:
-            results = {v: variant_job(v, _T0, pkgs) for v in variants}
-        else:
-            results = run_concurrently(variants, args.jobs, pkgs)
-        global _LABEL
+        # An interrupted run (SIGTERM, Ctrl+C) stops its VMs and still writes
+        # a report: the variants that finished keep their results, the rest
+        # fail with the interruption.
+        results, interrupted = {}, None
+        try:
+            if args.jobs == 1:
+                for v in variants:
+                    results[v] = variant_job(v, _T0, pkgs)
+            else:
+                run_concurrently(variants, args.jobs, pkgs, args.deadline, results)
+        except (Terminated, KeyboardInterrupt) as e:
+            interrupted = e
         _LABEL = ""
+        for v in variants:
+            if v not in results:
+                results[v] = failed_variant(
+                    v, "run interrupted: %s" % (interrupted or "no result"), pkgs)
         log("%d variant(s) done, %d at a time" % (len(variants), args.jobs))
         # The report lists variants in the requested order, whatever order
         # they finished in, so a concurrent run's report matches a serial one's.
@@ -908,6 +951,8 @@ def run(args):
     for c in cases:
         print("%-8s %s  (%d px)" % (c["status"], c["name"], c["stats"]["pixels"]))
     print("report: %s" % rel(REPORT))
+    if interrupted is not None:
+        return 130 if isinstance(interrupted, KeyboardInterrupt) else 128 + signal.SIGTERM
     # "near" is a difference within the case's reviewed tolerance: it passes.
     return 0 if all(c["status"] in ("pass", "near") for c in cases) else 1
 
@@ -942,8 +987,11 @@ def main(argv=None):
     r = sub.add_parser("run")
     r.add_argument("--jobs", type=int, default=1, metavar="N",
                    help="run up to N variants at once (default 1)")
-    r.add_argument("--pkg-cmd", metavar="CMD",
-                   help="shell command that builds the package, run under the lock first")
+    r.add_argument("--pkg-target", metavar="TARGET",
+                   help="make target that builds the package, run under the lock first")
+    r.add_argument("--deadline", type=int, default=VARIANT_DEADLINE, metavar="SECONDS",
+                   help="with --jobs above 1, stop a variant still running after this "
+                        "(default %d)" % VARIANT_DEADLINE)
     r.add_argument("variants", nargs="*", help="any of: " + ", ".join(VARIANTS))
     b = sub.add_parser("bless")
     b.add_argument("variants", nargs="*")

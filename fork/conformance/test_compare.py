@@ -228,6 +228,10 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(rows[0], [(0, "a"), (1, "日"), (3, "b")])
         self.assertEqual(rows[2], [(0, "a"), (1, "b"), (2, "c")])     # wrapped at 10 cells
         self.assertEqual(compare.cells((10, 0, 30, 20), (10, 20), rows, (100, 40)), ("row 1, cols 2-3", "日"))
+        # Either half of a wide character names it.
+        self.assertEqual(compare.cells((20, 0, 30, 20), (10, 20), rows, (100, 40)), ("row 1, col 3", "日"))
+        self.assertEqual(compare.cells((10, 0, 20, 20), (10, 20), rows, (100, 40)), ("row 1, col 2", "日"))
+
 
     def test_grid_offset(self):
         # kmscon centres the grid: 205×63 in 10×19 cells is 20 columns by 3

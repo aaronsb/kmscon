@@ -121,6 +121,11 @@ def region_stats(want, got, points, regions):
     return [tuple(s) for s in stats]
 
 
+def width(ch):
+    """Cells a character takes: two for a wide one."""
+    return 2 if unicodedata.east_asian_width(ch[0]) in ("W", "F") else 1
+
+
 def screen_rows(text, cols):
     """The screen's rows as lists of (column, character), lines wrapped at
     `cols` cells, wide characters two cells."""
@@ -131,12 +136,11 @@ def screen_rows(text, cols):
             if unicodedata.combining(ch) and row:
                 row[-1] = (row[-1][0], row[-1][1] + ch)
                 continue
-            width = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-            if col + width > cols:
+            if col + width(ch) > cols:
                 rows.append(row)
                 row, col = [], 0
             row.append((col, ch))
-            col += width
+            col += width(ch)
         rows.append(row)
     return rows
 
@@ -164,7 +168,7 @@ def cells(region, cell, rows, size):
     texts = []
     for r in range(r0, r1 + 1):
         if r < len(rows):
-            t = "".join(s for c, s in rows[r] if c0 <= c <= c1).strip()
+            t = "".join(s for c, s in rows[r] if c <= c1 and c + width(s) - 1 >= c0).strip()
             if t:
                 texts.append(t)
     shown = " / ".join(texts[:3]) + (" / …" if len(texts) > 3 else "")

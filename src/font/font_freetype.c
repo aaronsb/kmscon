@@ -27,6 +27,7 @@
 #include <fontconfig/fontconfig.h>
 #include <freetype2/freetype/freetype.h>
 #include FT_FREETYPE_H
+#include FT_BITMAP_H
 #include FT_TRUETYPE_TABLES_H
 #include <hb-ft.h>
 #include <hb.h>
@@ -354,6 +355,33 @@ static void copy_map(struct video_buffer *buf, const uint8_t *map, int map_w, in
 	}
 }
 
+/*
+ * @slot's bitmap as one byte of coverage per pixel, 0 to 255, or as one bit per
+ * pixel for FT_PIXEL_MODE_MONO, which the callers read bit by bit. Any other
+ * mode (a strike's 2- or 4-bit grey, LCD, BGRA) is converted into @tmp. @tmp is
+ * initialised here; the caller releases it with FT_Bitmap_Done. NULL when the
+ * conversion fails.
+ */
+static const FT_Bitmap *coverage(FT_GlyphSlot slot, FT_Bitmap *tmp)
+{
+	const FT_Bitmap *map = &slot->bitmap;
+	unsigned int i, n, top;
+
+	FT_Bitmap_Init(tmp);
+	if (map->pixel_mode == FT_PIXEL_MODE_GRAY || map->pixel_mode == FT_PIXEL_MODE_MONO)
+		return map;
+	if (FT_Bitmap_Convert(slot->library, map, tmp, 1))
+		return NULL;
+
+	/* the converted levels run from 0 to num_grays - 1 */
+	top = tmp->num_grays - 1;
+	n = tmp->rows * (unsigned int)tmp->pitch;
+	if (top && top < 255)
+		for (i = 0; i < n; i++)
+			tmp->buffer[i] = tmp->buffer[i] * 255 / top;
+	return tmp;
+}
+
 static struct kmscon_glyph *new_glyph(struct kmscon_font *font, unsigned int cwidth)
 {
 	struct kmscon_glyph *glyph;
@@ -406,18 +434,22 @@ static struct kmscon_glyph *render_glyph(struct kmscon_font *font, FT_Face face,
 					 unsigned int cwidth)
 {
 	struct kmscon_glyph *glyph;
-	FT_Bitmap *map;
+	const FT_Bitmap *map;
+	FT_Bitmap tmp;
 	int dx;
 
 	if (load_glyph(face, index))
 		return NULL;
 
-	glyph = new_glyph(font, cwidth);
-	if (!glyph)
+	map = coverage(face->glyph, &tmp);
+	if (!map)
 		return NULL;
 
+	glyph = new_glyph(font, cwidth);
+	if (!glyph)
+		goto out;
+
 	dx = centre_dx(font, glyph, face->glyph->advance.x);
-	map = &face->glyph->bitmap;
 	if (map->pixel_mode == FT_PIXEL_MODE_MONO)
 		copy_mono(&glyph->buf, face->glyph, face->size->metrics.ascender >> 6, dx);
 	else
@@ -425,6 +457,8 @@ static struct kmscon_glyph *render_glyph(struct kmscon_font *font, FT_Face face,
 			 face->glyph->bitmap_left + dx,
 			 (face->size->metrics.ascender >> 6) - face->glyph->bitmap_top);
 
+out:
+	FT_Bitmap_Done(face->glyph->library, &tmp);
 	return glyph;
 }
 
@@ -516,13 +550,17 @@ static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face fac
 
 	for (i = 0; i < n; i++) {
 		FT_GlyphSlot slot = face->glyph;
-		FT_Bitmap *map;
+		const FT_Bitmap *map;
+		FT_Bitmap tmp;
 
+		FT_Bitmap_Init(&tmp);
 		if (!info[i].codepoint)
 			continue;
 		if (load_glyph(face, info[i].codepoint))
 			goto next;
-		map = &slot->bitmap;
+		map = coverage(slot, &tmp);
+		if (!map)
+			goto next;
 		gx = ox + ((pen_x + pos[i].x_offset + 32) >> 6) + slot->bitmap_left;
 		gy = baseline - ((pen_y + pos[i].y_offset + 32) >> 6) - slot->bitmap_top;
 
@@ -567,6 +605,7 @@ static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face fac
 			}
 		}
 	next:
+		FT_Bitmap_Done(slot->library, &tmp);
 		pen_x += pos[i].x_advance;
 		pen_y += pos[i].y_advance;
 	}

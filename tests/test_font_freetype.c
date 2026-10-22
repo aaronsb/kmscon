@@ -378,6 +378,48 @@ static void test_centre_dx_bounded(void)
 	assert(centre_dx(&font, &glyph, 8 * 64) == 4);
 }
 
+/*
+ * A strike's 2- and 4-bit grey bitmap reaches the copy as one byte of coverage
+ * per pixel, scaled to 0-255; an 8-bit one is used as it is.
+ */
+static void test_coverage_grey_strikes(void)
+{
+	uint8_t gray4[] = {0xf0, 0x5a}, gray2[] = {0xe4};
+	FT_GlyphSlotRec slot = {0};
+	const FT_Bitmap *map;
+	FT_Bitmap tmp;
+	FT_Library ft;
+
+	assert(!FT_Init_FreeType(&ft));
+	slot.library = ft;
+	slot.bitmap.rows = 1;
+	slot.bitmap.width = 4;
+
+	slot.bitmap.pitch = 2;
+	slot.bitmap.buffer = gray4;
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_GRAY4;
+	map = coverage(&slot, &tmp);
+	assert(map && map->pixel_mode == FT_PIXEL_MODE_GRAY && map->width == 4 && map->rows == 1);
+	assert(map->buffer[0] == 255 && map->buffer[1] == 0 && map->buffer[2] == 85 &&
+	       map->buffer[3] == 170);
+	FT_Bitmap_Done(ft, &tmp);
+
+	slot.bitmap.pitch = 1;
+	slot.bitmap.buffer = gray2;
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_GRAY2;
+	map = coverage(&slot, &tmp);
+	assert(map && map->pixel_mode == FT_PIXEL_MODE_GRAY && map->width == 4);
+	assert(map->buffer[0] == 255 && map->buffer[1] == 170 && map->buffer[2] == 85 &&
+	       map->buffer[3] == 0);
+	FT_Bitmap_Done(ft, &tmp);
+
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_GRAY;
+	assert(coverage(&slot, &tmp) == &slot.bitmap);
+	FT_Bitmap_Done(ft, &tmp);
+
+	FT_Done_FreeType(ft);
+}
+
 int main(void)
 {
 	assert(FcInit());
@@ -388,6 +430,7 @@ int main(void)
 	test_cluster_missing_mark();
 	test_cluster_stacked_mark();
 	test_centre_dx_bounded();
+	test_coverage_grey_strikes();
 
 	FcFini();
 	return 0;

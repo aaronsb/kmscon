@@ -1,0 +1,129 @@
+"""Tier 3's cases and their verdicts: what each case shows, the text drawn
+on its screen, and its capture compared with its golden."""
+
+import os
+import re
+import subprocess
+
+import t3img
+from common import GOLDEN, GUEST, RUNDIR, rel
+
+# Screens drawn by `t3 NAME` in the guest (fork/tier3/guest/screens/NAME.sh).
+SCREENS = ["sgr", "boxdraw", "cjk"]
+# Every case of a variant: each screen, then the VT switch (a check without a
+# golden) and the restore after it (compared with the last screen's golden).
+CASES = SCREENS + ["vt-switch", "vt-restore"]
+# What each check shows and what correct looks like, for the conformance run
+# page; a screen's description is the header comment of its script.
+CHECKS = {
+    "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
+                 "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
+                 "screen just left.",
+    "vt-restore": "Back on tty2 after Ctrl+Alt+F2, the cjk screen redrawn by the first "
+                  "instance. Correct: identical to the cjk golden.",
+}
+
+# Seconds a screen script may run on the host before its text is given up.
+SCREEN_TIMEOUT = 10
+
+
+def describe(case):
+    """The caption of a case: its check's description, or the leading
+    comment lines of its screen script."""
+    if case in CHECKS:
+        return CHECKS[case]
+    lines = []
+    with open(os.path.join(GUEST, "screens", case + ".sh")) as f:
+        for line in f:
+            if not line.startswith("#"):
+                break
+            lines.append(line[1:].strip())
+    return " ".join(lines)
+
+
+def screen_text(case, log):
+    """The lines a case's screen script prints, colours removed, so a region
+    of the screen can be named by the text drawn there. The guest clears the
+    screen first, so line N is the screen's row N. Any other control in the
+    output (a cursor move, a tab, a character-set switch) would break that
+    mapping, so such output gives None, as do a check that draws no script
+    and a script that fails, hangs or reads its input: the text only
+    captions a region, and losing it must never cost a case its verdict."""
+    base = SCREENS[-1] if case == "vt-restore" else case
+    if base not in SCREENS:
+        return None
+    try:
+        out = subprocess.run(["bash", os.path.join(GUEST, "screens", base + ".sh")],
+                             stdin=subprocess.DEVNULL, capture_output=True, check=True,
+                             timeout=SCREEN_TIMEOUT,
+                             env=dict(os.environ, LC_ALL="C.UTF-8")).stdout.decode()
+    except Exception as e:
+        log("%s: no screen text: %s" % (case, e))
+        return None
+    text = re.sub(r"\x1b\[[0-9;:]*m", "", out)
+    if re.search(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", text):
+        log("%s: no screen text: the script prints controls other than colours" % case)
+        return None
+    return text.rstrip("\n").split("\n")
+
+
+def golden_for(variant, case):
+    """(golden, tolerance sidecar) paths for a case, or (None, None) for
+    vt-switch, which is a check without a golden."""
+    if case == "vt-switch":
+        return None, None
+    # vt-restore must reproduce the last screen drawn before the switch.
+    base = SCREENS[-1] if case == "vt-restore" else case
+    return (os.path.join(GOLDEN, variant, base + ".png"),
+            os.path.join(GOLDEN, variant, base + ".tol"))
+
+
+def write_thumb(img, path):
+    t3img.write_png(path, img)
+    return rel(path)
+
+
+def evaluate(variant, case, ppm, meta, log):
+    """The report entry for one case, from its capture (or None)."""
+    golden, tolpath = golden_for(variant, case)
+    stem = os.path.join(RUNDIR, variant, case)
+    entry = {"name": "%s/%s" % (variant, case), "description": describe(case),
+             "text": screen_text(case, log), "golden": rel(golden),
+             "actual": None, "diff": None, "tolerance": None,
+             "thumb_actual": None, "thumb_golden": None, "thumb_diff": None,
+             "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}
+    # The golden's thumbnail comes first, so a case that fails without a
+    # capture still shows on the contact sheet what it should have drawn.
+    gimg = None
+    if golden is not None and os.path.exists(golden):
+        gimg = t3img.read(golden)
+        os.makedirs(os.path.dirname(stem), exist_ok=True)
+        entry["thumb_golden"] = write_thumb(t3img.thumbnail(gimg), stem + ".golden.thumb.png")
+    try:
+        tol = entry["tolerance"] = t3img.load_tol(tolpath)
+    except ValueError as e:  # a malformed sidecar fails its case, loudly
+        entry["status"], entry["error"] = "fail", str(e)
+        return entry
+    if ppm is None:
+        entry["status"] = "fail"
+        entry["error"] = meta.get("errors", {}).get(case) or meta.get("error", "no capture")
+        return entry
+    img = t3img.read(ppm)
+    t3img.write_png(stem + ".png", img)
+    entry["actual"] = rel(stem + ".png")
+    entry["thumb_actual"] = write_thumb(t3img.thumbnail(img), stem + ".thumb.png")
+    if golden is None:  # a check, passed when the capture was taken
+        entry["status"] = "pass"
+        return entry
+    if gimg is None:
+        entry["status"] = "missing"
+        return entry
+    stats, diff, points = t3img.compare(img, gimg, tol["masks"] if tol else ())
+    entry["stats"] = stats
+    if diff is not None:
+        t3img.write_png(stem + ".diff.png", diff)
+        entry["diff"] = rel(stem + ".diff.png")
+        entry["thumb_diff"] = write_thumb(t3img.diff_thumbnail(img, points),
+                                          stem + ".diff.thumb.png")
+    entry["status"] = t3img.verdict(stats, tol)
+    return entry

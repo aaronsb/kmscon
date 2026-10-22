@@ -44,14 +44,22 @@ sheet-preview: tier1-report tier2-report ## Write this run's page into fork/buil
 	fork/conformance/golden-history.sh $(LEDGER) $(HISTORY)
 	$(PAGE) --out $(BUILD)/run $(REPORTS)
 
-.PHONY: sheet
-sheet: tier1-report tier2-report ## Commit-ready run page + ledger row (NOTE="what this run marks")
+# The checks a committed run must pass, made before any tier runs, so a
+# refused run costs nothing.
+.PHONY: sheet-check
+sheet-check:
 	@test -n "$(NOTE)" || { echo 'sheet: give NOTE="what this run marks"' >&2; exit 1; }
 	@test -z "$$(git status --porcelain --untracked-files=no)" || { echo "sheet: kmscon tree has uncommitted changes" >&2; exit 1; }
 	@test -z "$$(git -C subprojects/libtsm status --porcelain --untracked-files=no 2>/dev/null)" || { echo "sheet: libtsm tree has uncommitted changes" >&2; exit 1; }
-	@test -n "$(SHEET_ANY_COMMIT)" || { git fetch -q origin main && test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)"; } || { \
+	@test "$(SHEET_ANY_COMMIT)" = 1 || { \
+		git fetch -q origin main || { echo "sheet: git fetch origin main failed, so HEAD cannot be checked against origin/main" >&2; exit 1; }; \
+		test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" || { \
 		echo "sheet: HEAD is not origin/main; a ledger run is made on main once the stage's branches have merged" >&2; \
-		echo "sheet: SHEET_ANY_COMMIT=1 overrides" >&2; exit 1; }
+		echo "sheet: SHEET_ANY_COMMIT=1 overrides" >&2; exit 1; }; }
+
+.PHONY: sheet
+sheet: sheet-check ## Commit-ready run page + ledger row (NOTE="what this run marks")
+	$(MAKE) --no-print-directory tier1-report tier2-report
 	fork/conformance/golden-history.sh $(LEDGER) $(HISTORY)
 	$(PAGE) --out docs/conformance/runs/$(SHEET_DATE)-$(KREV)-$(LREV) --append --note "$(NOTE)" $(REPORTS)
 

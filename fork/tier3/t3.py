@@ -23,13 +23,13 @@ Paths are relative to the repository root, which is two levels above this file.
 
 import argparse
 import base64
-import concurrent.futures
 import contextlib
 import fcntl
 import glob
 import hashlib
 import json
 import multiprocessing
+import multiprocessing.connection
 import os
 import re
 import shutil
@@ -106,6 +106,17 @@ _LABEL = ""
 # A unix socket path, with its terminating NUL, must fit sun_path (108 bytes).
 SUN_PATH_MAX = 107
 
+# Seconds a QMP command may take before QEMU counts as wedged.
+QMP_TIMEOUT = 30
+# Seconds a variant's worker may run before it is stopped. Every wait in the
+# scenario has its own timeout well inside this; it catches a hang nothing
+# else does.
+VARIANT_DEADLINE = 1800
+
+# Called with the PID of each QEMU this process starts; a worker reports them
+# to the parent, which kills any that outlive the worker.
+_on_qemu_start = None
+
 # CSI and OSC sequences, which systemd's colored status lines carry.
 _ESCAPES = re.compile(r"\x1b\[[0-9;?!]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
@@ -158,8 +169,18 @@ class Qemu:
         self.proc = subprocess.Popen(args, stdout=self.qemu_log,
                                      stderr=subprocess.STDOUT)
         log("qemu pid %d" % self.proc.pid)
+        if _on_qemu_start:
+            _on_qemu_start(self.proc.pid)
         self.sock = None
         self.buf = b""
+        try:
+            self._connect()
+        except BaseException:  # a QEMU that cannot be driven is not left running
+            self._kill()
+            self.qemu_log.close()
+            raise
+
+    def _connect(self):
         deadline = time.time() + 30
         while self.sock is None:
             if self.proc.poll() is not None:
@@ -173,6 +194,8 @@ class Qemu:
                 if time.time() > deadline:
                     raise
                 time.sleep(0.2)
+        # A wedged QEMU makes a QMP command raise instead of blocking forever.
+        self.sock.settimeout(QMP_TIMEOUT)
         self._recv()  # greeting
         self.cmd("qmp_capabilities")
 
@@ -256,19 +279,25 @@ class Qemu:
         except subprocess.TimeoutExpired:
             return None
 
+    def _kill(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait()
+
     def stop(self):
         """Power the guest off, then make sure the process we started is gone."""
         if self.proc.poll() is None:
             try:
                 self.cmd("quit")
-            except (OSError, RuntimeError):
-                pass
-            if self.wait_exit(15) is None:
+                quit_sent = True
+            except (OSError, RuntimeError):  # QMP is gone or wedged
+                quit_sent = False
+            if not quit_sent or self.wait_exit(15) is None:
                 log("qemu pid %d did not quit; sending SIGTERM" % self.proc.pid)
-                os.kill(self.proc.pid, signal.SIGTERM)
+                self.proc.terminate()
                 if self.wait_exit(10) is None:
-                    os.kill(self.proc.pid, signal.SIGKILL)
-                    self.proc.wait()
+                    log("qemu pid %d did not exit; sending SIGKILL" % self.proc.pid)
+                    self._kill()
         if self.sock:
             self.sock.close()
         self.qemu_log.close()
@@ -453,20 +482,25 @@ def _provision(args):
 
 # --- the scenario -----------------------------------------------------------
 
-def build_pkg_disc(variant, work):
+def newest_packages():
+    """The newest build of each of the two split packages. A run resolves
+    them once, so every variant installs the same build."""
     pkgs = sorted(glob.glob(os.path.join(PKGOUT, "kmscon-aaronsb-*.pkg.tar.zst")),
                   key=os.path.getmtime)
     if not pkgs:
-        raise RuntimeError("no package in %s; run `make pkg`" % PKGOUT)
-    # The newest build of each of the two split packages.
+        raise SystemExit("no package in %s; run `make pkg`" % rel(PKGOUT))
     newest = {}
     for p in pkgs:
         name = "terminfo" if "-terminfo-" in os.path.basename(p) else "main"
         newest[name] = p
+    return sorted(newest.values())
+
+
+def build_pkg_disc(variant, work, pkgs):
     disc = os.path.join(work, "disc")
     shutil.rmtree(disc, ignore_errors=True)
     os.makedirs(os.path.join(disc, "pkg"))
-    for p in newest.values():
+    for p in pkgs:
         shutil.copy(p, os.path.join(disc, "pkg"))
     shutil.copy(os.path.join(GUEST, VARIANTS[variant]["conf"]),
                 os.path.join(disc, "kmscon.conf"))
@@ -475,7 +509,7 @@ def build_pkg_disc(variant, work):
     shutil.copy(os.path.join(GUEST, "setup"), disc)
     iso = os.path.join(work, "t3pkg.iso")
     make_iso(disc, "T3PKG", iso)
-    return iso, [os.path.basename(p) for p in newest.values()]
+    return iso
 
 
 def kmscon_displays(serial):
@@ -487,8 +521,8 @@ def kmscon_displays(serial):
                    if "Display " in line and "text renderer [" in line})
 
 
-def run_variant(variant, timing):
-    """Boot one variant and drive the scenario.
+def run_variant(variant, timing, pkgs):
+    """Boot one variant with the packages `pkgs` and drive the scenario.
 
     Returns ({case: capture path}, metadata). A scenario that fails part way
     keeps the captures taken before the failure; metadata carries the error,
@@ -500,8 +534,8 @@ def run_variant(variant, timing):
     Each step waits for state it can observe, never for a fixed time: lines
     on the console, events the guest reports on its event port (guest/setup),
     and a screen that has changed and then settled. Every wait has a timeout
-    that fails the case, so a slow host gives a failure, never a capture
-    taken too early.
+    that fails the case. On a slow host a capture taken too early can fail
+    its case; it cannot pass it.
     """
     start = time.time()
 
@@ -512,7 +546,7 @@ def run_variant(variant, timing):
     work = os.path.join(RUNDIR, variant)
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
-    iso, pkgs = build_pkg_disc(variant, work)
+    iso = build_pkg_disc(variant, work, pkgs)
     disk = os.path.join(work, "run.qcow2")
     subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2",
                     "-b", BASE, disk], check=True)
@@ -551,13 +585,15 @@ def run_variant(variant, timing):
             log("no login yet; typing the password again")
             vm.type("tester\n")
             vm.wait_event("T3-LOGIN", timeout=60)
-        wait_stable(vm, tmp)
+        last = wait_stable(vm, tmp)
         phase("login")
         for name in SCREENS:
             vm.type("t3 %s\n" % name)
             vm.wait_event("T3-DONE %s" % name, timeout=60)
             path = os.path.join(work, name + ".ppm")
-            last = wait_stable(vm, path)
+            # Each screen differs from the one before it, so a capture of the
+            # previous screen is never taken for this one.
+            last = wait_stable(vm, path, want=lambda img, prev=last: img.data != prev.data)
             caps[name] = path
             phase(name)
         # VT switch away and back. vt-switch: logind starts a second kmscon
@@ -592,7 +628,8 @@ def run_variant(variant, timing):
         if os.path.exists(disk):
             os.unlink(disk)
     displays = kmscon_displays(vm.serial)
-    meta = {"packages": pkgs, "kmscon": displays, "errors": errors}
+    meta = {"packages": [os.path.basename(p) for p in pkgs], "kmscon": displays,
+            "errors": errors}
     want = "text renderer [%s]" % v["renderer"]
     if not displays or not all(want in d for d in displays):
         caps = {}
@@ -667,20 +704,33 @@ def evaluate(variant, case, ppm, meta):
     return entry
 
 
-def variant_job(variant, t0):
+def failure_meta(error, pkgs):
+    """A variant's metadata when it produced no captures, in the same shape
+    as a variant that ran."""
+    return {"packages": [os.path.basename(p) for p in pkgs], "kmscon": [],
+            "errors": {}, "error": error, "timing": {}}
+
+
+def failed_variant(variant, error, pkgs):
+    log("%s: %s" % (variant, error))
+    meta = failure_meta(error, pkgs)
+    return [evaluate(variant, case, None, meta) for case in CASES], meta
+
+
+def variant_job(variant, t0, pkgs):
     """Drive and evaluate one variant: (its case entries, its metadata).
 
-    Runs in a worker process when variants run concurrently. A variant that
-    cannot run is reported, not fatal: each of its cases fails with the error.
+    A variant that cannot run is reported, not fatal: each of its cases fails
+    with the error.
     """
     global _T0, _LABEL
     _T0, _LABEL = t0, variant
     timing = {}
     try:
-        caps, meta = run_variant(variant, timing)
+        caps, meta = run_variant(variant, timing, pkgs)
     except Exception as e:
         log(str(e))
-        caps, meta = {}, {"error": str(e)}
+        caps, meta = {}, failure_meta(str(e), pkgs)
     start = time.time()
     cases = [evaluate(variant, case, caps.get(case), meta) for case in CASES]
     timing["evaluate"] = round(time.time() - start, 1)
@@ -689,47 +739,125 @@ def variant_job(variant, t0):
     return cases, meta
 
 
+def _exit_on_sigterm(signum, frame):
+    # The default SIGTERM action skips finally blocks, which stop the VM.
+    raise SystemExit("terminated by signal %d" % signum)
+
+
+def _worker(variant, t0, pkgs, conn):
+    """A worker process: reports each QEMU it starts, then its result."""
+    global _on_qemu_start
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    _on_qemu_start = lambda pid: conn.send(("qemu", pid))
+    conn.send(("result", variant_job(variant, t0, pkgs)))
+    conn.close()
+
+
 def uses_virgl(variant):
     return VARIANTS[variant]["device"].startswith("virtio-vga-gl")
 
 
-def run_concurrently(variants, jobs):
+def kill_leftover_qemu(pids):
+    """SIGKILL each QEMU in `pids` that outlived the worker that started it."""
+    for pid in pids:
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                if not f.read().startswith(b"qemu-system"):
+                    continue  # gone, or the PID now names another process
+            log("killing qemu pid %d, left by its worker" % pid)
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+class Job:
+    """One variant's worker process and what it has reported."""
+
+    def __init__(self, ctx, variant, pkgs):
+        self.variant = variant
+        self.conn, child = ctx.Pipe(duplex=False)
+        self.proc = ctx.Process(target=_worker, args=(variant, _T0, pkgs, child),
+                                name="t3-" + variant)
+        self.proc.start()
+        child.close()
+        self.start = time.time()
+        self.qemu = []
+        self.result = None
+
+    def drain(self):
+        try:
+            while self.conn.poll():
+                kind, value = self.conn.recv()
+                if kind == "qemu":
+                    self.qemu.append(value)
+                else:
+                    self.result = value
+        except (EOFError, OSError):  # the worker is gone
+            pass
+
+    def stop(self):
+        """Stop an overdue worker: SIGTERM lets it stop its VM first."""
+        self.proc.terminate()
+        self.proc.join(60)
+        if self.proc.is_alive():
+            self.proc.kill()
+
+    def finish(self):
+        self.proc.join()
+        self.drain()
+        self.conn.close()
+        kill_leftover_qemu(self.qemu)
+
+
+def run_concurrently(variants, jobs, pkgs):
     """{variant: variant_job's result}, at most `jobs` variants at once.
 
     Each variant runs in its own process, so one variant's compare (pure
-    Python, holding the GIL) never stalls another's captures. Variants on
-    virgl share the host's render node, so at most one of them runs at a
-    time. They start in the requested order.
+    Python, holding the GIL) never stalls another's captures, and a worker
+    that dies fails its own variant only. Variants on virgl share the host's
+    render node, so at most one of them runs at a time. They start in the
+    requested order.
     """
-    results, pending, running = {}, list(variants), {}
     ctx = multiprocessing.get_context("spawn")
-    with concurrent.futures.ProcessPoolExecutor(jobs, mp_context=ctx) as pool:
-        while pending or running:
-            for variant in list(pending):
-                if len(running) >= jobs:
-                    break
-                if uses_virgl(variant) and any(map(uses_virgl, running.values())):
-                    continue
-                pending.remove(variant)
-                running[pool.submit(variant_job, variant, _T0)] = variant
-            done, _ = concurrent.futures.wait(
-                running, return_when=concurrent.futures.FIRST_COMPLETED)
-            for future in done:
-                variant = running.pop(future)
-                try:
-                    results[variant] = future.result()
-                except Exception as e:  # the worker itself died
-                    log("%s: worker failed: %s" % (variant, e))
-                    meta = {"error": "worker failed: %s" % e}
-                    results[variant] = ([evaluate(variant, case, None, meta)
-                                         for case in CASES], meta)
+    results, pending, running = {}, list(variants), []
+    while pending or running:
+        for variant in list(pending):
+            if len(running) >= jobs:
+                break
+            if uses_virgl(variant) and any(uses_virgl(j.variant) for j in running):
+                continue
+            pending.remove(variant)
+            running.append(Job(ctx, variant, pkgs))
+        multiprocessing.connection.wait(
+            [j.conn for j in running] + [j.proc.sentinel for j in running], timeout=5)
+        for job in list(running):
+            alive = job.proc.is_alive()
+            job.drain()
+            overdue = alive and time.time() - job.start > VARIANT_DEADLINE
+            if alive and not overdue:
+                continue
+            if overdue:
+                job.stop()
+            job.finish()
+            running.remove(job)
+            if job.result is not None:
+                results[job.variant] = job.result
+            elif overdue:
+                results[job.variant] = failed_variant(
+                    job.variant, "no result within %d s; worker stopped" % VARIANT_DEADLINE,
+                    pkgs)
+            else:
+                results[job.variant] = failed_variant(
+                    job.variant, "worker exited with code %s before reporting"
+                    % job.proc.exitcode, pkgs)
     return results
 
 
 @contextlib.contextmanager
 def run_lock():
     """Hold fork/build/tier3.lock, or exit if another run holds it: two runs
-    would share the work directory, the report and the render node."""
+    would share the package, the work directory, the report and the render
+    node."""
     os.makedirs(os.path.dirname(LOCK), exist_ok=True)
     with open(LOCK, "a+") as f:
         try:
@@ -747,24 +875,32 @@ def run_lock():
 def run(args):
     if not os.path.exists(BASE):
         raise SystemExit("no base image at %s; run `make tier3-image`" % BASE)
-    global _LABEL
     variants = args.variants or DEFAULT_VARIANTS
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
     with run_lock():
+        if args.pkg_cmd:
+            log("building the package: %s" % args.pkg_cmd)
+            r = subprocess.run(args.pkg_cmd, shell=True)
+            if r.returncode:
+                raise SystemExit("package build failed with exit code %d" % r.returncode)
+        pkgs = newest_packages()
+        log("packages: %s" % ", ".join(map(os.path.basename, pkgs)))
         if args.jobs == 1:
-            results = {v: variant_job(v, _T0) for v in variants}
+            results = {v: variant_job(v, _T0, pkgs) for v in variants}
         else:
-            results = run_concurrently(variants, args.jobs)
-    _LABEL = ""
-    log("%d variant(s) done, %d at a time" % (len(variants), args.jobs))
-    # The report lists variants in the requested order, whatever order they
-    # finished in, so a concurrent run's report matches a serial one's.
-    cases = [c for v in variants for c in results[v][0]]
-    meta = {v: results[v][1] for v in variants}
-    report = {"tier": 3, "cases": cases, "variants": meta}
-    os.makedirs(os.path.dirname(REPORT), exist_ok=True)
-    with open(REPORT, "w") as f:
-        json.dump(report, f, indent=2)
-        f.write("\n")
+            results = run_concurrently(variants, args.jobs, pkgs)
+        global _LABEL
+        _LABEL = ""
+        log("%d variant(s) done, %d at a time" % (len(variants), args.jobs))
+        # The report lists variants in the requested order, whatever order
+        # they finished in, so a concurrent run's report matches a serial one's.
+        cases = [c for v in variants for c in results[v][0]]
+        meta = {v: results[v][1] for v in variants}
+        report = {"tier": 3, "cases": cases, "variants": meta}
+        os.makedirs(os.path.dirname(REPORT), exist_ok=True)
+        with open(REPORT, "w") as f:
+            json.dump(report, f, indent=2)
+            f.write("\n")
     for c in cases:
         print("%-8s %s  (%d px)" % (c["status"], c["name"], c["stats"]["pixels"]))
     print("report: %s" % rel(REPORT))
@@ -773,7 +909,12 @@ def run(args):
 
 
 def bless(args):
-    with run_lock(), open(REPORT) as f:
+    with run_lock():
+        return _bless(args)
+
+
+def _bless(args):
+    with open(REPORT) as f:
         report = json.load(f)
     for c in report["cases"]:
         variant, case = c["name"].split("/", 1)
@@ -797,6 +938,8 @@ def main(argv=None):
     r = sub.add_parser("run")
     r.add_argument("--jobs", type=int, default=1, metavar="N",
                    help="run up to N variants at once (default 1)")
+    r.add_argument("--pkg-cmd", metavar="CMD",
+                   help="shell command that builds the package, run under the lock first")
     r.add_argument("variants", nargs="*", help="any of: " + ", ".join(VARIANTS))
     b = sub.add_parser("bless")
     b.add_argument("variants", nargs="*")

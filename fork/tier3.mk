@@ -20,6 +20,9 @@ T3_PKGOUT  := fork/build/pkg
 T3_PKGVER  := $(shell git describe --tags --long 2>/dev/null | sed 's/^v//;s/-\([0-9]*\)-g/.r\1.g/')
 T3_PY      := python3 -I -B
 JOBS       ?= 1
+# tier3 and tier3-gl hand the package build to t3.py, which runs it under the
+# run lock, so a second run cannot rebuild the package under a running one.
+T3_PKG_CMD := --pkg-cmd '$(MAKE) --no-print-directory pkg'
 
 # Pinned guest: the official Arch Linux cloud image, verified against the
 # arch-boxes signing key, and the Arch Linux Archive snapshot its packages
@@ -56,12 +59,12 @@ $(T3_BASE): $(T3_VM)/images/$(T3_IMAGE) $(T3_GUEST)
 tier3-image: $(T3_BASE) ## Fetch, verify and provision the tier 3 guest base image
 
 .PHONY: tier3
-tier3: pkg $(T3_BASE) ## Tier 3: the 2D variants, or VARIANTS="2d-1280x800 gl-1280x800 ..."; JOBS=N runs N at once
-	$(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) $(VARIANTS)
+tier3: $(T3_BASE) ## Tier 3: the 2D variants, or VARIANTS="2d-1280x800 gl-1280x800 ..."; JOBS=N runs N at once
+	$(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) $(T3_PKG_CMD) $(VARIANTS)
 
 .PHONY: tier3-gl
-tier3-gl: pkg $(T3_BASE) ## Tier 3 on the GL variant (virgl), outside the default run: #17
-	$(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) gl-1280x800
+tier3-gl: $(T3_BASE) ## Tier 3 on the GL variant (virgl), outside the default run: #17
+	$(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) $(T3_PKG_CMD) gl-1280x800
 
 .PHONY: tier3-run
 tier3-run: ## Tier 3 without rebuilding the package (VARIANTS=, JOBS= as for tier3)

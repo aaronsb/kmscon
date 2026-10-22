@@ -59,38 +59,38 @@ right:    Each line underlined in the shape it names, all distinct: single,
           double, curly, dotted, dashed; 4:0 and 24 end it mid-line.
 wrong:    Every style drawn as one single line, or a line with none of its
           attributes: on stock kmscon only the plain 4 line is underlined.
- 1 right  2 wrong  3 can't tell  n note  b back  q quit
+ 1 right  2 wrong  3 unsure  c comment  b back  q quit
 ```
 
 | Key | What it does |
 |---|---|
 | `1` | the page looks right; records it and goes to the next page |
 | `2` | the page looks wrong |
-| `3` | can't tell |
-| `n` | types a one-line note (line editing works; Enter ends it), shows the page again with the note in its footer, and waits for the rating; `n` again edits the note |
-| `b` | back one page; a new rating there replaces the old one on the summary page and in `feedback.sh`, and the file keeps both lines |
-| `q` | quits: the summary page, then any key ends the demonstration |
+| `3` | unsure |
+| `c` | opens a comment below the page, as many lines as needed, each with line editing; on a full page each line scrolls the page up by one. Ctrl-D on an empty line, or a line holding only `.`, ends it. Then one key rates the page (`1`, `2`, `3`, or Enter for no rating, recorded as `none`) and the next page follows. An empty comment goes back to the page. Ctrl-D never ends the demonstration. |
+| `b` | back one page; a new answer there replaces the old one on the summary page and in `feedback.sh`, and the file keeps both lines |
+| `q` | quits to the summary page |
 
 Any other key asks again. Keys typed before the footer appears are discarded, so a double press does not rate the next page unseen. The footer sits below the page when it fits there: demo.sh asks the terminal for the cursor's row (DSR) and compares it with the screen's height. When it does not fit, or the terminal does not answer within a second, a key shows the footer on a screen of its own. At 80x25 every section fits with its footer; the tallest, colour-forms, ends its prompt on row 25.
 
-The summary page lists this run's rating and note for each section and the file they went to.
+The summary page lists this pass's rating and comment for each section and the file they went to, then asks `r review again from page 1  q exit`. `r` goes through the pages again as a new run, with its own run id, so `feedback.sh` shows that pass as the latest run and its summary page shows only that pass.
 
 ### Where the answers go
 
-Each rating appends one line to `$DEMO_FEEDBACK`, by default `/tmp/kmscon-demo/feedback.tsv`. `/tmp` is cleared on reboot, so copy the file elsewhere or set `DEMO_FEEDBACK` to keep it longer. The directory is created with mode 0755 and the file with mode 0644 and a header line, owned by whoever runs the demo. The dev build's demo runs as the invoking user (through `setpriv`), and the stock run in the comparison below is typed by the same user, so both runs append to the same file. If the file cannot be written, the title and summary pages say so and the demonstration runs without recording.
+Each answer appends one line to `$DEMO_FEEDBACK`, by default `/tmp/kmscon-demo/feedback.tsv`. `/tmp` is cleared on reboot, so copy the file elsewhere or set `DEMO_FEEDBACK` to keep it longer. The directory is created with mode 0755 and the file with mode 0644 and a header line, owned by whoever runs the demo. The dev build's demo runs as the invoking user (through `setpriv`), and the stock run in the comparison below is typed by the same user, so both runs append to the same file. If the file cannot be written, the title and summary pages say so and the demonstration runs without recording.
 
 | Column | Value |
 |---|---|
 | `time` | ISO 8601 time of the answer |
-| `run` | the run's start time and demo.sh's PID, the same for every line of one run |
+| `run` | the start time of the pass and demo.sh's PID, the same for every line of one pass; `r` on the summary page starts a new one |
 | `label` | `DEMO_LABEL`, or `unlabelled` |
 | `term` | `TERM` |
 | `size` | rows x columns, such as `25x80` |
 | `section` | the section's file name without `.sh`, such as `20-underline-styles` |
-| `rating` | `right`, `wrong` or `unsure` |
-| `note` | the note, tabs and line breaks turned to spaces; empty without one |
+| `rating` | `right`, `wrong`, `unsure`, or `none` for a comment without a rating |
+| `note` | the comment, with each line break written as `\n`, each backslash as `\\` and tabs as spaces; empty without one |
 
-`fork/demo/feedback.sh` prints the file as tables, one line per section with the last rating given for it:
+`fork/demo/feedback.sh` prints the file as tables, one line per section with the last answer given for it and that answer's comment below it, one indented line per line typed:
 
 ```sh
 fork/demo/feedback.sh                  # the latest run

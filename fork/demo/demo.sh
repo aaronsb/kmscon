@@ -5,13 +5,14 @@
 # correct screen looks like (its "# look-for:" lines) and what a defect looks
 # like ("# wrong-looks-like:"). Then one key records a judgement (#47):
 #
-#   1 looks right   2 looks wrong   3 can't tell
-#   n types a one-line note, then asks for the rating
+#   1 looks right   2 looks wrong   3 unsure
+#   c types a comment of any length, then asks for a rating (Enter: none)
 #   b goes back one page   q quits
 #
 # Each judgement is appended as one TSV line to $DEMO_FEEDBACK, by default
 # /tmp/kmscon-demo/feedback.tsv; feedback.sh prints it. A summary page with
-# this run's ratings ends the run.
+# this pass's ratings ends the run, and r there goes through the pages again
+# as a new run.
 #
 # It runs in any terminal as any user and needs nothing from the dev build, so
 # the same pages can be compared on a dev-build VT and a stock kmscon VT.
@@ -30,7 +31,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 nopage=${DEMO_NOPAGE:-}
 noprompt=${DEMO_NOPROMPT:-$nopage}
 feedback=${DEMO_FEEDBACK:-/tmp/kmscon-demo/feedback.tsv}
-run=$(date +%Y%m%dT%H%M%S)-$$
+run=
 rows=25
 cols=80
 key=
@@ -99,15 +100,14 @@ wrapped() {
 	done < <(printf '%s\n' "$2" | fold -s -w $((cols - 11)))
 }
 
-# The footer of section I, without its prompt line, into foot[]: a blank line,
-# the guidance, and the note typed for the page.
+# The footer of section I, without its prompt line, into foot[]: a blank line
+# and the guidance.
 footer_lines() {
 	local f=${sections[$1]}
 	mapfile -t foot < <(
 		echo
 		wrapped 'right:' "$(meta look-for "$f")"
 		wrapped 'wrong:' "$(meta wrong-looks-like "$f")"
-		wrapped 'note:' "$note"
 	)
 }
 
@@ -136,6 +136,22 @@ clean() {
 	printf '%s' "${s//$'\r'/ }"
 }
 
+# A comment as one TSV field: a backslash becomes \\, a line break \n, a tab a
+# space. feedback.sh turns them back.
+escape() {
+	local s=${1//\\/\\\\}
+	s=${s//$'\t'/ }
+	s=${s//$'\r'/}
+	printf '%s' "${s//$'\n'/\\n}"
+}
+
+# A new run id: the time and the PID, never the id of the pass before.
+new_run() {
+	local id
+	while id=$(date +%Y%m%dT%H%M%S)-$$; [ "$id" = "$run" ]; do sleep 0.2; done
+	run=$id
+}
+
 # Creates the feedback file with its header line if it is missing. Sets
 # recording, or why_not when the file cannot be written.
 recording=
@@ -156,7 +172,7 @@ init_feedback() {
 	fi
 }
 
-# Records RATING for section I with the typed note.
+# Records RATING for section I with the comment typed for it.
 rating=()
 notes=()
 rate() {
@@ -165,12 +181,34 @@ rate() {
 	[ -n "$recording" ] || return 0
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$run" \
 		"$(clean "${DEMO_LABEL:-unlabelled}")" "$(clean "${TERM:-unset}")" \
-		"${rows}x$cols" "$(id_of "${sections[$1]}")" "$2" "$(clean "$note")" \
+		"${rows}x$cols" "$(id_of "${sections[$1]}")" "$2" "$(escape "$note")" \
 		>>"$feedback" || { recording='' why_not="writing $feedback failed"; }
 }
 
 prompt() {
-	printf '\r\033[K\033[7m %s \033[0m' "1 right  2 wrong  3 can't tell  n note  b back  q quit"
+	printf '\r\033[K\033[7m %s \033[0m' "$1"
+}
+
+# Reads a comment of any number of lines into note, below the page so the page
+# stays in view. Ctrl-D on an empty line or a line holding only "." ends it.
+# Ctrl-D reaches the line editor as a key, never as the end of the demo's
+# input. The line editor shows what is typed only while the terminal's echo is
+# on, so echo is on for the comment.
+read_comment() {
+	local line lines=()
+	prompt 'comment: end it with Ctrl-D or a line holding only .'
+	printf '\n'
+	stty echo </dev/tty 2>/dev/null
+	while :; do
+		if ! IFS= read -r -e -p '> ' line </dev/tty; then
+			printf '\n'
+			break
+		fi
+		[ "$line" != . ] || break
+		lines+=("$line")
+	done
+	stty -echo </dev/tty 2>/dev/null
+	note=$(printf '%s\n' "${lines[@]}")
 }
 
 # Shows page I with its footer and reads keys until one rates the page, goes
@@ -193,34 +231,54 @@ ask() {
 		fi
 		printf '%s\n' "${foot[@]}"
 		drain
-		prompt
+		prompt '1 right  2 wrong  3 unsure  c comment  b back  q quit'
 		while :; do
 			read_key
 			case $key in
 			1) rate "$i" right; go=next; return ;;
 			2) rate "$i" wrong; go=next; return ;;
 			3) rate "$i" unsure; go=next; return ;;
-			n | N)
-				printf '\r\033[K'
-				IFS= read -r -e -i "$note" -p 'note: ' note </dev/tty || note=
-				note=$(clean "$note")
-				continue 2
+			c | C)
+				read_comment
+				# An empty comment changes nothing: the page again.
+				[ -n "$note" ] || continue 2
+				ask_rating "$i"
+				go=next
+				return
 				;;
 			b | B) [ "$i" -eq 0 ] || { go=back; return; } ;;
 			q | Q) go=quit; return ;;
 			esac
-			prompt
+			prompt '1 right  2 wrong  3 unsure  c comment  b back  q quit'
 		done
 	done
 }
 
+# Records the comment of page I with the one-key rating that follows it.
+ask_rating() {
+	drain
+	prompt '1 right  2 wrong  3 unsure  Enter no rating'
+	while :; do
+		read_key
+		case $key in
+		1) rate "$1" right; return ;;
+		2) rate "$1" wrong; return ;;
+		3) rate "$1" unsure; return ;;
+		'') rate "$1" none; return ;;
+		esac
+		prompt '1 right  2 wrong  3 unsure  Enter no rating'
+	done
+}
+
+# The answers of this pass, then r or q; returns 0 for r.
 summary() {
 	local i id nt
 	clear_screen
-	printf '\033[1mkmscon fork: local VT demo, answers of this run\033[0m\n\n'
+	printf '\033[1mkmscon fork: local VT demo, answers of this pass\033[0m\n\n'
 	for i in "${!sections[@]}"; do
 		id=$(id_of "${sections[$i]}")
 		nt=${notes[$i]:-}
+		nt=${nt//$'\n'/ / }
 		printf '  %-22s %-7s %s\n' "$id" "${rating[$i]:--}" "${nt:0:$((cols - 35))}"
 	done
 	echo
@@ -230,7 +288,16 @@ summary() {
 	else
 		printf '  \033[31mnot recorded: %s\033[0m\n\n' "$why_not"
 	fi
-	page_end 'press a key to finish'
+	drain
+	prompt 'r review again from page 1  q exit'
+	while :; do
+		read_key
+		case $key in
+		r | R) return 0 ;;
+		q | Q) return 1 ;;
+		esac
+		prompt 'r review again from page 1  q exit'
+	done
 }
 
 sections=()
@@ -249,8 +316,8 @@ done
 read_size
 
 # Echo stays off for the whole run, so neither a key typed between prompts nor
-# the terminal's answer to cursor_row lands on a page. The note's line editor
-# echoes for itself.
+# the terminal's answer to cursor_row lands on a page. read_comment turns it on
+# while a comment is typed.
 if [ -z "$nopage" ] && tty_mode=$(stty -g </dev/tty 2>/dev/null); then
 	trap 'stty "$tty_mode" </dev/tty' EXIT
 	stty -echo </dev/tty
@@ -262,8 +329,8 @@ printf '  running   %s\n' "${DEMO_LABEL:-unlabelled (DEMO_LABEL not set; run-vt.
 printf '  terminal  TERM=%s, %s rows by %s columns\n\n' "${TERM:-unset}" "$rows" "$cols"
 printf '  Below each page: what a right and a wrong screen look like.\n'
 if [ -z "$noprompt" ]; then
-	printf '  Then one key: 1 looks right, 2 looks wrong, 3 cannot tell,\n'
-	printf '  n types a note first, b goes back a page, q quits.\n'
+	printf '  Then one key: 1 looks right, 2 looks wrong, 3 unsure,\n'
+	printf '  c types a comment first, b goes back a page, q quits.\n'
 	if [ -n "$recording" ]; then
 		printf '  Answers go to %s.\n' "$feedback"
 	else
@@ -294,14 +361,20 @@ if [ -n "$noprompt" ]; then
 	exit 0
 fi
 
-i=0
-while [ "$i" -lt ${#sections[@]} ]; do
-	ask "$i"
-	case $go in
-	next) i=$((i + 1)) ;;
-	back) i=$((i - 1)) ;;
-	quit) break ;;
-	esac
+# One pass through the pages per run id; r on the summary starts another.
+while :; do
+	new_run
+	rating=()
+	notes=()
+	i=0
+	while [ "$i" -lt ${#sections[@]} ]; do
+		ask "$i"
+		case $go in
+		next) i=$((i + 1)) ;;
+		back) i=$((i - 1)) ;;
+		quit) break ;;
+		esac
+	done
+	summary || break
 done
-summary
 clear_screen

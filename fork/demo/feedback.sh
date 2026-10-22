@@ -1,7 +1,8 @@
 #!/bin/bash
 # Prints the judgements demo.sh recorded (#47): one line per section, with the
-# last rating given for it in the run and its note. A rating given again after
-# b replaces the earlier one here; the file keeps both.
+# last rating given for it in the run, and its comment below it, one indented
+# line per line typed. A rating given again after b replaces the earlier one
+# here; the file keeps both.
 #
 #   feedback.sh [--file PATH]             the latest run
 #   feedback.sh [--file PATH] --run ID    the run ID (the run column)
@@ -44,8 +45,31 @@ answers() {
 
 [ -n "$(answers)" ] || die "no answers in $file"
 
+# awk functions both views use: the comment's escapes undone (\\ and \n, as
+# demo.sh writes them), each of its lines printed indented, and a sort.
+lib='
+function unescape(s,   out, c, i) {
+	for (i = 1; i <= length(s); i++) {
+		c = substr(s, i, 1)
+		if (c == "\\" && i < length(s)) {
+			c = substr(s, ++i, 1)
+			if (c == "n") c = "\n"
+		}
+		out = out c
+	}
+	return out
+}
+function comment(s,   n, l, i) {
+	n = split(unescape(s), l, "\n")
+	for (i = 1; i <= n; i++) printf "    %s\n", l[i]
+}
+function sort(a, n,   i, j, t) {
+	for (i = 2; i <= n; i++)
+		for (j = i; j > 1 && a[j - 1] > a[j]; j--) { t = a[j]; a[j] = a[j - 1]; a[j - 1] = t }
+}'
+
 if [ "$mode" = compare ]; then
-	answers | awk -F'\t' '
+	answers | awk -F'\t' "$lib"'
 	{ line[NR] = $0; if (!($3 in latest)) labels[++nl] = $3; latest[$3] = $2 }
 	END {
 		for (i = 1; i <= NR; i++) {
@@ -75,19 +99,16 @@ if [ "$mode" = compare ]; then
 		for (s = 1; s <= ns; s++)
 			for (c = 1; c <= nl; c++)
 				if (note[labels[c], ids[s]] != "") {
-					if (!header++) printf "\nnotes\n"
-					printf "%s  %-24s %s\n", substr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c, 1), ids[s], note[labels[c], ids[s]]
+					if (!header++) printf "\ncomments\n"
+					printf "%s  %s\n", substr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c, 1), ids[s]
+					comment(note[labels[c], ids[s]])
 				}
-	}
-	function sort(a, n,   i, j, t) {
-		for (i = 2; i <= n; i++)
-			for (j = i; j > 1 && a[j - 1] > a[j]; j--) { t = a[j]; a[j] = a[j - 1]; a[j - 1] = t }
 	}' | sed 's/ *$//'
 	exit 0
 fi
 
 [ "$mode" = run ] || run=$(answers | awk -F'\t' 'END { print $2 }')
-answers | awk -F'\t' -v run="$run" '
+answers | awk -F'\t' -v run="$run" "$lib"'
 $2 != run { next }
 {
 	if (!n++) { started = $1; label = $3; term = $4; size = $5 }
@@ -100,10 +121,9 @@ END {
 	sort(ids, ns)
 	printf "run       %s\nlabel     %s\nterminal  TERM=%s, %s\nstarted   %s\n", run, label, term, size, started
 	printf "answers   %d for %d sections\n\n", n, ns
-	printf "%-24s  %-7s  %s\n", "section", "rating", "note"
-	for (s = 1; s <= ns; s++) printf "%-24s  %-7s  %s\n", ids[s], rating[ids[s]], note[ids[s]]
-}
-function sort(a, n,   i, j, t) {
-	for (i = 2; i <= n; i++)
-		for (j = i; j > 1 && a[j - 1] > a[j]; j--) { t = a[j]; a[j] = a[j - 1]; a[j - 1] = t }
+	printf "%-24s  %s\n", "section", "rating"
+	for (s = 1; s <= ns; s++) {
+		printf "%-24s  %s\n", ids[s], rating[ids[s]]
+		if (note[ids[s]] != "") comment(note[ids[s]])
+	}
 }' | sed 's/ *$//'

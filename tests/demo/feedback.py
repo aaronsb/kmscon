@@ -30,7 +30,10 @@ ROWS, COLS = 25, 80
 ESC = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
 RUN = re.compile(r"^\d{8}T\d{6}-\d+$")
-PROMPT = b"n note  b back  q quit"
+PROMPT = b"c comment  b back  q quit"
+COMMENT = b"a line holding only ."
+RATE = b"Enter no rating"
+RERUN = b"r review again from page 1  q exit"
 
 
 class Demo:
@@ -104,6 +107,11 @@ def rows_of(path):
         return [line.rstrip("\n").split("\t") for line in f]
 
 
+def summary_rows(page):
+    """The section rows of a summary page."""
+    return [line.rstrip() for line in page.replace("\r", "").split("\n") if re.match(r"  \d\d-", line)]
+
+
 def feedback(root, *args):
     r = subprocess.run(["bash", os.path.join(root, "fork/demo/feedback.sh"), *args],
                        capture_output=True, text=True, check=False)
@@ -127,8 +135,10 @@ def main():
         check(all(re.search(rf"^# {k}: \S", text, re.M) for k in ("look-for", "wrong-looks-like")),
               f"{name} has look-for and wrong-looks-like lines")
 
-    # Run 1: a reprompt, ratings 1, 2 (with a note) and 3, b and a new rating,
-    # the footer on a screen of its own, q.
+    # Run 1: reprompts on x and on Ctrl-D, ratings 1 and 3, a comment of two
+    # lines ended by "." and rated 2, b, an empty comment, a comment ended by
+    # Ctrl-D with no rating, the footer on a screen of its own, q, then r for a
+    # second pass and q.
     d = Demo(root, ["sgr", "colour-forms", "underline-styles", "strike"],
              {**base, "DEMO_LABEL": "dev\tbuild"})
     d.expect("press a key for the first section")
@@ -140,15 +150,21 @@ def main():
     d.expect(PROMPT)
     check(rows_of(path) == [["time", "run", "label", "term", "size", "section", "rating", "note"]],
           "the file holds only its header before an answer; x reprompted")
+    d.send("\x04")
+    d.expect(PROMPT)
     d.send("1")
     d.expect("[2/4] colour-forms")
     d.expect(PROMPT)
-    d.send("n")
-    d.expect("note: ")
+    d.send("c")
+    d.expect(COMMENT)
+    d.expect("> ")
     d.send("swatch 3 differs\r")
-    page = d.expect(PROMPT)
-    check("[2/4] colour-forms" in page and "note:     swatch 3 differs" in page,
-          "after n the page is drawn again with the note in its footer")
+    check("swatch 3 differs" in d.expect("> "), "a comment's text is echoed as it is typed")
+    d.send("rows 2\\4 too\r")
+    d.expect("> ")
+    d.send(".\r")
+    page = d.expect(RATE)
+    check("[3/4]" not in page, "a comment ended by . asks for a rating on the same page")
     d.send("2")
     d.expect("[3/4] underline-styles")
     d.expect(PROMPT)
@@ -158,86 +174,136 @@ def main():
     d.send("b")
     d.expect("[3/4] underline-styles")
     d.expect(PROMPT)
+    d.send("c")
+    d.expect(COMMENT)
+    d.expect("> ")
+    d.send("\x04")
+    page = d.expect(PROMPT)
+    check("[3/4] underline-styles" in page and RATE.decode() not in page,
+          "Ctrl-D on an empty comment draws the page again and asks nothing")
+    d.send("c")
+    d.expect(COMMENT)
+    d.expect("> ")
+    d.send("curly ok\r")
+    d.expect("> ")
+    d.send("\x04")
+    d.expect(RATE)
     d.row = 25
-    d.send("1")
+    d.send("\r")
     page = d.expect("press a key for the questions on this page")
     check("[4/4] strike" in page and "right:" not in page,
-          "a footer that does not fit is not drawn below the page")
+          "Enter after a comment goes on; a footer that does not fit is not drawn below the page")
     d.send(" ")
     page = d.expect(PROMPT)
     check("[4/4] strike: questions" in page and "right:    A line through the middle" in page,
           "the footer gets a screen of its own")
     d.send("q")
-    page = d.expect("press a key to finish")
-    summary = [line.rstrip() for line in page.replace("\r", "").split("\n")]
-    check(["  10-sgr                 right",
-           "  15-colour-forms        wrong   swatch 3 differs",
-           "  20-underline-styles    right",
-           "  30-strike              -"] == [s for s in summary if re.match(r"  \d\d-", s)],
-          "the summary shows each section's last rating, b's included")
+    page = d.expect(RERUN)
+    check(summary_rows(page) == [
+        "  10-sgr                 right",
+        "  15-colour-forms        wrong   swatch 3 differs / rows 2\\4 too",
+        "  20-underline-styles    none    curly ok",
+        "  30-strike              -"], "the summary shows each section's last answer, b's included",
+        "\n".join(summary_rows(page)))
     check(path in page, "the summary names the file")
-    d.send(" ")
-    check(d.wait() == 0, "q, then a key, ends the run with status 0")
+    d.row = 5
+    d.send("r")
+    d.expect("[1/4] sgr")
+    d.expect(PROMPT)
+    d.send("1")
+    d.expect("[2/4] colour-forms")
+    d.expect(PROMPT)
+    d.send("q")
+    page = d.expect(RERUN)
+    check(summary_rows(page) == [
+        "  10-sgr                 right",
+        "  15-colour-forms        -",
+        "  20-underline-styles    -",
+        "  30-strike              -"], "after r the summary shows only the new pass",
+        "\n".join(summary_rows(page)))
+    d.send("q")
+    check(d.wait() == 0, "q on the summary ends the run with status 0")
 
     rows = rows_of(path)
     run1 = rows[1][1] if len(rows) > 1 else "(none)"
     check([r[2:] for r in rows[1:]] == [
         ["dev build", "xterm-256color", "25x80", "10-sgr", "right", ""],
-        ["dev build", "xterm-256color", "25x80", "15-colour-forms", "wrong", "swatch 3 differs"],
+        ["dev build", "xterm-256color", "25x80", "15-colour-forms", "wrong", "swatch 3 differs\\nrows 2\\\\4 too"],
         ["dev build", "xterm-256color", "25x80", "20-underline-styles", "unsure", ""],
-        ["dev build", "xterm-256color", "25x80", "20-underline-styles", "right", ""],
-    ], "run 1 recorded four answers, the tab in the label made a space")
+        ["dev build", "xterm-256color", "25x80", "20-underline-styles", "none", "curly ok"],
+        ["dev build", "xterm-256color", "25x80", "10-sgr", "right", ""],
+    ], "run 1 recorded five answers; comments escaped; the tab in the label made a space",
+        "\n".join(map(repr, rows[1:])))
     check(all(ISO.match(r[0]) for r in rows[1:]), "each answer carries an ISO timestamp")
-    check(RUN.match(run1) and all(r[1] == run1 for r in rows[1:]), "one run id for the whole run")
+    check(RUN.match(run1) and all(r[1] == run1 for r in rows[1:5]), "one run id for the first pass")
+    run1b = rows[-1][1]
+    check(RUN.match(run1b) and run1b != run1, "the pass after r has a run id of its own")
     check(oct(os.stat(path).st_mode & 0o777) == "0o644"
           and oct(os.stat(os.path.dirname(path)).st_mode & 0o777) == "0o755",
           "the file is 0644 in a directory of 0755")
+    status, out = feedback(root, "--file", path)
+    check(status == 0 and out == (
+        f"run       {run1b}\nlabel     dev build\nterminal  TERM=xterm-256color, 25x80\n"
+        f"started   {rows[-1][0]}\nanswers   1 for 1 sections\n\n"
+        "section                   rating\n"
+        "10-sgr                    right\n"), "feedback.sh shows the pass after r as the latest run", out)
 
-    # Run 2, another label, into the same file: 2, then q.
+    # Run 2, another label, into the same file: a comment rated 2, then q, q.
     d = Demo(root, ["sgr", "colour-forms"], {**base, "DEMO_LABEL": "stock"})
     d.expect("press a key for the first section")
     d.send(" ")
     d.expect(PROMPT)
+    d.send("c")
+    d.expect(COMMENT)
+    for line in ("a", "b", "."):
+        d.expect("> ")
+        d.send(line + "\r")
+    d.expect(RATE)
     d.send("2")
     d.expect("[2/2] colour-forms")
     d.expect(PROMPT)
     d.send("q")
-    d.expect("press a key to finish")
-    d.send(" ")
+    d.expect(RERUN)
+    d.send("q")
     check(d.wait() == 0, "run 2 ends with status 0")
     rows = rows_of(path)
     run2 = rows[-1][1]
-    check(len(rows) == 6 and rows[0][0] == "time" and rows[5][2:] ==
-          ["stock", "xterm-256color", "25x80", "10-sgr", "wrong", ""] and run2 != run1,
+    check(len(rows) == 7 and rows[0][0] == "time" and rows[6][2:] ==
+          ["stock", "xterm-256color", "25x80", "10-sgr", "wrong", "a\\nb"] and run2 not in (run1, run1b),
           "run 2 appended one answer under a run id of its own, no second header")
-    if len(rows) != 6:
+    if len(rows) != 7:
         print(f"{len(failures)} check(s) failed; the files are in {tmp}")
         return 1
 
     status, out = feedback(root, "--file", path)
     check(status == 0 and out == (
         f"run       {run2}\nlabel     stock\nterminal  TERM=xterm-256color, 25x80\n"
-        f"started   {rows[5][0]}\nanswers   1 for 1 sections\n\n"
-        "section                   rating   note\n"
-        "10-sgr                    wrong\n"), "feedback.sh prints the latest run", out)
+        f"started   {rows[6][0]}\nanswers   1 for 1 sections\n\n"
+        "section                   rating\n"
+        "10-sgr                    wrong\n"
+        "    a\n"
+        "    b\n"), "feedback.sh prints the latest run, its comment one line per line", out)
     status, out = feedback(root, "--file", path, "--run", run1)
     check(status == 0 and out == (
         f"run       {run1}\nlabel     dev build\nterminal  TERM=xterm-256color, 25x80\n"
         f"started   {rows[1][0]}\nanswers   4 for 3 sections\n\n"
-        "section                   rating   note\n"
+        "section                   rating\n"
         "10-sgr                    right\n"
-        "15-colour-forms           wrong    swatch 3 differs\n"
-        "20-underline-styles       right\n"), "feedback.sh --run prints run 1", out)
+        "15-colour-forms           wrong\n"
+        "    swatch 3 differs\n"
+        "    rows 2\\4 too\n"
+        "20-underline-styles       none\n"
+        "    curly ok\n"), "feedback.sh --run prints run 1", out)
     status, out = feedback(root, "--file", path, "--compare")
     check(status == 0 and out == (
-        f"A  dev build\n   run {run1}, TERM=xterm-256color, 25x80\n"
+        f"A  dev build\n   run {run1b}, TERM=xterm-256color, 25x80\n"
         f"B  stock\n   run {run2}, TERM=xterm-256color, 25x80\n\n"
         "section                   A        B\n"
-        "10-sgr                    right    wrong\n"
-        "15-colour-forms           wrong    -\n"
-        "20-underline-styles       right    -\n\n"
-        "notes\n"
-        "A  15-colour-forms          swatch 3 differs\n"), "feedback.sh --compare", out)
+        "10-sgr                    right    wrong\n\n"
+        "comments\n"
+        "B  10-sgr\n"
+        "    a\n"
+        "    b\n"), "feedback.sh --compare", out)
     status, out = feedback(root, "--file", path, "--run", "nope")
     check(status == 1 and "no run nope" in out, "feedback.sh --run with an unknown id fails")
 

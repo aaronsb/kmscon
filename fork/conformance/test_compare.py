@@ -129,6 +129,25 @@ class CompareTest(unittest.TestCase):
         self.assertIn("- **This page:** `make sheet-compare A=a B=b`", page)
         self.assertNotIn("golden", page.lower())
 
+    def test_machines_differ(self):
+        # The same machine is claimed only when both runs recorded it; a
+        # difference shows each run's value, and regions fall back to pixels
+        # when the cells differ.
+        self.assertIn("installed in the same virtual machine", self.page())
+        tools = dict(TOOLS, guest_image="other.qcow2")
+        meta = {"v": dict(META["v"], device="virtio-gpu", cell=[8, 16])}
+        write_run("c", {"v/curly": screen(CHANGED)}, tools=tools, meta=meta)
+        page = self.page("out", "--b", "c")
+        self.assertNotIn("same virtual machine", page)
+        self.assertIn("the two runs' machines or displays differ", page)
+        self.assertIn("cloud image `cloudimg.qcow2` for upstream, `other.qcow2` for fork "
+                      "(SHA-256 `abc123`)", page)
+        self.assertIn("QEMU device `virtio-vga,xres=200` for upstream, `virtio-gpu` for fork. "
+                      "kmscon configuration: `font-size=16`. Character cell 10×20 pixels for "
+                      "upstream, 8×16 pixels for fork.", page)
+        self.assertIn("| 1 | pixels 0,5 to 15,6 |", page)
+        self.assertIn("the runs record different character cells, 10×20 and 8×16.", page)
+
     def test_deterministic(self):
         def snapshot():
             self.page("out", "--a2", "a2", "--b2", "b2")

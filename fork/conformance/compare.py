@@ -274,7 +274,10 @@ class Page:
         common = self.tiers()[0]
         how = {3: "For screens on a display, each build was installed in the same virtual machine, "
                   "one at a time, drew each screen on the same virtual display, and the display was "
-                  "captured pixel for pixel.",
+                  "captured pixel for pixel." if self.same_machine() else
+                  "For screens on a display, each build was installed in a virtual machine and drew "
+                  "each screen on a virtual display, captured pixel for pixel; the two runs' machines "
+                  "or displays differ, as listed at the end.",
                2: "For screens in memory, kmscon's renderer drew each screen into a buffer with "
                   "pinned fonts, with no display involved."}
         self.w("This page compares two builds of kmscon, %s and %s, drawing the same screens. %s "
@@ -376,7 +379,8 @@ class Page:
                "outlined in yellow and numbered as in the table. %s*" % (
                    "Left to right" if across else "Top to bottom", self.la, self.lb, self.lb,
                    self.crop_note(a, box, step)), "")
-        cell = self.a.meta(key).get("cell") or self.b.meta(key).get("cell")
+        ca, cb = self.a.meta(key).get("cell"), self.b.meta(key).get("cell")
+        cell = ca if not cb or ca == cb else cb if not ca else None
         rows = screen_rows(case.get("text") or self.b.cases[key].get("text"),
                            a.width // cell[0]) if cell else []
         self.w("| # | Where | Pixels | Max delta | Text drawn there |", "|---|---|---|---|---|")
@@ -391,6 +395,9 @@ class Page:
             self.w("*Rows and columns count from 1 at the top left of the character grid, in "
                    "%d×%d-pixel cells; kmscon centres the grid on the screen, offset %d,%d here.*"
                    % (tuple(cell) + grid_offset((a.width, a.height), cell)), "")
+        elif ca and cb:
+            self.w("*Regions are given in pixels: the runs record different character cells, "
+                   "%d×%d and %d×%d.*" % (tuple(ca) + tuple(cb)), "")
 
     def crop_note(self, img, box, step):
         if box == (0, 0, img.width, img.height) and step == 1:
@@ -399,22 +406,44 @@ class Page:
             box + (img.width, img.height))
         return note + ("; one pixel in %d kept." % step if step > 1 else ".")
 
+    # What each run records of the machine and display it drew on: the
+    # page says "the same machine" only when every one of these agrees.
+    MACHINE = ("guest_image", "guest_image_sha256", "guest_archive")
+    DISPLAY = ("device", "config", "cell")
+
+    def same_machine(self):
+        return all(self.a.tools.get(k) == self.b.tools.get(k) for k in self.MACHINE) and \
+            all(self.a.variants.get(n, {}).get(k) == self.b.variants.get(n, {}).get(k)
+                for n in self.common_variants() for k in self.DISPLAY)
+
+    def common_variants(self):
+        return sorted({k[1].split("/")[0] for k in self.keys()[0] if k[0] == 3})
+
+    def fact(self, va, vb, fmt):
+        """One value when both runs recorded the same, else each run's."""
+        show = lambda v: fmt(v) if v else "not recorded"  # noqa: E731
+        if va == vb:
+            return show(va)
+        return "%s for %s, %s for %s" % (show(va), self.la, show(vb), self.lb)
+
+    def tool(self, key, fmt=lambda v: "`%s`" % v):
+        return self.fact(self.a.tools.get(key), self.b.tools.get(key), fmt)
+
     def footer(self):
-        t = self.a.tools or self.b.tools
         self.w("## How this was produced", "")
         harness = self.args.harness
         where = "[`fork/tier3`](%s/tree/%s/fork/tier3)" % (REPO, harness) if harness else "`fork/tier3`"
-        self.w("- **Machine:** a QEMU/KVM virtual machine booted from the Arch Linux cloud image `%s` "
-               "(SHA-256 `%s`), with packages from the Arch Linux Archive snapshot of %s. Each build "
+        self.w("- **Machine:** a QEMU/KVM virtual machine booted from the Arch Linux cloud image %s "
+               "(SHA-256 %s), with packages from the Arch Linux Archive snapshot of %s. Each build "
                "was installed as a package and run by systemd on a virtual console, as on a real "
-               "system." % (t.get("guest_image") or "not recorded", t.get("guest_image_sha256") or "not recorded",
-                            t.get("guest_archive") or "not recorded"))
-        for name, meta in sorted(self.a.variants.items()):
-            cell = meta.get("cell")
-            self.w("- **Display `%s`:** QEMU device `%s`. kmscon configuration: %s.%s" % (
-                name, meta.get("device", "not recorded"),
-                ", ".join("`%s`" % c for c in meta.get("config", [])) or "not recorded",
-                " Character cell %d×%d pixels." % tuple(cell) if cell else ""))
+               "system." % (self.tool("guest_image"), self.tool("guest_image_sha256"),
+                            self.tool("guest_archive", str)))
+        for name in sorted(set(self.a.variants) | set(self.b.variants)):
+            ma, mb = self.a.variants.get(name, {}), self.b.variants.get(name, {})
+            self.w("- **Display `%s`:** QEMU device %s. kmscon configuration: %s. Character cell %s." % (
+                name, self.fact(ma.get("device"), mb.get("device"), lambda v: "`%s`" % v),
+                self.fact(ma.get("config"), mb.get("config"), lambda v: ", ".join("`%s`" % c for c in v)),
+                self.fact(ma.get("cell"), mb.get("cell"), lambda v: "%d×%d pixels" % tuple(v))))
         common = self.tiers()[0]
         if 3 in common:
             self.w("- **Screens on a display:** for each screen the console is cleared and a shell "
@@ -425,9 +454,9 @@ class Page:
             self.w("- **Screens in memory:** `tests/test_pixels.c` feeds each screen's bytes to the "
                    "terminal emulator and draws the result with kmscon's renderer into a buffer, "
                    "using the fonts in `tests/fonts`.")
-        self.w("- **Builds:** each package was built in the container image `%s`, with packages "
+        self.w("- **Builds:** each package was built in the container image %s, with packages "
                "from the Arch Linux Archive snapshot of %s." % (
-                   t.get("image_base") or "not recorded", t.get("archive_date") or "not recorded"))
+                   self.tool("image_base"), self.tool("archive_date", str)))
         if self.args.command:
             self.w("- **This page:** `%s`" % self.args.command)
         self.w("")

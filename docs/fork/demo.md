@@ -109,20 +109,20 @@ What each page should and should not look like is in its section file's `# look-
 
 | Section | What it shows |
 |---|---|
-| sgr | tier 3's `sgr` screen: the 16 colours as text and background, bold, underline, reverse, faint, italic, the 256-colour cube, a 24-bit ramp |
+| sgr | the 16 colours as text and background, bold, underline, reverse, faint, italic, the 256-colour cube, a 24-bit ramp |
 | colour-forms | SGR 38 and 48 in the semicolon forms (`38;5;n`, `38;2;r;g;b`) beside the colon forms (`38:5:n`, `38:2::r:g:b`) |
 | underline-styles | SGR `4:1` to `4:5`, ended by `4:0` and `24`, over colour, bold, reverse and CJK |
 | underline-colour | SGR 58 in both forms, with styles, and 59 |
 | strike | SGR 9 and 29, with colour, underline, reverse and CJK |
-| boxdraw | tier 3's `boxdraw` screen: box drawing, shades and blocks |
-| cjk | tier 3's `cjk` screen: CJK beside Latin |
+| boxdraw | box drawing, shades and blocks |
+| cjk | CJK beside Latin |
 | wide-margin | double-width characters placed and typed at the right margin |
 | combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 |
 | emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji |
 
-`sgr`, `boxdraw` and `cjk` run tier 3's screen scripts unchanged (`fork/tier3/guest/screens/`), so the demo shows what tier 3 captures. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+Every section but emoji is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, wide-margin and combining are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. emoji is not a tier 3 screen until colour emoji land (ADR-102 step 4c). The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
-The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws: as of this page, libtsm parses the underline styles, underline colour and strike, but the renderer draws every underline style as a single line and draws neither strike nor underline colour until step 2.4 lands its decoration sprites.
+The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws. The fork draws every one of them that way except emoji, which stay clipped or monochrome until colour emoji land (ADR-102 step 4c).
 
 ## Compare with stock kmscon
 
@@ -139,7 +139,7 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 
 | Section | Stock kmscon |
 |---|---|
-| sgr, boxdraw, cjk | Nothing beyond the font: these are tier 3's screens, whose goldens match upstream's behaviour. |
+| sgr, boxdraw, cjk | Nothing beyond the font: their tier 3 goldens match upstream's behaviour. |
 | colour-forms | The colon rows have no colour: upstream libtsm discards a whole SGR sequence that holds a colon, so their text is the default colour and their backgrounds are empty. The colon half of the mixed line is plain. The semicolon rows are right. |
 | underline-styles | Only the plain `4` line is underlined. Every line set with `4:n`, including the red, bold, reverse and blue-background ones, is drawn with none of its attributes. |
 | underline-colour | No line has a coloured underline. The colon rows have no underline. Upstream does not know 58, so the numbers after it are read as SGR codes of their own: `4;58;5;196` is underlined in the text's colour and blinks (5), and in `4;58;2;0;160;255` the 0 resets the line, which loses its underline. |
@@ -161,7 +161,7 @@ The first real run, on 2026-10-22: Arch Linux, one output (DP-8) at 7680x2160, t
 
 ## Adding a section
 
-A capability that adds something visible adds its section in the same PR. A section is one file, `fork/demo/sections/NN-name.sh`:
+A capability that adds something visible adds its section in the same PR. A section is one file, `fork/demo/sections/NN-name.sh`, normally a symlink to the tier 3 screen script `fork/tier3/guest/screens/name.sh` that holds it:
 
 - `NN` places it in the order; `name` is what the title page lists and what `demo.sh name` runs.
 - Its guidance is two comment fields, each one or more lines that demo.sh joins with spaces, in terms a person can check by eye. `# look-for:` says what a correct screen looks like; `# wrong-looks-like:` says what a defect looks like, naming what stock kmscon is known to get wrong and any defect the fork already knows about (with its issue), so that one is not reported again. Keep each to about 130 characters of ASCII, so it wraps to two rows of the footer at 80 columns. `tests/demo/feedback.py` fails a section without both fields.
@@ -169,4 +169,4 @@ A capability that adds something visible adds its section in the same PR. A sect
 
 Check it outside a VT with `DEMO_NOPAGE=1 fork/demo/demo.sh name`, which runs without waiting for keys and leaves the page and its guidance on the screen, then on a VT with `run-vt.sh`.
 
-The sections are meant to be tier 3's screens as well (#36): tier 3 would run each section in its guest and compare the capture with a golden, so every demonstration is also a check. Until tier 3 runs them (#22), only `sgr`, `boxdraw` and `cjk` are judged by tier 3.
+Each section is a tier 3 screen as well (#36): tier 3 runs it in its guest and compares the capture with a golden, so every demonstration is also a check. A new section adds its name to `SCREENS` in `fork/tier3/t3_evaluate.py`, before `cjk`, which stays last because `vt-restore` is compared with its golden (`test_t3.py` fails otherwise), and its goldens with `make tier3-bless`, in a commit of their own. Its `# look-for:` and `# wrong-looks-like:` lines are also its case's caption on the run page. Tier 3 does not judge emoji yet (ADR-102 step 4c).

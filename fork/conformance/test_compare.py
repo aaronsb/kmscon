@@ -58,6 +58,7 @@ def write_run(path, screens, tools=TOOLS, meta=META, run_id=None):
         t3img.write_png(str(path / rel), img)
         cases.append({"name": name, "status": "pass", "actual": rel, "text": TEXT,
                       "description": "A screen of text. Correct: every glyph in its cell.",
+                      "wrong": "A glyph cut at *one* edge <or> in two_cells.",
                       "stats": {"pixels": 0, "bbox": [], "max_delta": 0}})
     report = {"tier": 3, "run_id": run_id or "run-" + Path(path).name, "tools": tools,
               "variants": meta, "cases": cases}
@@ -104,6 +105,9 @@ class CompareTest(unittest.TestCase):
         self.assertIn("| 1 | row 1, cols 1-2 | 15 | 192 | `he` |", page)
         self.assertIn("| 2 | row 3, cols 5-13 | 90 | 192 | `4:3 curly` |", page)
         self.assertIn("**What correct looks like:** every glyph in its cell.", page)
+        # The caption's markdown characters show as themselves.
+        self.assertIn("**What wrong looks like:** A glyph cut at \\*one\\* edge \\<or\\> in two\\_cells.",
+                      page)
         self.assertIn("**Which is correct:** *not yet judged*", page)
         strip = read_png("out/v-curly-strip.png")
         self.assertIn(pageimg.OUTLINE_RGB, strip.data)

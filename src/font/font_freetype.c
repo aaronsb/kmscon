@@ -429,7 +429,9 @@ static struct kmscon_glyph *render_glyph(struct kmscon_font *font, FT_Face face,
  * A cluster of several codepoints (ADR-102): HarfBuzz shapes it on @face, the
  * face that covers its first codepoint, and FreeType draws each shaped glyph.
  * They are composed into a canvas one glyph box wider on each side, then the
- * ink is placed in the cell as a single glyph's bitmap would be.
+ * ink is placed in the cell as a single glyph's bitmap would be. A codepoint
+ * @face lacks shapes to glyph 0, the missing-glyph box; it is left out, with
+ * its advance, so the box does not cover the rest of the cluster.
  */
 static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face face,
 					   const uint32_t *cps, size_t len, unsigned int cwidth)
@@ -468,6 +470,8 @@ static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face fac
 		FT_GlyphSlot slot = face->glyph;
 		FT_Bitmap *map;
 
+		if (!info[i].codepoint)
+			continue;
 		if (load_glyph(face, info[i].codepoint))
 			goto next;
 		map = &slot->bitmap;

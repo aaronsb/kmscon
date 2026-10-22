@@ -259,6 +259,42 @@ static void test_copy_mono_clip(void)
 	free(buf);
 }
 
+/*
+ * A cluster's codepoint the face lacks is left out, not drawn as the face's
+ * missing-glyph box: '1' with a keycap mark the face does not have draws as '1'
+ * with a variation selector, which shaping hides.
+ */
+static void test_cluster_missing_mark(void)
+{
+	static const uint32_t keycap[] = {'1', 0x20e3};
+	static const uint32_t plain[] = {'1', 0xfe0f};
+	struct kmscon_font font = {.width = 9, .height = 18};
+	struct kmscon_glyph *a, *b;
+	FT_Library ft;
+	FT_Face face;
+	unsigned int i, ink = 0;
+
+	assert(!FT_Init_FreeType(&ft));
+	assert(!FT_New_Face(ft, TEST_FONT_DIR "/DejaVuSansMono.ttf", 0, &face));
+	assert(!FT_Set_Pixel_Sizes(face, 0, 14));
+	/* the premise: the face has no keycap mark */
+	assert(!FT_Get_Char_Index(face, 0x20e3));
+
+	a = render_cluster(&font, face, keycap, 2, 2);
+	b = render_cluster(&font, face, plain, 2, 2);
+	assert(a && b);
+	assert(a->buf.width == b->buf.width && a->buf.height == b->buf.height);
+	for (i = 0; i < b->buf.width * b->buf.height; i++)
+		ink += b->buf.data[i] != 0;
+	assert(ink > 0);
+	assert(!memcmp(a->buf.data, b->buf.data, a->buf.width * a->buf.height));
+
+	free(a);
+	free(b);
+	FT_Done_Face(face);
+	FT_Done_FreeType(ft);
+}
+
 int main(void)
 {
 	assert(FcInit());
@@ -266,6 +302,7 @@ int main(void)
 	test_filter_unit();
 	test_monospace_fallback_set();
 	test_copy_mono_clip();
+	test_cluster_missing_mark();
 
 	FcFini();
 	return 0;

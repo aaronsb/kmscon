@@ -112,6 +112,7 @@ if enable_font_freetype
         'test_font_freetype',
         'test_font_freetype.c',
         include_directories: src_inc,
+        c_args: '-DTEST_FONT_DIR="@0@"'.format(meson.current_source_dir() / 'fonts'),
         dependencies: [
             libtsm_deps,
             freetype_deps,

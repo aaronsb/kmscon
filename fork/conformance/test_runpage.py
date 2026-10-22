@@ -145,6 +145,23 @@ class RunPageTest(unittest.TestCase):
         self.assertIn("[2026-10-20](../prev/README.md), \"Earlier\"", page)
         self.assertIn("| 1 | 1 of 2 | 2 of 3 |", page)
 
+    def test_tier_not_run(self):
+        # Tier 2 only then, tier 3 only now: neither tier's cases are new
+        # or removed.
+        Path("tier3.json").write_text(json.dumps({"tier": 3, "variants": {}, "cases": [
+            case("v/x", "pass", None, None)]}))
+        argv = ["--out", "ledger/runs/now", "--kmscon", "ccccccc", "--libtsm", "ddddddd",
+                "--date", "2026-10-22", "--ledger", "ledger/LEDGER.md", "--history", "history",
+                "tier1.json", "tier3.json"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            runpage.main(argv)
+        page = Path("ledger/runs/now/README.md").read_text()
+        self.assertIn("- **New cases:** none.", page)
+        self.assertIn("- **Removed cases:** none.", page)
+        self.assertIn("Tier 3 was not run then, so its cases are not compared.", page)
+        self.assertIn("Tier 2 is not run now, so its cases are not compared.", page)
+        self.assertIn("| 3 | not run | 1 of 1 |", page)
+
     def test_tier1_text(self):
         page = self.fx.run("ledger/runs/now")
         self.assertIn("| `t1-ok` | 4×1 | pass | fork: kept on purpose |", page)

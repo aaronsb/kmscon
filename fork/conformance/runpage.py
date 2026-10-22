@@ -291,9 +291,14 @@ class Page:
             self.w("| %d | %s | %s |" % (tier, fmt(prev["counts"].get(tier)), fmt(now.get(tier))))
         self.w("")
 
+        # A tier run only now, or only then, is named once, not listed case
+        # by case as new or removed.
+        then = set(prev["cases"] if prev["cases"] is not None else prev["counts"])
         groups = {"failing": [], "passing": [], "new": [], "changed": []}
         unknown = set()
         for tier, rep in sorted(self.reports.items()):
+            if tier not in then:
+                continue
             for case in rep["cases"]:
                 was, ok = self.prev_status(tier, case), case["status"] in OK
                 ref = "[`%s`](#%s)" % (case["name"], anchor(case_heading(tier, case["name"], case["status"])))
@@ -311,6 +316,8 @@ class Page:
         removed = []
         if prev["cases"] is not None:
             for tier, cases in sorted(prev["cases"].items()):
+                if tier not in self.reports:
+                    continue
                 names = {c["name"] for c in self.reports.get(tier, {"cases": []})["cases"]}
                 removed += [(tier, "`%s`" % n) for n in sorted(cases) if n not in names]
         else:
@@ -331,6 +338,10 @@ class Page:
                "- **New cases:** " + listing(groups["new"]),
                "- **Removed cases:** " + listing(removed),
                "- **Goldens changed:** " + listing(groups["changed"]), "")
+        for tier in sorted(set(self.reports) - then):
+            self.w("Tier %d was not run then, so its cases are not compared." % tier, "")
+        for tier in sorted(then - set(self.reports)):
+            self.w("Tier %d is not run now, so its cases are not compared." % tier, "")
         if prev["cases"] is None:
             self.w("The previous run left no per-case record. A case counts as passing then when the "
                    "previous run passed every case of its tier, and as new when its golden was added "

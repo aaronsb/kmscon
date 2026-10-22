@@ -357,6 +357,27 @@ static void test_cluster_stacked_mark(void)
 	FT_Done_FreeType(ft);
 }
 
+/*
+ * render_cluster reads its glyph from canvas + gw - centre_dx() in a canvas
+ * three glyphs wide, so the offset stays within one glyph width either way,
+ * whatever the cluster's advance, a negative one included.
+ */
+static void test_centre_dx_bounded(void)
+{
+	static const long advs[] = {-100 * 64, -3 * 8 * 64, -64, 0, 4 * 64, 8 * 64, 16 * 64, 40 * 64};
+	struct kmscon_font font = {.width = 8, .height = 16};
+	struct kmscon_glyph glyph = {.double_width = true, .buf = {.width = 16, .height = 16}};
+	unsigned int i;
+	int dx;
+
+	for (i = 0; i < sizeof(advs) / sizeof(advs[0]); i++) {
+		dx = centre_dx(&font, &glyph, advs[i]);
+		assert(dx >= -16 && dx <= 16);
+	}
+	/* a narrow glyph is still centred in its two cells */
+	assert(centre_dx(&font, &glyph, 8 * 64) == 4);
+}
+
 int main(void)
 {
 	assert(FcInit());
@@ -366,6 +387,7 @@ int main(void)
 	test_copy_mono_clip();
 	test_cluster_missing_mark();
 	test_cluster_stacked_mark();
+	test_centre_dx_bounded();
 
 	FcFini();
 	return 0;

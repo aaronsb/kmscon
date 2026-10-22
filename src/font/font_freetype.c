@@ -387,7 +387,8 @@ static int load_glyph(FT_Face face, FT_UInt index)
  * How far to move a glyph that advances @adv (26.6) right so that it is
  * centred in its box: a narrow glyph in a two-cell box, such as a text-style
  * emoji widened by VS16, sits in the middle of the two cells. A glyph as wide
- * as its box stays where the font puts it.
+ * as its box stays where the font puts it. A negative advance, which a shaped
+ * cluster can have, counts as none, so the move stays within the box.
  */
 static int centre_dx(struct kmscon_font *font, const struct kmscon_glyph *glyph, long adv)
 {
@@ -395,6 +396,8 @@ static int centre_dx(struct kmscon_font *font, const struct kmscon_glyph *glyph,
 
 	if (!glyph->double_width || px > font->width)
 		return 0;
+	if (px < 0)
+		px = 0;
 	return (glyph->buf.width - px) / 2;
 }
 

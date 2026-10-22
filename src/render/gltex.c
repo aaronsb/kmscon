@@ -91,9 +91,17 @@ struct gl_glyph {
 #define GLYPH_STRIDE(gly) ((gly)->buf.stride)
 #define GLYPH_DATA(gly) ((gly)->buf.data)
 
+/*
+ * The glyph cache holds at most this many screens of atlas cells between
+ * flushes (see gltex_flush()).
+ */
+#define GLTEX_CACHE_SCREENS 4
+
 struct gltex {
 	struct shl_hashtable *glyphs;
 	unsigned int max_tex_size;
+	unsigned int cells;	/* atlas cells handed out since the last flush */
+	unsigned int max_cells; /* flush at the next frame once cells passes this */
 
 	struct dlist atlases;
 
@@ -227,6 +235,7 @@ static int gltex_set(struct kmscon_text *txt)
 	txt->max_rows = kmscon_text_get_rows(txt, FONT_HEIGHT(txt));
 	txt->cols = txt->max_cols;
 	txt->rows = txt->max_rows;
+	gt->max_cells = GLTEX_CACHE_SCREENS * (txt->max_cols * txt->max_rows + 1);
 	compute_advance_and_offset(txt);
 	gltex_set_cos(gt, txt->orientation);
 
@@ -293,10 +302,12 @@ static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num)
 	unsigned int width, height, nsize;
 	GLenum err;
 
-	/* check whether the last added atlas has still room for one glyph */
-	atlas = dlist_first(&gt->atlases, struct atlas, list);
-	if (atlas && atlas->fill + num <= atlas->count)
-		return atlas;
+	/* an atlas with room, which after a flush may be an old one */
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		if (atlas->fill + num <= atlas->count)
+			return atlas;
+	}
 
 	/* all atlases are full so we have to create a new atlas */
 	atlas = calloc(1, sizeof(*atlas));
@@ -505,6 +516,7 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 		goto err_free;
 
 	atlas->fill += num;
+	gt->cells += num;
 	free(glyph);
 
 	return glglyph;
@@ -531,6 +543,31 @@ static int gltex_rotate(struct kmscon_text *txt, enum Orientation orientation)
 	return 0;
 }
 
+/*
+ * Empty the glyph cache and refill every atlas from its first cell; the atlases
+ * and their textures stay. Atlas cells are handed out in order and not given
+ * back one at a time, and a cluster's frame key changes each time the screen
+ * re-creates the cluster, so without this the atlases grow without bound. It
+ * runs between frames, as no queued vertex may name a cell that is refilled.
+ */
+static void gltex_flush(struct kmscon_text *txt)
+{
+	struct gltex *gt = txt->data;
+	struct shl_hashtable *glyphs;
+	struct atlas *atlas;
+
+	if (shl_hashtable_new(&glyphs, shl_direct_hash, shl_direct_equal, free_glyph))
+		return; /* keep the full cache and try again next frame */
+	shl_hashtable_free(gt->glyphs);
+	gt->glyphs = glyphs;
+
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		atlas->fill = 0;
+	}
+	gt->cells = 0;
+}
+
 static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 {
 	struct gltex *gt = txt->data;
@@ -540,6 +577,9 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	ret = display_use(txt->disp);
 	if (ret)
 		return ret;
+
+	if (gt->cells > gt->max_cells)
+		gltex_flush(txt);
 
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{

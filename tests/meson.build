@@ -48,6 +48,26 @@ test_bbulk = executable(
 )
 test('test_bbulk', test_bbulk)
 
+if enable_renderer_gltex
+    # GL is stubbed in the test; only its headers are used.
+    test_gltex = executable(
+        'test_gltex',
+        [
+            'test_gltex.c',
+            embed_gen.process('../src/render/gltex_atlas.vert', extra_args: shader_regex),
+            embed_gen.process('../src/render/gltex_atlas.frag', extra_args: shader_regex),
+        ],
+        include_directories: src_inc,
+        dependencies: [
+            libtsm_deps,
+            shl_deps,
+            htable_deps,
+            glesv2_deps.partial_dependency(compile_args: true, includes: true),
+        ],
+    )
+    test('test_gltex', test_gltex)
+endif
+
 if enable_video_drm2d
     test_blend = executable(
         'test_blend',

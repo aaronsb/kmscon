@@ -84,6 +84,7 @@ class Run:
         if not self.reports:
             raise SystemExit("compare: no tier 2 or tier 3 report in %s" % path)
         self.cases = {(r["tier"], c["name"]): c for r in self.reports for c in r["cases"]}
+        self.ids = {r["tier"]: r.get("run_id") for r in self.reports}
         self.tools = next((r["tools"] for r in self.reports if r["tier"] == 3 and r.get("tools")), {})
         self.variants = next((r.get("variants", {}) for r in self.reports if r["tier"] == 3), {})
 
@@ -184,6 +185,11 @@ class Page:
         self.a2 = Run(args.a2) if args.a2 else None
         self.b2 = Run(args.b2) if args.b2 else None
         self.la, self.lb = args.label_a, args.label_b
+        for flag, run, again in (("--a2", self.a, self.a2), ("--b2", self.b, self.b2)):
+            same = [t for t, i in sorted(run.ids.items()) if i and again and again.ids.get(t) == i]
+            if same:
+                raise SystemExit("compare: %s holds the same tier %d run (%s) as %s; a second run "
+                                 "is a separate capture" % (flag, same[0], run.ids[same[0]], flag[:-1]))
         self.verdicts = {}
         if args.verdicts:
             for line in Path(args.verdicts).read_text().splitlines():
@@ -321,6 +327,10 @@ class Page:
             return
         self.w("Each build below was captured in two separate runs, each in a freshly booted machine. "
                "A build that draws the same pixels every time shows 0 differing pixels.", "")
+        unknown = [lbl for lbl, r, r2 in pairs if not all(r.ids.values()) or not all(r2.ids.values())]
+        if unknown:
+            self.w("The reports of %s carry no run id, so this page cannot confirm that its two "
+                   "runs are separate captures rather than one run saved twice." % " and ".join(unknown), "")
         self.w("| Screen | Display | " + " | ".join("%s: run 1 vs run 2" % p[0] for p in pairs) + " |",
                "|---|---|" + "---|" * len(pairs))
         for k in both:

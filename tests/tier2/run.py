@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pixcmp  # noqa: E402
@@ -57,7 +58,10 @@ def write_report(path, cases, libtsm=None):
     with open(path, "w") as f:
         tools = tool_versions()
         tools["libtsm"] = libtsm
-        json.dump({"tier": 2, "tools": tools, "cases": cases}, f, indent=2)
+        # A fresh id per run lets a comparison tell two runs from one run
+        # saved twice.
+        json.dump({"tier": 2, "run_id": uuid.uuid4().hex, "tools": tools, "cases": cases},
+                  f, indent=2)
         f.write("\n")
 
 

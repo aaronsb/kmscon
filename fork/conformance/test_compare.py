@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -47,7 +48,7 @@ def screen(paint=(), w=W, h=H):
 CHANGED = [(x, 5, RED) for x in range(15)] + [(x, 45, RED) for x in range(40, 130)]
 
 
-def write_run(path, screens, tools=TOOLS, meta=META):
+def write_run(path, screens, tools=TOOLS, meta=META, run_id=None):
     """A saved run: one tier 3 report and its PNGs, as compare.py save writes."""
     path = Path(path)
     (path / "t3").mkdir(parents=True)
@@ -58,7 +59,8 @@ def write_run(path, screens, tools=TOOLS, meta=META):
         cases.append({"name": name, "status": "pass", "actual": rel, "text": TEXT,
                       "description": "A screen of text. Correct: every glyph in its cell.",
                       "stats": {"pixels": 0, "bbox": [], "max_delta": 0}})
-    report = {"tier": 3, "tools": tools, "variants": meta, "cases": cases}
+    report = {"tier": 3, "run_id": run_id or "run-" + Path(path).name, "tools": tools,
+              "variants": meta, "cases": cases}
     (path / "tier3-report.json").write_text(json.dumps(report))
 
 
@@ -117,6 +119,21 @@ class CompareTest(unittest.TestCase):
         self.assertIn("| `same` | 200×60, bbulk | identical (0 px) | **3 px differ** |", page)
         self.assertIn("| `curly` | 200×60, bbulk | identical (0 px) | identical (0 px) |", page)
         self.assertIn("Each build was captured once.", self.page())
+
+    def test_second_run_is_another_run(self):
+        # The same run saved twice is refused as its own second run; a run
+        # without an id is flagged.
+        shutil.copytree("a", "a-again")
+        with self.assertRaises(SystemExit) as e:
+            self.page("out", "--a2", "a-again")
+        self.assertIn("--a2 holds the same tier 3 run (run-a) as --a", str(e.exception))
+        with self.assertRaises(SystemExit):
+            self.page("out", "--b2", "b")
+        rep = json.loads(Path("b2/tier3-report.json").read_text())
+        del rep["run_id"]
+        Path("b2/tier3-report.json").write_text(json.dumps(rep))
+        page = self.page("out", "--a2", "a2", "--b2", "b2")
+        self.assertIn("The reports of fork carry no run id", page)
 
     def test_header_and_footer(self):
         page = self.page()

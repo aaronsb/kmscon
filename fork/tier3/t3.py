@@ -39,6 +39,7 @@ import struct
 import subprocess
 import sys
 import time
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3img  # noqa: E402
@@ -1004,7 +1005,10 @@ def run(args):
         # they finished in, so a concurrent run's report matches a serial one's.
         cases = [c for v in variants for c in results[v][0]]
         meta = {v: results[v][1] for v in variants}
-        report = {"tier": 3, "tools": run_tools(), "cases": cases, "variants": meta}
+        # A fresh id per run lets a comparison tell two runs from one run
+        # saved twice.
+        report = {"tier": 3, "run_id": uuid.uuid4().hex, "tools": run_tools(),
+                  "cases": cases, "variants": meta}
         os.makedirs(os.path.dirname(REPORT), exist_ok=True)
         with open(REPORT, "w") as f:
             json.dump(report, f, indent=2)

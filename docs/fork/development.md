@@ -208,7 +208,7 @@ The goldens decide whether a change is correct, so they change under stricter ru
 
 ## Reviews
 
-- Every PR gets a code review, by a person or a reviewing agent who did not write the change.
+- Every PR gets a code review, by a person or a reviewing agent who did not write the change. The ledger PR is the exception: it changes no code, and its contents are checked instead (see [The conformance record](#the-conformance-record)).
 - Each finding is fixed on the branch before merge, or filed as an issue that gives the reason it was deferred and a done condition. The PR body lists filed findings by number (kmscon #33 filed #40, #43, #44 and #45).
 - Each round of fixes is posted as a PR comment that names the commits and the gates run on them (libtsm #12's "Review round 1, fixed in a1b9be8..e4eaed1").
 - A review that finds nothing to fix still records what it checked, so the next reader can tell a clean review from an absent one.
@@ -237,8 +237,15 @@ A committed ledger run (`make sheet NOTE=...` and its entry in [LEDGER.md](../co
 A working session runs as a loop: increments merge one by one, then the bring-home point, then the ledger run, then the handoff to the next session. The ledger run is its own small PR, separate from any feature PR: a branch from that head of `main` (for example `docs/ledger-<date>`) carrying only the run page and its LEDGER.md entry, opened with `--repo aaronsb/kmscon --base main`, and merged once its contents are checked (the measured commits match `main`'s head and the page renders). It changes no code, so it needs no code review.
 
 ```sh
-make tier3                              # at the same main commit, to include tier 3
+git fetch origin
+git worktree add ../kmscon-ledger-<date> -b docs/ledger-<date> origin/main
+cd ../kmscon-ledger-<date>
+make tier3                              # optional: includes tier 3 in the run
 make sheet NOTE="what this run marks"
+git add docs/conformance
+git commit -m "docs(conformance): ledger run at <short hash of main>: <what this run marks>"
+git push -u origin docs/ledger-<date>
+gh pr create --repo aaronsb/kmscon --base main
 ```
 
 `make sheet` runs tiers 1 and 2, draws the contact sheet and adds the ledger entry. It refuses a tree with uncommitted changes, so every entry names the commits it measured.

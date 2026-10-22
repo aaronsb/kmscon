@@ -11,10 +11,11 @@ make tier3          # pkg, then the 2D variants; report in fork/build/tier3-repo
 make tier3-gl       # pkg, then the GL variant, which is outside the default run (#17)
 make tier3 VARIANTS="2d-1280x800 2d-7680x2160 gl-1280x800"   # any set of variants
 make tier3-run VARIANTS=2d-1280x800     # without rebuilding the package
+make tier3 JOBS=2   # up to two variants at once, each in its own VM
 make tier3-selftest # unit tests of the compare module
 ```
 
-Host needs: docker (for `make pkg`), `qemu-system-x86_64` with KVM, `qemu-img`, `xorriso`, `gpg`, `curl`, python 3. Everything runs as the invoking user; nothing needs root. QEMU runs headless, one VM at a time (4 vCPUs, 4 GiB), and the driver stops every VM it starts by the PID it started. A run takes about 40 seconds per variant once the base image exists.
+Host needs: docker (for `make pkg`), `qemu-system-x86_64` with KVM, `qemu-img`, `xorriso`, `gpg`, `curl`, python 3. Everything runs as the invoking user; nothing needs root. QEMU runs headless, one VM per variant (4 vCPUs, 4 GiB each), and the driver stops every VM it starts by the PID it started. Once the base image exists, the two 2D variants take about 50 s one after the other and about 28 s with `JOBS=2`.
 
 ## What is pinned
 
@@ -31,12 +32,20 @@ The pins live at the top of `fork/tier3.mk`. The snapshot date has to be no olde
 ## How a run works
 
 1. `make tier3-image` provisions the base once: a qcow2 overlay on the pristine image, booted with a cloud-init seed disc (`guest/user-data.in`). Cloud-init creates the user `tester` (password `tester`, prompt `$ `, no MOTD), installs kmscon's runtime dependencies and the fonts, points `autovt@.service` at `kmsconvt@.service`, enables the boot hook `tier3-install.service`, disables itself and powers off.
-2. Each variant boots a throwaway overlay of the base with a second disc labelled `T3PKG`: the built packages, the variant's `kmscon.conf`, the screen scripts and `guest/setup`. The boot hook runs `setup`, which installs the packages with `pacman -U` and routes kmscon's log to the serial console. Changing anything on the disc never needs a new base image.
-3. The driver (`t3.py`) talks QMP on a unix socket. It waits for `TIER3-INSTALL-OK` on the serial log, presses Ctrl+Alt+F2 (logind spawns kmscon on tty2), logs in, and types `t3 sgr`, `t3 boxdraw`, `t3 cjk`. After each, it captures until two captures a second apart are identical.
+2. Each variant boots a throwaway overlay of the base with a second disc labelled `T3PKG`: the built packages, the variant's `kmscon.conf`, the screen scripts and `guest/setup`. The boot hook runs `setup`, which installs the packages with `pacman -U`, routes kmscon's log to the serial console, and makes the second serial port (ttyS1) writable as the event port: the login shell and each screen script write a line there. Changing anything on the disc never needs a new base image.
+3. The driver (`t3.py`) talks QMP on a unix socket. It waits for `TIER3-INSTALL-OK` and systemd's `Reached target Login Prompts` on the serial log, presses Ctrl+Alt+F2 (logind spawns kmscon on tty2; a boot without the keypress has no kmscon there), logs in, and types `t3 sgr`, `t3 boxdraw`, `t3 cjk`. After each, it waits for the screen script's line on the event port, then captures until two captures a second apart are identical.
 4. VT switch: Ctrl+Alt+F3, then Ctrl+Alt+F2. The `vt-switch` case passes when logind's second kmscon on tty3 draws a screen that is neither blank nor the one just left, so a switch that never happens cannot let `vt-restore` pass on its own. `vt-restore` then requires the tty2 screen to equal the `cjk` golden exactly.
 5. The driver reads kmscon's `Display ... with backend [..] text renderer [..]` line from the serial log and fails the variant if kmscon drew with a renderer other than the one the variant exists to test.
 
+Each step waits for state the driver can observe: a line on the serial log or the event port, or a screen that has changed and then settled. Every wait has a timeout that fails the case and names what it waited for, so a slow host gives a `fail`, never a capture taken too early. The one fixed pause left is 50 ms between key chords, because QEMU's input queue is bounded and shows nothing outside QEMU. A password typed before the prompt is discarded by PAM, so when no login follows within 20 s the driver types it once more.
+
 A step that fails part way keeps the captures taken before it: each remaining case is reported as `fail` with the error.
+
+## Concurrent runs
+
+`JOBS=N` runs up to N variants at once, each in its own worker process and VM; the default, 1, runs them one after the other in the driver's own process. The report lists variants in the requested order, so it equals a serial run's report apart from each variant's `timing`. GL variants share the host's render node and never run together; a GL variant runs beside a 2D one. A second run started while one holds `fork/build/tier3.lock` exits at once with the holder's PID. Log lines carry the seconds since the run started and the variant's name.
+
+Only `JOBS=2` has been measured, on a 32-thread host. There is one GL variant, so the rule that keeps GL variants apart has been checked only with stand-in jobs. The default stays 1 until serial and concurrent reports have matched over more runs. Snapshots that would let a variant skip its boot are deferred (#16).
 
 ## Variants
 
@@ -102,6 +111,7 @@ The tier exits non-zero on any `fail` or `missing`.
 - `vt-switch` has no golden (`"golden": null`); it is a check.
 - `actual`, `diff` and the thumbnails are PNGs, so a contact sheet can show them. The raw PPM captures sit beside them.
 - Thumbnails are at most 480 pixels wide, nearest-neighbour. In the diff thumbnail, any block holding a differing pixel is red, so a one-pixel difference stays visible. Fields are `null` where there is nothing to show.
+- `timing` under each variant holds the seconds from the variant's start to the end of each phase (`install`, `boot`, `kmscon`, `login`, each screen, `vt-switch`, `vt-restore`) and the seconds `evaluate` took.
 - `bbox` is a list of at most 16 regions for outlining. Differing pixels in touching 16-pixel tiles share a region, coarser tiles are used while there are many clusters, and then the closest regions merge.
 - A variant that cannot boot or drive reports each of its cases as `fail` with an `error`.
 
@@ -109,6 +119,7 @@ The tier exits non-zero on any `fail` or `missing`.
 
 - Guest config: `palette=solarized` appended to `guest/kmscon.conf` turned the four golden cases of `2d-1280x800` red (929 760 to 1 024 000 pixels; `vt-switch`, a check, stayed green); restoring the file turned them green.
 - Code: offsetting double-width glyphs by one pixel in `src/render/bbulk.c` (rebuilt with `make pkg`) turned `cjk` and `vt-restore` red (1 870 and 1 852 pixels, all within the CJK lines) and left `sgr` and `boxdraw` green; restoring the file and rebuilding turned them green.
+- Concurrent: the same `palette=solarized` under `JOBS=2` turned the four golden cases of both 2D variants red at once (`2d-7680x2160`: 16 494 560 to 16 588 800 pixels); restoring the file turned them green.
 - Tolerance: a golden altered by one channel level at one pixel, with a sidecar `max_delta=1`, `max_pixels=1`, gave `near` and exit 0; without the sidecar the same run gave `fail` and exit 2. The golden was then restored.
 
 ## Known failure: the GL renderer under virgl, intermittently

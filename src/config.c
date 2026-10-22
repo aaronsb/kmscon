@@ -863,7 +863,14 @@ static int conf_parse_deco_color(struct conf_option *opt, bool on, const char *a
 		c.rgb[1] = val >> 8;
 		c.rgb[2] = val;
 	} else {
-		if (shl_strtou(arg, &val) || val > 255)
+		/* decimal digits only: a leading 0 is not octal */
+		if (!arg[0] || strlen(arg) > 3)
+			goto err;
+		for (i = 0; arg[i]; i++)
+			if (!isdigit((unsigned char)arg[i]))
+				goto err;
+		val = strtoul(arg, &end, 10);
+		if (val > 255)
 			goto err;
 		c.kind = KMSCON_COLOR_INDEX;
 		c.index = val;

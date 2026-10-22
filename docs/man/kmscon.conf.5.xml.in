@@ -84,7 +84,7 @@ font-size=18
 font-name=Ubuntu Mono
     </programlisting>
     <para>In any line, every character are ignored after a # and considered to be a comment,
-          except a # that opens a value, as in <literal>underline-color=#ff8000</literal>.
+          except a # that opens a #rrggbb colour value, as in <literal>underline-color=#ff8000</literal>.
           whitespace are ignored at begining and ending of a line, and around the '=' when
           assigning a parameter</para>
   </refsect1>

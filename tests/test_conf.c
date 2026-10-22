@@ -182,6 +182,48 @@ static void test_parse_text(void)
 	assert(!parse_conf(&ctx, "underline-color=#12345\n"));
 	assert(!parse_conf(&ctx, "underline-color=#12345g\n"));
 	assert(!parse_conf(&ctx, "strike-color=red\n"));
+	assert(!parse_conf(&ctx, "underline-color=0x10\n"));
+	assert(!parse_conf(&ctx, "underline-color=-0\n"));
+
+	/* an index is decimal: a leading 0 is not octal */
+	conf = parse_conf(&ctx, "underline-color=010\nstrike-color=08\n");
+	assert(conf);
+	assert(conf->underline_color.kind == KMSCON_COLOR_INDEX);
+	assert(conf->underline_color.index == 10);
+	assert(conf->strike_color.kind == KMSCON_COLOR_INDEX);
+	assert(conf->strike_color.index == 8);
+}
+
+/* a '#' opens a comment, unless it begins a #rrggbb value */
+static void test_parse_comment(void)
+{
+	struct conf_ctx *ctx;
+	struct kmscon_conf_t *conf;
+
+	conf = parse_conf(&ctx, "font-name= # comment\n");
+	assert(conf);
+	assert(!strcmp(conf->font_name, ""));
+
+	conf = parse_conf(&ctx, "font-name=#comment\n");
+	assert(conf);
+	assert(!strcmp(conf->font_name, ""));
+
+	conf = parse_conf(&ctx, "font-name=mono # comment\n");
+	assert(conf);
+	assert(!strcmp(conf->font_name, "mono"));
+
+	conf = parse_conf(&ctx, "font-name= #abcdef0\n");
+	assert(conf);
+	assert(!strcmp(conf->font_name, ""));
+
+	conf = parse_conf(&ctx, "underline-color= #00ff80 # green\nstrike-color=#0000ff#blue\n");
+	assert(conf);
+	assert(conf->underline_color.kind == KMSCON_COLOR_RGB);
+	assert(conf->underline_color.rgb[0] == 0x00);
+	assert(conf->underline_color.rgb[1] == 0xff);
+	assert(conf->underline_color.rgb[2] == 0x80);
+	assert(conf->strike_color.kind == KMSCON_COLOR_RGB);
+	assert(conf->strike_color.rgb[2] == 0xff);
 }
 
 int main()
@@ -189,6 +231,7 @@ int main()
 	test_parse_mode(config_file, parsed_modes, 6);
 	test_parse_screen(screen_conf, parsed_screens, 3);
 	test_parse_text();
+	test_parse_comment();
 
 	return 0;
 }

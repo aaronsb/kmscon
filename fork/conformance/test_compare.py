@@ -109,6 +109,16 @@ class CompareTest(unittest.TestCase):
         self.assertIn(pageimg.OUTLINE_RGB, strip.data)
         self.assertIn(pageimg.DIFF_RGB, strip.data)
 
+    def test_merged_regions_footnoted(self):
+        # 52 specks 32 pixels apart are more areas than the regions shown.
+        specks = [(x, y, RED) for x in range(5, 400, 32) for y in range(5, 100, 32)]
+        write_run("ma", {"v/curly": screen(w=400, h=100)})
+        write_run("mb", {"v/curly": screen(specks, w=400, h=100)})
+        page = self.page("out", "--a", "ma", "--b", "mb")
+        self.assertIn("in 16 regions |", page)
+        self.assertIn("*More than 16 separate areas differ, so nearby ones are merged", page)
+        self.assertNotIn("separate areas differ", self.page())
+
     def test_verdicts(self):
         page = self.page("out", "--verdicts", "verdicts")
         self.assertIn("**Which is correct:** upstream is right; the red is stray.", page)

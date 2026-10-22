@@ -270,7 +270,8 @@ class Page:
         if not points:
             return "same", (a,)
         regions = [tuple(r) for r in stats["bbox"]]
-        return "differ", (a, b, stats, regions, region_stats(a, b, points, regions))
+        return "differ", (a, b, stats, regions, region_stats(a, b, points, regions),
+                          t3img.regions_merged(points))
 
     def summary(self, status, data):
         if status == "same":
@@ -383,7 +384,7 @@ class Page:
             self.w("The captures differ in size (%d×%d and %d×%d), so they are not compared pixel by "
                    "pixel." % (a.width, a.height, b.width, b.height), "")
             return
-        a, b, stats, regions, per = data
+        a, b, stats, regions, per, merged = data
         box = crop_box([a, b], regions)
         step = step_for(box)
         diff, _ = diff_image(a, b, box, step)
@@ -415,6 +416,9 @@ class Page:
         elif ca and cb:
             self.w("*Regions are given in pixels: the runs record different character cells, "
                    "%d×%d and %d×%d.*" % (tuple(ca) + tuple(cb)), "")
+        if merged:
+            self.w("*More than %d separate areas differ, so nearby ones are merged into one region: "
+                   "a region can cover cells that did not all differ.*" % t3img.MAX_REGIONS, "")
 
     def crop_note(self, img, box, step):
         if box == (0, 0, img.width, img.height) and step == 1:

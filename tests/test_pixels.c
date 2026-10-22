@@ -35,6 +35,8 @@
 #undef LOG_SUBSYSTEM
 #include "../src/render/bbulk.c"
 #undef LOG_SUBSYSTEM
+#include "../src/render/deco.c"
+#undef LOG_SUBSYSTEM
 #include "../src/video/drm2d_render.c"
 
 void shl_module_ref(struct shl_module *module) {}
@@ -42,7 +44,7 @@ void shl_module_unref(struct shl_module *module) {}
 
 /* ---- in-memory display ---- */
 
-static uint32_t *fb;
+static uint32_t *fb, *fb_back;
 static unsigned int fb_w, fb_h;
 
 unsigned int display_get_width(struct display *disp)
@@ -109,7 +111,22 @@ int display_blend(struct display *disp, const struct video_blend_req *req)
 struct screen {
 	const char *name;
 	const char *bytes;
+	/* optional: the bytes of a second frame; frames 2 and 4 repeat the
+	 * one before, so the result is the 4th frame's buffer */
+	const char *next;
 };
+
+/* UTF-8 */
+#define E_ACUTE "\xc3\xa9"
+#define A_TILDE "\xc3\xa3"
+#define N_TILDE "\xc3\xb1"
+#define COMB_GRAVE "\xcc\x80"
+#define COMB_ACUTE "\xcc\x81"
+#define COMB_TILDE "\xcc\x83"
+#define COMB_DIAER "\xcc\x88"
+#define HEART "\xe2\x9d\xa4"
+#define VS15 "\xef\xb8\x8e"
+#define VS16 "\xef\xb8\x8f"
 
 static const struct screen screens[] = {
 	{"ascii",
@@ -163,6 +180,56 @@ static const struct screen screens[] = {
 	 "└──────┴──────┘ ╚══════╩══════╝\r\n"
 	 "░░▒▒▓▓██ ▀▄▌▐ ▁▂▃▄▅▆▇█ ▏▎▍▌▋▊▉█\r\n"
 	 "╭─╮ ╰─╯ ┏━┓ ┗━┛ ┃ ╱╲╳\r\n"},
+
+	/* ADR-102: each underline style in the foreground and in an SGR 58
+	 * colour, over descenders */
+	{"underline",
+	 ESC "[4mSingle gjpqy" ESC "[0m  " ESC "[4;58:5:196mSingle gjpqy" ESC "[0m\r\n" ESC
+	 "[4:2mDouble gjpqy" ESC "[0m  " ESC "[4:2;58:2::0:200:255mDouble gjpqy" ESC "[0m\r\n" ESC
+	 "[4:3mCurly  gjpqy" ESC "[0m  " ESC "[4:3;58:5:46mCurly  gjpqy" ESC "[0m\r\n" ESC
+	 "[4:4mDotted gjpqy" ESC "[0m  " ESC "[4:4;58:2::255:128:0mDotted gjpqy" ESC "[0m\r\n" ESC
+	 "[4:5mDashed gjpqy" ESC "[0m  " ESC "[4:5;58:5:201mDashed gjpqy" ESC "[0m\r\n" ESC
+	 "[31;4:3;58:5:226mred, yellow curl" ESC "[59m then fg" ESC "[0m\r\n" ESC
+	 "[44;4mon blue" ESC "[0m " ESC "[7;4minverse" ESC "[0m " ESC "[1;4:2mbold double" ESC
+	 "[0m\r\n"},
+
+	{"strike",
+	 ESC "[9mstruck through gjpqy" ESC "[0m plain\r\n" ESC "[9;31mred strike" ESC "[0m " ESC
+	 "[9;42mstrike on green" ESC "[0m\r\n" ESC "[9;4mstrike and underline" ESC "[0m " ESC
+	 "[9;4:3;58:5:51mcurly too" ESC "[0m\r\n" ESC "[1;9mbold struck" ESC "[0m " ESC
+	 "[7;9minverse struck" ESC "[0m\r\n" ESC "[9m      " ESC "[0m struck spaces\r\n"},
+
+	/* clusters shaped by HarfBuzz: decomposed against precomposed */
+	{"combining",
+	 "precomposed: " E_ACUTE " " A_TILDE " " N_TILDE "\r\n"
+	 "decomposed:  e" COMB_ACUTE " a" COMB_TILDE COMB_GRAVE " n" COMB_DIAER "\r\n"
+	 "in words: cafe" COMB_ACUTE " na" COMB_TILDE COMB_GRAVE "o n" COMB_DIAER "ice\r\n" ESC
+	 "[4mu" COMB_DIAER "nderlined e" COMB_ACUTE ESC "[0m " ESC "[9mstruck a" COMB_TILDE
+	 COMB_GRAVE ESC "[0m\r\n"
+	 "bold: " ESC "[1me" COMB_ACUTE " a" COMB_TILDE COMB_GRAVE " n" COMB_DIAER ESC "[0m\r\n"},
+
+	/* a heart with VS16 takes two cells; until colour glyphs (step 4c) it
+	 * draws as the text heart, centred in them */
+	{"vs16",
+	 "a" HEART VS16 "b  VS16, wide\r\n"
+	 "a" HEART "b  no selector, narrow\r\n"
+	 "a" HEART VS15 "b  VS15, narrow\r\n" ESC "[4ma" HEART VS16 "b" ESC "[0m  underlined\r\n"},
+
+	/* decorated wide cells take each sprite twice; the last one is cut at
+	 * the margin */
+	{"wide-deco",
+	 ESC "[4m日本語" ESC "[0m " ESC "[4:3m漢字" ESC "[0m " ESC "[4:4;58:5:196mカタカナ" ESC
+	 "[0m\r\n" ESC "[4:2m한글" ESC "[0m " ESC "[4:5m中文" ESC "[0m " ESC "[9m日本語" ESC
+	 "[0m\r\n" ESC "[4ma日b本c" ESC "[0m\r\n" ESC "[5;48H" ESC "[4;9m語" ESC "[0m"},
+
+	/* frame N changes cells that frame N+1 must draw again into the other
+	 * buffer */
+	{"redraw",
+	 "unchanged line\r\n"
+	 "line two, before\r\n"
+	 "line three stays\r\n",
+	 ESC "[2;1Hline 2 CHANGED " ESC "[4:3mcurly" ESC "[0m" ESC "[4;1H" ESC "[9mnew struck" ESC
+	 "[0m"},
 };
 
 static void vte_write(struct tsm_vte *vte, const char *u8, size_t len, void *data) {}
@@ -186,12 +253,32 @@ static int write_ppm(const char *path)
 	return fclose(f) ? -errno : 0;
 }
 
+static void draw_frame(struct kmscon_text *txt, struct tsm_screen *con, struct tsm_vte *vte)
+{
+	struct tsm_screen_attr attr;
+	uint32_t *tmp;
+	int ret;
+
+	tsm_vte_get_def_attr(vte, &attr);
+	ret = kmscon_text_prepare(txt, &attr, false);
+	assert(ret == 0);
+	ret = kmscon_text_draw(txt, con, false);
+	assert(ret == 0);
+	ret = kmscon_text_render(txt);
+	assert(ret == 0);
+
+	/* swap: the next frame draws into the other buffer */
+	tmp = fb;
+	fb = fb_back;
+	fb_back = tmp;
+	fake_d2d.rb[1].map = fb;
+}
+
 static int render_screen(struct kmscon_font *font, const struct screen *s, const char *out_dir)
 {
 	struct tsm_screen *con;
 	struct tsm_vte *vte;
 	struct kmscon_text *txt;
-	struct tsm_screen_attr attr;
 	char path[4096];
 	int ret;
 
@@ -213,18 +300,28 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	assert(ret == 0);
 	assert(txt->cols == COLS && txt->rows == ROWS);
 
-	tsm_vte_get_def_attr(vte, &attr);
-	ret = kmscon_text_prepare(txt, &attr, false);
-	assert(ret == 0);
-	ret = kmscon_text_draw(txt, con, false);
-	assert(ret == 0);
-	ret = kmscon_text_render(txt);
-	assert(ret == 0);
+	draw_frame(txt, con, vte);
+	if (s->next) {
+		draw_frame(txt, con, vte);
+		tsm_vte_input(vte, s->next, strlen(s->next));
+		draw_frame(txt, con, vte);
+		draw_frame(txt, con, vte);
+		/* both buffers now hold the last frame */
+		if (memcmp(fb, fb_back, (size_t)fb_w * fb_h * sizeof(*fb))) {
+			fprintf(stderr, "test_pixels: %s: the two buffers differ after the last frame\n",
+				s->name);
+			ret = -EINVAL;
+		}
+	}
 
+	/* the buffer last drawn */
 	snprintf(path, sizeof(path), "%s/%s.ppm", out_dir, s->name);
-	ret = write_ppm(path);
+	fb = fb_back;
+	if (!ret)
+		ret = write_ppm(path);
 	if (ret)
 		fprintf(stderr, "test_pixels: cannot write %s: %s\n", path, strerror(-ret));
+	fb = fake_d2d.rb[1].map;
 
 	kmscon_text_unref(txt);
 	tsm_vte_unref(vte);
@@ -309,7 +406,8 @@ int main(int argc, char **argv)
 	fb_w = COLS * font->width;
 	fb_h = ROWS * font->height;
 	fb = calloc((size_t)fb_w * fb_h, sizeof(*fb));
-	assert(fb);
+	fb_back = calloc((size_t)fb_w * fb_h, sizeof(*fb));
+	assert(fb && fb_back);
 	fake_display_init();
 	check_font_files(font, argv[1]);
 
@@ -318,5 +416,6 @@ int main(int argc, char **argv)
 
 	kmscon_font_unref(font);
 	free(fb);
+	free(fb_back);
 	return failed ? 1 : 0;
 }

@@ -99,7 +99,8 @@ static void manager__unref()
 }
 
 static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *face,
-				      const struct kmscon_font_attr *attr, const uint32_t ch)
+				      const struct kmscon_font_attr *attr, const uint32_t *cps,
+				      size_t len, unsigned int cwidth)
 {
 	struct kmscon_glyph *glyph = NULL;
 	PangoLayout *layout;
@@ -107,13 +108,8 @@ static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *fac
 	PangoRectangle rec, logical_rec;
 	PangoLayoutLine *line;
 	FT_Bitmap bitmap;
-	unsigned int cwidth;
 	size_t ulen, cnt;
 	char *val;
-
-	cwidth = tsm_ucs4_get_width(ch);
-	if (!cwidth)
-		return NULL;
 
 	manager_lock();
 
@@ -131,12 +127,6 @@ static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *fac
 	/* no line spacing */
 	pango_layout_set_spacing(layout, 0);
 
-	/* underline if requested */
-	if (attr->underline)
-		pango_attr_list_change(attrlist, pango_attr_underline_new(PANGO_UNDERLINE_SINGLE));
-	else
-		pango_attr_list_change(attrlist, pango_attr_underline_new(PANGO_UNDERLINE_NONE));
-
 	/* italic if requested */
 	if (attr->italic)
 		pango_attr_list_change(attrlist, pango_attr_style_new(PANGO_STYLE_ITALIC));
@@ -149,7 +139,8 @@ static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *fac
 	else
 		pango_attr_list_change(attrlist, pango_attr_weight_new(PANGO_WEIGHT_NORMAL));
 
-	val = tsm_ucs4_to_utf8_alloc(&ch, 1, &ulen);
+	/* the whole cluster: pango shapes it */
+	val = tsm_ucs4_to_utf8_alloc(cps, len, &ulen);
 	if (!val)
 		goto out_layout;
 
@@ -165,9 +156,6 @@ static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *fac
 	pango_layout_line_get_extents(line, &logical_rec, &rec);
 	pango_extents_to_pixels(&rec, &logical_rec);
 
-	if (logical_rec.x + logical_rec.width > rec.x + font->width)
-		cwidth = 2;
-
 	glyph = calloc(1, sizeof(*glyph) + cwidth * font->width * font->height);
 	if (!glyph) {
 		log_error("cannot allocate memory for new glyph");
@@ -177,6 +165,7 @@ static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *fac
 	glyph->double_width = cwidth == 2;
 	glyph->buf.width = font->width * cwidth;
 	glyph->buf.height = font->height;
+	glyph->buf.format = VIDEO_FORMAT_A8;
 
 	bitmap.rows = glyph->buf.height;
 	bitmap.width = glyph->buf.width;
@@ -373,9 +362,10 @@ static bool kmscon_font_pango_has_glyph(struct kmscon_font *font, struct kmscon_
 }
 
 static struct kmscon_glyph *kmscon_font_pango_render(struct kmscon_font *font,
-						     struct kmscon_font_attr *attr, uint32_t ch)
+						     struct kmscon_font_attr *attr,
+						     const uint32_t *cps, size_t len, unsigned int cwidth)
 {
-	return get_glyph(font, font->data, attr, ch);
+	return get_glyph(font, font->data, attr, cps, len, cwidth);
 }
 
 struct kmscon_font_ops kmscon_font_pango_ops = {

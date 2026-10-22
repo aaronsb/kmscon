@@ -75,12 +75,10 @@ static void kmscon_font_8x16_destroy(struct kmscon_font *font)
 	log_debug("unloading static 8x16 font");
 }
 
-static uint8_t apply_attr(uint8_t c, const struct kmscon_font_attr *attr, bool last_line)
+static uint8_t apply_attr(uint8_t c, const struct kmscon_font_attr *attr)
 {
 	if (attr->bold)
 		c |= c >> 1;
-	if (attr->underline && last_line)
-		c = 0xff;
 	return c;
 }
 
@@ -110,12 +108,13 @@ static struct kmscon_glyph *new_glyph(uint32_t ch, const struct kmscon_font_attr
 	glyph->double_width = false;
 	glyph->buf.width = w;
 	glyph->buf.height = h;
+	glyph->buf.format = VIDEO_FORMAT_A8;
 
 	for (i = 0; i < h; i++) {
 		for (j = 0; j < w; j++) {
 			k = i / scale;
 			l = j / scale;
-			c = apply_attr((uint8_t)font_data[k], attr, k == 15);
+			c = apply_attr((uint8_t)font_data[k], attr);
 			glyph->buf.data[i * glyph->buf.width + j] = unfold(c & (1 << (7 - l)));
 		}
 	}
@@ -129,9 +128,11 @@ static bool kmscon_font_8x16_has_glyph(struct kmscon_font *font, struct kmscon_f
 }
 
 static struct kmscon_glyph *kmscon_font_8x16_render(struct kmscon_font *font,
-						    struct kmscon_font_attr *attr, uint32_t ch)
+						    struct kmscon_font_attr *attr,
+						    const uint32_t *cps, size_t len, unsigned int cwidth)
 {
 	unsigned int scale = font->height / 16;
+	uint32_t ch = cps[0];
 
 	if (ch == FONT_FULL_BLOCK)
 		ch = 219;

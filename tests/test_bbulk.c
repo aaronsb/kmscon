@@ -1,5 +1,7 @@
 /*
- * Lightweight test for repeated bbulk_set calls (no leaks, all cells re-damaged).
+ * Lightweight test for repeated bbulk_set calls (no leaks, all cells re-damaged),
+ * and for the two-frame damage rule: a cell the frame marks changed on frame N
+ * is drawn on N and again on N+1, because the back buffer is two frames old.
  * We include the implementation to access static helpers.
  */
 
@@ -11,6 +13,7 @@
 
 /* ---- Stubs for external dependencies used by text_bbulk.c ---- */
 #include "../src/font/font.h"	/* for kmscon_font_* */
+#include "../src/render/deco.h"
 #include "../src/video/video.h" /* for display_* prototypes */
 unsigned int display_get_width(struct display *disp)
 {
@@ -44,15 +47,62 @@ unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_hei
 
 /* Stub font rendering APIs used by text_bbulk.c */
 struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
-					const uint32_t ch)
+					const uint32_t *cps, size_t len, unsigned int cwidth)
 {
 	struct kmscon_glyph *g;
 	(void)font;
 	(void)attr;
-	(void)ch;
-	g = calloc(1, sizeof(*g) + FAKE_CELL_W * FAKE_CELL_W);
-	g->buf.width = g->buf.height = FAKE_CELL_W;
+	(void)cps;
+	(void)len;
+	g = calloc(1, sizeof(*g) + cwidth * FAKE_CELL_W * FAKE_CELL_H);
+	g->buf.width = cwidth * FAKE_CELL_W;
+	g->buf.height = FAKE_CELL_H;
+	g->double_width = cwidth == 2;
 	return g;
+}
+
+void kmscon_font_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out)
+{
+	(void)font;
+	out->ul_pos = FAKE_CELL_H - 2;
+	out->ul_thick = 1;
+	out->strike_pos = FAKE_CELL_H / 2;
+	out->strike_thick = 1;
+}
+
+struct kmscon_glyph *kmscon_deco_render(enum kmscon_deco kind, unsigned int w, unsigned int h,
+					const struct kmscon_font_deco *m)
+{
+	struct kmscon_glyph *g = calloc(1, sizeof(*g) + w * h);
+	(void)kind;
+	(void)m;
+	g->buf.width = w;
+	g->buf.height = h;
+	return g;
+}
+
+/* Stub text helpers used by text_bbulk.c */
+const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, uint32_t *one,
+					size_t *len)
+{
+	(void)txt;
+	*one = key;
+	*len = 1;
+	return one;
+}
+
+struct tsm_screen_color kmscon_text_ul_color(struct kmscon_text *txt,
+					     const struct tsm_frame_cell *cell)
+{
+	(void)txt;
+	return cell->fg;
+}
+
+struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
+						 const struct tsm_frame_cell *cell)
+{
+	(void)txt;
+	return cell->fg;
 }
 
 bool kmscon_font_has_glyph(struct kmscon_font *font, struct kmscon_font_attr *attr,
@@ -103,11 +153,27 @@ int display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b)
 	(void)b;
 	return 0;
 }
+/* the top-left corners of the cells blended since the last reset */
+static unsigned int blended[4096][2];
+static unsigned int n_blended;
+
 int display_blend(struct display *disp, const struct video_blend_req *req)
 {
 	(void)disp;
-	(void)req;
+	if (n_blended < 4096) {
+		blended[n_blended][0] = req->x;
+		blended[n_blended][1] = req->y;
+		n_blended++;
+	}
 	return 0;
+}
+
+static bool was_blended(unsigned int x, unsigned int y)
+{
+	for (unsigned int i = 0; i < n_blended; i++)
+		if (blended[i][0] == x && blended[i][1] == y)
+			return true;
+	return false;
 }
 void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages)
 {
@@ -142,6 +208,62 @@ static void init_fake_txt(struct kmscon_text *txt)
 	txt->ref = 1;
 }
 
+/* one frame of blank cells; @changed_x, @changed_y is marked changed, if set */
+static void draw_frame(struct kmscon_text *txt, int changed_x, int changed_y)
+{
+	static struct tsm_frame_cell cells[(640 / FAKE_CELL_W) * (480 / FAKE_CELL_H)];
+	struct tsm_frame frame = {0};
+	struct tsm_screen_attr attr = {0};
+	unsigned int i;
+
+	frame.cols = txt->cols;
+	frame.rows = txt->rows;
+	frame.cell_size = sizeof(cells[0]);
+	frame.cells = cells;
+	for (i = 0; i < frame.cols * frame.rows; i++) {
+		memset(&cells[i], 0, sizeof(cells[i]));
+		cells[i].width = 1;
+	}
+	if (changed_x >= 0) {
+		cells[changed_y * frame.cols + changed_x].key = 'x';
+		cells[changed_y * frame.cols + changed_x].flags = TSM_FRAME_CHANGED;
+	}
+
+	n_blended = 0;
+	assert(bbulk_prepare(txt, &attr) == 0);
+	assert(bbulk_draw(txt, &frame, false) == 0);
+	assert(bbulk_render(txt) == 0);
+}
+
+static void test_two_frame_rule(struct kmscon_text *txt)
+{
+	struct bbulk *bb = txt->data;
+	unsigned int x, y;
+
+	/* a fresh renderer redraws everything for two frames */
+	draw_frame(txt, -1, -1);
+	assert(n_blended == bb->cell_count);
+	draw_frame(txt, -1, -1);
+	assert(n_blended == bb->cell_count);
+	draw_frame(txt, -1, -1);
+	assert(n_blended == 0);
+
+	/* frame N: the changed cell is drawn and reported as damage */
+	set_coordinate(txt, &x, &y, 5, 3);
+	draw_frame(txt, 5, 3);
+	assert(n_blended == 1 && was_blended(x, y));
+	assert(bb->damage_rect_len == 1);
+
+	/* frame N+1: unchanged, but drawn again into the other buffer */
+	draw_frame(txt, -1, -1);
+	assert(n_blended == 1 && was_blended(x, y));
+	assert(bb->damage_rect_len == 0);
+
+	/* frame N+2: both buffers hold it */
+	draw_frame(txt, -1, -1);
+	assert(n_blended == 0);
+}
+
 int main(void)
 {
 	struct kmscon_text txt;
@@ -165,12 +287,12 @@ int main(void)
 	ret = bbulk_set(&txt);
 	assert(ret == 0);
 	assert(bb->cell_count == prev_cells);
-	assert(bb->cells != NULL);
+	assert(bb->sprites[KMSCON_DECO_CURLY] != NULL && bb->blank != NULL && bb->scratch != NULL);
 	assert(bb->cell_flags != NULL);
 	assert(bb->damage_rects != NULL);
 	/* All cells should be marked damaged */
 	for (unsigned i = 0; i < bb->cell_count; ++i)
-		assert(bb->cells[i].ch == ID_DAMAGED);
+		assert(bb->cell_flags[i].force && bb->cell_flags[i].damaged);
 
 	/* Exercise prepare/render + damage path */
 	struct tsm_screen_attr attr = {0};
@@ -180,8 +302,9 @@ int main(void)
 	assert(ret == 0);
 	assert(bb->damage_rect_len > 0);
 
+	test_two_frame_rule(&txt);
+
 	bbulk_unset(&txt);
-	assert(bb->cells == NULL);
 	assert(bb->cell_flags == NULL);
 	assert(bb->damage_rects == NULL);
 	kmscon_text_bbulk_ops.destroy(&txt);

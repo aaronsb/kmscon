@@ -208,12 +208,10 @@ static void kmscon_font_psf_destroy(struct kmscon_font *kfont)
 	free(font);
 }
 
-static uint32_t apply_attr(uint32_t c, const struct kmscon_font_attr *attr, bool last_line)
+static uint32_t apply_attr(uint32_t c, const struct kmscon_font_attr *attr)
 {
 	if (attr->bold)
 		c |= c >> 1;
-	if (attr->underline && last_line)
-		c = 0xffffffff;
 	return c;
 }
 
@@ -253,11 +251,12 @@ static struct kmscon_glyph *new_glyph(const struct kmscon_font *kfont,
 	glyph->double_width = false;
 	glyph->buf.width = w;
 	glyph->buf.height = h;
+	glyph->buf.format = VIDEO_FORMAT_A8;
 
 	for (i = 0; i < h; i++) {
 		k = i / font->scale;
 		c = apply_attr(readrow(glyph_data + k * (font->step / font->height), font->width),
-			       attr, k == (font->height - 1));
+			       attr);
 
 		for (j = 0; j < w; j++) {
 			l = j / font->scale;
@@ -280,9 +279,11 @@ static bool kmscon_font_psf_has_glyph(struct kmscon_font *kfont, struct kmscon_f
 }
 
 static struct kmscon_glyph *kmscon_font_psf_render(struct kmscon_font *kfont,
-						   struct kmscon_font_attr *attr, uint32_t ch)
+						   struct kmscon_font_attr *attr,
+						   const uint32_t *cps, size_t len, unsigned int cwidth)
 {
 	psf_font_t *font = kfont->data;
+	uint32_t ch = cps[0];
 
 	if (ch == FONT_FULL_BLOCK)
 		ch = 219;

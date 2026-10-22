@@ -3,9 +3,11 @@
 render_srcs = [
     'text.c',
     'bbulk.c',
+    'deco.c',
 ]
 
 render_dep = [
+    math_deps,
     font_deps,
     shl_deps,
     libtsm_deps,

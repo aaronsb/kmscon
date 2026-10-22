@@ -52,6 +52,19 @@ enum Orientation {
 struct kmscon_text;
 struct kmscon_text_ops;
 
+/*
+ * The colours underline and strike-through take (ADR-102), resolved by the
+ * caller from kmscon.conf: palette indices are looked up in the palette in
+ * use before they reach the renderer.
+ */
+struct kmscon_text_deco {
+	bool ul_fg;			/* underline-color=fg: the cell's foreground */
+	struct tsm_screen_color ul;	/* else this */
+	bool strike_fg;			/* strike-color=fg */
+	struct tsm_screen_color strike; /* else this */
+	bool force;			/* force-decoration-colors: win over SGR 58 */
+};
+
 struct kmscon_text {
 	unsigned long ref;
 	struct shl_register_record *record;
@@ -67,14 +80,10 @@ struct kmscon_text {
 	bool rendering;
 	enum Orientation orientation;
 	bool blinking;
+	struct kmscon_text_deco deco;
+	struct tsm_screen *screen; /* the screen being drawn, for cluster lookups */
 };
 
-struct kmscon_cursor {
-	struct tsm_screen_cell cell;
-	unsigned int x;
-	unsigned int y;
-	bool visible;
-};
 
 struct kmscon_text_ops {
 	const char *name;
@@ -86,8 +95,11 @@ struct kmscon_text_ops {
 	void (*resize)(struct kmscon_text *txt, unsigned int cols, unsigned int rows);
 	int (*rotate)(struct kmscon_text *txt, enum Orientation orientation);
 	int (*prepare)(struct kmscon_text *txt, struct tsm_screen_attr *attr);
-	int (*draw)(struct kmscon_text *txt, const struct tsm_screen_cell *cells,
-		    struct kmscon_cursor *cursor);
+	/*
+	 * Draw @frame. @cursor_on: the frame's cursor is visible and in the
+	 * visible phase of its blink.
+	 */
+	int (*draw)(struct kmscon_text *txt, const struct tsm_frame *frame, bool cursor_on);
 	int (*draw_pointer)(struct kmscon_text *txt, unsigned int x, unsigned int y);
 	int (*render)(struct kmscon_text *txt);
 	void (*abort)(struct kmscon_text *txt);
@@ -116,11 +128,21 @@ enum Orientation kmscon_text_get_orientation(struct kmscon_text *txt);
 void kmscon_text_resize(struct kmscon_text *txt, unsigned int cols, unsigned int rows);
 int kmscon_text_rotate(struct kmscon_text *txt, enum Orientation orientation);
 
+void kmscon_text_set_decorations(struct kmscon_text *txt, const struct kmscon_text_deco *deco);
 int kmscon_text_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr, bool blinking);
 int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool cursor_blink);
 int kmscon_text_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned int y);
 int kmscon_text_render(struct kmscon_text *txt);
 void kmscon_text_abort(struct kmscon_text *txt);
+
+/* helpers for backends */
+
+const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, uint32_t *one,
+					size_t *len);
+struct tsm_screen_color kmscon_text_ul_color(struct kmscon_text *txt,
+					     const struct tsm_frame_cell *cell);
+struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
+						 const struct tsm_frame_cell *cell);
 
 /* modularized backends */
 

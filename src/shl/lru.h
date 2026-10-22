@@ -25,6 +25,7 @@
  */
 
 #include <errno.h>
+#include <stdbool.h>
 #include <string.h>
 #include "dlist.h"
 #include "htable.h"
@@ -87,7 +88,13 @@ static inline void shl_lru_free(struct shl_lru *lru)
 	free(lru);
 }
 
-static inline void *shl_lru_get(struct shl_lru *lru, uint64_t key)
+/*
+ * The value stored under @key for which @match returns true, or NULL. A key
+ * that is a hash of a longer key may hold several values: @match compares the
+ * full key, so a collision is a miss. A NULL @match takes the first value.
+ */
+static inline void *shl_lru_find(struct shl_lru *lru, uint64_t key,
+				 bool (*match)(const void *value, const void *data), const void *data)
 {
 	struct htable_iter i;
 	struct shl_lru_entry *entry;
@@ -97,7 +104,7 @@ static inline void *shl_lru_get(struct shl_lru *lru, uint64_t key)
 
 	for (entry = htable_firstval(&lru->tbl, &i, key); entry;
 	     entry = htable_nextval(&lru->tbl, &i, key)) {
-		if (key == entry->key) {
+		if (key == entry->key && (!match || match(entry->value, data))) {
 			/* Put this entry at the top of the list */
 			dlist_unlink(&entry->list);
 			dlist_link(&lru->list, &entry->list);
@@ -105,6 +112,11 @@ static inline void *shl_lru_get(struct shl_lru *lru, uint64_t key)
 		}
 	}
 	return NULL;
+}
+
+static inline void *shl_lru_get(struct shl_lru *lru, uint64_t key)
+{
+	return shl_lru_find(lru, key, NULL, NULL);
 }
 
 static inline int shl_lru_evict(struct shl_lru *lru)

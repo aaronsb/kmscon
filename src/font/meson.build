@@ -78,6 +78,7 @@ if enable_font_freetype
             libtsm_deps,
             freetype_deps,
             fontconfig_deps,
+            harfbuzz_deps,
             threads_deps,
             shl_deps,
         ],

@@ -69,12 +69,10 @@ struct unifont_data {
 	unsigned long len;
 };
 
-static uint8_t apply_attr(uint8_t c, const struct kmscon_font_attr *attr, bool last_line)
+static uint8_t apply_attr(uint8_t c, const struct kmscon_font_attr *attr)
 {
 	if (attr->bold)
 		c |= c >> 1;
-	if (attr->underline && last_line)
-		c = 0xff;
 	return c;
 }
 
@@ -131,16 +129,17 @@ static struct kmscon_glyph *new_glyph(struct kmscon_font *font, const struct kms
 	g->double_width = (cwidth == 2);
 	g->buf.width = cwidth * font->width;
 	g->buf.height = font->height;
+	g->buf.format = VIDEO_FORMAT_A8;
 
 	/* Unpack the glyph and apply scaling */
 	for (i = 0; i < 16; i++) {
-		c = apply_attr(data[cwidth * i], attr, i == 15);
+		c = apply_attr(data[cwidth * i], attr);
 		for (j = 0; j < g->buf.width / cwidth; j++) {
 			k = j / scale;
 			g->buf.data[off++] = unfold(c & (1 << (7 - k)));
 		}
 		if (g->double_width) {
-			c = apply_attr(data[cwidth * i + 1], attr, i == 15);
+			c = apply_attr(data[cwidth * i + 1], attr);
 			for (j = 0; j < g->buf.width / cwidth; j++) {
 				k = j / scale;
 				g->buf.data[off++] = unfold(c & (1 << (7 - k)));
@@ -171,8 +170,10 @@ static bool kmscon_font_unifont_has_glyph(struct kmscon_font *font, struct kmsco
 }
 
 static struct kmscon_glyph *kmscon_font_unifont_render(struct kmscon_font *font,
-						       struct kmscon_font_attr *attr, uint32_t ch)
+						       struct kmscon_font_attr *attr,
+						       const uint32_t *cps, size_t n, unsigned int cwidth)
 {
+	uint32_t ch = cps[0];
 	struct unifont_data *uf = font->data;
 	const uint8_t *data;
 	uint32_t len;

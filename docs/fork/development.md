@@ -138,7 +138,7 @@ git fetch --prune
 
 ### 10. Close the session
 
-Increments merge one by one; when the session's last one has merged and `main` is green (the bring-home point), the session closes with one committed ledger run on `main`, then the handoff. See [The conformance record](#the-conformance-record).
+Increments merge one by one; when the session's last one has merged and `main` is green (the bring-home point), the session closes with one ledger run, landed as its own PR, then the handoff. See [The conformance record](#the-conformance-record).
 
 ## Verification before merge
 
@@ -232,9 +232,9 @@ A change that adds something visible adds its demo section in the same PR. [demo
 
 ## The conformance record
 
-A committed ledger run (`make sheet NOTE=...` and its entry in [LEDGER.md](../conformance/LEDGER.md)) happens once per working session, at its bring-home point: when the session's workstreams have merged and `main` is green, as the first thing on `main` afterwards. Never per PR, and never during the work.
+A committed ledger run (`make sheet NOTE=...` and its entry in [LEDGER.md](../conformance/LEDGER.md)) happens once per working session, at its bring-home point: when the session's workstreams have merged and `main` is green, measured from the head of `main` at that point. Never per PR, and never during the work.
 
-A working session runs as a loop: increments merge one by one, then the bring-home point, then the ledger run, then the handoff to the next session. The ledger run is not part of any PR.
+A working session runs as a loop: increments merge one by one, then the bring-home point, then the ledger run, then the handoff to the next session. The ledger run is its own small PR, separate from any feature PR: a branch from that head of `main` (for example `docs/ledger-<date>`) carrying only the run page and its LEDGER.md entry, opened with `--repo aaronsb/kmscon --base main`, and merged once its contents are checked (the measured commits match `main`'s head and the page renders). It changes no code, so it needs no code review.
 
 ```sh
 make tier3                              # at the same main commit, to include tier 3

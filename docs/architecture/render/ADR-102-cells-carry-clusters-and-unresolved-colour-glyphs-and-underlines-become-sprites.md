@@ -39,7 +39,7 @@ basis:
 agent:
   name: claude
   model: claude-opus-5-5
-status: proposed
+status: accepted
 date: 2026-10-21
 deciders:
   - aaronsb
@@ -57,6 +57,9 @@ considered:
     said: "yes lets do that"
     via: Claude Code session, on painting COLRv1 with HarfBuzz's rasteriser instead of cairo, after comparing the two on maturity, licence and dependencies
     covers: [colour-formats]
+  - operator: aaronsb
+    said: "ok. I think using the develop skill to get through some of the changes would be the right thing"
+    via: "Claude Code session, after being asked whether to accept and merge ADR-102 and start #9 and the parser work"
 ---
 
 # ADR-102: Cells carry clusters and unresolved colour; glyphs and underlines become sprites

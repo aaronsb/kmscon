@@ -96,6 +96,17 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 | combining | The decomposed column is blank: kmscon draws a cell of more than one code point as nothing. The precomposed column is right except its last row, which is a precomposed letter plus a mark. |
 | emoji | Every cluster (family, flag, keycap, skin tone, VS16 heart) is drawn blank or as separate pieces, so its bars do not line up. The single emoji is monochrome at best: kmscon has no colour glyphs. |
 
+## Seen on hardware
+
+The first real run, on 2026-10-22: Arch Linux, one output (DP-8) at 7680x2160, the desktop on tty7, build v10.0.4-150-gbfa7b6e with pango and Monoid Nerd Font Mono at 30 (cell 20x40), on tty5.
+
+- The handoff, the staged modules, the demo running as the user, and the stock unit's return after `q` all worked.
+- The operator found these pages correct: sgr, colour forms, underline styles and colours, strike, wide characters at the margin, combining marks and CJK.
+- Emoji draw as a clipped corner. The fallback emoji font's bitmaps are larger than the cell, and nothing scales them until colour emoji land (ADR-102 step 4c).
+- Stacked block elements show a one-pixel gap between rows (#46).
+- Stock kmscon 10.0.4 on that machine never repaints after a switch from the desktop. Its journal repeats `drm_shared: test-only atomic commit failed, -22`, then `vt_timeout: failed to wake up after 20 retries`. The dev build, on newer code, takes the display. The comparison with stock could not be made there, so the table above is still a prediction.
+- `run-vt.sh` refuses a VT that has a login on it, and a login on a stock kmscon VT counts as one. Pick a VT nobody is logged into.
+
 ## Adding a section
 
 A capability that adds something visible adds its section in the same PR. A section is one file, `fork/demo/sections/NN-name.sh`:

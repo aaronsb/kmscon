@@ -45,6 +45,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include "deco.h"
 #include "font/font.h"
 #include "gltex_atlas.frag.bin.h"
 #include "gltex_atlas.vert.bin.h"
@@ -80,6 +81,7 @@ struct atlas {
 
 struct gl_glyph {
 	bool double_width;
+	struct kmscon_glyph_key key;
 	struct atlas *atlas;
 	unsigned int texoff;
 };
@@ -89,10 +91,17 @@ struct gl_glyph {
 #define GLYPH_STRIDE(gly) ((gly)->buf.stride)
 #define GLYPH_DATA(gly) ((gly)->buf.data)
 
+/*
+ * The glyph cache holds at most this many screens of atlas cells between
+ * flushes (see gltex_flush()).
+ */
+#define GLTEX_CACHE_SCREENS 4
+
 struct gltex {
 	struct shl_hashtable *glyphs;
 	unsigned int max_tex_size;
-	bool previous_overflow;
+	unsigned int cells;	/* atlas cells handed out since the last flush */
+	unsigned int max_cells; /* flush at the next frame once cells passes this */
 
 	struct dlist atlases;
 
@@ -226,6 +235,7 @@ static int gltex_set(struct kmscon_text *txt)
 	txt->max_rows = kmscon_text_get_rows(txt, FONT_HEIGHT(txt));
 	txt->cols = txt->max_cols;
 	txt->rows = txt->max_rows;
+	gt->max_cells = GLTEX_CACHE_SCREENS * (txt->max_cols * txt->max_rows + 1);
 	compute_advance_and_offset(txt);
 	gltex_set_cos(gt, txt->orientation);
 
@@ -292,10 +302,12 @@ static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num)
 	unsigned int width, height, nsize;
 	GLenum err;
 
-	/* check whether the last added atlas has still room for one glyph */
-	atlas = dlist_first(&gt->atlases, struct atlas, list);
-	if (atlas && atlas->fill + num <= atlas->count)
-		return atlas;
+	/* an atlas with room, which after a flush may be an old one */
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		if (atlas->fill + num <= atlas->count)
+			return atlas;
+	}
 
 	/* all atlases are full so we have to create a new atlas */
 	atlas = calloc(1, sizeof(*atlas));
@@ -382,7 +394,34 @@ err_free:
 	return NULL;
 }
 
-static struct gl_glyph *find_glyph(struct kmscon_text *txt, const struct tsm_screen_cell *cell)
+/*
+ * Until gltex composes decoration sprites itself (ADR-102, step 6), it bakes
+ * them into the glyph mask, drawn in the foreground colour as before: every
+ * underline style and strike-through, without decoration colours.
+ */
+static void bake_deco(struct kmscon_text *txt, struct kmscon_glyph *glyph, enum kmscon_deco kind)
+{
+	struct kmscon_font_deco m;
+	struct kmscon_glyph *sprite;
+	unsigned int fw = FONT_WIDTH(txt), x, y;
+
+	kmscon_font_get_deco(txt->font, &m);
+	sprite = kmscon_deco_render(kind, fw, FONT_HEIGHT(txt), &m);
+	if (!sprite)
+		return;
+	for (y = 0; y < glyph->buf.height && y < sprite->buf.height; y++)
+		for (x = 0; x < glyph->buf.width; x++) {
+			uint8_t v = sprite->buf.data[y * fw + x % fw];
+			uint8_t *d = &glyph->buf.data[y * glyph->buf.width + x];
+
+			if (v > *d)
+				*d = v;
+		}
+	free(sprite);
+}
+
+static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16_t flags,
+				   unsigned int width, unsigned int underline, bool strike)
 {
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
@@ -392,32 +431,52 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, const struct tsm_scr
 	unsigned int num;
 	struct kmscon_glyph *glyph;
 	struct kmscon_font_attr attr;
-	uint32_t ch = cell->ch ? cell->ch : ' ';
+	struct kmscon_glyph_key k = {0};
+	const uint32_t *cps;
+	uint32_t one;
+	size_t len;
 	uint64_t id;
 
-	attr.underline = !!cell->attr2.underline;
-	attr.italic = !!cell->attr2.italic;
-	attr.bold = !!cell->attr2.bold;
+	attr.italic = !!(flags & TSM_FRAME_ITALIC);
+	attr.bold = !!(flags & TSM_FRAME_BOLD);
 
-	if (cell->attr2.blink && txt->blinking)
-		ch = ' ';
+	k.key = key ? key : ' ';
+	k.bold = attr.bold;
+	k.italic = attr.italic;
+	k.width = width;
+	k.extra = (underline & 7) | (strike ? 8 : 0);
+	id = kmscon_glyph_key_hash(&k);
 
-	if (!kmscon_font_has_glyph(font, &attr, ch))
-		ch = FONT_REPLACEMENT_CHAR;
+	if (shl_hashtable_find(gt->glyphs, (void **)&glglyph, id)) {
+		if (kmscon_glyph_key_equal(&glglyph->key, &k))
+			return glglyph;
+		/* a hash collision: the newer glyph takes the slot */
+		shl_hashtable_remove(gt->glyphs, id);
+		free(glglyph);
+	}
 
-	id = kmscon_glyph_id(ch, cell->attr2.u8);
-
-	if (shl_hashtable_find(gt->glyphs, (void **)&glglyph, id))
-		return glglyph;
+	cps = kmscon_text_get_cluster(txt, k.key, &one, &len);
+	if (!kmscon_font_has_glyph(font, &attr, cps[0])) {
+		one = FONT_REPLACEMENT_CHAR;
+		cps = &one;
+		len = 1;
+	}
 
 	glglyph = calloc(1, sizeof(*glglyph));
 	if (!glglyph)
 		return NULL;
 
-	glyph = kmscon_font_render(font, &attr, ch);
-	if (!glyph)
+	glyph = kmscon_font_render(font, &attr, cps, len, width);
+	if (!glyph) {
+		free(glglyph);
 		return NULL;
+	}
+	if (underline > KMSCON_DECO_NONE && underline < KMSCON_DECO_STRIKE)
+		bake_deco(txt, glyph, underline);
+	if (strike)
+		bake_deco(txt, glyph, KMSCON_DECO_STRIKE);
 
+	glglyph->key = k;
 	glglyph->double_width = glyph->double_width;
 
 	num = kmscon_glyph_cwidth(glyph);
@@ -457,6 +516,7 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, const struct tsm_scr
 		goto err_free;
 
 	atlas->fill += num;
+	gt->cells += num;
 	free(glyph);
 
 	return glglyph;
@@ -483,6 +543,31 @@ static int gltex_rotate(struct kmscon_text *txt, enum Orientation orientation)
 	return 0;
 }
 
+/*
+ * Empty the glyph cache and refill every atlas from its first cell; the atlases
+ * and their textures stay. Atlas cells are handed out in order and not given
+ * back one at a time, and a cluster's frame key changes each time the screen
+ * re-creates the cluster, so without this the atlases grow without bound. It
+ * runs between frames, as no queued vertex may name a cell that is refilled.
+ */
+static void gltex_flush(struct kmscon_text *txt)
+{
+	struct gltex *gt = txt->data;
+	struct shl_hashtable *glyphs;
+	struct atlas *atlas;
+
+	if (shl_hashtable_new(&glyphs, shl_direct_hash, shl_direct_equal, free_glyph))
+		return; /* keep the full cache and try again next frame */
+	shl_hashtable_free(gt->glyphs);
+	gt->glyphs = glyphs;
+
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		atlas->fill = 0;
+	}
+	gt->cells = 0;
+}
+
 static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 {
 	struct gltex *gt = txt->data;
@@ -492,6 +577,9 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	ret = display_use(txt->disp);
 	if (ret)
 		return ret;
+
+	if (gt->cells > gt->max_cells)
+		gltex_flush(txt);
 
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{
@@ -504,8 +592,12 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	return 0;
 }
 
-static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_screen_cell *cell,
-			   unsigned int posx, unsigned int posy)
+/*
+ * Draw @cell at @posx, @posy with glyph key @key (0: none), @cwidth cells wide
+ * (a wide glyph in the last column is cut at the margin by the atlas).
+ */
+static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell,
+			   uint64_t key, unsigned int posx, unsigned int posy, unsigned int cwidth)
 {
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
@@ -514,11 +606,8 @@ static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_screen_cell
 	float width;
 	int i, idx;
 
-	if (posx && gt->previous_overflow && (cell->ch == 0 || cell->ch == ' ')) {
-		gt->previous_overflow = false;
-		return 0;
-	}
-	glglyph = find_glyph(txt, cell);
+	glglyph = find_glyph(txt, key, cell->flags, cwidth, cell->underline,
+			     cell->flags & TSM_FRAME_STRIKE);
 	if (!glglyph)
 		return -ENOMEM;
 
@@ -528,7 +617,6 @@ static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_screen_cell
 		return -ERANGE;
 
 	width = glglyph->double_width ? 2.0 : 1.0;
-	gt->previous_overflow = glglyph->double_width;
 
 	idx = atlas->cache_num * 2 * 6;
 	gl_x1 = gt->off_x + gt->advance_x * posx - 1.0;
@@ -579,24 +667,41 @@ static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_screen_cell
 	return 0;
 }
 
-static int gltex_draw(struct kmscon_text *txt, const struct tsm_screen_cell *cells,
-		      struct kmscon_cursor *cursor)
+static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bool cursor_on)
 {
-	unsigned int posx, posy, off;
+	unsigned int posx, posy, cols, rows, width;
+	const struct tsm_frame_cell *fc, *cell;
+	bool is_cursor;
+	uint64_t key;
 
-	for (posy = 0; posy < txt->rows; posy++) {
-		for (posx = 0; posx < txt->cols; posx++) {
-			off = posx + posy * txt->cols;
+	cols = min(txt->cols, frame->cols);
+	rows = min(txt->rows, frame->rows);
 
-			if (cursor->visible && cursor->x == posx && cursor->y == posy)
-				gltex_draw_cell(txt, &cursor->cell, posx, posy);
-			else if (cells[off].attr2.blink && txt->blinking) {
-				struct tsm_screen_cell cell = cells[off];
+	for (posy = 0; posy < rows; posy++) {
+		for (posx = 0; posx < cols; posx++) {
+			fc = tsm_frame_cell_at(frame, posx, posy);
 
-				cell.ch = ' ';
-				gltex_draw_cell(txt, &cell, posx, posy);
-			} else
-				gltex_draw_cell(txt, &cells[off], posx, posy);
+			/* a trailing half is drawn by the wide cell before it */
+			if (!fc->width && posx)
+				continue;
+
+			width = fc->width == 2 ? 2 : 1;
+			is_cursor = cursor_on && frame->cursor.x == posx && frame->cursor.y == posy;
+			cell = is_cursor ? &frame->cursor.cell : fc;
+			key = cell->key;
+			if (!is_cursor && (fc->flags & TSM_FRAME_BLINK) && txt->blinking)
+				key = 0;
+			if (is_cursor && (frame->cursor.style == TSM_SCREEN_CURSOR_VBAR_BLINK ||
+					  frame->cursor.style == TSM_SCREEN_CURSOR_VBAR_STEADY)) {
+				/* the bar, at the left of the cell; a wide cell's
+				 * second half is left empty */
+				if (width == 2 && posx + 1 < cols)
+					gltex_draw_cell(txt, cell, 0, posx + 1, posy, 1);
+				key = FONT_VBAR;
+				width = 1;
+			}
+
+			gltex_draw_cell(txt, cell, key, posx, posy, width);
 		}
 	}
 	return 0;
@@ -610,10 +715,7 @@ static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned 
 	float gl_x1, gl_x2, gl_y1, gl_y2;
 	unsigned int sw, sh;
 	int i, idx;
-	struct tsm_screen_cell pointer_cell = {0};
-	pointer_cell.ch = 'I';
-
-	glyph = find_glyph(txt, &pointer_cell);
+	glyph = find_glyph(txt, 'I', 0, 1, TSM_UNDERLINE_NONE, false);
 	if (!glyph)
 		return -ENOMEM;
 

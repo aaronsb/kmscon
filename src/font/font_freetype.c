@@ -27,6 +27,10 @@
 #include <fontconfig/fontconfig.h>
 #include <freetype2/freetype/freetype.h>
 #include FT_FREETYPE_H
+#include FT_BITMAP_H
+#include FT_TRUETYPE_TABLES_H
+#include <hb-ft.h>
+#include <hb.h>
 #include <libtsm.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -278,22 +282,11 @@ static void kmscon_font_freetype_destroy(struct kmscon_font *font)
 	font->data = NULL;
 }
 
-/*
- * Returns true if a glyph is wide and needs 2 cells.
- * Take a 20% margin, in case the glyph slightly bleeds on the next cell.
- */
-static bool glyph_is_wide(FT_GlyphSlot glyph, int width)
-{
-	int real_width = glyph->bitmap.width + glyph->bitmap_left;
-	return real_width > (width * 6) / 5;
-}
-
-static void copy_mono(struct video_buffer *buf, FT_GlyphSlot glyph, unsigned int ascender,
-		      bool underline)
+static void copy_mono(struct video_buffer *buf, FT_GlyphSlot glyph, unsigned int ascender, int dx)
 {
 	FT_Bitmap *map = &glyph->bitmap;
 	int top = ascender - glyph->bitmap_top;
-	int left = glyph->bitmap_left;
+	int left = glyph->bitmap_left + dx;
 	uint8_t *src = map->buffer;
 	uint8_t *dst = buf->data;
 	int i, j, w, h;
@@ -305,8 +298,10 @@ static void copy_mono(struct video_buffer *buf, FT_GlyphSlot glyph, unsigned int
 	if (left < 0)
 		left = 0;
 
-	w = min(buf->width - left, map->width);
-	h = min(buf->height - top, map->rows);
+	w = min((int)buf->width - left, (int)map->width);
+	h = min((int)buf->height - top, (int)map->rows);
+	if (w <= 0 || h <= 0)
+		return;
 
 	for (i = 0; i < h; i++) {
 		for (j = 0; j < w; j++)
@@ -316,112 +311,316 @@ static void copy_mono(struct video_buffer *buf, FT_GlyphSlot glyph, unsigned int
 		dst += buf->width;
 		src += map->pitch;
 	}
-	if (underline)
-		for (j = 0; j < buf->width; j++)
-			buf->data[(buf->height - 1) * buf->width + j] = 0xff;
 }
 
-static void draw_underline(struct video_buffer *buf, FT_Face face)
+/*
+ * Copy a coverage map whose top-left pixel sits at @left, @top in the cell:
+ * clipped at the top and bottom, and centred when it is wider than the cell
+ * space to its right.
+ */
+static void copy_map(struct video_buffer *buf, const uint8_t *map, int map_w, int map_h,
+		     int pitch, int left, int top)
 {
-	int i, j;
-	int thickness = FT_MulFix(face->underline_thickness, face->size->metrics.y_scale);
-	int position = FT_MulFix(face->underline_position, face->size->metrics.y_scale);
-
-	// Round thinkness to nearest integer
-	thickness = (thickness + (thickness >> 1)) >> 6;
-	position = (face->size->metrics.ascender - position) >> 6;
-
-	if (thickness < 1 || thickness > buf->height / 4)
-		thickness = 1;
-
-	if (position + thickness > buf->height)
-		position = buf->height - thickness;
-
-	for (i = position; i < position + thickness; i++)
-		for (j = 0; j < buf->width; j++)
-			buf->data[i * buf->width + j] = 0xff;
-}
-
-static void copy_glyph(struct video_buffer *buf, FT_Face face, FT_Bitmap *map, bool underline)
-{
-	int top = (face->size->metrics.ascender >> 6) - face->glyph->bitmap_top;
-	int left = face->glyph->bitmap_left;
 	int width, height;
 	int left_src = 0;
 	int top_src = 0;
 	int i;
 	uint8_t *dst;
 
-	if (!map->width || !map->rows)
-		goto underline;
+	if (!map_w || !map_h)
+		return;
 
 	if (top < 0) {
 		top_src = -top;
 		top = 0;
 	}
-	height = min((int)(buf->height - top), (int)(map->rows - top_src));
+	height = min((int)(buf->height - top), map_h - top_src);
 
-	if (left + map->width > buf->width)
-		left -= ((left + map->width) - buf->width) / 2;
+	if (left + map_w > (int)buf->width)
+		left -= ((left + map_w) - (int)buf->width) / 2;
 
 	if (left < 0) {
 		left_src = -left;
 		left = 0;
 	}
-	width = min((int)(buf->width - left), (int)(map->width - left_src));
+	width = min((int)(buf->width - left), map_w - left_src);
 
 	if (width <= 0 || height <= 0)
-		goto underline;
+		return;
 
 	dst = buf->data + left + top * buf->width;
 	for (i = 0; i < height; i++) {
-		memcpy(dst, &map->buffer[(i + top_src) * map->pitch + left_src], width);
+		memcpy(dst, &map[(i + top_src) * pitch + left_src], width);
 		dst += buf->width;
 	}
-
-underline:
-	if (underline)
-		draw_underline(buf, face);
 }
 
-static struct kmscon_glyph *render_glyph(struct kmscon_font *font, FT_Face face, FT_UInt index,
-					 uint32_t ch, const struct kmscon_font_attr *attr)
+/*
+ * @slot's bitmap as one byte of coverage per pixel, 0 to 255, or as one bit per
+ * pixel for FT_PIXEL_MODE_MONO, which the callers read bit by bit. Any other
+ * mode (a strike's 2- or 4-bit grey, LCD, BGRA) is converted into @tmp. @tmp is
+ * initialised here; the caller releases it with FT_Bitmap_Done. NULL when the
+ * conversion fails.
+ */
+static const FT_Bitmap *coverage(FT_GlyphSlot slot, FT_Bitmap *tmp)
 {
-	unsigned int cwidth;
+	const FT_Bitmap *map = &slot->bitmap;
+	unsigned int i, n, top;
+
+	FT_Bitmap_Init(tmp);
+	if (map->pixel_mode == FT_PIXEL_MODE_GRAY || map->pixel_mode == FT_PIXEL_MODE_MONO)
+		return map;
+	if (FT_Bitmap_Convert(slot->library, map, tmp, 1))
+		return NULL;
+
+	/* the converted levels run from 0 to num_grays - 1 */
+	top = tmp->num_grays - 1;
+	n = tmp->rows * (unsigned int)tmp->pitch;
+	if (top && top < 255)
+		for (i = 0; i < n; i++)
+			tmp->buffer[i] = tmp->buffer[i] * 255 / top;
+	return tmp;
+}
+
+static struct kmscon_glyph *new_glyph(struct kmscon_font *font, unsigned int cwidth)
+{
 	struct kmscon_glyph *glyph;
 
-	cwidth = tsm_ucs4_get_width(ch);
-	if (!cwidth)
-		return NULL;
-
-	if (FT_Load_Glyph(face, index, FT_LOAD_TARGET_LIGHT)) {
-		log_err("Failed to load glyph\n");
-		return NULL;
-	}
-
-	if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL)) {
-		log_err("Failed to render glyph\n");
-		return NULL;
-	}
-
-	cwidth = glyph_is_wide(face->glyph, font->width) ? 2 : cwidth;
 	glyph = calloc(1, sizeof(*glyph) + cwidth * font->width * font->height);
 	if (!glyph) {
 		log_error("cannot allocate memory for new glyph");
 		return NULL;
 	}
-
 	glyph->double_width = cwidth == 2;
 	glyph->buf.width = font->width * cwidth;
 	glyph->buf.height = font->height;
-
-	if (face->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_MONO)
-		copy_mono(&glyph->buf, face->glyph, face->size->metrics.ascender >> 6,
-			  attr->underline);
-	else
-		copy_glyph(&glyph->buf, face, &face->glyph->bitmap, attr->underline);
-
+	glyph->buf.format = VIDEO_FORMAT_A8;
 	return glyph;
+}
+
+static int load_glyph(FT_Face face, FT_UInt index)
+{
+	if (FT_Load_Glyph(face, index, FT_LOAD_TARGET_LIGHT)) {
+		log_err("Failed to load glyph\n");
+		return -EINVAL;
+	}
+	if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_NORMAL)) {
+		log_err("Failed to render glyph\n");
+		return -EINVAL;
+	}
+	return 0;
+}
+
+/*
+ * How far to move a glyph that advances @adv (26.6) right so that it is
+ * centred in its box: a narrow glyph in a two-cell box, such as a text-style
+ * emoji widened by VS16, sits in the middle of the two cells. A glyph as wide
+ * as its box stays where the font puts it. A negative advance, which a shaped
+ * cluster can have, counts as none, so the move stays within the box.
+ */
+static int centre_dx(struct kmscon_font *font, const struct kmscon_glyph *glyph, long adv)
+{
+	long px = (adv + 32) >> 6;
+
+	if (!glyph->double_width || px > font->width)
+		return 0;
+	if (px < 0)
+		px = 0;
+	return (glyph->buf.width - px) / 2;
+}
+
+/* A single codepoint: loaded by glyph index, without shaping. */
+static struct kmscon_glyph *render_glyph(struct kmscon_font *font, FT_Face face, FT_UInt index,
+					 unsigned int cwidth)
+{
+	struct kmscon_glyph *glyph;
+	const FT_Bitmap *map;
+	FT_Bitmap tmp;
+	int dx;
+
+	if (load_glyph(face, index))
+		return NULL;
+
+	map = coverage(face->glyph, &tmp);
+	if (!map)
+		return NULL;
+
+	glyph = new_glyph(font, cwidth);
+	if (!glyph)
+		goto out;
+
+	dx = centre_dx(font, glyph, face->glyph->advance.x);
+	if (map->pixel_mode == FT_PIXEL_MODE_MONO)
+		copy_mono(&glyph->buf, face->glyph, face->size->metrics.ascender >> 6, dx);
+	else
+		copy_map(&glyph->buf, map->buffer, map->width, map->rows, map->pitch,
+			 face->glyph->bitmap_left + dx,
+			 (face->size->metrics.ascender >> 6) - face->glyph->bitmap_top);
+
+out:
+	FT_Bitmap_Done(face->glyph->library, &tmp);
+	return glyph;
+}
+
+/* @ccc is a combining class drawn above the base, or below it */
+static bool ccc_above(hb_unicode_combining_class_t ccc)
+{
+	switch (ccc) {
+	case HB_UNICODE_COMBINING_CLASS_ATTACHED_ABOVE:
+	case HB_UNICODE_COMBINING_CLASS_ATTACHED_ABOVE_RIGHT:
+	case HB_UNICODE_COMBINING_CLASS_ABOVE_LEFT:
+	case HB_UNICODE_COMBINING_CLASS_ABOVE:
+	case HB_UNICODE_COMBINING_CLASS_ABOVE_RIGHT:
+	case HB_UNICODE_COMBINING_CLASS_DOUBLE_ABOVE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool ccc_below(hb_unicode_combining_class_t ccc)
+{
+	switch (ccc) {
+	case HB_UNICODE_COMBINING_CLASS_ATTACHED_BELOW:
+	case HB_UNICODE_COMBINING_CLASS_BELOW_LEFT:
+	case HB_UNICODE_COMBINING_CLASS_BELOW:
+	case HB_UNICODE_COMBINING_CLASS_BELOW_RIGHT:
+	case HB_UNICODE_COMBINING_CLASS_DOUBLE_BELOW:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/*
+ * A cluster of several codepoints (ADR-102): HarfBuzz shapes it on @face, the
+ * face that covers its first codepoint, and FreeType draws each shaped glyph
+ * into a canvas one glyph box wider on each side. The cluster's pen origin goes
+ * where a single glyph's would, and ink past the cell is cut.
+ *
+ * A codepoint @face lacks shapes to glyph 0, the missing-glyph box; it is left
+ * out, with its advance, so the box does not cover the rest of the cluster.
+ *
+ * A mark above or below that the face does not place (no advance, no offset;
+ * HarfBuzz composes a + U+0303 to atilde, and a face may have no anchor for a
+ * grave on atilde) would sit at the pen, past the base. It goes centred over
+ * the base's ink, above or below all the ink drawn since the base, as in
+ * HarfBuzz's fallback mark positioning (hb-ot-shape-fallback.cc,
+ * position_around_base; MIT). Left and right classes are centred too. A mark
+ * that does not fit is pushed back inside the cell.
+ */
+static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face face,
+					   const uint32_t *cps, size_t len, unsigned int cwidth)
+{
+	struct kmscon_glyph *glyph = NULL;
+	hb_font_t *hb;
+	hb_buffer_t *hbuf;
+	hb_glyph_info_t *info;
+	hb_glyph_position_t *pos;
+	hb_unicode_funcs_t *ucd;
+	hb_unicode_combining_class_t ccc;
+	unsigned int n, i, gw, cw, ch;
+	int baseline = face->size->metrics.ascender >> 6;
+	int pen_x = 0, pen_y = 0, ox, x, y, gx, gy;
+	int base_x0 = 0, base_x1 = -1, ink_top = 0, ink_bottom = 0;
+	uint8_t *canvas;
+
+	glyph = new_glyph(font, cwidth);
+	if (!glyph)
+		return NULL;
+	gw = glyph->buf.width;
+	cw = 3 * gw;
+	ch = glyph->buf.height;
+	ox = gw;
+	canvas = calloc(cw, ch);
+	if (!canvas)
+		goto err_glyph;
+
+	hb = hb_ft_font_create_referenced(face);
+	hb_ft_font_set_load_flags(hb, FT_LOAD_TARGET_LIGHT);
+	hbuf = hb_buffer_create();
+	/* each glyph's cluster is the index of its codepoint in @cps */
+	hb_buffer_set_cluster_level(hbuf, HB_BUFFER_CLUSTER_LEVEL_CHARACTERS);
+	hb_buffer_add_utf32(hbuf, cps, len, 0, len);
+	hb_buffer_guess_segment_properties(hbuf);
+	hb_shape(hb, hbuf, NULL, 0);
+	info = hb_buffer_get_glyph_infos(hbuf, &n);
+	pos = hb_buffer_get_glyph_positions(hbuf, &n);
+	ucd = hb_buffer_get_unicode_funcs(hbuf);
+
+	for (i = 0; i < n; i++) {
+		FT_GlyphSlot slot = face->glyph;
+		const FT_Bitmap *map;
+		FT_Bitmap tmp;
+
+		FT_Bitmap_Init(&tmp);
+		if (!info[i].codepoint)
+			continue;
+		if (load_glyph(face, info[i].codepoint))
+			goto next;
+		map = coverage(slot, &tmp);
+		if (!map)
+			goto next;
+		gx = ox + ((pen_x + pos[i].x_offset + 32) >> 6) + slot->bitmap_left;
+		gy = baseline - ((pen_y + pos[i].y_offset + 32) >> 6) - slot->bitmap_top;
+
+		ccc = info[i].cluster < len ? hb_unicode_combining_class(ucd, cps[info[i].cluster])
+					    : HB_UNICODE_COMBINING_CLASS_NOT_REORDERED;
+		if (base_x1 >= base_x0 && !pos[i].x_advance && !pos[i].x_offset &&
+		    !pos[i].y_offset && (ccc_above(ccc) || ccc_below(ccc))) {
+			gx = (base_x0 + base_x1 + 1 - (int)map->width) / 2;
+			if (ccc_above(ccc))
+				gy = max(ink_top - 1 - (int)map->rows, 0);
+			else
+				gy = min(ink_bottom + 1, (int)ch - (int)map->rows);
+		}
+		if (map->width && map->rows) {
+			if (ccc == HB_UNICODE_COMBINING_CLASS_NOT_REORDERED) {
+				base_x0 = gx;
+				base_x1 = gx + (int)map->width - 1;
+				ink_top = gy;
+				ink_bottom = gy + (int)map->rows - 1;
+			} else {
+				ink_top = min(ink_top, gy);
+				ink_bottom = max(ink_bottom, gy + (int)map->rows - 1);
+			}
+		}
+
+		for (y = 0; y < (int)map->rows; y++) {
+			if (gy + y < 0 || gy + y >= (int)ch)
+				continue;
+			for (x = 0; x < (int)map->width; x++) {
+				uint8_t v, *d;
+
+				if (gx + x < 0 || gx + x >= (int)cw)
+					continue;
+				if (map->pixel_mode == FT_PIXEL_MODE_MONO)
+					v = !!(map->buffer[y * map->pitch + x / 8] &
+					       (1 << (7 - (x % 8)))) * 0xff;
+				else
+					v = map->buffer[y * map->pitch + x];
+				d = &canvas[(gy + y) * cw + gx + x];
+				if (v > *d)
+					*d = v;
+			}
+		}
+	next:
+		FT_Bitmap_Done(slot->library, &tmp);
+		pen_x += pos[i].x_advance;
+		pen_y += pos[i].y_advance;
+	}
+
+	hb_buffer_destroy(hbuf);
+	hb_font_destroy(hb);
+
+	copy_map(&glyph->buf, canvas + ox - centre_dx(font, glyph, pen_x), gw, ch, cw, 0, 0);
+
+	free(canvas);
+	return glyph;
+
+err_glyph:
+	free(glyph);
+	return NULL;
 }
 
 static void select_font_size(struct kmscon_font *font, FT_Face face)
@@ -504,16 +703,16 @@ static bool kmscon_font_freetype_has_glyph(struct kmscon_font *font, struct kmsc
 	return get_fallback(ch, ftfont) >= 0;
 }
 
-static struct kmscon_glyph *kmscon_font_freetype_render(struct kmscon_font *font,
-							struct kmscon_font_attr *attr, uint32_t ch)
+/* The face that draws @ch for @ftfont, and its glyph index, or NULL. */
+static FT_Face face_for(struct kmscon_font *font, struct ft_font *ftfont, uint32_t ch,
+			FT_UInt *index)
 {
 	struct ft_data *ftd = font->data;
-	struct ft_font *ftfont = attr->bold ? &ftd->bold : &ftd->regular;
-	FT_UInt glyph_index = FT_Get_Char_Index(ftfont->face, ch);
 	int fallback_index;
 
-	if (glyph_index)
-		return render_glyph(font, ftfont->face, glyph_index, ch, attr);
+	*index = FT_Get_Char_Index(ftfont->face, ch);
+	if (*index)
+		return ftfont->face;
 
 	/* Fallback, if the glyph is not found in the regular font */
 	fallback_index = get_fallback(ch, ftfont);
@@ -534,10 +733,77 @@ static struct kmscon_glyph *kmscon_font_freetype_render(struct kmscon_font *font
 		select_font_size(font, ftfont->fallback);
 	}
 
-	glyph_index = FT_Get_Char_Index(ftfont->fallback, ch);
-	if (!glyph_index)
+	*index = FT_Get_Char_Index(ftfont->fallback, ch);
+	return *index ? ftfont->fallback : NULL;
+}
+
+static struct kmscon_glyph *kmscon_font_freetype_render(struct kmscon_font *font,
+							struct kmscon_font_attr *attr,
+							const uint32_t *cps, size_t len,
+							unsigned int cwidth)
+{
+	struct ft_data *ftd = font->data;
+	struct ft_font *ftfont = attr->bold ? &ftd->bold : &ftd->regular;
+	FT_UInt glyph_index;
+	FT_Face face;
+
+	face = face_for(font, ftfont, cps[0], &glyph_index);
+	if (!face)
 		return NULL;
-	return render_glyph(font, ftfont->fallback, glyph_index, ch, attr);
+	if (len == 1)
+		return render_glyph(font, face, glyph_index, cwidth);
+	return render_cluster(font, face, cps, len, cwidth);
+}
+
+/*
+ * Underline from the post table (position is the centre of the stroke, below
+ * the baseline when negative); a zero thickness is estimated from the cell
+ * height. Strike-through from the OS/2 strikeout (position is the top of the
+ * stroke above the baseline), else centred on half the x-height.
+ * kmscon_font_get_deco() clamps the result inside the cell.
+ */
+static void kmscon_font_freetype_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out)
+{
+	struct ft_data *ftd = font->data;
+	FT_Face face = ftd->regular.face;
+	TT_OS2 *os2 = FT_Get_Sfnt_Table(face, FT_SFNT_OS2);
+	FT_Fixed ys = face->size->metrics.y_scale;
+	long baseline = face->size->metrics.ascender; /* 26.6, from the cell top */
+	long h = font->height, thick, centre, xh;
+	FT_UInt x;
+
+	thick = (FT_MulFix(face->underline_thickness, ys) + 32) >> 6;
+	if (!FT_IS_SCALABLE(face) || thick <= 0) {
+		thick = h / 14;
+		if (thick < 1)
+			thick = 1;
+	}
+	if (FT_IS_SCALABLE(face) && face->underline_position)
+		centre = baseline - FT_MulFix(face->underline_position, ys);
+	else
+		centre = (h << 6) - (thick << 5) - (thick << 6);
+	out->ul_thick = thick;
+	out->ul_pos = max(0L, (centre - (thick << 5) + 32) >> 6);
+
+	if (os2 && os2->version != 0xFFFF && os2->yStrikeoutSize > 0 && FT_IS_SCALABLE(face)) {
+		thick = (FT_MulFix(os2->yStrikeoutSize, ys) + 32) >> 6;
+		out->strike_thick = thick > 0 ? thick : 1;
+		out->strike_pos =
+			max(0L, (baseline - FT_MulFix(os2->yStrikeoutPosition, ys) + 32) >> 6);
+		return;
+	}
+
+	out->strike_thick = out->ul_thick;
+	xh = 0;
+	if (os2 && os2->version != 0xFFFF && os2->version >= 2 && os2->sxHeight)
+		xh = FT_MulFix(os2->sxHeight, ys);
+	x = FT_Get_Char_Index(face, 'x');
+	if (!xh && x && !FT_Load_Glyph(face, x, FT_LOAD_TARGET_LIGHT))
+		xh = face->glyph->metrics.horiBearingY;
+	if (!xh)
+		xh = baseline / 2;
+	centre = baseline - xh / 2;
+	out->strike_pos = max(0L, (centre - ((long)out->strike_thick << 5) + 32) >> 6);
 }
 
 struct kmscon_font_ops kmscon_font_freetype_ops = {
@@ -547,4 +813,5 @@ struct kmscon_font_ops kmscon_font_freetype_ops = {
 	.destroy = kmscon_font_freetype_destroy,
 	.has_glyph = kmscon_font_freetype_has_glyph,
 	.render = kmscon_font_freetype_render,
+	.get_deco = kmscon_font_freetype_get_deco,
 };

@@ -23,6 +23,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <paths.h>
 #include <stdbool.h>
@@ -248,7 +249,21 @@ static void print_help()
 		"\t                                      custom palette\n"
 		"\t    --palette-background <color>    [  0,   0,   0]\n"
 		"\t                                      Default background color in\n"
-		"\t                                      custom palette\n",
+		"\t                                      custom palette\n"
+		"\n"
+		"Text Options:\n"
+		"\t    --grapheme-width <method>       [unicode]\n"
+		"\t                                      How text is divided into cells:\n"
+		"\t                                      unicode (grapheme clusters) or\n"
+		"\t                                      wcwidth (one cell per codepoint)\n"
+		"\t    --underline-color <color>       [fg]\n"
+		"\t                                      Underline color: fg, a palette\n"
+		"\t                                      index 0-255 or #rrggbb\n"
+		"\t    --strike-color <color>          [fg]\n"
+		"\t                                      Strike-through color, as above\n"
+		"\t    --force-decoration-colors       [off]\n"
+		"\t                                      The configured colors win over\n"
+		"\t                                      the underline color programs set\n",
 		"kmscon");
 	/*
 	 * 80 char line:
@@ -818,6 +833,110 @@ static const struct conf_type conf_color = {
 		    &def_palette[_offset])
 
 /*
+ * Decoration colour type
+ * Parses `fg`, a palette index 0-255 or `#rrggbb` into a struct
+ * kmscon_conf_color.
+ */
+
+static void conf_default_deco_color(struct conf_option *opt)
+{
+	memcpy(opt->mem, opt->def, sizeof(struct kmscon_conf_color));
+}
+
+static int conf_parse_deco_color(struct conf_option *opt, bool on, const char *arg)
+{
+	struct kmscon_conf_color c = {0};
+	unsigned int val, i;
+	char *end;
+
+	if (!strcmp(arg, "fg")) {
+		c.kind = KMSCON_COLOR_FG;
+	} else if (arg[0] == '#') {
+		if (strlen(arg) != 7)
+			goto err;
+		for (i = 1; i < 7; i++)
+			if (!isxdigit((unsigned char)arg[i]))
+				goto err;
+		val = strtoul(arg + 1, &end, 16);
+		c.kind = KMSCON_COLOR_RGB;
+		c.rgb[0] = val >> 16;
+		c.rgb[1] = val >> 8;
+		c.rgb[2] = val;
+	} else {
+		/* decimal digits only: a leading 0 is not octal */
+		if (!arg[0] || strlen(arg) > 3)
+			goto err;
+		for (i = 0; arg[i]; i++)
+			if (!isdigit((unsigned char)arg[i]))
+				goto err;
+		val = strtoul(arg, &end, 10);
+		if (val > 255)
+			goto err;
+		c.kind = KMSCON_COLOR_INDEX;
+		c.index = val;
+	}
+
+	memcpy(opt->mem, &c, sizeof(c));
+	return 0;
+
+err:
+	log_error("invalid '%s' value '%s': expected fg, a palette index 0-255 or #rrggbb",
+		  opt->long_name + 3, arg);
+	return -EFAULT;
+}
+
+static int conf_copy_deco_color(struct conf_option *opt, const struct conf_option *src)
+{
+	memcpy(opt->mem, src->mem, sizeof(struct kmscon_conf_color));
+	return 0;
+}
+
+static const struct conf_type conf_deco_color = {
+	.flags = CONF_HAS_ARG,
+	.set_default = conf_default_deco_color,
+	.parse = conf_parse_deco_color,
+	.copy = conf_copy_deco_color,
+};
+
+static const struct kmscon_conf_color def_deco_color = {.kind = KMSCON_COLOR_FG};
+
+/*
+ * Grapheme width type
+ * Parses `unicode` or `wcwidth` into an enum tsm_width_method.
+ */
+
+static void conf_default_grapheme_width(struct conf_option *opt)
+{
+	*(enum tsm_width_method *)opt->mem = TSM_WIDTH_UNICODE;
+}
+
+static int conf_parse_grapheme_width(struct conf_option *opt, bool on, const char *arg)
+{
+	if (!strcmp(arg, "unicode")) {
+		*(enum tsm_width_method *)opt->mem = TSM_WIDTH_UNICODE;
+	} else if (!strcmp(arg, "wcwidth")) {
+		*(enum tsm_width_method *)opt->mem = TSM_WIDTH_WCWIDTH;
+	} else {
+		log_error("invalid 'grapheme-width' value '%s': expected unicode or wcwidth", arg);
+		return -EFAULT;
+	}
+	return 0;
+}
+
+static int conf_copy_grapheme_width(struct conf_option *opt, const struct conf_option *src)
+{
+	*(enum tsm_width_method *)opt->mem = *(enum tsm_width_method *)src->mem;
+	return 0;
+}
+
+static const struct conf_type conf_grapheme_width = {
+	.flags = CONF_HAS_ARG,
+	.set_default = conf_default_grapheme_width,
+	.parse = conf_parse_grapheme_width,
+	.copy = conf_copy_grapheme_width,
+};
+
+/*
  * Custom Afterchecks
  * Several other options have side-effects on other options. We use afterchecks
  * to enforce these. They're pretty simple. See below.
@@ -1085,6 +1204,16 @@ int kmscon_conf_new(struct conf_ctx **out)
 		CONF_OPTION_COLOR("palette-white", conf->custom_palette, TSM_COLOR_WHITE),
 		CONF_OPTION_COLOR("palette-foreground", conf->custom_palette, TSM_COLOR_FOREGROUND),
 		CONF_OPTION_COLOR("palette-background", conf->custom_palette, TSM_COLOR_BACKGROUND),
+
+		/* Text Options */
+		CONF_OPTION(0, 0, "grapheme-width", &conf_grapheme_width, NULL, NULL, NULL,
+			    &conf->grapheme_width, NULL),
+		CONF_OPTION(0, 0, "underline-color", &conf_deco_color, NULL, NULL, NULL,
+			    &conf->underline_color, (void *)&def_deco_color),
+		CONF_OPTION(0, 0, "strike-color", &conf_deco_color, NULL, NULL, NULL,
+			    &conf->strike_color, (void *)&def_deco_color),
+		CONF_OPTION_BOOL(0, "force-decoration-colors", &conf->force_decoration_colors,
+				 false),
 	};
 
 	ret = conf_ctx_new(&ctx, options, sizeof(options) / sizeof(*options), conf);

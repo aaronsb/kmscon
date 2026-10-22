@@ -159,6 +159,8 @@ int kmscon_text_new(struct kmscon_text **out, const char *backend, enum Orientat
 	}
 
 	text->orientation = orientation;
+	text->deco.ul_fg = true;
+	text->deco.strike_fg = true;
 
 	ret = new_text(text, backend);
 	if (ret) {
@@ -275,6 +277,7 @@ void kmscon_text_unset(struct kmscon_text *txt)
 	txt->cols = 0;
 	txt->rows = 0;
 	txt->rendering = false;
+	kmscon_text_redraw_all(txt);
 }
 
 /**
@@ -294,6 +297,7 @@ void kmscon_text_resize(struct kmscon_text *txt, unsigned int cols, unsigned int
 		return;
 	if (txt->ops->resize)
 		txt->ops->resize(txt, cols, rows);
+	kmscon_text_redraw_all(txt);
 }
 
 unsigned int kmscon_text_get_width(struct kmscon_text *txt)
@@ -370,9 +374,85 @@ enum Orientation kmscon_text_get_orientation(struct kmscon_text *txt)
  */
 int kmscon_text_rotate(struct kmscon_text *txt, enum Orientation orientation)
 {
+	kmscon_text_redraw_all(txt);
 	if (txt->ops->rotate)
 		return txt->ops->rotate(txt, orientation);
 	return 0;
+}
+
+/**
+ * kmscon_text_set_decorations:
+ * @txt: valid text renderer
+ * @deco: the colours of underline and strike-through
+ *
+ * Sets the colours decorations take when no program has chosen one, and
+ * whether they win over the program's (ADR-102). Call it before
+ * kmscon_text_prepare(); a change redraws the screen.
+ */
+void kmscon_text_set_decorations(struct kmscon_text *txt, const struct kmscon_text_deco *deco)
+{
+	if (!txt || !deco)
+		return;
+	txt->deco = *deco;
+}
+
+/**
+ * kmscon_text_ul_color:
+ * @txt: valid text renderer
+ * @cell: a frame cell with an underline
+ *
+ * The colour @cell's underline draws in: the configured colour when
+ * force-decoration-colors is on, else the colour SGR 58 set, else the
+ * configured colour, where `fg` is the cell's foreground as drawn.
+ */
+struct tsm_screen_color kmscon_text_ul_color(struct kmscon_text *txt,
+					     const struct tsm_frame_cell *cell)
+{
+	const struct kmscon_text_deco *d = &txt->deco;
+
+	if (!d->force && (cell->flags & TSM_FRAME_UL_SET))
+		return cell->ul;
+	return d->ul_fg ? cell->fg : d->ul;
+}
+
+/**
+ * kmscon_text_strike_color:
+ * @txt: valid text renderer
+ * @cell: a frame cell with strike-through
+ *
+ * The colour @cell's strike-through draws in. No escape sequence sets one, so
+ * it is always the configured colour.
+ */
+struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
+						 const struct tsm_frame_cell *cell)
+{
+	return txt->deco.strike_fg ? cell->fg : txt->deco.strike;
+}
+
+/**
+ * kmscon_text_get_cluster:
+ * @txt: valid text renderer, drawing
+ * @key: a frame cell's glyph key, not 0
+ * @one: storage for a single codepoint
+ * @len: the number of codepoints returned
+ *
+ * The codepoints frame key @key names: @key itself for a codepoint, the
+ * cluster's codepoints for a cluster, or the replacement character for a
+ * cluster the screen no longer holds.
+ */
+const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, uint32_t *one,
+					size_t *len)
+{
+	const uint32_t *cps = NULL;
+
+	if (key >= TSM_FRAME_CLUSTER_KEY && txt->screen)
+		cps = tsm_screen_frame_cluster(txt->screen, key, len);
+	if (cps && *len)
+		return cps;
+
+	*one = key < TSM_FRAME_CLUSTER_KEY ? (uint32_t)key : FONT_REPLACEMENT_CHAR;
+	*len = 1;
+	return one;
 }
 
 /**
@@ -411,65 +491,49 @@ static bool is_cursor_blinking(enum tsm_screen_cursor_style style)
 	return (!style || style & 1);
 }
 
-static bool is_underline(enum tsm_screen_cursor_style style)
-{
-	return (style == TSM_SCREEN_CURSOR_UNDERLINE_BLINK ||
-		style == TSM_SCREEN_CURSOR_UNDERLINE_STEADY);
-}
-
-static bool is_block(enum tsm_screen_cursor_style style)
-{
-	return (style == TSM_SCREEN_CURSOR_DEFAULT || style == TSM_SCREEN_CURSOR_BLOCK_BLINK ||
-		style == TSM_SCREEN_CURSOR_BLOCK_STEADY);
-}
-
-static bool is_vbar(enum tsm_screen_cursor_style style)
-{
-	return (style == TSM_SCREEN_CURSOR_VBAR_BLINK || style == TSM_SCREEN_CURSOR_VBAR_STEADY);
-}
-
 /**
  * kmscon_text_draw:
  * @txt: valid text renderer
  * @con: valid tsm screen
+ * @cursor_blink: the cursor's blink phase hides it
  *
- * This draw all cells in the screen.
+ * This draws the screen's frame (ADR-102). The frame carries the cursor cell;
+ * the renderer only decides whether the blink phase shows it.
+ *
+ * The frame marks the cells changed since this display's last frame, from
+ * @txt's own age, so every display drawing @con sees each change. That covers
+ * one frame back; a double-buffered backend also keeps the previous frame's
+ * changes, as bbulk does, because its back buffer is two frames old.
  *
  * Returns: 0 on success or negative error code if this glyph couldn't be drawn.
  */
 int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool cursor_blink)
 {
-	const struct tsm_screen_cell *cells;
-	struct kmscon_cursor cursor = {0};
-	enum tsm_screen_cursor_style style;
+	const struct tsm_frame *frame;
+	bool cursor_on;
+	int ret;
 
 	if (!txt || !con)
 		return -EINVAL;
 
-	cells = tsm_screen_draw2(con);
-	cursor.x = tsm_screen_get_cursor_x(con);
-	cursor.y = tsm_screen_get_cursor_y(con);
-	style = tsm_screen_get_cursor_style(con);
-
-	if (cursor.x < txt->cols && cursor.y < txt->rows) {
-		unsigned offset = cursor.x + cursor.y * txt->cols;
-
-		cursor.visible = !(tsm_screen_get_flags(con) & TSM_SCREEN_HIDE_CURSOR);
-		cursor.cell.fg = cells[offset].fg;
-		cursor.cell.bg = cells[offset].bg;
-		if (is_cursor_blinking(style))
-			cursor.visible = cursor.visible && !cursor_blink;
-		if (is_underline(style)) {
-			cursor.cell.attr2.underline = !cells[offset].attr2.underline;
-			cursor.cell.ch = cells[offset].ch;
-		} else if (is_block(style)) {
-			cursor.cell.fg = cells[offset].bg;
-			cursor.cell.bg = cells[offset].fg;
-			cursor.cell.ch = cells[offset].ch;
-		} else if (is_vbar(style))
-			cursor.cell.ch = FONT_VBAR;
+	if (txt->drawn != con) {
+		kmscon_text_redraw_all(txt);
+		txt->drawn = con;
 	}
-	return txt->ops->draw(txt, cells, &cursor);
+
+	frame = tsm_screen_frame_since(con, &txt->age);
+	if (!frame)
+		return -ENOMEM;
+
+	cursor_on = frame->cursor.visible &&
+		    !(is_cursor_blinking(frame->cursor.style) && cursor_blink);
+
+	txt->screen = con;
+	ret = txt->ops->draw(txt, frame, cursor_on);
+	txt->screen = NULL;
+	if (ret)
+		kmscon_text_redraw_all(txt);
+	return ret;
 }
 
 /**

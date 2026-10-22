@@ -314,6 +314,7 @@ static void disable_screen(struct screen *scr)
 static void do_redraw_screen(struct screen *scr)
 {
 	struct tsm_screen_attr attr;
+	struct kmscon_text_deco deco;
 	int ret;
 
 	if (!scr->term->awake || !kmscon_session_get_foreground(scr->term->session))
@@ -328,6 +329,8 @@ static void do_redraw_screen(struct screen *scr)
 
 	scr->pending = false;
 
+	kmscon_conf_resolve_deco(scr->term->conf, scr->term->vte, &deco);
+	kmscon_text_set_decorations(scr->txt, &deco);
 	tsm_vte_get_def_attr(scr->term->vte, &attr);
 	kmscon_text_prepare(scr->txt, &attr, scr->term->blinking);
 	kmscon_text_draw(scr->txt, scr->term->console, scr->term->cursor_blinking);
@@ -1448,6 +1451,10 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 		goto err_vte;
 
 	ret = tsm_vte_set_custom_palette(term->vte, term->conf->custom_palette);
+	if (ret)
+		goto err_vte;
+
+	ret = tsm_vte_set_width_method(term->vte, term->conf->grapheme_width);
 	if (ret)
 		goto err_vte;
 

@@ -127,10 +127,111 @@ void test_parse_screen(const char *config, struct kmscon_conf_screen *screen, in
 	}
 }
 
+static struct kmscon_conf_t *parse_conf(struct conf_ctx **ctx, const char *config)
+{
+	char *buf;
+	int ret;
+
+	kmscon_conf_new(ctx);
+	conf_ctx_reset(*ctx);
+
+	buf = strdup(config);
+	ret = parse_buffer((*ctx)->opts, (*ctx)->onum, buf, strlen(buf));
+	free(buf);
+	return ret ? NULL : conf_ctx_get_mem(*ctx);
+}
+
+/* grapheme-width, underline-color, strike-color, force-decoration-colors */
+static void test_parse_text(void)
+{
+	struct conf_ctx *ctx;
+	struct kmscon_conf_t *conf;
+
+	/* defaults */
+	conf = parse_conf(&ctx, "\n");
+	assert(conf);
+	assert(conf->grapheme_width == TSM_WIDTH_UNICODE);
+	assert(conf->underline_color.kind == KMSCON_COLOR_FG);
+	assert(conf->strike_color.kind == KMSCON_COLOR_FG);
+	assert(!conf->force_decoration_colors);
+
+	conf = parse_conf(&ctx, "grapheme-width=wcwidth\n"
+				"underline-color=196\n"
+				"strike-color=#12ab9F\n"
+				"force-decoration-colors\n");
+	assert(conf);
+	assert(conf->grapheme_width == TSM_WIDTH_WCWIDTH);
+	assert(conf->underline_color.kind == KMSCON_COLOR_INDEX);
+	assert(conf->underline_color.index == 196);
+	assert(conf->strike_color.kind == KMSCON_COLOR_RGB);
+	assert(conf->strike_color.rgb[0] == 0x12);
+	assert(conf->strike_color.rgb[1] == 0xab);
+	assert(conf->strike_color.rgb[2] == 0x9f);
+	assert(conf->force_decoration_colors);
+
+	conf = parse_conf(&ctx, "grapheme-width=unicode\nunderline-color=fg\n"
+				"no-force-decoration-colors\n");
+	assert(conf);
+	assert(conf->grapheme_width == TSM_WIDTH_UNICODE);
+	assert(conf->underline_color.kind == KMSCON_COLOR_FG);
+	assert(!conf->force_decoration_colors);
+
+	/* rejected values */
+	assert(!parse_conf(&ctx, "grapheme-width=both\n"));
+	assert(!parse_conf(&ctx, "underline-color=256\n"));
+	assert(!parse_conf(&ctx, "underline-color=#12345\n"));
+	assert(!parse_conf(&ctx, "underline-color=#12345g\n"));
+	assert(!parse_conf(&ctx, "strike-color=red\n"));
+	assert(!parse_conf(&ctx, "underline-color=0x10\n"));
+	assert(!parse_conf(&ctx, "underline-color=-0\n"));
+
+	/* an index is decimal: a leading 0 is not octal */
+	conf = parse_conf(&ctx, "underline-color=010\nstrike-color=08\n");
+	assert(conf);
+	assert(conf->underline_color.kind == KMSCON_COLOR_INDEX);
+	assert(conf->underline_color.index == 10);
+	assert(conf->strike_color.kind == KMSCON_COLOR_INDEX);
+	assert(conf->strike_color.index == 8);
+}
+
+/* a '#' opens a comment, unless it begins a #rrggbb value */
+static void test_parse_comment(void)
+{
+	struct conf_ctx *ctx;
+	struct kmscon_conf_t *conf;
+
+	conf = parse_conf(&ctx, "font-name= # comment\n");
+	assert(conf);
+	assert(!strcmp(conf->font_name, ""));
+
+	conf = parse_conf(&ctx, "font-name=#comment\n");
+	assert(conf);
+	assert(!strcmp(conf->font_name, ""));
+
+	conf = parse_conf(&ctx, "font-name=mono # comment\n");
+	assert(conf);
+	assert(!strcmp(conf->font_name, "mono"));
+
+	conf = parse_conf(&ctx, "font-name= #abcdef0\n");
+	assert(conf);
+	assert(!strcmp(conf->font_name, ""));
+
+	conf = parse_conf(&ctx, "underline-color= #00ff80 # green\nstrike-color=#0000ff#blue\n");
+	assert(conf);
+	assert(conf->underline_color.kind == KMSCON_COLOR_RGB);
+	assert(conf->underline_color.rgb[0] == 0x00);
+	assert(conf->underline_color.rgb[1] == 0xff);
+	assert(conf->underline_color.rgb[2] == 0x80);
+	assert(conf->strike_color.kind == KMSCON_COLOR_RGB);
+	assert(conf->strike_color.rgb[2] == 0xff);
+}
+
 int main()
 {
 	test_parse_mode(config_file, parsed_modes, 6);
 	test_parse_screen(screen_conf, parsed_screens, 3);
+	test_parse_text();
+	test_parse_comment();
 
 	return 0;
 }

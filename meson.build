@@ -55,6 +55,7 @@ libtsm_deps = dependency('libtsm', version: '>=4.8.0', allow_fallback: true)
 libudev_deps = dependency('libudev', version: '>=172')
 dl_deps = dependency('dl')
 threads_deps = dependency('threads')
+math_deps = meson.get_compiler('c').find_library('m', required: false)
 zlib_deps = dependency('zlib')
 zlib_deps_native = dependency('zlib', native: true)
 
@@ -98,6 +99,12 @@ fontconfig_deps = dependency(
     disabler: true,
     required: get_option('font_freetype'),
 )
+# The freetype backend shapes multi-codepoint clusters with HarfBuzz (ADR-102)
+harfbuzz_deps = dependency(
+    'harfbuzz',
+    disabler: true,
+    required: get_option('font_freetype'),
+)
 dbus_deps = dependency('dbus-1', disabler: true, required: get_option('dbus'))
 xsltproc = find_program(
     'xsltproc',
@@ -129,7 +136,7 @@ foreach name, reqs : {
     'renderer_gltex': [glesv2_deps],
     'font_psf': [],
     'font_unifont': [],
-    'font_freetype': [freetype_deps, fontconfig_deps],
+    'font_freetype': [freetype_deps, fontconfig_deps, harfbuzz_deps],
     'font_pango': [pango_deps],
     'dbus': [dbus_deps],
 }

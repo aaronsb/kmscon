@@ -37,6 +37,7 @@ makedepends=(
   docbook-xsl
   freetype2
   git
+  harfbuzz
   libxslt
   linux-api-headers
   libglvnd
@@ -45,6 +46,7 @@ makedepends=(
 )
 optdepends=(
   'fontconfig: for freetype font rendering'
+  'harfbuzz: for freetype font rendering (cluster shaping)'
   'inotify-tools: for kmscon-launch-gui waiting mechanism'
   'libglvnd: for accelerated video output'
   'libx11: for XKB compose support'

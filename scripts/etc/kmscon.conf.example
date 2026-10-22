@@ -152,3 +152,17 @@
 #palette-white=255,255,255
 #palette-foreground=229,229,229
 #palette-background=0,0,0
+
+## How text is divided into cells, one of [unicode, wcwidth]. unicode gives
+## each grapheme cluster one cell (two for wide ones); wcwidth gives every
+## codepoint with a width its own cells. Programs can switch it with mode 2027.
+#grapheme-width=unicode
+
+## Colors of underlines a program has not colored (SGR 58), and of
+## strike-through: fg (the text color), a palette index 0-255 (follows the
+## palette), or #rrggbb.
+#underline-color=fg
+#strike-color=fg
+## Draw every underline and strike-through in the colors above, also where a
+## program set an underline color (disabled by default).
+#force-decoration-colors

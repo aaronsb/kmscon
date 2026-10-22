@@ -495,6 +495,8 @@ static void compose_sprite(struct kmscon_text *txt, enum kmscon_deco kind, unsig
 /*
  * Draw @cell at @posx, @posy over @ncells cells (2 for a wide cell with room
  * for its second half), with glyph key @key (0: none) drawn @width cells wide.
+ * When the glyph cannot be had, the cell is drawn without it and -ENOMEM
+ * returned, for the caller to draw it again.
  */
 static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
 			   unsigned int width, unsigned int posx, unsigned int posy,
@@ -505,11 +507,15 @@ static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 	struct video_blend_req req;
 	bool across = txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN;
 	bool strike = cell->flags & TSM_FRAME_STRIKE;
+	int ret = 0;
 
 	if (key) {
 		glyph = find_glyph(txt, key, cell->flags, width);
-		if (!glyph)
-			return -ENOMEM;
+		if (!glyph) {
+			glyph = bb->blank;
+			key = 0;
+			ret = -ENOMEM;
+		}
 	}
 
 	if (ncells == 2 && (txt->orientation == OR_LEFT || txt->orientation == OR_UPSIDE_DOWN))
@@ -554,7 +560,7 @@ static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 
 	display_blend(txt->disp, &req);
 	bb->requests++;
-	return 0;
+	return ret;
 }
 
 static bool is_vbar(enum tsm_screen_cursor_style style)

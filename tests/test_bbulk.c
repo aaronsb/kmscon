@@ -47,6 +47,8 @@ unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_hei
 
 /* Stub font rendering APIs used by text_bbulk.c; rendering fails while set */
 static bool fail_render;
+static unsigned int n_rendered; /* glyphs rendered */
+static uint32_t last_rendered;	/* the first codepoint of the last one */
 
 struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
 					const uint32_t *cps, size_t len, unsigned int cwidth)
@@ -58,6 +60,8 @@ struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_
 	(void)len;
 	if (fail_render)
 		return NULL;
+	n_rendered++;
+	last_rendered = cps[0];
 	g = calloc(1, sizeof(*g) + cwidth * FAKE_CELL_W * FAKE_CELL_H);
 	g->buf.width = cwidth * FAKE_CELL_W;
 	g->buf.height = FAKE_CELL_H;
@@ -157,27 +161,39 @@ int display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b)
 	(void)b;
 	return 0;
 }
-/* the top-left corners of the cells blended since the last reset */
-static unsigned int blended[4096][2];
+/* the requests blended since the last reset */
+static struct {
+	unsigned int x, y;
+	const struct video_buffer *buf;
+	uint32_t first; /* the buffer's first four bytes */
+} blended[4096];
 static unsigned int n_blended;
 
 int display_blend(struct display *disp, const struct video_blend_req *req)
 {
 	(void)disp;
 	if (n_blended < 4096) {
-		blended[n_blended][0] = req->x;
-		blended[n_blended][1] = req->y;
+		blended[n_blended].x = req->x;
+		blended[n_blended].y = req->y;
+		blended[n_blended].buf = req->buf;
+		memcpy(&blended[n_blended].first, req->buf->data, 4);
 		n_blended++;
 	}
 	return 0;
 }
 
-static bool was_blended(unsigned int x, unsigned int y)
+/* the request blended with its top-left corner at @x, @y, or NULL */
+static typeof(&blended[0]) blended_at(unsigned int x, unsigned int y)
 {
 	for (unsigned int i = 0; i < n_blended; i++)
-		if (blended[i][0] == x && blended[i][1] == y)
-			return true;
-	return false;
+		if (blended[i].x == x && blended[i].y == y)
+			return &blended[i];
+	return NULL;
+}
+
+static bool was_blended(unsigned int x, unsigned int y)
+{
+	return blended_at(x, y);
 }
 void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages)
 {
@@ -212,17 +228,15 @@ static void init_fake_txt(struct kmscon_text *txt)
 	txt->ref = 1;
 }
 
-/*
- * One frame of blank cells; @changed_x, @changed_y is marked changed and holds
- * @key, if set.
- */
-static void draw_frame_key(struct kmscon_text *txt, int changed_x, int changed_y, uint64_t key)
+static struct tsm_frame_cell cells[(640 / FAKE_CELL_W) * (480 / FAKE_CELL_H)];
+static struct tsm_frame frame;
+
+/* a frame of blank, unchanged cells, with no cursor */
+static void blank_frame(struct kmscon_text *txt)
 {
-	static struct tsm_frame_cell cells[(640 / FAKE_CELL_W) * (480 / FAKE_CELL_H)];
-	struct tsm_frame frame = {0};
-	struct tsm_screen_attr attr = {0};
 	unsigned int i;
 
+	memset(&frame, 0, sizeof(frame));
 	frame.cols = txt->cols;
 	frame.rows = txt->rows;
 	frame.cell_size = sizeof(cells[0]);
@@ -231,15 +245,41 @@ static void draw_frame_key(struct kmscon_text *txt, int changed_x, int changed_y
 		memset(&cells[i], 0, sizeof(cells[i]));
 		cells[i].width = 1;
 	}
-	if (changed_x >= 0) {
-		cells[changed_y * frame.cols + changed_x].key = key;
-		cells[changed_y * frame.cols + changed_x].flags = TSM_FRAME_CHANGED;
-	}
+}
+
+static struct tsm_frame_cell *cell_at(unsigned int x, unsigned int y)
+{
+	return &cells[y * frame.cols + x];
+}
+
+static void run_frame(struct kmscon_text *txt, bool cursor_on)
+{
+	struct tsm_screen_attr attr = {0};
 
 	n_blended = 0;
 	assert(bbulk_prepare(txt, &attr) == 0);
-	assert(bbulk_draw(txt, &frame, false) == 0);
+	assert(bbulk_draw(txt, &frame, cursor_on) == 0);
 	assert(bbulk_render(txt) == 0);
+}
+
+/* blank cells, but @x, @y holds @key with @flags, if @x is set */
+static void draw_frame_cell(struct kmscon_text *txt, int x, int y, uint64_t key, uint16_t flags)
+{
+	blank_frame(txt);
+	if (x >= 0) {
+		cell_at(x, y)->key = key;
+		cell_at(x, y)->flags = flags;
+	}
+	run_frame(txt, false);
+}
+
+/*
+ * One frame of blank cells; @changed_x, @changed_y is marked changed and holds
+ * @key, if set.
+ */
+static void draw_frame_key(struct kmscon_text *txt, int changed_x, int changed_y, uint64_t key)
+{
+	draw_frame_cell(txt, changed_x, changed_y, key, TSM_FRAME_CHANGED);
 }
 
 static void draw_frame(struct kmscon_text *txt, int changed_x, int changed_y)
@@ -276,10 +316,14 @@ static void test_two_frame_rule(struct kmscon_text *txt)
 	assert(n_blended == 0);
 }
 
-/* a cell whose glyph failed to draw is drawn on a later frame */
+/*
+ * A cell whose glyph failed to draw gets its background at once, and its glyph
+ * on a later frame.
+ */
 static void test_draw_failure_retried(struct kmscon_text *txt)
 {
-	unsigned int x, y;
+	struct bbulk *bb = txt->data;
+	unsigned int x, y, rendered;
 
 	draw_frame(txt, -1, -1);
 	draw_frame(txt, -1, -1);
@@ -288,17 +332,23 @@ static void test_draw_failure_retried(struct kmscon_text *txt)
 	/* the frame marks the cell changed, but its glyph cannot be had */
 	fail_render = true;
 	draw_frame_key(txt, 7, 2, 'q');
-	assert(!was_blended(x, y));
+	assert(was_blended(x, y) && blended_at(x, y)->buf == &bb->blank->buf);
 	fail_render = false;
 
-	/* the frame's flag is spent; the cell is still drawn into both buffers */
-	draw_frame_key(txt, -1, -1, 'q');
+	/* the frame's flag is spent, the cell still holds 'q': its glyph is
+	 * rendered and drawn into both buffers */
+	rendered = n_rendered;
+	draw_frame_cell(txt, 7, 2, 'q', 0);
 	assert(n_blended == 1 && was_blended(x, y));
-	draw_frame_key(txt, -1, -1, 'q');
+	assert(n_rendered == rendered + 1 && last_rendered == 'q');
+	assert(blended_at(x, y)->buf != &bb->blank->buf);
+	draw_frame_cell(txt, 7, 2, 'q', 0);
 	assert(n_blended == 1 && was_blended(x, y));
-	draw_frame_key(txt, -1, -1, 'q');
+	assert(blended_at(x, y)->buf != &bb->blank->buf);
+	draw_frame_cell(txt, 7, 2, 'q', 0);
 	assert(n_blended == 0);
 }
+
 
 int main(void)
 {

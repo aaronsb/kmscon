@@ -33,6 +33,7 @@
 #include <string.h>
 
 #include "../src/font/font.c"	       /* real dispatch: register / find / render */
+#include "../src/font/font_box.c"
 #undef LOG_SUBSYSTEM		       /* font.c and font_freetype.c both define it */
 #include "../src/font/font_freetype.c" /* backend ops + ft_data layout */
 

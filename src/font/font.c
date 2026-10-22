@@ -56,6 +56,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "font.h"
+#include "font_box.h"
 #include "shl/log.h"
 #include "shl/misc.h"
 #include "shl/module.h"
@@ -313,9 +314,11 @@ static struct kmscon_glyph *fit_glyph(struct kmscon_font *font, struct kmscon_gl
  * @len: number of codepoints in @cps, at least 1
  * @cwidth: width of the glyph in cells, 1 or 2, as the frame gives it
  *
- * Renders the glyph for the cluster @cps, exactly @cwidth cells wide. If the
- * glyph cannot be found or is invalid, the replacement character is drawn
- * instead, and if that fails too, NULL is returned.
+ * Renders the glyph for the cluster @cps, exactly @cwidth cells wide. A single
+ * box drawing or block element codepoint is drawn to fill the cell
+ * (font_box.c), not taken from the font. If the glyph cannot be found or is
+ * invalid, the replacement character is drawn instead, and if that fails too,
+ * NULL is returned.
  *
  * Returns: a new allocated glyph object on success, NULL on failure
  */
@@ -331,6 +334,20 @@ struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_
 		return NULL;
 	if (cwidth != 2)
 		cwidth = 1;
+
+	/* box drawing and blocks fill the cell, which can be taller than the
+	 * font's own glyph for them (#46) */
+	if (len == 1 && kmscon_font_box_has(cps[0])) {
+		struct kmscon_font_deco m;
+
+		kmscon_font_get_deco(font, &m);
+		glyph = kmscon_font_box_render(cps[0], cwidth * font->width, font->height,
+					       m.ul_thick);
+		if (glyph) {
+			glyph->double_width = cwidth == 2;
+			return glyph;
+		}
+	}
 
 	glyph = font->ops->render(font, attr, cps, len, cwidth);
 	if (!glyph)
@@ -388,7 +405,8 @@ void kmscon_font_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out
  * @ch: Symbol to find a glyph for
  * @len: Length of @ch
  *
- * Checks if the font has a glyph for the given symbol @ch.
+ * Checks if the font has a glyph for the given symbol @ch. Box drawing and
+ * block elements are always drawn, whatever the font holds.
  *
  * Returns: true if the font has a glyph for the given symbol, false otherwise
  */
@@ -397,6 +415,8 @@ bool kmscon_font_has_glyph(struct kmscon_font *font, struct kmscon_font_attr *at
 {
 	if (!font)
 		return false;
+	if (kmscon_font_box_has(ch))
+		return true;
 
 	return font->ops->has_glyph(font, attr, ch);
 }

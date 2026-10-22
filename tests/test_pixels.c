@@ -28,6 +28,7 @@
 #include <limits.h>
 
 #include "../src/font/font.c"
+#include "../src/font/font_box.c"
 #undef LOG_SUBSYSTEM
 #include "../src/font/font_freetype.c"
 #undef LOG_SUBSYSTEM
@@ -109,6 +110,19 @@ int display_blend(struct display *disp, const struct video_blend_req *req)
 #define FONT_PX 16
 #define ESC "\x1b"
 
+/*
+ * A structural check of the drawn screen, over a rectangle of cells, against
+ * the background (the screen's last pixel, which no screen draws on):
+ * 'f' every pixel the same colour and not the background (blocks that meet);
+ * 'v' every pixel row holds a pixel that is not the background (a line that
+ *     runs down from row to row);
+ * 'h' the same for every pixel column (a line that runs across).
+ */
+struct check {
+	char kind;
+	unsigned int col, row, cols, rows;
+};
+
 struct screen {
 	const char *name;
 	/* what the screen shows and what correct looks like: the caption on
@@ -120,6 +134,13 @@ struct screen {
 	const char *next;
 	/* optional: the decoration settings of kmscon.conf */
 	const struct kmscon_conf_t *conf;
+	/* optional: the font's pixel size, FONT_PX if 0 */
+	unsigned int px;
+	/* optional: pixel rows added to the font's line height, standing in for
+	 * a font whose line height has line spacing beyond its glyphs (#46) */
+	unsigned int spacing;
+	/* optional: checks, ended by kind 0 */
+	const struct check *checks;
 };
 
 /* the ADR-102 decoration settings the deco-* screens configure */
@@ -150,6 +171,56 @@ static const struct kmscon_conf_t conf_deco_force = {
 	"[4:3;58:5:46mSGR 58 green" ESC "[0m " ESC "[4:4;58:2::255:255:0mSGR 58 yellow" ESC         \
 	"[0m\r\n" ESC "[32;4mgreen text" ESC "[0m " ESC "[33;9mstruck yellow text" ESC "[0m\r\n" ESC \
 	"[4:2;9mdouble and strike" ESC "[0m\r\n"
+
+/*
+ * Blocks and box lines stacked across rows and columns (#46): full blocks,
+ * halves that meet across a row and side by side, quadrants, shades, and
+ * light, double, heavy, rounded, diagonal and dashed lines whose boxes span
+ * five rows.
+ */
+#define BLOCKS_BYTES                                                                               \
+	"██████ ▄▄▄▄ ┌──┬──┐ ╔══╦══╗ ┏━━┳━━┓ ╭──╮\r\n"                                             \
+	"██████ ████ │  │  │ ║  ║  ║ ┃  ┃  ┃ │  │\r\n"                                             \
+	"██████ ▀▀▀▀ ├──┼──┤ ╠══╬══╣ ┣━━╋━━┫ ╰──╯\r\n"                                             \
+	"▐▌▐▌▐▌ ▖▗▘▝ │  │  │ ║  ║  ║ ┃  ┃  ┃ ╱╲╳\r\n"                                              \
+	"▐▌▐▌▐▌ ▙▛▜▟ └──┴──┘ ╚══╩══╝ ┗━━┻━━┛ ▚▞\r\n"                                               \
+	"▁▂▃▄▅▆▇█ ▏▎▍▌▋▊▉█ ▔▕ ░▒▓█ ┄┈╌ ┅┉╍\r\n"                                                    \
+	"┆┊╎ ┇┋╏ ╞╡╟╢ ╒╕╓╖ ┍┑┎┒ ┝┥┠┨ ╼╽╾╿ ╴╵╶╷\r\n"                                                \
+	"┆┊╎ ┇┋╏ ╘╛╙╜ ╪╫┿╂ ┕┙┖┚ ╀╁╃╄ ╅╆╇╈ ╉╊\r\n" ESC "[33;44m██▀▄▌▐░▒▓ ┼╋╬ ╭╮╰╯" ESC "[0m\r\n"
+
+/* the boxes' corners and ends reach only one way, so the line checks start
+ * past them; the double box's centre cross is four corners with nothing
+ * between them */
+static const struct check blocks_checks[] = {
+	{'f', 0, 0, 6, 3},  /* full blocks */
+	{'f', 7, 1, 4, 1},  /* full blocks between lower and upper halves */
+	{'v', 12, 1, 1, 3}, /* light box: left, middle and right */
+	{'v', 15, 1, 1, 3}, /* ... */
+	{'v', 18, 1, 1, 3}, /* ... */
+	{'v', 20, 1, 1, 3}, /* double box: left and right */
+	{'v', 26, 1, 1, 3}, /* ... */
+	{'v', 28, 1, 1, 3}, /* heavy box: left, middle and right */
+	{'v', 31, 1, 1, 3}, /* ... */
+	{'v', 34, 1, 1, 3}, /* ... */
+	{'h', 13, 0, 5, 1}, /* light box: top, middle and bottom */
+	{'h', 13, 2, 5, 1}, /* ... */
+	{'h', 13, 4, 5, 1}, /* ... */
+	{'h', 21, 0, 5, 1}, /* double box: top, middle either side, bottom */
+	{'h', 21, 2, 2, 1}, /* ... */
+	{'h', 24, 2, 2, 1}, /* ... */
+	{'h', 21, 4, 5, 1}, /* ... */
+	{'h', 29, 0, 5, 1}, /* heavy box: top, middle and bottom */
+	{'h', 29, 2, 5, 1}, /* ... */
+	{'h', 29, 4, 5, 1}, /* ... */
+	{0},
+};
+
+#define BLOCKS_DESC                                                                                \
+	"Block elements and box drawing stacked across rows and columns: full blocks, halves "     \
+	"that meet across a row and side by side, eighths, quadrants, shades, and light, "         \
+	"double, heavy, rounded, diagonal and dashed lines, then blocks and lines in yellow on "   \
+	"blue. Correct: blocks fill their cells and lines run from cell to cell with no gap "      \
+	"between rows or columns."
 
 static const struct screen screens[] = {
 	{"ascii",
@@ -293,6 +364,14 @@ static const struct screen screens[] = {
 	 "[0m\r\n" ESC "[4:2m한글" ESC "[0m " ESC "[4:5m中文" ESC "[0m " ESC "[9m日本語" ESC
 	 "[0m\r\n" ESC "[4ma日b本c" ESC "[0m\r\n" ESC "[5;48H" ESC "[4;9m語" ESC "[0m"},
 
+	/* #46: drawn to the cell, not the font's glyph box */
+	{"blocks", BLOCKS_DESC " The cell is the font's own line height.", BLOCKS_BYTES, NULL, NULL,
+	 0, 0, blocks_checks},
+	{"blocks-spaced",
+	 BLOCKS_DESC " The cell is 6 pixel rows taller than the font's line height, as with a font"
+		     " whose line height has spacing beyond its glyphs.",
+	 BLOCKS_BYTES, NULL, NULL, 22, 6, blocks_checks},
+
 	/* frame N changes cells that frame N+1 must draw again into the other
 	 * buffer */
 	{"redraw",
@@ -335,6 +414,45 @@ static int write_text(const char *path, const char *text)
 		return -errno;
 	fprintf(f, "%s\n", text);
 	return fclose(f) ? -errno : 0;
+}
+
+/* @s's checks against the buffer last drawn, @cw x @ch cells; 0 if all hold */
+static int run_checks(const struct screen *s, unsigned int cw, unsigned int ch)
+{
+	uint32_t bg = fb[fb_w * fb_h - 1];
+	int ret = 0;
+
+	for (const struct check *c = s->checks; c && c->kind; c++) {
+		unsigned int x0 = c->col * cw, x1 = (c->col + c->cols) * cw;
+		unsigned int y0 = c->row * ch, y1 = (c->row + c->rows) * ch;
+		unsigned int outer0 = c->kind == 'h' ? x0 : y0, outer1 = c->kind == 'h' ? x1 : y1;
+		uint32_t first = fb[y0 * fb_w + x0];
+
+		for (unsigned int a = outer0; a < outer1; a++) {
+			unsigned int inner0 = c->kind == 'h' ? y0 : x0;
+			unsigned int inner1 = c->kind == 'h' ? y1 : x1;
+			bool ink = false, bad = false;
+
+			for (unsigned int b = inner0; b < inner1; b++) {
+				unsigned int x = c->kind == 'h' ? a : b, y = c->kind == 'h' ? b : a;
+				uint32_t p = fb[y * fb_w + x];
+
+				ink |= p != bg;
+				bad |= c->kind == 'f' && (p != first || p == bg);
+			}
+			if (bad || !ink) {
+				fprintf(stderr,
+					"test_pixels: %s: check %c on cells %u,%u +%ux%u fails at "
+					"pixel %s %u%s\n",
+					s->name, c->kind, c->col, c->row, c->cols, c->rows,
+					c->kind == 'h' ? "column" : "row", a,
+					bad ? " (not one solid colour)" : " (background only)");
+				ret = -EINVAL;
+				break;
+			}
+		}
+	}
+	return ret;
 }
 
 static void draw_frame(struct kmscon_text *txt, struct tsm_screen *con, struct tsm_vte *vte,
@@ -411,13 +529,16 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 		ret = write_ppm(path);
 	if (ret)
 		fprintf(stderr, "test_pixels: cannot write %s: %s\n", path, strerror(-ret));
-	fb = fake_d2d.rb[1].map;
 
 	snprintf(path, sizeof(path), "%s/%s.txt", out_dir, s->name);
 	if (!ret)
 		ret = write_text(path, s->desc);
 	if (ret)
 		fprintf(stderr, "test_pixels: cannot write %s: %s\n", path, strerror(-ret));
+
+	if (!ret)
+		ret = run_checks(s, font->width, font->height);
+	fb = fake_d2d.rb[1].map;
 
 	kmscon_text_unref(txt);
 	tsm_vte_unref(vte);
@@ -476,28 +597,26 @@ static void check_font_files(struct kmscon_font *font, const char *font_dir)
 	}
 }
 
-int main(int argc, char **argv)
+/*
+ * Draw @s with the pinned font at its size and line spacing, into a
+ * framebuffer of COLS x ROWS of its cells.
+ */
+static int run_screen(const struct screen *s, const char *font_dir, const char *out_dir)
 {
 	struct kmscon_font *font = NULL;
-	int ret, failed = 0;
+	int ret;
 
-	if (argc != 3) {
-		fprintf(stderr, "usage: %s FONT_DIR OUT_DIR\n", argv[0]);
-		return 2;
-	}
-
-	pin_fonts(argv[1]);
-
-	ret = kmscon_font_register(&kmscon_font_freetype_ops);
-	assert(ret == 0);
-	ret = kmscon_text_register(&kmscon_text_bbulk_ops);
-	assert(ret == 0);
-
-	ret = kmscon_font_find(&font, "DejaVu Sans Mono", FONT_PX, "freetype");
+	/* a fresh configuration per font: the backend's font set filter, set
+	 * again by a second font, drops fonts added to the configuration by
+	 * file */
+	pin_fonts(font_dir);
+	ret = kmscon_font_find(&font, "DejaVu Sans Mono", s->px ? s->px : FONT_PX, "freetype");
 	if (ret || !font || font->ops != &kmscon_font_freetype_ops) {
 		fprintf(stderr, "test_pixels: pinned font not found\n");
-		return 2;
+		exit(2);
 	}
+	check_font_files(font, font_dir);
+	font->height += s->spacing;
 
 	fb_w = COLS * font->width;
 	fb_h = ROWS * font->height;
@@ -505,13 +624,31 @@ int main(int argc, char **argv)
 	fb_back = calloc((size_t)fb_w * fb_h, sizeof(*fb));
 	assert(fb && fb_back);
 	fake_display_init();
-	check_font_files(font, argv[1]);
 
-	for (size_t i = 0; i < sizeof(screens) / sizeof(screens[0]); i++)
-		failed |= !!render_screen(font, &screens[i], argv[2]);
+	ret = render_screen(font, s, out_dir);
 
 	kmscon_font_unref(font);
 	free(fb);
 	free(fb_back);
+	return ret;
+}
+
+int main(int argc, char **argv)
+{
+	int ret, failed = 0;
+
+	if (argc != 3) {
+		fprintf(stderr, "usage: %s FONT_DIR OUT_DIR\n", argv[0]);
+		return 2;
+	}
+
+	ret = kmscon_font_register(&kmscon_font_freetype_ops);
+	assert(ret == 0);
+	ret = kmscon_text_register(&kmscon_text_bbulk_ops);
+	assert(ret == 0);
+
+	for (size_t i = 0; i < sizeof(screens) / sizeof(screens[0]); i++)
+		failed |= !!run_screen(&screens[i], argv[1], argv[2]);
+
 	return failed ? 1 : 0;
 }

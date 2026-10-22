@@ -121,6 +121,7 @@ trap 'exit 129' HUP
 
 [ -z "$was_active" ] || run systemctl stop "$unit"
 
+build=$(cut -d' ' -f1 "$stage/BUILD" 2>/dev/null) || build='(unknown)'
 if [ -n "$was_active" ]; then
 	after="when the demo ends, $unit is started again on VT $vt"
 else
@@ -128,7 +129,7 @@ else
 fi
 cat <<EOF
 
-kmscon $(cat "$stage/BUILD" 2>/dev/null || echo '(unknown build)') on VT $vt
+kmscon dev build $build on VT $vt
   1. switch with Ctrl-Alt-F$vt
   2. page with any key; press q in the demo to finish
   3. $after;
@@ -142,12 +143,14 @@ EOF
 # script decides how it stops: SIGTERM from restore(), which kmscon handles by
 # releasing the VT. unshare and sh exec, so $! is kmscon's own PID. kmscon
 # starts its child with execve, without a PATH search, so its path is absolute.
+# kmscon and setpriv both clear the environment, so DEMO_LABEL, which names the
+# build on the demo's title page, is set last, by env.
 # shellcheck disable=SC2016 # $1, $2 and $@ are for the inner sh
 cmd=(unshare --mount --propagation private --
 	/bin/sh -c 'mount --bind "$1" "$2" && shift 2 && exec "$@"' sh "$modules" "$moduledir"
 	"$kmscon" --vt="tty$vt" --no-switchvt --configdir "$here" --oneshot "${extra[@]}"
 	--login -- /usr/bin/setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env
-	-- /bin/bash "$here/demo.sh")
+	-- /usr/bin/env DEMO_LABEL="dev build $build" /bin/bash "$here/demo.sh")
 show "${cmd[@]}"
 [ -z "$dry" ] || exit 0
 "${cmd[@]}" &

@@ -1,14 +1,19 @@
 #!/bin/bash
-# The local VT demo (#36): a title page naming the build, then one page per
-# section script in sections/, in file name order. Each page shows the
-# section's label (its "# demo:" lines), which says what a correct screen looks
-# like, then the screen the section draws.
+# The local VT demo (#36): a title page naming the terminal it runs in, then
+# one page per section script in sections/, in file name order. Each page shows
+# the section's label (its "# demo:" lines), which says what a correct screen
+# looks like, then the screen the section draws.
+#
+# It runs in any terminal as any user and needs nothing from the dev build, so
+# the same pages can be compared on a dev-build VT and a stock kmscon VT.
 #
 #   demo.sh [SECTION...]   SECTION is a file name without the number and .sh,
 #                          such as cjk; with none, every section runs
 #
-# DEMO_NOPAGE=1 runs every page without waiting for a key and leaves the last
-# page on the screen, for checking the sections outside a VT.
+# DEMO_LABEL names the terminal on the title page; run-vt.sh sets it to
+# "dev build <git describe>". DEMO_NOPAGE=1 runs every page without waiting for
+# a key and leaves the last page on the screen, for checking the sections
+# outside a VT.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -45,13 +50,11 @@ for f in "$here"/sections/*.sh; do
 done
 [ ${#sections[@]} -gt 0 ] || { echo "demo: no such section: $*" >&2; exit 2; }
 
-build=$(cat "$here/../build/demo-root/BUILD" 2>/dev/null ||
-	git -C "$here" describe --tags --long --dirty 2>/dev/null || echo unknown)
 size=$(stty size </dev/tty 2>/dev/null || echo '? ?')
 
 clear_screen
 printf '\033[1mkmscon fork: local VT demo\033[0m\n\n'
-printf '  build     %s\n' "$build"
+printf '  running   %s\n' "${DEMO_LABEL:-unlabelled (DEMO_LABEL not set; run-vt.sh sets it for the dev build)}"
 printf '  terminal  TERM=%s, %s rows by %s columns\n\n' "${TERM:-unset}" "${size% *}" "${size#* }"
 printf '  Each page names what a correct screen looks like.\n\n'
 i=0

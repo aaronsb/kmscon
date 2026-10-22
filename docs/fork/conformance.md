@@ -77,7 +77,26 @@ The page is drawn only from the run's reports, so it cannot disagree with the ve
 
 "Since the previous run" compares with the ledger's last row. Verdicts come from the `cases.json` that row's page left. Goldens changed, added and deleted come from git, between the previous row's kmscon commit and the working tree and between its libtsm commit and the subproject's (`fork/conformance/golden-history.sh`, which runs on the host). The three runs recorded before run pages existed are SVG contact sheets under `docs/conformance/sheets/` and left no per-case record: against those, a case counts as passing then when its tier passed every case, and as new when its golden was added since.
 
-Milestones commit their page and add a row to [the ledger](../conformance/LEDGER.md): the date (UTC), what the run marks, the kmscon and libtsm commits measured, the pass count of each tier, and a link to the page. Over time the ledger shows the fork building and conforming against upstream as both move.
+A committed run (`make sheet NOTE="..."`, which writes the page and adds its row to [the ledger](../conformance/LEDGER.md)) happens once per working session, at its bring-home point: every open branch of the session has merged, main is green, and the run is the first thing done on main afterwards. The row records the date (UTC), what the run marks, the kmscon and libtsm commits measured, the pass count of each tier, and a link to the page, so over time the ledger shows the fork building and conforming against upstream as both move. `make sheet` refuses a tree with uncommitted changes, and a HEAD that is not `origin/main` after fetching it; `SHEET_ANY_COMMIT=1` overrides the second check.
+
+The exception is comparative analysis. When work on a branch needs before and after views, `make sheet-preview` writes the same page under `fork/build/run/`, uncommitted, as often as the analysis needs. To set two runs side by side, save each and compare them:
+
+```sh
+make tier3 && make sheet-save SAVE=fork/build/saved/before   # on main, say
+make tier3 && make sheet-save SAVE=fork/build/saved/after    # on the branch
+make sheet-compare A=fork/build/saved/before B=fork/build/saved/after LABEL_A=main LABEL_B=branch
+```
+
+## Comparison pages
+
+`make sheet-compare` writes `fork/build/compare/README.md` (or `OUT=`): each screen two saved runs both captured, A beside B, paired by name. A screen only one run has is listed, not dropped. The same comparison sets upstream kmscon beside the fork, built and run in the same tier 3 machine, which is the evidence the fork is announced with; the page is written for a reader who has not seen this repository.
+
+- An identical pair says so and shows the screen once.
+- A pair that differs shows A, B and a difference image, with each differing region outlined in yellow and numbered. A table gives each region's terminal row and columns (from the character cell size kmscon logs, which the tier 3 report records per display), its pixel count and largest channel difference, and the text the screen's script printed there (the report carries each script's output with escape sequences removed). A one-line verdict on which side is correct comes from `VERDICTS=FILE`, lines of `screen: verdict`; until one is given the page says *not yet judged*, beside the screen's own note of what correct looks like.
+- `A2=` and `B2=` take a second run of each build; the page then reports, per screen, whether each build reproduced its own capture exactly.
+- The footer says how the screens were made: the guest image and its SHA-256, the package snapshot, each display's QEMU device, kmscon configuration and cell size, the dev image the packages were built in, both builds' commits, and the command that regenerates the page. The tier 3 report records these at run time (`tools` and `variants` in `fork/build/tier3-report.json`).
+
+`make sheet-save SAVE=DIR` copies the last run's tier 2 and tier 3 reports and every screen they captured into `DIR`, with paths relative to it, so a run can be kept and compared later. `DIR` must be inside the checkout, because the generators run in the dev image with only the checkout mounted.
 
 ## Commands
 
@@ -88,9 +107,11 @@ make test                      # all suites, including tiers 1 and 2
 make test LIBTSM=../libtsm     # against a local libtsm checkout
 make tier2                     # tier 2 only, with its report
 make tier2-golden              # regenerate tier 2 goldens (review, then commit on their own)
-make sheet-preview             # write this run's page into fork/build/run/
-make sheet NOTE="what it marks"   # commit-ready run page and ledger row; refuses uncommitted changes
-make sheet-selftest            # unit tests of the page generator (part of make test)
+make sheet-preview             # write this run's page into fork/build/run/, uncommitted
+make sheet NOTE="what it marks"   # run page and ledger row, once per session on a green main
+make sheet-save SAVE=DIR       # keep the last run's reports and screens for comparing
+make sheet-compare A=DIR B=DIR LABEL_A=.. LABEL_B=..   # pair two saved runs' screens
+make sheet-selftest            # unit tests of the page generators (part of make test)
 ```
 
 Tier 3 needs KVM and QEMU on the host besides docker; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements, pins and variants:

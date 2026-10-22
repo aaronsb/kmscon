@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Compare two builds of kmscon drawing the same screens, as a markdown page.
+
+Two subcommands:
+
+  compare.py save --out DIR REPORT...
+      Copy a run's reports, with the screens each one captured, into DIR, so
+      the run can be compared later. Paths in the saved reports are relative
+      to DIR.
+
+  compare.py page --out DIR --a DIR --b DIR [--a2 DIR] [--b2 DIR]
+                  [--label-a TEXT] [--label-b TEXT] [--verdicts FILE]
+                  [--harness REV] [--command TEXT]
+      Write DIR/README.md and its images: each screen both runs captured, A
+      beside B, and where they differ a difference image with each differing
+      region outlined and numbered, and a table naming each region by
+      terminal row and column and by the text the screen's script printed
+      there. --a2 and --b2 are second runs of the same builds: the page says
+      whether each side reproduces its own captures exactly. --verdicts holds
+      "screen: which side is right and why" lines for the captions.
+
+Screens pair by name; a screen only one run has is listed, not dropped. The
+page is written for a reader who has not seen this repository, and the same
+inputs always write the same bytes.
+
+SPDX-License-Identifier: MIT
+"""
+
+import argparse
+import json
+import re
+import shutil
+import sys
+import unicodedata
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pageimg import crop, crop_box, diff_image, outline, step_for, strip, t3img, write_png  # noqa: E402
+
+REPO = "https://github.com/aaronsb/kmscon"
+
+
+# ---------------------------------------------------------------- saved runs
+
+def slug(name):
+    return re.sub(r"[^\w.-]", "-", name)
+
+
+def save(out, reports):
+    """Copy each report and every screen it captured into `out`."""
+    out = Path(out)
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    for path in reports:
+        rep = json.loads(Path(path).read_text())
+        for case in rep["cases"]:
+            src = case.get("actual")
+            for key in ("golden", "diff", "thumb_actual", "thumb_golden", "thumb_diff"):
+                case.pop(key, None)
+            case["actual"] = None
+            if src and Path(src).exists():
+                dest = Path("t%d" % rep["tier"]) / (slug(case["name"]) + ".png")
+                (out / dest).parent.mkdir(exist_ok=True)
+                t3img.write_png(str(out / dest), t3img.read(src))
+                case["actual"] = dest.as_posix()
+        (out / Path(path).name).write_text(json.dumps(rep, indent=1, ensure_ascii=False, sort_keys=True) + "\n")
+    print("compare: saved %d report(s) to %s" % (len(reports), out))
+
+
+class Run:
+    """A saved run: its image-tier reports, keyed by (tier, case name)."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.reports = [json.loads(p.read_text()) for p in sorted(self.path.glob("*-report.json"))]
+        self.reports = [r for r in self.reports if r["tier"] in (2, 3)]
+        if not self.reports:
+            raise SystemExit("compare: no tier 2 or tier 3 report in %s" % path)
+        self.cases = {(r["tier"], c["name"]): c for r in self.reports for c in r["cases"]}
+        self.tools = next((r["tools"] for r in self.reports if r["tier"] == 3 and r.get("tools")), {})
+        self.variants = next((r.get("variants", {}) for r in self.reports if r["tier"] == 3), {})
+
+    def image(self, key):
+        case = self.cases.get(key)
+        path = self.path / case["actual"] if case and case.get("actual") else None
+        return t3img.read(str(path)) if path and path.exists() else None
+
+    def meta(self, key):
+        return self.variants.get(key[1].split("/")[0], {}) if key[0] == 3 else {}
+
+    def renderer(self):
+        found = {}
+        for meta in self.variants.values():
+            for line in meta.get("kmscon") or []:
+                found.update(re.findall(r"(backend|text renderer|font engine) \[([^\]]*)\]", line))
+        return found
+
+
+# ---------------------------------------------------------------- regions
+
+def region_stats(want, got, points, regions):
+    """[(pixels, max channel delta)] for each region; a point counts in the
+    first region that holds it."""
+    stats = [[0, 0] for _ in regions]
+    for x, y in points:
+        for i, (x0, y0, x1, y1) in enumerate(regions):
+            if x0 <= x < x1 and y0 <= y < y1:
+                a = want.row(y)[x * 3:x * 3 + 3]
+                b = got.row(y)[x * 3:x * 3 + 3]
+                stats[i][0] += 1
+                stats[i][1] = max(stats[i][1], *(abs(p - q) for p, q in zip(a, b)))
+                break
+    return [tuple(s) for s in stats]
+
+
+def screen_rows(text, cols):
+    """The screen's rows as lists of (column, character), lines wrapped at
+    `cols` cells, wide characters two cells."""
+    rows = []
+    for line in text or []:
+        row, col = [], 0
+        for ch in line:
+            if unicodedata.combining(ch) and row:
+                row[-1] = (row[-1][0], row[-1][1] + ch)
+                continue
+            width = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+            if col + width > cols:
+                rows.append(row)
+                row, col = [], 0
+            row.append((col, ch))
+            col += width
+        rows.append(row)
+    return rows
+
+
+def cells(region, cell, rows):
+    """A region as terminal cells, rows and columns counted from 1, with the
+    text printed there: ("row 3, cols 10-24", "the text")."""
+    cw, ch = cell
+    c0, r0 = region[0] // cw, region[1] // ch
+    c1, r1 = (region[2] - 1) // cw, (region[3] - 1) // ch
+    where = ("row %d" % (r0 + 1) if r0 == r1 else "rows %d-%d" % (r0 + 1, r1 + 1)) + ", " + \
+        ("col %d" % (c0 + 1) if c0 == c1 else "cols %d-%d" % (c0 + 1, c1 + 1))
+    texts = []
+    for r in range(r0, r1 + 1):
+        if r < len(rows):
+            t = "".join(s for c, s in rows[r] if c0 <= c <= c1).strip()
+            if t:
+                texts.append(t)
+    shown = " / ".join(texts[:3]) + (" / …" if len(texts) > 3 else "")
+    return where, shown
+
+
+def code(text):
+    return "`` %s ``" % text if "`" in text else "`%s`" % text
+
+
+# ---------------------------------------------------------------- the page
+
+class Page:
+    def __init__(self, args):
+        self.args = args
+        self.out = Path(args.out)
+        self.a, self.b = Run(args.a), Run(args.b)
+        self.a2 = Run(args.a2) if args.a2 else None
+        self.b2 = Run(args.b2) if args.b2 else None
+        self.la, self.lb = args.label_a, args.label_b
+        self.verdicts = {}
+        if args.verdicts:
+            for line in Path(args.verdicts).read_text().splitlines():
+                name, sep, text = line.partition(":")
+                if sep and not line.startswith("#"):
+                    self.verdicts[name.strip()] = text.strip()
+        self.lines = []
+
+    def w(self, *lines):
+        self.lines.extend(lines)
+
+    def keys(self):
+        order = list(self.a.cases) + [k for k in self.b.cases if k not in self.a.cases]
+        return [k for k in order if k in self.a.cases and k in self.b.cases], \
+            [k for k in order if (k in self.a.cases) != (k in self.b.cases)]
+
+    def display(self, key, run):
+        """"1280×800" for a screen, from its capture."""
+        img = run.image(key)
+        return "%d×%d" % (img.width, img.height) if img else "?"
+
+    def screen_name(self, key):
+        return key[1].split("/")[-1]
+
+    def heading(self, key):
+        # A plain x: GitHub's heading anchors drop some symbols.
+        return "`%s` at %s" % (self.screen_name(key), self.display(key, self.a).replace("×", "x"))
+
+    def render(self):
+        both, one = self.keys()
+        results = {k: self.result(k) for k in both}
+        self.header(both, results)
+        self.reproducibility(both)
+        self.w("## The screens", "")
+        for k in both:
+            self.screen(k, results[k])
+        if one:
+            self.w("## Screens only one build drew", "", "| Screen | Drawn by | Not drawn by |", "|---|---|---|")
+            for k in one:
+                has, lacks = (self.la, self.lb) if k in self.a.cases else (self.lb, self.la)
+                self.w("| `%s` | %s | %s |" % (k[1], has, lacks))
+            self.w("")
+        self.footer()
+        return "\n".join(self.lines).rstrip() + "\n"
+
+    def result(self, key):
+        """(status, data) for a pair: missing, size, same or differ."""
+        a, b = self.a.image(key), self.b.image(key)
+        if a is None or b is None:
+            why = [self.a.cases[key], self.b.cases[key]][a is not None]
+            return "missing", (self.la if a is None else self.lb, why.get("error") or "no capture")
+        if (a.width, a.height) != (b.width, b.height):
+            return "size", (a, b)
+        stats, _, points = t3img.compare(b, a)
+        if not points:
+            return "same", (a,)
+        regions = [tuple(r) for r in stats["bbox"]]
+        return "differ", (a, b, stats, regions, region_stats(a, b, points, regions))
+
+    def summary(self, status, data):
+        if status == "same":
+            return "identical"
+        if status == "missing":
+            return "no screen from %s" % data[0]
+        if status == "size":
+            return "different sizes"
+        return "differ: %d pixels in %d region%s" % (data[2]["pixels"], len(data[3]),
+                                                    "" if len(data[3]) == 1 else "s")
+
+    def header(self, both, results):
+        self.w("# kmscon: %s and %s drawing the same screens" % (self.la, self.lb), "")
+        self.w("Two builds of kmscon were installed in the same virtual machine, one at a time. Each "
+               "drew the same screens on the same virtual display, and each screen was captured "
+               "from the display, pixel for pixel. This page sets the two captures of each screen "
+               "side by side and marks every pixel where they differ. How the screens were made "
+               "is at the end.", "")
+        self.w("| | %s | %s |" % (self.la, self.lb), "|---|---|---|")
+        for label, key in (("kmscon commit", "kmscon"), ("libtsm commit", "libtsm")):
+            self.w("| %s | %s | %s |" % (label, self.commit(self.a, key), self.commit(self.b, key)))
+        ra, rb = self.a.renderer(), self.b.renderer()
+        for label, key in (("Video backend", "backend"), ("Text renderer", "text renderer"),
+                           ("Font engine", "font engine")):
+            self.w("| %s | %s | %s |" % (label, ra.get(key, "not recorded"), rb.get(key, "not recorded")))
+        self.w("")
+        counts = {}
+        for k in both:
+            counts[results[k][0]] = counts.get(results[k][0], 0) + 1
+        self.w("Of the %d screens both builds drew: %d identical, %d different%s." % (
+            len(both), counts.get("same", 0), counts.get("differ", 0) + counts.get("size", 0),
+            ", %d without a capture from one side" % counts["missing"] if counts.get("missing") else ""), "")
+        self.w("| Screen | Display | Result |", "|---|---|---|")
+        for k in both:
+            self.w("| [`%s`](#%s) | %s | %s |" % (self.screen_name(k), anchor(self.heading(k)),
+                                                self.display(k, self.a), self.summary(*results[k])))
+        self.w("")
+
+    def commit(self, run, key):
+        rev = run.tools.get(key)
+        if not rev:
+            return "not recorded"
+        bare, _, dirty = rev.partition("+")
+        repo = REPO if key == "kmscon" else REPO.replace("kmscon", "libtsm")
+        return "[`%s`](%s/commit/%s)%s" % (bare, repo, bare, " with uncommitted changes" if dirty else "")
+
+    def reproducibility(self, both):
+        self.w("## Reproducibility", "")
+        pairs = [(lbl, r, r2) for lbl, r, r2 in ((self.la, self.a, self.a2), (self.lb, self.b, self.b2)) if r2]
+        if not pairs:
+            self.w("Each build was captured once. To check that a build draws the same pixels every "
+                   "time, capture it twice and pass the second run as well (see the end of the page).", "")
+            return
+        self.w("Each build below was captured in two separate runs, each in a freshly booted machine. "
+               "A build that draws the same pixels every time shows 0 differing pixels.", "")
+        self.w("| Screen | Display | " + " | ".join("%s: run 1 vs run 2" % p[0] for p in pairs) + " |",
+               "|---|---|" + "---|" * len(pairs))
+        for k in both:
+            row = []
+            for _, r, r2 in pairs:
+                a, b = r.image(k), r2.image(k)
+                if a is None or b is None:
+                    row.append("no capture in one run")
+                elif (a.width, a.height) != (b.width, b.height):
+                    row.append("different sizes")
+                else:
+                    n = t3img.compare(b, a)[0]["pixels"]
+                    row.append("identical (0 px)" if n == 0 else "**%d px differ**" % n)
+            self.w("| `%s` | %s | %s |" % (self.screen_name(k), self.display(k, self.a), " | ".join(row)))
+        self.w("")
+
+    def screen(self, key, result):
+        status, data = result
+        case = self.a.cases[key]
+        self.w("### " + self.heading(key), "")
+        desc = case.get("description") or self.b.cases[key].get("description") or ""
+        shows, _, correct = desc.partition("Correct:")
+        if shows.strip():
+            self.w("**What it shows:** " + shows.strip(), "")
+        if correct.strip():
+            self.w("**What correct looks like:** " + correct.strip(), "")
+        stem = slug(key[1])
+        if status == "same":
+            img = data[0]
+            box = crop_box([img])
+            step = step_for(box)
+            write_png(self.out / (stem + ".png"), crop(img, box, step))
+            self.w("Identical: both builds drew exactly the same pixels.", "",
+                   "![%s](%s.png)" % (stem, stem), "", "*%s*" % self.crop_note(img, box, step), "")
+            return
+        verdict = self.verdicts.get(key[1]) or self.verdicts.get(self.screen_name(key))
+        self.w("**Which is correct:** " + (verdict or "*not yet judged*"), "")
+        if status == "missing":
+            self.w("No capture from %s: %s" % data, "")
+            return
+        if status == "size":
+            a, b = data
+            self.w("The captures differ in size (%d×%d and %d×%d), so they are not compared pixel by "
+                   "pixel." % (a.width, a.height, b.width, b.height), "")
+            return
+        a, b, stats, regions, per = data
+        box = crop_box([a, b], regions)
+        step = step_for(box)
+        diff, _ = diff_image(a, b, box, step)
+        img, across = strip([crop(a, box, step), crop(b, box, step), outline(diff, regions, box, step)])
+        write_png(self.out / (stem + "-strip.png"), img)
+        self.w("%d pixels differ, by at most %d in any colour channel (0 to 255)." % (
+            stats["pixels"], stats["max_delta"]), "")
+        self.w("![%s: %s, %s, difference](%s-strip.png)" % (stem, self.la, self.lb, stem), "",
+               "*%s: %s, %s, and the difference: %s dimmed, differing pixels in red, each region "
+               "outlined in yellow and numbered as in the table. %s*" % (
+                   "Left to right" if across else "Top to bottom", self.la, self.lb, self.lb,
+                   self.crop_note(a, box, step)), "")
+        cell = self.a.meta(key).get("cell") or self.b.meta(key).get("cell")
+        rows = screen_rows(case.get("text") or self.b.cases[key].get("text"),
+                           a.width // cell[0]) if cell else []
+        self.w("| # | Where | Pixels | Max delta | Text drawn there |", "|---|---|---|---|---|")
+        for n, (region, (px, delta)) in enumerate(zip(regions, per), 1):
+            if cell:
+                where, text = cells(region, cell, rows)
+            else:
+                where, text = "pixels %d,%d to %d,%d" % tuple(region), ""
+            self.w("| %d | %s | %d | %d | %s |" % (n, where, px, delta, code(text) if text else "—"))
+        self.w("")
+        if cell:
+            self.w("*Rows and columns count from 1 at the top left, in %d×%d-pixel character cells.*"
+                   % tuple(cell), "")
+
+    def crop_note(self, img, box, step):
+        if box == (0, 0, img.width, img.height) and step == 1:
+            return "The whole screen."
+        note = "Cropped to the drawn part, pixels %d,%d to %d,%d of the %d×%d screen" % (
+            box + (img.width, img.height))
+        return note + ("; one pixel in %d kept." % step if step > 1 else ".")
+
+    def footer(self):
+        t = self.a.tools or self.b.tools
+        self.w("## How this was produced", "")
+        harness = self.args.harness
+        where = "[`fork/tier3`](%s/tree/%s/fork/tier3)" % (REPO, harness) if harness else "`fork/tier3`"
+        self.w("- **Machine:** a QEMU/KVM virtual machine booted from the Arch Linux cloud image `%s` "
+               "(SHA-256 `%s`), with packages from the Arch Linux Archive snapshot of %s. Each build "
+               "was installed as a package and run by systemd on a virtual console, as on a real "
+               "system." % (t.get("guest_image") or "not recorded", t.get("guest_image_sha256") or "not recorded",
+                            t.get("guest_archive") or "not recorded"))
+        for name, meta in sorted(self.a.variants.items()):
+            cell = meta.get("cell")
+            self.w("- **Display `%s`:** QEMU device `%s`. kmscon configuration: %s.%s" % (
+                name, meta.get("device", "not recorded"),
+                ", ".join("`%s`" % c for c in meta.get("config", [])) or "not recorded",
+                " Character cell %d×%d pixels." % tuple(cell) if cell else ""))
+        self.w("- **Screens:** for each screen the console is cleared and a shell script prints it; "
+               "the display is captured once two captures a second apart are identical. The scripts "
+               "and the driver are in %s of the repository that made this page." % where)
+        self.w("- **Builds:** each package was built in the container image `%s`, with packages "
+               "from the Arch Linux Archive snapshot of %s." % (
+                   t.get("image_base") or "not recorded", t.get("archive_date") or "not recorded"))
+        if self.args.command:
+            self.w("- **This page:** `%s`" % self.args.command)
+        self.w("")
+
+
+def anchor(heading):
+    """The fragment GitHub gives a heading."""
+    return re.sub(r"[^\w\- ]", "", heading.lower()).replace(" ", "-")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("save")
+    s.add_argument("--out", required=True)
+    s.add_argument("reports", nargs="+")
+    p = sub.add_parser("page")
+    for opt in ("--out", "--a", "--b"):
+        p.add_argument(opt, required=True)
+    for opt in ("--a2", "--b2", "--verdicts", "--harness", "--command"):
+        p.add_argument(opt)
+    p.add_argument("--label-a", default="A")
+    p.add_argument("--label-b", default="B")
+    args = ap.parse_args(argv)
+    if args.cmd == "save":
+        save(args.out, args.reports)
+        return 0
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("*.png"):
+        old.unlink()
+    (out / "README.md").write_text(Page(args).render())
+    size = sum(f.stat().st_size for f in out.iterdir())
+    print("compare: wrote %s (%d KB)" % (out / "README.md", -(-size // 1024)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

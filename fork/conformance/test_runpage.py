@@ -22,7 +22,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import runpage  # noqa: E402
-from runpage import t3img  # noqa: E402
+from pageimg import t3img  # noqa: E402
+import pageimg  # noqa: E402
 
 BG, FG = b"\x10\x12\x16", b"\xd0\xd0\xd0"
 
@@ -166,9 +167,9 @@ class RunPageTest(unittest.TestCase):
         self.assertIn("A line of text.", page)
         # Cropped to the drawn region with its margin, not the whole screen.
         thumb = read_png(out / "t2-same.png")
-        self.assertEqual((thumb.width, thumb.height), (40 - 10 + 2 * runpage.MARGIN, 1 + 2 * runpage.MARGIN))
+        self.assertEqual((thumb.width, thumb.height), (40 - 10 + 2 * pageimg.MARGIN, 1 + 2 * pageimg.MARGIN))
         strip = read_png(out / "t2-broken-strip.png")
-        self.assertIn(runpage.DIFF_RGB, strip.data)
+        self.assertIn(pageimg.DIFF_RGB, strip.data)
 
     def test_ledger_row(self):
         self.fx.run("ledger/runs/2026-10-22-ccccccc-ddddddd", "--append", "--note", "a | note")
@@ -190,12 +191,12 @@ class RunPageTest(unittest.TestCase):
         # differing pixel still marks its block.
         want = screen(3000, 50, [(x, 10) for x in range(0, 2500)])
         got = screen(3000, 50, [(x, 10) for x in range(0, 2500)] + [(1001, 40)])
-        box = runpage.crop_box([want, got])
-        step = runpage.step_for(box)
+        box = pageimg.crop_box([want, got])
+        step = pageimg.step_for(box)
         self.assertEqual(step, 3)
-        img, n = runpage.diff_image(want, got, box, step)
+        img, n = pageimg.diff_image(want, got, box, step)
         self.assertEqual(n, 1)
-        self.assertLessEqual(img.width, runpage.MAX_W)
+        self.assertLessEqual(img.width, pageimg.MAX_W)
 
 
 if __name__ == "__main__":

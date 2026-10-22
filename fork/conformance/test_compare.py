@@ -232,6 +232,9 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(compare.cells((20, 0, 30, 20), (10, 20), rows, (100, 40)), ("row 1, col 3", "日"))
         self.assertEqual(compare.cells((10, 0, 20, 20), (10, 20), rows, (100, 40)), ("row 1, col 2", "日"))
 
+    def test_pipes_escaped_in_tables(self):
+        self.assertEqual(compare.code("|一|二|"), "`\\|一\\|二\\|`")
+        self.assertEqual(compare.code("a`|b"), "`` a`\\|b ``")
 
     def test_grid_offset(self):
         # kmscon centres the grid: 205×63 in 10×19 cells is 20 columns by 3

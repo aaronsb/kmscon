@@ -176,6 +176,9 @@ def cells(region, cell, rows, size):
 
 
 def code(text):
+    """Text as inline code in a table cell; GitHub splits cells at a bare |
+    even inside backticks."""
+    text = text.replace("|", "\\|")
     return "`` %s ``" % text if "`" in text else "`%s`" % text
 
 

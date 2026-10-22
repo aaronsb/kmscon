@@ -15,4 +15,9 @@ systemctl daemon-reload
 rm -rf /usr/local/share/tier3
 cp -r "$disc"/screens /usr/local/share/tier3
 install -m755 "$disc"/t3 /usr/local/bin/t3
+# ttyS1 is the harness's event port: the scenario reports a login and each
+# drawn screen there, and the driver waits for those lines.
+stty -F /dev/ttyS1 clocal
+chmod 0666 /dev/ttyS1
+echo 'echo "T3-LOGIN $(tty)" > /dev/ttyS1' > /etc/profile.d/tier3.sh
 echo "TIER3-INSTALL-OK $(pacman -Q kmscon-aaronsb)" > /dev/ttyS0

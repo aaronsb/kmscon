@@ -8,14 +8,25 @@
 #   make tier3-gl       the same for the GL (virgl) variant, see #17
 #   make tier3-bless    rewrite the goldens from the last run's captures
 #
+# JOBS=N runs up to N variants at once, each in its own VM (4 vCPUs, 4 GiB);
+# the default, 1, runs them one after another. GL variants never run together.
+# With JOBS above 1, T3_DEADLINE=S stops a variant still running after S seconds.
+#
 # Everything the guest needs lives in fork/vm (gitignored). QEMU runs headless
-# as the invoking user, one VM at a time.
+# as the invoking user.
 
 T3_DIR     := fork/tier3
 T3_VM      := fork/vm
 T3_PKGOUT  := fork/build/pkg
 T3_PKGVER  := $(shell git describe --tags --long 2>/dev/null | sed 's/^v//;s/-\([0-9]*\)-g/.r\1.g/')
 T3_PY      := python3 -I -B
+JOBS       ?= 1
+# Seconds a variant may run, with JOBS above 1, before its worker is stopped.
+T3_DEADLINE ?= 1800
+# tier3 and tier3-gl name the package target for t3.py, which builds it under
+# the run lock, so a second run cannot rebuild the package under a running
+# one. The recipes hold no $(MAKE), so `make -n` runs nothing.
+T3_RUN := $(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) --deadline $(T3_DEADLINE)
 
 # Pinned guest: the official Arch Linux cloud image, verified against the
 # arch-boxes signing key, and the Arch Linux Archive snapshot its packages
@@ -52,16 +63,16 @@ $(T3_BASE): $(T3_VM)/images/$(T3_IMAGE) $(T3_GUEST)
 tier3-image: $(T3_BASE) ## Fetch, verify and provision the tier 3 guest base image
 
 .PHONY: tier3
-tier3: pkg $(T3_BASE) ## Tier 3: the 2D variants, or VARIANTS="2d-1280x800 gl-1280x800 ..."
-	$(T3_PY) $(T3_DIR)/t3.py run $(VARIANTS)
+tier3: $(T3_BASE) ## Tier 3: the 2D variants, or VARIANTS="2d-1280x800 gl-1280x800 ..."; JOBS=N runs N at once
+	$(T3_RUN) --pkg-target pkg $(VARIANTS)
 
 .PHONY: tier3-gl
-tier3-gl: pkg $(T3_BASE) ## Tier 3 on the GL variant (virgl), outside the default run: #17
-	$(T3_PY) $(T3_DIR)/t3.py run gl-1280x800
+tier3-gl: $(T3_BASE) ## Tier 3 on the GL variant (virgl), outside the default run: #17
+	$(T3_RUN) --pkg-target pkg gl-1280x800
 
 .PHONY: tier3-run
-tier3-run: ## Tier 3 without rebuilding the package
-	$(T3_PY) $(T3_DIR)/t3.py run $(VARIANTS)
+tier3-run: ## Tier 3 without rebuilding the package (VARIANTS=, JOBS= as for tier3)
+	$(T3_RUN) $(VARIANTS)
 
 .PHONY: tier3-bless
 tier3-bless: ## Copy the last tier 3 run's captures over the goldens

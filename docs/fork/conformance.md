@@ -69,11 +69,15 @@ The sheet header shows the same versions when a report has them; a sheet drawn o
 To move a pin, change `DEV_BASE` or `DEV_ARCHIVE` in one commit, run `make test`, and read `git status`.
 Nothing is regenerated unless a golden moves, and a moved golden lands in its own commit with the diff read, as for any golden.
 
-## Contact sheets and the ledger
+## Run pages and the ledger
 
-Each recorded run produces a contact sheet: one SVG with a tile for every case and checkpoint. A passing tile shows the screen; a failing tile shows the golden beside the actual result with every region that differs outlined. Image tiers add the diff image, and a within-tolerance case is framed and outlined in amber. The sheet is drawn from the same report the verdict came from, so the two cannot disagree, and the same run always draws the same bytes.
+Each recorded run produces a run page: `docs/conformance/runs/<date>-<kmscon>-<libtsm>/README.md`, with its images beside it, written for a reader who was not there. It opens with what the run marks, the commits it measured, the pass count of each tier, and what changed since the previous ledger run: cases newly failing or newly passing, cases added or removed, and goldens changed. Then each tier says what it checks and lists its cases. Tier 1 is text: a table of cases with the verdict and, for a case whose golden comes from a fork commit, the reason from libtsm's `fork-goldens.list`; a failure, or a golden changed since the previous run, gets a short text diff. Tiers 2 and 3 show each screen cropped to its drawn region, with a caption saying what it shows and what correct looks like. A passing case shows its screen. A failing or near case shows golden, actual and their difference, with differing pixels in red, and a case whose golden changed shows the previous golden, the golden now and their difference.
 
-Milestones commit their sheet under `docs/conformance/sheets/` and add a row to [the ledger](../conformance/LEDGER.md): the date (UTC), what the run marks, the kmscon and libtsm commits measured, and the pass count of each tier. Over time the ledger shows the fork building and conforming against upstream as both move.
+The page is drawn only from the run's reports, so it cannot disagree with the verdicts, and the same reports always write the same bytes. The captions come from where the cases are defined: the `desc` of each screen in `tests/test_pixels.c`, the header comment of each tier 3 screen script (and `CHECKS` in `fork/tier3/t3.py` for the VT checks), and the reasons in libtsm's `test/conformance/fork-goldens.list`. A new case gets its caption there.
+
+"Since the previous run" compares with the ledger's last row. Verdicts come from the `cases.json` that row's page left. Goldens changed, added and deleted come from git, between the previous row's kmscon commit and the working tree and between its libtsm commit and the subproject's (`fork/conformance/golden-history.sh`, which runs on the host). The three runs recorded before run pages existed are SVG contact sheets under `docs/conformance/sheets/` and left no per-case record: against those, a case counts as passing then when its tier passed every case, and as new when its golden was added since.
+
+Milestones commit their page and add a row to [the ledger](../conformance/LEDGER.md): the date (UTC), what the run marks, the kmscon and libtsm commits measured, the pass count of each tier, and a link to the page. Over time the ledger shows the fork building and conforming against upstream as both move.
 
 ## Commands
 
@@ -84,8 +88,9 @@ make test                      # all suites, including tiers 1 and 2
 make test LIBTSM=../libtsm     # against a local libtsm checkout
 make tier2                     # tier 2 only, with its report
 make tier2-golden              # regenerate tier 2 goldens (review, then commit on their own)
-make sheet-preview             # draw this run's contact sheet into fork/build/sheet.svg
-make sheet NOTE="what it marks"   # commit-ready sheet and ledger row; refuses uncommitted changes
+make sheet-preview             # write this run's page into fork/build/run/
+make sheet NOTE="what it marks"   # commit-ready run page and ledger row; refuses uncommitted changes
+make sheet-selftest            # unit tests of the page generator (part of make test)
 ```
 
 Tier 3 needs KVM and QEMU on the host besides docker; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements, pins and variants:

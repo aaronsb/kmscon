@@ -1,0 +1,26 @@
+# Upstream kmscon, packaged with the fork's recipe for tier 3's comparison
+#
+# Sources fork/pkg/PKGBUILD, which `make pkg-upstream` (fork/upstream.mk)
+# copies beside this file as fork.PKGBUILD, so upstream is built with the
+# fork's meson options, libtsm compiled in statically from the tree's
+# subprojects/libtsm, and the same split. Only the names differ: the guest
+# log then names the build that ran, and no package of the fork's can stand
+# in for it. Both packages conflict with the fork's, as both provide kmscon.
+
+. "$startdir/fork.PKGBUILD"
+
+pkgbase=kmscon-upstream
+pkgname=(
+  kmscon-upstream
+  kmscon-upstream-terminfo
+)
+pkgdesc='Kernel Mode Setting (KMS) and DRM based virtual Console Emulator (upstream, for comparison)'
+url='https://github.com/kmscon/kmscon'
+
+package_kmscon-upstream() {
+  _package_kmscon kmscon-upstream-terminfo
+}
+
+package_kmscon-upstream-terminfo() {
+  _package_terminfo 'Terminfo for kmscon (upstream, for comparison)'
+}

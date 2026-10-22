@@ -16,6 +16,9 @@ worker process.
     t3.py provision                       build fork/vm/base.qcow2 from the pinned image
     t3.py run [--jobs N] [VARIANT ...]    install the package, run the scenario, compare
                                           (default: the 2D variants)
+    t3.py run --pkg-dir DIR --pkg-name NAME --compare-only
+                                          the same for another build, such as
+                                          upstream's (fork/upstream.mk)
     t3.py bless [VARIANT ...]             copy the last run's captures over the goldens
 
 Paths are relative to the repository root, which is two levels above this file.
@@ -33,7 +36,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3_runner  # noqa: E402
 import t3_scenario  # noqa: E402
-from t3_common import BASE, GUEST, REPORT, ROOT, VM, Logger, rel  # noqa: E402
+from t3_common import BASE, GUEST, PKGOUT, REPORT, ROOT, VM, Logger, rel  # noqa: E402
 from t3_evaluate import SCREENS, golden_for  # noqa: E402
 from t3_qemu import Qemu, make_iso  # noqa: E402
 
@@ -99,7 +102,7 @@ def run(args, log):
             r = subprocess.run(["make", "--no-print-directory", args.pkg_target], cwd=ROOT)
             if r.returncode:
                 raise SystemExit("package build failed with exit code %d" % r.returncode)
-        pkgs = t3_scenario.newest_packages()
+        pkgs = t3_scenario.newest_packages(args.pkg_dir, args.pkg_name)
         log("packages: %s" % ", ".join(map(os.path.basename, pkgs)))
         results, interrupted = t3_runner.run_variants(variants, args.jobs, pkgs,
                                                    args.deadline, log)
@@ -109,6 +112,10 @@ def run(args, log):
     print("report: %s" % rel(REPORT))
     if interrupted is not None:
         return 130 if isinstance(interrupted, KeyboardInterrupt) else 128 + signal.SIGTERM
+    if args.compare_only:
+        # Another build measured against the fork's goldens: a difference is
+        # what the comparison shows, and only a missing capture fails.
+        return 0 if all(c["actual"] for c in cases) else 1
     # "near" is a difference within the case's reviewed tolerance: it passes.
     return 0 if all(c["status"] in ("pass", "near") for c in cases) else 1
 
@@ -149,6 +156,14 @@ def main(argv=None):
     r.add_argument("--deadline", type=int, default=t3_runner.VARIANT_DEADLINE, metavar="SECONDS",
                    help="with --jobs above 1, stop a variant still running after this "
                         "(default %d)" % t3_runner.VARIANT_DEADLINE)
+    r.add_argument("--pkg-dir", default=PKGOUT, metavar="DIR",
+                   help="where the package target puts the packages (default %s)" % rel(PKGOUT))
+    r.add_argument("--pkg-name", default="kmscon-aaronsb", metavar="NAME",
+                   help="the console's package; its terminfo is NAME-terminfo "
+                        "(default kmscon-aaronsb)")
+    r.add_argument("--compare-only", action="store_true",
+                   help="fail only a case without a capture, for a build the goldens "
+                        "do not describe, such as upstream's")
     r.add_argument("variants", nargs="*", help="any of: " + ", ".join(t3_scenario.VARIANTS))
     b = sub.add_parser("bless")
     b.add_argument("variants", nargs="*")

@@ -38,6 +38,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from outdir import claim  # noqa: E402
 from pageimg import crop, crop_box, diff_image, load, step_for, strip, write_png  # noqa: E402
 
 OK = ("pass", "near")
@@ -508,8 +509,8 @@ def main(argv=None):
         ap.error("--append needs --ledger and --note")
 
     reports = [json.loads(Path(r).read_text()) for r in args.reports]
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    inputs = args.reports + [p for p in (args.ledger, args.history, args.fork_goldens) if p]
+    out = claim("runpage.py", args.out, ".run-page", inputs)
     for old in out.glob("*.png"):
         old.unlink()
     page = Page(args, reports)

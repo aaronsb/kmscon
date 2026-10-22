@@ -35,9 +35,12 @@ import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from outdir import claim  # noqa: E402
 from pageimg import crop, crop_box, diff_image, outline, step_for, strip, t3img, write_png  # noqa: E402
 
 REPO = "https://github.com/aaronsb/kmscon"
+SAVED = ".saved-run"        # marks a directory compare.py save wrote
+PAGE = ".compare-page"      # marks a directory compare.py page wrote
 KINDS = {2: "screens rendered in memory without a display (tier 2)",
          3: "screens captured from the virtual machine's display (tier 3)"}
 
@@ -49,11 +52,12 @@ def slug(name):
 
 
 def save(out, reports):
-    """Copy each report and every screen it captured into `out`."""
-    out = Path(out)
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
+    """Copy each report and every screen it captured into `out`, replacing
+    what an earlier save left there."""
+    out = claim("compare.py save", out, SAVED, reports)
+    for old in out.iterdir():
+        if old.name != SAVED:
+            shutil.rmtree(old) if old.is_dir() and not old.is_symlink() else old.unlink()
     for path in reports:
         rep = json.loads(Path(path).read_text())
         for case in rep["cases"]:
@@ -451,8 +455,8 @@ def main(argv=None):
     if args.cmd == "save":
         save(args.out, args.reports)
         return 0
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out = claim("compare.py page", args.out, PAGE,
+                [p for p in (args.a, args.b, args.a2, args.b2, args.verdicts) if p])
     for old in out.glob("*.png"):
         old.unlink()
     (out / "README.md").write_text(Page(args).render())

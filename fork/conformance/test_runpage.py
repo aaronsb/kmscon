@@ -186,6 +186,23 @@ class RunPageTest(unittest.TestCase):
         self.assertEqual(first, snapshot())
         self.assertIn("cases.json", first)
 
+    def test_refuses_foreign_output_dir(self):
+        # Each refusal deletes nothing: not the checkout (out "."), not a
+        # directory holding an input, not one runpage did not write.
+        def files():
+            return sorted(str(p) for p in Path(".").rglob("*"))
+        before = files()
+        for out in (".", "ledger", "history", "out"):
+            with self.assertRaises(SystemExit, msg=out) as e:
+                self.fx.run(out)
+            self.assertIn("refusing to write into %s" % out, str(e.exception))
+            self.assertEqual(files(), before, out)
+        # Its own directory, marked, is rewritten.
+        self.fx.run("ledger/runs/now")
+        Path("ledger/runs/now/stale.png").write_bytes(b"")
+        self.fx.run("ledger/runs/now")
+        self.assertFalse(Path("ledger/runs/now/stale.png").exists())
+
     def test_large_screen_scaled(self):
         # Content wider than MAX_W is kept one pixel in two, and a single
         # differing pixel still marks its block.

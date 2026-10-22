@@ -153,6 +153,40 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(run.image((3, "v/x")).data, screen().data)
         self.assertIsNone(run.image((3, "v/lost")))
 
+    def test_refuses_foreign_output_dir(self):
+        # Each refusal deletes nothing: not the checkout (out "."), not a
+        # directory holding an input, not one compare.py did not write.
+        Path("build").mkdir()
+        Path("build/tier3-report.json").write_text(Path("a/tier3-report.json").read_text())
+        Path("mine").mkdir()
+        Path("mine/notes.png").write_bytes(b"x")
+        Path("mine/README.md").write_text("mine\n")
+
+        def files():
+            return sorted((str(p), p.stat().st_size) for p in Path(".").rglob("*"))
+        before = files()
+        for out in (".", "build", "mine"):
+            with self.assertRaises(SystemExit, msg=out) as e, contextlib.redirect_stdout(io.StringIO()):
+                compare.main(["save", "--out", out, "build/tier3-report.json"])
+            self.assertIn("refusing to write into %s" % out, str(e.exception))
+            self.assertEqual(files(), before, out)
+        for out in (".", "a", "mine"):
+            with self.assertRaises(SystemExit, msg=out) as e:
+                self.page(out)
+            self.assertIn("refusing to write into %s" % out, str(e.exception))
+            self.assertEqual(files(), before, out)
+        # Its own directories, marked, are rewritten.
+        for _ in range(2):
+            with contextlib.redirect_stdout(io.StringIO()):
+                compare.main(["save", "--out", "saved", "build/tier3-report.json"])
+            Path("saved/stale").write_text("")
+            self.page("out")
+            Path("out/stale.png").write_bytes(b"")
+        with contextlib.redirect_stdout(io.StringIO()):
+            compare.main(["save", "--out", "saved", "build/tier3-report.json"])
+        self.page("out")
+        self.assertFalse(Path("saved/stale").exists() or Path("out/stale.png").exists())
+
     def test_wide_characters(self):
         rows = compare.screen_rows(["a日b", "0123456789abc"], 10)
         self.assertEqual(rows[0], [(0, "a"), (1, "日"), (3, "b")])

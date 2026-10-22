@@ -146,6 +146,17 @@ class RunPageTest(unittest.TestCase):
         self.assertIn("[2026-10-20](../prev/README.md), \"Earlier\"", page)
         self.assertIn("| 1 | 1 of 2 | 2 of 3 |", page)
 
+    def test_previous_run_by_url(self):
+        # A run whose sheet left the tree: its row links to GitHub and it
+        # left no per-case record, so verdicts then come from its counts.
+        url = "https://github.com/aaronsb/kmscon/blob/627f3d1/docs/conformance/sheets/old.svg"
+        Path("ledger/LEDGER.md").write_text(runpage.LEDGER_HEAD + (
+            "| 2026-10-20 | Earlier | `aaaaaaa` | `bbbbbbb` | 3/3 | 3/3 | — | [old.svg](%s) |\n" % url))
+        page = self.fx.run("ledger/runs/now")
+        self.assertIn("[2026-10-20](%s), \"Earlier\"" % url, page)
+        self.assertIn("- **Newly failing:** tier 1: [`t1-bad`](#t1-bad-tier-1-fail); "
+                      "tier 2: [`broken`](#broken-tier-2-fail).", page)
+
     def test_tier_not_run(self):
         # Tier 2 only then, tier 3 only now: neither tier's cases are new
         # or removed.

@@ -274,3 +274,26 @@ Each step's code reads the specifications and the MIT references above. Anything
 - **A runtime Unicode library (utf8proc, libunistring).** Either adds a dependency to a console that runs before most of userspace. Generated tables are small, versioned and reviewed like goldens.
 - **Draw underlines as geometry (foot).** This avoids an atlas on the CPU path, but gltex would then need a second path. Sprites serve both renderers.
 - **One RGBA atlas for everything (WezTerm).** This quadruples the memory of plain text glyphs. Two formats keep text at one byte per pixel.
+
+## Corrections from the prototype (2026-10-22)
+
+A prototype of the colour glyph path ran against FreeType 2.15.0 and HarfBuzz 14.6.0 with Noto Color Emoji (CBDT), Noto-COLRv1 v2.051 and Twemoji Mozilla v0.7.0, at cells from 8x16 to 32x64, one and two cells wide. Two of its contact sheets are kept with this record. The rest of its evidence (450 rendered boxes, timings, the code) was not kept. It confirmed the pipeline and corrected the Glyphs section as follows; the section above stays as decided, read with these corrections.
+
+The first sheet compares two ways to put Noto Color Emoji's bitmap into a cell: FreeType's strike scaled with a box filter (top), and HarfBuzz's rasteriser (bottom). Each test string appears at four cell sizes, one and two cells wide, on dark and light backgrounds.
+
+![Noto Color Emoji at cell sizes 8x16 to 32x64: the FreeType strike with a box filter is clean at every size, while HarfBuzz's rasteriser on the same strike breaks up the flag's stripes](figures/ADR-102-prototype-cbdt.png)
+
+The second sheet shows Noto-COLRv1 painted by HarfBuzz's rasteriser through its own font functions (top) and through FreeType's (middle), and FreeType with `FT_LOAD_COLOR` alone (bottom).
+
+![Noto-COLRv1 at the same sizes: HarfBuzz's rasteriser draws the same pictures as the bitmap font through either set of font functions, and FreeType alone draws nothing but the missing-glyph boxes](figures/ADR-102-prototype-colrv1.png)
+
+- **Shaping is required, as decided.** Every ZWJ, flag, keycap, skin-tone and VS16 sequence shaped to one glyph in all three fonts. FreeType alone returns the first codepoint's glyph.
+- **COLRv1 paint data comes from HarfBuzz, not FreeType.** HarfBuzz's own font functions read the COLR table from the face blob and are about 25% faster than going through FreeType's COLRv1 API. FreeType with `FT_LOAD_COLOR` returns an empty bitmap for a COLRv1 glyph.
+- **COLRv1 is painted with `hb_raster_paint_glyph_or_fail`.** The variant without `_or_fail` draws a glyph with no colour paint as an outline in the foreground colour. With `_or_fail`, a glyph that has no colour goes to the mask path. COLRv1 output was premultiplied in every box, matched the CBDT pictures (mean difference 7 of 255), and cost 6-23 microseconds per glyph at cell sizes.
+- **CBDT stays on FreeType with the box filter.** HarfBuzz's rasteriser can also paint CBDT, through bilinear sampling of the strike, but it visibly aliases (flag stripes break up). FreeType's strike is premultiplied, so the box filter works on it directly.
+- **Strike selection:** the smallest strike at least as tall as the box, else the largest, replacing "nearest the cell height", so a strike is never scaled up when a larger one exists. Noto Color Emoji has one strike (136x128 at 109 ppem). A box taller than the strike was not tested.
+- **Cache key:** the face and the cell width and height in pixels are part of the key. Bold and italic are not, for colour glyphs. A COLRv1 glyph that paints with the foreground colour would also need the foreground in its key; none in the three fonts does, so the loader detects such a glyph at load time and keys it by foreground only when it does.
+- **A missing emoji:** CBDT's .notdef is empty, so a cluster no colour face covers falls back to the text face's .notdef, not the colour face's.
+- **SVG:** Twemoji Mozilla, given above as the common SVG-only font, is COLRv0 with a CPAL palette and draws in colour through FreeType. No SVG-only emoji font was found to test.
+- **HarfBuzz version:** the rasteriser arrived in HarfBuzz 13.0.0 and is still marked experimental in 14.6.0. Its API changed incompatibly in 14.2.0. The build requires HarfBuzz 14.2.0 or later for COLRv1, checks it with `HB_VERSION_ATLEAST`, and without it draws COLRv1 glyphs as masks. The pinned dev image carries 14.6.0. An API change in a later release is caught when the dev image pin moves, by the tier 2 screens that pin a colour font.
+- **FreeType version:** 2.10 or later for COLRv0 through `FT_LOAD_COLOR`.

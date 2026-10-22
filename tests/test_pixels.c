@@ -38,6 +38,7 @@
 #include "../src/render/deco.c"
 #undef LOG_SUBSYSTEM
 #include "../src/video/drm2d_render.c"
+#include "config.h"
 
 void shl_module_ref(struct shl_module *module) {}
 void shl_module_unref(struct shl_module *module) {}
@@ -114,6 +115,19 @@ struct screen {
 	/* optional: the bytes of a second frame; frames 2 and 4 repeat the
 	 * one before, so the result is the 4th frame's buffer */
 	const char *next;
+	/* optional: the decoration settings of kmscon.conf */
+	const struct kmscon_conf_t *conf;
+};
+
+/* the ADR-102 decoration settings the deco-* screens configure */
+static const struct kmscon_conf_t conf_deco = {
+	.underline_color = {.kind = KMSCON_COLOR_INDEX, .index = 196},
+	.strike_color = {.kind = KMSCON_COLOR_RGB, .rgb = {0x00, 0xc0, 0xff}},
+};
+static const struct kmscon_conf_t conf_deco_force = {
+	.underline_color = {.kind = KMSCON_COLOR_INDEX, .index = 196},
+	.strike_color = {.kind = KMSCON_COLOR_RGB, .rgb = {0x00, 0xc0, 0xff}},
+	.force_decoration_colors = true,
 };
 
 /* UTF-8 */
@@ -127,6 +141,12 @@ struct screen {
 #define HEART "\xe2\x9d\xa4"
 #define VS15 "\xef\xb8\x8e"
 #define VS16 "\xef\xb8\x8f"
+
+#define DECO_CONFIG_BYTES                                                                          \
+	ESC "[4mconfigured underline" ESC "[0m " ESC "[9mconfigured strike" ESC "[0m\r\n" ESC        \
+	"[4:3;58:5:46mSGR 58 green" ESC "[0m " ESC "[4:4;58:2::255:255:0mSGR 58 yellow" ESC         \
+	"[0m\r\n" ESC "[32;4mgreen text" ESC "[0m " ESC "[33;9mstruck yellow text" ESC "[0m\r\n" ESC \
+	"[4:2;9mdouble and strike" ESC "[0m\r\n"
 
 static const struct screen screens[] = {
 	{"ascii",
@@ -199,6 +219,11 @@ static const struct screen screens[] = {
 	 "[9;4:3;58:5:51mcurly too" ESC "[0m\r\n" ESC "[1;9mbold struck" ESC "[0m " ESC
 	 "[7;9minverse struck" ESC "[0m\r\n" ESC "[9m      " ESC "[0m struck spaces\r\n"},
 
+	/* underline-color=196, strike-color=#00c0ff */
+	{"deco-config", DECO_CONFIG_BYTES, NULL, &conf_deco},
+	/* the same, with force-decoration-colors */
+	{"deco-force", DECO_CONFIG_BYTES, NULL, &conf_deco_force},
+
 	/* clusters shaped by HarfBuzz: decomposed against precomposed */
 	{"combining",
 	 "precomposed: " E_ACUTE " " A_TILDE " " N_TILDE "\r\n"
@@ -253,12 +278,18 @@ static int write_ppm(const char *path)
 	return fclose(f) ? -errno : 0;
 }
 
-static void draw_frame(struct kmscon_text *txt, struct tsm_screen *con, struct tsm_vte *vte)
+static void draw_frame(struct kmscon_text *txt, struct tsm_screen *con, struct tsm_vte *vte,
+		       const struct kmscon_conf_t *conf)
 {
 	struct tsm_screen_attr attr;
+	struct kmscon_text_deco deco;
 	uint32_t *tmp;
 	int ret;
 
+	if (conf) {
+		kmscon_conf_resolve_deco(conf, vte, &deco);
+		kmscon_text_set_decorations(txt, &deco);
+	}
 	tsm_vte_get_def_attr(vte, &attr);
 	ret = kmscon_text_prepare(txt, &attr, false);
 	assert(ret == 0);
@@ -300,12 +331,12 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	assert(ret == 0);
 	assert(txt->cols == COLS && txt->rows == ROWS);
 
-	draw_frame(txt, con, vte);
+	draw_frame(txt, con, vte, s->conf);
 	if (s->next) {
-		draw_frame(txt, con, vte);
+		draw_frame(txt, con, vte, s->conf);
 		tsm_vte_input(vte, s->next, strlen(s->next));
-		draw_frame(txt, con, vte);
-		draw_frame(txt, con, vte);
+		draw_frame(txt, con, vte, s->conf);
+		draw_frame(txt, con, vte, s->conf);
 		/* both buffers now hold the last frame */
 		if (memcmp(fb, fb_back, (size_t)fb_w * fb_h * sizeof(*fb))) {
 			fprintf(stderr, "test_pixels: %s: the two buffers differ after the last frame\n",

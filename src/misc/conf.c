@@ -423,8 +423,16 @@ static int parse_line(struct conf_option *opts, size_t olen, char **buf, size_t 
 	*line++ = 0;
 	--len;
 
-	/* parse value */
+	/* parse value; a '#' that opens the value is part of it (#rrggbb) */
 	value = line;
+	while (len && (*line == ' ' || *line == '\t')) {
+		++line;
+		--len;
+	}
+	if (len && *line == '#') {
+		++line;
+		--len;
+	}
 	while (len) {
 		c = *line;
 		if (c == '\n' || c == '#')

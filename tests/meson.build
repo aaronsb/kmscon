@@ -118,7 +118,7 @@ if enable_font_freetype and enable_video_drm2d
     test_pixels = executable(
         'test_pixels',
         'test_pixels.c',
-        include_directories: src_inc,
+        include_directories: [src_inc, misc_inc],
         dependencies: [
             libtsm_deps,
             freetype_deps,

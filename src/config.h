@@ -35,6 +35,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "conf.h"
 #include "render/text.h"
 
@@ -60,6 +61,22 @@ struct kmscon_conf_screen {
 	char connector[MAX_DISPLAY_NAME_LEN];
 	bool enabled;
 	enum Orientation orientation;
+};
+
+/*
+ * A decoration colour (ADR-102): `fg` follows the cell's foreground, a palette
+ * index 0-255 follows the palette in use, `#rrggbb` is fixed.
+ */
+enum kmscon_conf_color_kind {
+	KMSCON_COLOR_FG,
+	KMSCON_COLOR_INDEX,
+	KMSCON_COLOR_RGB,
+};
+
+struct kmscon_conf_color {
+	enum kmscon_conf_color_kind kind;
+	uint8_t index;
+	uint8_t rgb[3];
 };
 
 struct kmscon_conf_t {
@@ -209,7 +226,47 @@ struct kmscon_conf_t {
 	char *palette;
 	/* custom palette */
 	palette_t custom_palette;
+
+	/* Text Options */
+	/* how printed text is divided into cells */
+	enum tsm_width_method grapheme_width;
+	/* the colours of underline and strike-through */
+	struct kmscon_conf_color underline_color;
+	struct kmscon_conf_color strike_color;
+	/* configured decoration colours win over SGR 58 */
+	bool force_decoration_colors;
 };
+
+/*
+ * The decoration colours @conf configures, resolved for the renderer: a
+ * palette index is looked up in @vte's palette, so it follows the palette in
+ * use. Called on every frame.
+ */
+static inline void kmscon_conf_resolve_deco(const struct kmscon_conf_t *conf, struct tsm_vte *vte,
+					    struct kmscon_text_deco *out)
+{
+	const struct kmscon_conf_color *in[2] = {&conf->underline_color, &conf->strike_color};
+	bool *fg[2] = {&out->ul_fg, &out->strike_fg};
+	struct tsm_screen_color *rgb[2] = {&out->ul, &out->strike};
+	uint8_t c[3];
+	int i;
+
+	memset(out, 0, sizeof(*out));
+	out->force = conf->force_decoration_colors;
+	for (i = 0; i < 2; i++) {
+		*fg[i] = true;
+		if (in[i]->kind == KMSCON_COLOR_RGB) {
+			memcpy(c, in[i]->rgb, 3);
+		} else if (in[i]->kind != KMSCON_COLOR_INDEX ||
+			   tsm_vte_get_palette_color(vte, in[i]->index, c)) {
+			continue;
+		}
+		*fg[i] = false;
+		rgb[i]->r = c[0];
+		rgb[i]->g = c[1];
+		rgb[i]->b = c[2];
+	}
+}
 
 int kmscon_conf_new(struct conf_ctx **out);
 void kmscon_conf_free(struct conf_ctx *ctx);

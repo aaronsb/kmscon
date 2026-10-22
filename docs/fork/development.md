@@ -112,7 +112,8 @@ For a libtsm PR, a kmscon PR moves the pin to the merge commit. From the main km
 git fetch origin
 git worktree add ../kmscon-libtsm-<topic> -b fork/libtsm-<topic> origin/main
 cd ../kmscon-libtsm-<topic>
-# set revision in subprojects/libtsm.wrap to the full hash of libtsm's merge commit
+git -C ../libtsm pull -q && git -C ../libtsm rev-parse HEAD   # the merge commit's full hash
+# set revision in subprojects/libtsm.wrap to that hash
 make test                                   # a fresh worktree fetches libtsm at the new pin
 git -C subprojects/libtsm log --oneline -1  # must show the merge commit
 git commit -am "build: pin libtsm <short hash>: <what the libtsm change does for kmscon>"
@@ -120,7 +121,7 @@ git push -u origin fork/libtsm-<topic>
 gh pr create --repo aaronsb/kmscon --base main
 ```
 
-The commit body names the libtsm PRs it brings in and the test count against the pin, as in `b55fdd0` and `1e4cc25`. The bump PR changes the one `revision` line. If kmscon needs code changes to use the new libtsm, they go in a separate kmscon PR after the bump (kmscon #33 followed the bump in #41).
+The commit body names the libtsm PRs it brings in and the test count against the pin, as in `b55fdd0` and `1e4cc25`. The bump PR changes the one `revision` line. If the new libtsm moves a kmscon golden (the libtsm PR says so), the bump PR also carries that golden in its own commit, read and explained like any other, and runs `make tier3 JOBS=2` when the libtsm change alters rendered output. If kmscon needs code changes to use the new libtsm, they go in a separate kmscon PR after the bump (kmscon #33 followed the bump in #41).
 
 The bump PR is verified and reviewed like any other: `make test` from a clean build at the new pin, and the tier 2 goldens unchanged unless the libtsm PR said they would move. Every other kmscon checkout, the main one included, needs the reset in [Stale and mixed libtsm builds](#stale-and-mixed-libtsm-builds-38-open) once the bump merges.
 
@@ -189,7 +190,7 @@ The PR body lists each planted defect and the check that caught it, as libtsm #1
 
 ### Reading changed goldens
 
-Every changed golden is read: a tier 1 golden line by line in the diff, a tier 2 or tier 3 golden as an image beside the old one. The reader names what moved in each changed row or region and checks it against the commit message that changed it.
+Every changed golden is read: a tier 1 golden line by line in the diff, a tier 2 or tier 3 golden as an image beside the old one. The reader names what moved in each changed row or region and checks it against the commit message that changed it. `make tier2` writes each screen's capture to `fork/build/tier2/actual/<screen>.ppm` and a diff to `fork/build/tier2/diff/<screen>.ppm`, beside the golden in `tests/goldens/tier2/`. `make tier3` writes `fork/build/tier3/<variant>/<case>.png` and `<case>.diff.png`, beside `fork/tier3/golden/<variant>/<case>.png`. Any image viewer opens them.
 
 ### Tier 3
 
@@ -222,11 +223,13 @@ Both repositories are public. Commit messages, PR bodies and issues describe an 
 
 ## Clean room
 
-[ADR-300](../architecture/fork/ADR-300-write-from-protocol-specs-and-permissive-sources-never-from-kitty-s-code.md): nobody working on the fork, person or agent, opens kitty's source (GPL-3.0). Kitty's published protocol documentation may be read. Ghostty, foot, WezTerm and fcft (MIT) may be consulted, and where an approach is adapted from one, the commit or PR cites it by file and function, as libtsm #13 cites Ghostty's `Screen.blankCell` and foot's `erase_cell_range`.
+[ADR-300](../architecture/fork/ADR-300-write-from-protocol-specs-and-permissive-sources-never-from-kitty-s-code.md): nobody working on the fork, person or agent, opens kitty's source (GPL-3.0). Kitty's published protocol documentation may be read. The permissively licensed implementations ADR-300 lists (Ghostty, WezTerm, foot and libsixel, all MIT) may be consulted as reference. Anything adapted from one is attributed in the adapted file and in the commit, as ADR-300 requires, naming the file and function, as libtsm #13 cites Ghostty's `Screen.blankCell` and foot's `erase_cell_range`.
 
 ## The human check: the VT demo
 
 The conformance tiers compare against goldens; the [local VT demo](demo.md) is where a person looks at the fork on real hardware, page by page, and records a judgement of each page that the agent reads back with `fork/demo/feedback.sh` (#47).
+
+`fork/demo/run-vt.sh` starts the demo with a cleared environment, so a dev build's answers always go to the default `/tmp/kmscon-demo/feedback.tsv`. `DEMO_FEEDBACK` applies only when `demo.sh` is run directly.
 
 A change that adds something visible adds its demo section in the same PR. [demo.md's "Adding a section"](demo.md#adding-a-section) gives the rules for a section file.
 
@@ -240,7 +243,8 @@ A working session runs as a loop: increments merge one by one, then the bring-ho
 git fetch origin
 git worktree add ../kmscon-ledger-<date> -b docs/ledger-<date> origin/main
 cd ../kmscon-ledger-<date>
-make tier3                              # optional: includes tier 3 in the run
+make tier3                              # optional: includes tier 3 in the run; a new worktree first needs
+                                        # fork/vm/base.qcow2 and fork/vm/images linked from the main checkout
 make sheet NOTE="what this run marks"
 git add docs/conformance
 git commit -m "docs(conformance): ledger run at <short hash of main>: <what this run marks>"

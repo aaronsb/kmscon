@@ -295,6 +295,68 @@ static void test_cluster_missing_mark(void)
 	FT_Done_FreeType(ft);
 }
 
+/*
+ * a + U+0303 + U+0300: HarfBuzz composes atilde, and the face does not place
+ * the grave on it. The grave is drawn above the tilde, over the base, and the
+ * base and tilde stay where they are drawn without it. The cell is the one
+ * kmscon uses for this face at 14 px.
+ */
+static void test_cluster_stacked_mark(void)
+{
+	static const uint32_t tilde[] = {'a', 0x303};
+	static const uint32_t both[] = {'a', 0x303, 0x300};
+	struct kmscon_font font = {.width = 8, .height = 16};
+	struct kmscon_glyph *t, *g;
+	FT_Library ft;
+	FT_Face face;
+	int x, y, w, h, t_top = -1, t_x0 = -1, t_x1 = -1;
+	int d_top = -1, d_bottom = -1, d_x0 = -1, d_x1 = -1;
+
+	assert(!FT_Init_FreeType(&ft));
+	assert(!FT_New_Face(ft, TEST_FONT_DIR "/DejaVuSansMono.ttf", 0, &face));
+	assert(!FT_Set_Pixel_Sizes(face, 0, 14));
+
+	t = render_cluster(&font, face, tilde, 2, 1);
+	g = render_cluster(&font, face, both, 3, 1);
+	assert(t && g);
+	w = t->buf.width;
+	h = t->buf.height;
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++) {
+			uint8_t tv = t->buf.data[y * w + x], gv = g->buf.data[y * w + x];
+
+			/* the base and its tilde did not move */
+			assert(gv >= tv);
+			if (tv) {
+				if (t_top < 0)
+					t_top = y;
+				if (t_x0 < 0 || x < t_x0)
+					t_x0 = x;
+				t_x1 = x > t_x1 ? x : t_x1;
+			}
+			/* the grave: ink the tilde alone does not have */
+			if (gv > tv) {
+				if (d_top < 0)
+					d_top = y;
+				d_bottom = y;
+				if (d_x0 < 0 || x < d_x0)
+					d_x0 = x;
+				d_x1 = x > d_x1 ? x : d_x1;
+			}
+		}
+	fprintf(stderr, "tilde top %d cols %d-%d; grave rows %d-%d cols %d-%d\n", t_top, t_x0, t_x1,
+		d_top, d_bottom, d_x0, d_x1);
+	assert(d_top >= 0);
+	/* above the tilde, and over the base's columns */
+	assert(d_top < t_top && d_bottom <= t_top);
+	assert(d_x0 > t_x0 && d_x1 < t_x1);
+
+	free(t);
+	free(g);
+	FT_Done_Face(face);
+	FT_Done_FreeType(ft);
+}
+
 int main(void)
 {
 	assert(FcInit());
@@ -303,6 +365,7 @@ int main(void)
 	test_monospace_fallback_set();
 	test_copy_mono_clip();
 	test_cluster_missing_mark();
+	test_cluster_stacked_mark();
 
 	FcFini();
 	return 0;

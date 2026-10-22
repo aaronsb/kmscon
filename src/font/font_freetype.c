@@ -425,13 +425,52 @@ static struct kmscon_glyph *render_glyph(struct kmscon_font *font, FT_Face face,
 	return glyph;
 }
 
+/* @ccc is a combining class drawn above the base, or below it */
+static bool ccc_above(hb_unicode_combining_class_t ccc)
+{
+	switch (ccc) {
+	case HB_UNICODE_COMBINING_CLASS_ATTACHED_ABOVE:
+	case HB_UNICODE_COMBINING_CLASS_ATTACHED_ABOVE_RIGHT:
+	case HB_UNICODE_COMBINING_CLASS_ABOVE_LEFT:
+	case HB_UNICODE_COMBINING_CLASS_ABOVE:
+	case HB_UNICODE_COMBINING_CLASS_ABOVE_RIGHT:
+	case HB_UNICODE_COMBINING_CLASS_DOUBLE_ABOVE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool ccc_below(hb_unicode_combining_class_t ccc)
+{
+	switch (ccc) {
+	case HB_UNICODE_COMBINING_CLASS_ATTACHED_BELOW:
+	case HB_UNICODE_COMBINING_CLASS_BELOW_LEFT:
+	case HB_UNICODE_COMBINING_CLASS_BELOW:
+	case HB_UNICODE_COMBINING_CLASS_BELOW_RIGHT:
+	case HB_UNICODE_COMBINING_CLASS_DOUBLE_BELOW:
+		return true;
+	default:
+		return false;
+	}
+}
+
 /*
  * A cluster of several codepoints (ADR-102): HarfBuzz shapes it on @face, the
- * face that covers its first codepoint, and FreeType draws each shaped glyph.
- * They are composed into a canvas one glyph box wider on each side, then the
- * ink is placed in the cell as a single glyph's bitmap would be. A codepoint
- * @face lacks shapes to glyph 0, the missing-glyph box; it is left out, with
- * its advance, so the box does not cover the rest of the cluster.
+ * face that covers its first codepoint, and FreeType draws each shaped glyph
+ * into a canvas one glyph box wider on each side. The cluster's pen origin goes
+ * where a single glyph's would, and ink past the cell is cut.
+ *
+ * A codepoint @face lacks shapes to glyph 0, the missing-glyph box; it is left
+ * out, with its advance, so the box does not cover the rest of the cluster.
+ *
+ * A mark above or below that the face does not place (no advance, no offset;
+ * HarfBuzz composes a + U+0303 to atilde, and a face may have no anchor for a
+ * grave on atilde) would sit at the pen, past the base. It goes centred over
+ * the base's ink, above or below all the ink drawn since the base, as in
+ * HarfBuzz's fallback mark positioning (hb-ot-shape-fallback.cc,
+ * position_around_base; MIT). Left and right classes are centred too. A mark
+ * that does not fit is pushed back inside the cell.
  */
 static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face face,
 					   const uint32_t *cps, size_t len, unsigned int cwidth)
@@ -441,9 +480,12 @@ static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face fac
 	hb_buffer_t *hbuf;
 	hb_glyph_info_t *info;
 	hb_glyph_position_t *pos;
+	hb_unicode_funcs_t *ucd;
+	hb_unicode_combining_class_t ccc;
 	unsigned int n, i, gw, cw, ch;
 	int baseline = face->size->metrics.ascender >> 6;
-	int pen_x = 0, pen_y = 0, ox, x, y, gx, gy, min_x, max_x;
+	int pen_x = 0, pen_y = 0, ox, x, y, gx, gy;
+	int base_x0 = 0, base_x1 = -1, ink_top = 0, ink_bottom = 0;
 	uint8_t *canvas;
 
 	glyph = new_glyph(font, cwidth);
@@ -460,11 +502,14 @@ static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face fac
 	hb = hb_ft_font_create_referenced(face);
 	hb_ft_font_set_load_flags(hb, FT_LOAD_TARGET_LIGHT);
 	hbuf = hb_buffer_create();
+	/* each glyph's cluster is the index of its codepoint in @cps */
+	hb_buffer_set_cluster_level(hbuf, HB_BUFFER_CLUSTER_LEVEL_CHARACTERS);
 	hb_buffer_add_utf32(hbuf, cps, len, 0, len);
 	hb_buffer_guess_segment_properties(hbuf);
 	hb_shape(hb, hbuf, NULL, 0);
 	info = hb_buffer_get_glyph_infos(hbuf, &n);
 	pos = hb_buffer_get_glyph_positions(hbuf, &n);
+	ucd = hb_buffer_get_unicode_funcs(hbuf);
 
 	for (i = 0; i < n; i++) {
 		FT_GlyphSlot slot = face->glyph;
@@ -477,6 +522,28 @@ static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face fac
 		map = &slot->bitmap;
 		gx = ox + ((pen_x + pos[i].x_offset + 32) >> 6) + slot->bitmap_left;
 		gy = baseline - ((pen_y + pos[i].y_offset + 32) >> 6) - slot->bitmap_top;
+
+		ccc = info[i].cluster < len ? hb_unicode_combining_class(ucd, cps[info[i].cluster])
+					    : HB_UNICODE_COMBINING_CLASS_NOT_REORDERED;
+		if (base_x1 >= base_x0 && !pos[i].x_advance && !pos[i].x_offset &&
+		    !pos[i].y_offset && (ccc_above(ccc) || ccc_below(ccc))) {
+			gx = (base_x0 + base_x1 + 1 - (int)map->width) / 2;
+			if (ccc_above(ccc))
+				gy = max(ink_top - 1 - (int)map->rows, 0);
+			else
+				gy = min(ink_bottom + 1, (int)ch - (int)map->rows);
+		}
+		if (map->width && map->rows) {
+			if (ccc == HB_UNICODE_COMBINING_CLASS_NOT_REORDERED) {
+				base_x0 = gx;
+				base_x1 = gx + (int)map->width - 1;
+				ink_top = gy;
+				ink_bottom = gy + (int)map->rows - 1;
+			} else {
+				ink_top = min(ink_top, gy);
+				ink_bottom = max(ink_bottom, gy + (int)map->rows - 1);
+			}
+		}
 
 		for (y = 0; y < (int)map->rows; y++) {
 			if (gy + y < 0 || gy + y >= (int)ch)
@@ -504,17 +571,7 @@ static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face fac
 	hb_buffer_destroy(hbuf);
 	hb_font_destroy(hb);
 
-	min_x = cw;
-	max_x = -1;
-	for (y = 0; y < (int)ch; y++)
-		for (x = 0; x < (int)cw; x++)
-			if (canvas[y * cw + x]) {
-				min_x = min(min_x, x);
-				max_x = max(max_x, x);
-			}
-	if (max_x >= min_x)
-		copy_map(&glyph->buf, canvas + min_x, max_x - min_x + 1, ch, cw,
-			 min_x - ox + centre_dx(font, glyph, pen_x), 0);
+	copy_map(&glyph->buf, canvas + ox - centre_dx(font, glyph, pen_x), gw, ch, cw, 0, 0);
 
 	free(canvas);
 	return glyph;

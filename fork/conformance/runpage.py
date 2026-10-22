@@ -120,7 +120,10 @@ def previous_run(ledger):
     if not rows:
         return None
     prev = rows[-1]
-    prev["path"] = Path(ledger).parent / prev["link"] if prev["link"] else None
+    link = prev["link"]
+    # A run whose record has left the tree links to it on GitHub.
+    prev["url"] = link if link and re.match(r"[a-z]+://", link) else None
+    prev["path"] = Path(ledger).parent / link if link and not prev["url"] else None
     record = prev["path"].parent / "cases.json" if prev["path"] else None
     prev["cases"] = None
     if record and prev["path"].name == "README.md" and record.exists():
@@ -281,7 +284,8 @@ class Page:
         if prev is None:
             self.w("This is the first run in the ledger.", "")
             return
-        target = "[%s](%s)" % (prev["date"], self.link(prev["path"])) if prev["path"] else prev["date"]
+        href = prev["url"] or (self.link(prev["path"]) if prev["path"] else None)
+        target = "[%s](%s)" % (prev["date"], href) if href else prev["date"]
         self.w("The previous ledger run is %s, \"%s\": kmscon `%s`, libtsm `%s`." % (
             target, prev["note"], prev["kmscon"], prev["libtsm"]), "")
         now = self.counts()
@@ -508,7 +512,7 @@ class Page:
 
 LEDGER_HEAD = """# Conformance ledger
 
-One row per recorded run of the harness (ADR-301), oldest first. `make sheet NOTE="..."` runs the tiers, writes the run's page under `runs/`, and appends its row here. The kmscon and libtsm columns name the commits that run measured. The first three runs were drawn as SVG contact sheets under `sheets/`.
+One row per recorded run of the harness (ADR-301), oldest first. `make sheet NOTE="..."` runs the tiers, writes the run's page under `runs/`, and appends its row here. The kmscon and libtsm columns name the commits that run measured. The first three runs were drawn as SVG contact sheets, since removed from the tree; their rows link to each sheet at commit `627f3d1`.
 
 | Date (UTC) | Note | kmscon | libtsm | Tier 1 | Tier 2 | Tier 3 | Run |
 |---|---|---|---|---|---|---|---|

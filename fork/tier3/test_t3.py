@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Self-test for the parts of tier 3 that run on the host without a guest:
-the screen text a case's report carries (t3_evaluate.py) and the logger a
-worker process receives (t3_common.py).
+the caption and screen text a case's report carries (t3_evaluate.py) and
+the logger a worker process receives (t3_common.py).
 
     python3 -I fork/tier3/test_t3.py
 """
@@ -81,6 +81,34 @@ class ScreenTextTest(unittest.TestCase):
         for name in ("moves", "tab", "charset", "title"):
             with self.subTest(name):
                 self.assertIsNone(self.text(name))
+
+
+class DescribeTest(unittest.TestCase):
+    def describe(self, header):
+        with tempfile.TemporaryDirectory() as guest:
+            os.mkdir(os.path.join(guest, "screens"))
+            with open(os.path.join(guest, "screens", "s.sh"), "w") as f:
+                f.write(header + "echo body\n# not header\n")
+            saved = t3_evaluate.GUEST
+            t3_evaluate.GUEST = guest
+            try:
+                return t3_evaluate.describe("s")
+            finally:
+                t3_evaluate.GUEST = saved
+
+    def test_guidance(self):
+        # The demo's guidance lines, in any order among the caption's.
+        self.assertEqual(self.describe("# look-for: Lines\n# look-for: joined.\n"
+                                       "# wrong-looks-like: A gap.\n# A screen.\n"),
+                         ("A screen. Correct: Lines joined.", "A gap."))
+
+    def test_plain_caption(self):
+        self.assertEqual(self.describe("# A screen. Correct: x: y.\n"),
+                         ("A screen. Correct: x: y.", None))
+
+    def test_check(self):
+        self.assertEqual(t3_evaluate.describe("vt-switch"),
+                         (t3_evaluate.CHECKS["vt-switch"], None))
 
 
 class LoggerTest(unittest.TestCase):

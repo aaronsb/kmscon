@@ -430,6 +430,8 @@ class Page:
         self.w("%s %s" % (level, case_heading(tier, name, status)), "")
         if case.get("description"):
             self.w(case["description"], "")
+        if case.get("wrong"):
+            self.w("Wrong looks like: " + case["wrong"], "")
         stem = "t%d-%s" % (tier, re.sub(r"[^\w.-]", "-", name))
         golden, actual = load(case.get("golden")), load(case.get("actual"))
         changed = self.changed(tier, case)

@@ -8,13 +8,16 @@ import subprocess
 import t3img
 from t3_common import GOLDEN, GUEST, RUNDIR, rel
 
-# Screens drawn by `t3 NAME` in the guest (fork/tier3/guest/screens/NAME.sh).
-SCREENS = ["sgr", "boxdraw", "cjk"]
+# Screens drawn by `t3 NAME` in the guest (fork/tier3/guest/screens/NAME.sh),
+# in the local VT demo's order (fork/demo/sections), except that cjk stays last:
+# vt-restore is compared with its golden.
+SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
+           "boxdraw", "wide-margin", "combining", "cjk"]
 # Every case of a variant: each screen, then the VT switch (a check without a
 # golden) and the restore after it (compared with the last screen's golden).
 CASES = SCREENS + ["vt-switch", "vt-restore"]
 # What each check shows and what correct looks like, for the conformance run
-# page; a screen's description is the header comment of its script.
+# page; a screen's comes from the header comment of its script (describe).
 CHECKS = {
     "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
                  "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
@@ -28,17 +31,29 @@ SCREEN_TIMEOUT = 10
 
 
 def describe(case):
-    """The caption of a case: its check's description, or the leading
-    comment lines of its screen script."""
+    """(caption, what a defect looks like) of a case.
+
+    A check's caption is its entry in CHECKS. A screen's is the leading
+    comment lines of its script; the "# look-for:" lines the local VT demo
+    shows join it as "Correct: ...", and its "# wrong-looks-like:" lines are
+    the second part, or None for a script without them.
+    """
     if case in CHECKS:
-        return CHECKS[case]
-    lines = []
+        return CHECKS[case], None
+    fields = {"": [], "look-for": [], "wrong-looks-like": []}
     with open(os.path.join(GUEST, "screens", case + ".sh")) as f:
         for line in f:
             if not line.startswith("#"):
                 break
-            lines.append(line[1:].strip())
-    return " ".join(lines)
+            key, sep, text = line[1:].strip().partition(": ")
+            if sep and key in fields:
+                fields[key].append(text.strip())
+            else:
+                fields[""].append(line[1:].strip())
+    caption = " ".join(fields[""])
+    if fields["look-for"]:
+        caption += " Correct: " + " ".join(fields["look-for"])
+    return caption, " ".join(fields["wrong-looks-like"]) or None
 
 
 def screen_text(case, log):
@@ -87,8 +102,9 @@ def evaluate(variant, case, ppm, meta, log):
     """The report entry for one case, from its capture (or None)."""
     golden, tolpath = golden_for(variant, case)
     stem = os.path.join(RUNDIR, variant, case)
-    entry = {"name": "%s/%s" % (variant, case), "description": describe(case),
-             "text": screen_text(case, log), "golden": rel(golden),
+    description, wrong = describe(case)
+    entry = {"name": "%s/%s" % (variant, case), "description": description,
+             "wrong": wrong, "text": screen_text(case, log), "golden": rel(golden),
              "actual": None, "diff": None, "tolerance": None,
              "thumb_actual": None, "thumb_golden": None, "thumb_diff": None,
              "stats": {"pixels": 0, "bbox": [], "max_delta": 0}}

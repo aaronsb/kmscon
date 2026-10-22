@@ -31,15 +31,25 @@
  * Similar to the bblit renderer but assembles an array of blit-requests and
  * pushes all of them at once to the video device.
  *
- * Only push cells that have changed from previous frame, and the frame before
- * as kmscon uses double buffering.
- * bbulk->prev holds the previous cell content, bbulk->damaged tells if the
- * previous cell content was different from its predecessor.
+ * It draws libtsm's frame (ADR-102). A cell is pushed when the frame marks it
+ * changed, and once more on the next frame, as kmscon uses double buffering
+ * and the back buffer is two frames old: cell_flags.damaged records that the
+ * cell was drawn because it changed. The frame's changes are this display's
+ * own, since its last frame (kmscon_text_draw), so with damaged they span the
+ * two frames the back buffer is behind. Changes the frame cannot know about
+ * (the cursor and text blink phases, the pointer, a full redraw) are tracked
+ * here; a full redraw also asks the next frame for every cell.
+ *
+ * A cell draws its background, then its underline, then its glyph, then its
+ * strike-through. An undecorated cell is one alpha-mask request; a decorated
+ * one is composed in system memory and sent as one premultiplied ARGB request
+ * over its background, so the device's memory is never read back.
  */
 
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include "deco.h"
 #include "font/font.h"
 #include "shl/log.h"
 #include "shl/lru.h"
@@ -49,17 +59,16 @@
 
 #define LOG_SUBSYSTEM "text_bbulk"
 
-#define ID_DAMAGED 0x80000001
-#define ID_OVERFLOW 0x80000002
-
 // Max horizontal distance of two damaged cells to be merged in a damage rectangle
 #define DAMAGE_MERGE_LEN 3
 
 /* Flags for each cell */
 typedef union {
 	struct {
-		uint8_t double_width : 1;
-		uint8_t damaged : 1;
+		uint8_t damaged : 1; /* drawn on the last frame because it changed */
+		uint8_t force : 1;   /* draw on the next frame whatever the frame says */
+		uint8_t cursor : 1;  /* last drawn as the cursor */
+		uint8_t hidden : 1;  /* last drawn in the blink phase that hides text */
 	};
 	uint8_t u8;
 } cell_flags_t;
@@ -75,9 +84,14 @@ struct bbulk {
 
 	unsigned int requests; /* number of blend calls, for debugging */
 	struct shl_lru *glyphs;
-	struct tsm_screen_cell *cells;
 	cell_flags_t *cell_flags;
 	unsigned int cell_count;
+	struct kmscon_text_deco deco; /* the decoration colours last drawn */
+
+	/* one-cell sprites, rotated: decorations, and an empty glyph */
+	struct kmscon_glyph *sprites[KMSCON_DECO_COUNT];
+	struct kmscon_glyph *blank;
+	struct video_buffer *scratch; /* a decorated cell is composed here */
 
 	struct video_rect *damage_rects;
 	unsigned int damage_rect_len;
@@ -105,7 +119,7 @@ static void bbulk_destroy(struct kmscon_text *txt)
 
 static void damage_cell(struct bbulk *bb, unsigned int off)
 {
-	bb->cells[off].ch = ID_DAMAGED;
+	bb->cell_flags[off].force = 1;
 	bb->cell_flags[off].damaged = 1;
 }
 
@@ -125,6 +139,131 @@ static void compute_border(struct kmscon_text *txt)
 		bb->max_y = bb->off_y + txt->cols * FONT_WIDTH(txt);
 	}
 	display_set_cursor_offset(txt->disp, bb->off_x, bb->off_y);
+}
+
+/*
+ * Rotate a glyph to the given orientation
+ * Return a new rotated glyph, and free the original glyph
+ */
+static struct kmscon_glyph *bbulk_rotate_glyph(struct kmscon_glyph *glyph,
+					       enum Orientation orientation)
+{
+	struct video_buffer *buf = &glyph->buf;
+	struct kmscon_glyph *rglyph;
+	unsigned int bpp = buf->format == VIDEO_FORMAT_ARGB32 ? 4 : 1;
+	int width, height, i, j;
+	uint8_t *dst, *src;
+
+	rglyph = calloc(1, sizeof(*rglyph) + glyph->buf.width * glyph->buf.height * bpp);
+	if (!rglyph)
+		goto err_free;
+
+	if (orientation == OR_NORMAL || orientation == OR_UPSIDE_DOWN) {
+		width = buf->width;
+		height = buf->height;
+	} else {
+		width = buf->height;
+		height = buf->width;
+	}
+	src = buf->data;
+	dst = rglyph->buf.data;
+
+	switch (orientation) {
+	default:
+	case OR_NORMAL:
+		/* should never happen */
+		break;
+	case OR_RIGHT:
+		for (i = 0; i < buf->height; i++) {
+			for (j = 0; j < buf->width; j++)
+				memcpy(&dst[(j * width + (width - i - 1)) * bpp], &src[j * bpp], bpp);
+			src += buf->width * bpp;
+		}
+		break;
+	case OR_UPSIDE_DOWN:
+		src += (buf->height - 1) * buf->width * bpp;
+		for (i = 0; i < buf->height; i++) {
+			for (j = 0; j < buf->width; j++)
+				memcpy(&dst[j * bpp], &src[(buf->width - j - 1) * bpp], bpp);
+			dst += width * bpp;
+			src -= buf->width * bpp;
+		}
+		break;
+	case OR_LEFT:
+		for (i = 0; i < buf->height; i++) {
+			for (j = 0; j < buf->width; j++)
+				memcpy(&dst[((height - j - 1) * width + i) * bpp], &src[j * bpp], bpp);
+			src += buf->width * bpp;
+		}
+	}
+	rglyph->buf.width = width;
+	rglyph->buf.height = height;
+	rglyph->buf.format = buf->format;
+	rglyph->double_width = glyph->double_width;
+	rglyph->key = glyph->key;
+
+err_free:
+	free(glyph);
+	return rglyph;
+}
+
+static void free_sprites(struct bbulk *bb)
+{
+	int i;
+
+	for (i = 0; i < KMSCON_DECO_COUNT; i++) {
+		free(bb->sprites[i]);
+		bb->sprites[i] = NULL;
+	}
+	free(bb->blank);
+	bb->blank = NULL;
+	free(bb->scratch);
+	bb->scratch = NULL;
+}
+
+/*
+ * The decoration sprites for this font's cell size and metrics, rotated like
+ * the glyphs; a blank two-cell glyph for empty cells; and the scratch buffer a
+ * decorated cell, at most two cells, is composed in.
+ */
+static int make_sprites(struct kmscon_text *txt)
+{
+	struct bbulk *bb = txt->data;
+	unsigned int fw = FONT_WIDTH(txt), fh = FONT_HEIGHT(txt);
+	struct kmscon_font_deco m;
+	int i;
+
+	kmscon_font_get_deco(txt->font, &m);
+	for (i = KMSCON_DECO_SINGLE; i < KMSCON_DECO_COUNT; i++) {
+		bb->sprites[i] = kmscon_deco_render(i, fw, fh, &m);
+		if (bb->sprites[i] && txt->orientation != OR_NORMAL)
+			bb->sprites[i] = bbulk_rotate_glyph(bb->sprites[i], txt->orientation);
+		if (!bb->sprites[i])
+			goto err;
+	}
+
+	/* rotated or not, all zeros; only its dimensions differ */
+	bb->blank = calloc(1, sizeof(*bb->blank) + 2 * fw * fh);
+	if (!bb->blank)
+		goto err;
+	bb->blank->double_width = true;
+	if (txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN) {
+		bb->blank->buf.width = 2 * fw;
+		bb->blank->buf.height = fh;
+	} else {
+		bb->blank->buf.width = fh;
+		bb->blank->buf.height = 2 * fw;
+	}
+
+	bb->scratch = calloc(1, sizeof(*bb->scratch) + 2 * fw * fh * 4);
+	if (!bb->scratch)
+		goto err;
+	bb->scratch->format = VIDEO_FORMAT_ARGB32;
+	return 0;
+
+err:
+	free_sprites(bb);
+	return -ENOMEM;
 }
 
 static int bbulk_set(struct kmscon_text *txt)
@@ -150,13 +289,9 @@ static int bbulk_set(struct kmscon_text *txt)
 	bb->cell_count = txt->max_cols * txt->max_rows;
 	max_damage_rects = SHL_DIV_ROUND_UP(txt->max_cols, DAMAGE_MERGE_LEN + 1) * txt->max_rows;
 
-	bb->cells = calloc(bb->cell_count, sizeof(*bb->cells));
-	if (!bb->cells)
-		goto err_no_mem;
-
 	bb->cell_flags = calloc(bb->cell_count, sizeof(*bb->cell_flags));
 	if (!bb->cell_flags)
-		goto free_prev;
+		goto err_no_mem;
 
 	bb->damage_rects = calloc(max_damage_rects, sizeof(*bb->damage_rects));
 	if (!bb->damage_rects)
@@ -169,14 +304,20 @@ static int bbulk_set(struct kmscon_text *txt)
 	bb->glyphs = shl_lru_new(2 * bb->cell_count);
 	if (!bb->glyphs)
 		goto free_r_damages;
+
+	if (make_sprites(txt))
+		goto free_glyphs;
 	return 0;
 
+free_glyphs:
+	shl_lru_free(bb->glyphs);
+	bb->glyphs = NULL;
 free_r_damages:
 	free(bb->damage_rects);
+	bb->damage_rects = NULL;
 free_damages:
 	free(bb->cell_flags);
-free_prev:
-	free(bb->cells);
+	bb->cell_flags = NULL;
 err_no_mem:
 	return -ENOMEM;
 }
@@ -188,11 +329,10 @@ static void bbulk_unset(struct kmscon_text *txt)
 	shl_lru_free(bb->glyphs);
 	free(bb->damage_rects);
 	free(bb->cell_flags);
-	free(bb->cells);
+	free_sprites(bb);
 	bb->glyphs = NULL;
 	bb->damage_rects = NULL;
 	bb->cell_flags = NULL;
-	bb->cells = NULL;
 }
 
 static void bbulk_resize(struct kmscon_text *txt, unsigned int cols, unsigned int rows)
@@ -212,101 +352,61 @@ static int bbulk_rotate(struct kmscon_text *txt, enum Orientation orientation)
 	return bbulk_set(txt);
 }
 
-/*
- * Rotate a glyph to the given orientation
- * Return a new rotated glyph, and free the original glyph
- */
-static struct kmscon_glyph *bbulk_rotate_glyph(struct kmscon_glyph *glyph,
-					       enum Orientation orientation)
+static bool glyph_matches(const void *value, const void *data)
 {
-	struct video_buffer *buf = &glyph->buf;
-	struct kmscon_glyph *rglyph;
-	int width, height, i, j;
-	uint8_t *dst, *src;
+	const struct kmscon_glyph *glyph = value;
 
-	rglyph = calloc(1, sizeof(*rglyph) + glyph->buf.width * glyph->buf.height);
-	if (!rglyph)
-		goto err_free;
-
-	if (orientation == OR_NORMAL || orientation == OR_UPSIDE_DOWN) {
-		width = buf->width;
-		height = buf->height;
-	} else {
-		width = buf->height;
-		height = buf->width;
-	}
-	src = buf->data;
-	dst = rglyph->buf.data;
-
-	switch (orientation) {
-	default:
-	case OR_NORMAL:
-		/* should never happen */
-		break;
-	case OR_RIGHT:
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++) {
-				dst[j * width + (width - i - 1)] = src[j];
-			}
-			src += buf->width;
-		}
-		break;
-	case OR_UPSIDE_DOWN:
-		src += (buf->height - 1) * buf->width;
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++)
-				dst[j] = src[buf->width - j - 1];
-			dst += width;
-			src -= buf->width;
-		}
-		break;
-	case OR_LEFT:
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++) {
-				dst[(height - j - 1) * width + i] = src[j];
-			}
-			src += buf->width;
-		}
-	}
-	rglyph->buf.width = width;
-	rglyph->buf.height = height;
-	rglyph->double_width = glyph->double_width;
-
-err_free:
-	free(glyph);
-	return rglyph;
+	return kmscon_glyph_key_equal(&glyph->key, data);
 }
 
-static struct kmscon_glyph *find_glyph(struct kmscon_text *txt, const struct tsm_screen_cell *cell)
+/*
+ * The glyph for frame key @key (a codepoint or a cluster), cached under the
+ * key plus bold, italic and width; a hash collision is a miss.
+ */
+static struct kmscon_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16_t flags,
+				       unsigned int width)
 {
 	struct bbulk *bb = txt->data;
 	struct kmscon_glyph *glyph;
 	struct kmscon_font *font = txt->font;
 	struct kmscon_font_attr attr;
-	uint32_t ch = cell->ch ? cell->ch : ' ';
-	uint64_t id;
+	struct kmscon_glyph_key k = {0};
+	const uint32_t *cps;
+	uint32_t one;
+	size_t len;
+	uint64_t hash;
 
-	attr.underline = !!cell->attr2.underline;
-	attr.italic = !!cell->attr2.italic;
-	attr.bold = !!cell->attr2.bold;
+	attr.bold = !!(flags & TSM_FRAME_BOLD);
+	attr.italic = !!(flags & TSM_FRAME_ITALIC);
 
-	if (!kmscon_font_has_glyph(font, &attr, ch))
-		ch = FONT_REPLACEMENT_CHAR;
+	k.key = key;
+	k.bold = attr.bold;
+	k.italic = attr.italic;
+	k.width = width;
+	hash = kmscon_glyph_key_hash(&k);
 
-	id = kmscon_glyph_id(cell->ch, cell->attr2.u8);
-
-	glyph = shl_lru_get(bb->glyphs, id);
+	glyph = shl_lru_find(bb->glyphs, hash, glyph_matches, &k);
 	if (glyph)
 		return glyph;
 
-	glyph = kmscon_font_render(font, &attr, ch);
+	cps = kmscon_text_get_cluster(txt, key, &one, &len);
+	if (!kmscon_font_has_glyph(font, &attr, cps[0])) {
+		one = FONT_REPLACEMENT_CHAR;
+		cps = &one;
+		len = 1;
+	}
+
+	glyph = kmscon_font_render(font, &attr, cps, len, width);
 	if (!glyph)
 		return NULL;
 
 	if (txt->orientation != OR_NORMAL)
 		glyph = bbulk_rotate_glyph(glyph, txt->orientation);
+	if (!glyph)
+		return NULL;
+	glyph->key = k;
 
-	if (shl_lru_insert(bb->glyphs, id, glyph)) {
+	if (shl_lru_insert(bb->glyphs, hash, glyph)) {
 		free(glyph);
 		return NULL;
 	}
@@ -341,70 +441,85 @@ static void set_coordinate(struct kmscon_text *txt, unsigned int *x, unsigned in
 	}
 }
 
-static void set_color(struct video_blend_req *req, const struct tsm_screen_cell *cell)
+static inline uint32_t over_div255(uint32_t t)
 {
-	req->fr = cell->fg.r;
-	req->fg = cell->fg.g;
-	req->fb = cell->fg.b;
-	req->br = cell->bg.r;
-	req->bg = cell->bg.g;
-	req->bb = cell->bg.b;
+	t += 0x80;
+	return (t + (t >> 8)) >> 8;
 }
 
-static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_screen_cell *cell,
-			   unsigned int posx, unsigned int posy)
+/*
+ * Paint mask @src, tinted with @c, over the premultiplied ARGB scratch @dst,
+ * with @src's top-left at @ox, @oy, clipped to @dst. Both are packed.
+ */
+static void compose(struct video_buffer *dst, const struct video_buffer *src, unsigned int ox,
+		    unsigned int oy, struct tsm_screen_color c)
+{
+	unsigned int x, y, w, h;
+	uint32_t *d;
+	const uint8_t *m;
+
+	if (ox >= dst->width || oy >= dst->height)
+		return;
+	w = min(src->width, dst->width - ox);
+	h = min(src->height, dst->height - oy);
+
+	for (y = 0; y < h; y++) {
+		d = &((uint32_t *)dst->data)[(oy + y) * dst->width + ox];
+		m = &src->data[y * src->width];
+		for (x = 0; x < w; x++) {
+			uint32_t a = m[x], na = 255 - a, p = d[x];
+
+			if (!a)
+				continue;
+			d[x] = ((a + over_div255((p >> 24) * na)) << 24) |
+			       ((over_div255(c.r * a) + over_div255(((p >> 16) & 0xff) * na)) << 16) |
+			       ((over_div255(c.g * a) + over_div255(((p >> 8) & 0xff) * na)) << 8) |
+			       (over_div255(c.b * a) + over_div255((p & 0xff) * na));
+		}
+	}
+}
+
+/* paint sprite @kind over each of the @ncells cells of the scratch buffer */
+static void compose_sprite(struct kmscon_text *txt, enum kmscon_deco kind, unsigned int ncells,
+			   struct tsm_screen_color c)
 {
 	struct bbulk *bb = txt->data;
-	unsigned int offset = posx + posy * txt->cols;
-	struct tsm_screen_cell *cur_cell = &bb->cells[offset];
-	struct kmscon_glyph *glyph;
+	bool across = txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN;
+	unsigned int i;
+
+	for (i = 0; i < ncells; i++)
+		compose(bb->scratch, &bb->sprites[kind]->buf, across ? i * FONT_WIDTH(txt) : 0,
+			across ? 0 : i * FONT_WIDTH(txt), c);
+}
+
+/*
+ * Draw @cell at @posx, @posy over @ncells cells (2 for a wide cell with room
+ * for its second half), with glyph key @key (0: none) drawn @width cells wide.
+ * When the glyph cannot be had, the cell is drawn without it and -ENOMEM
+ * returned, for the caller to draw it again. @ul_cursor: @cell's underline is
+ * an underline cursor, which is no decoration and draws in the foreground.
+ */
+static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
+			   unsigned int width, unsigned int posx, unsigned int posy,
+			   unsigned int ncells, bool ul_cursor)
+{
+	struct bbulk *bb = txt->data;
+	struct kmscon_glyph *glyph = bb->blank;
 	struct video_blend_req req;
-	bool last_col = (posx == txt->cols - 1);
-	bool changed;
+	bool across = txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN;
+	bool strike = cell->flags & TSM_FRAME_STRIKE;
+	int ret = 0;
 
-	// left cell overflow on this cell.
-	if ((cell->ch == 0 || cell->ch == ' ') && posx && bb->cell_flags[offset - 1].double_width) {
-		/* an overflow cell never starts a wide glyph: drop the stale flag */
-		bb->cell_flags[offset].double_width = 0;
-		if (cur_cell->ch == ID_OVERFLOW) {
-			bb->cell_flags[offset].damaged = 0;
-			return 0;
+	if (key) {
+		glyph = find_glyph(txt, key, cell->flags, width);
+		if (!glyph) {
+			glyph = bb->blank;
+			key = 0;
+			ret = -ENOMEM;
 		}
-		cur_cell->ch = ID_OVERFLOW;
-		bb->cell_flags[offset].damaged = 1;
-		return 0;
 	}
 
-	changed = memcmp(cur_cell, cell, sizeof(*cell));
-
-	if (!changed) {
-		/* Cell content is unchanged */
-		if (bb->cell_flags[offset].double_width && !last_col) {
-			if (!bb->cell_flags[offset].damaged && !bb->cell_flags[offset + 1].damaged)
-				return 0;
-			bb->cell_flags[offset].damaged = 0;
-		} else {
-			if (!bb->cell_flags[offset].damaged)
-				return 0;
-			bb->cell_flags[offset].damaged = 0;
-		}
-	} else {
-		bb->cell_flags[offset].damaged = 1;
-	}
-
-	*cur_cell = *cell;
-
-	glyph = find_glyph(txt, cur_cell);
-	if (!glyph)
-		return -ENOMEM;
-
-	if (glyph->double_width && !last_col && changed)
-		damage_cell(bb, offset + 1);
-
-	bb->cell_flags[offset].double_width = glyph->double_width;
-
-	if (glyph->double_width && !last_col &&
-	    (txt->orientation == OR_LEFT || txt->orientation == OR_UPSIDE_DOWN))
+	if (ncells == 2 && (txt->orientation == OR_LEFT || txt->orientation == OR_UPSIDE_DOWN))
 		/*
 		 * In case of left or upside down orientation, we need to draw to the
 		 * next cell, as the glyph is already rotated, so start on the next cell
@@ -414,42 +529,116 @@ static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_screen_cell
 	else
 		set_coordinate(txt, &req.x, &req.y, posx, posy);
 
-	req.w = glyph->buf.width;
-	req.h = glyph->buf.height;
+	/* the cells drawn; a wide glyph in the last column is cut at the margin */
+	req.w = across ? ncells * FONT_WIDTH(txt) : FONT_HEIGHT(txt);
+	req.h = across ? FONT_HEIGHT(txt) : ncells * FONT_WIDTH(txt);
+	req.fr = cell->fg.r;
+	req.fg = cell->fg.g;
+	req.fb = cell->fg.b;
+	req.br = cell->bg.r;
+	req.bg = cell->bg.g;
+	req.bb = cell->bg.b;
 
-	/* Truncate the glyph if it would overflow in the border */
-	if (glyph->double_width && last_col) {
-		if (txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN)
-			req.w = FONT_WIDTH(txt);
-		else if (txt->orientation == OR_RIGHT || txt->orientation == OR_LEFT)
-			req.h = FONT_WIDTH(txt);
+	if (cell->underline == TSM_UNDERLINE_NONE && !strike) {
+		req.buf = &glyph->buf;
+	} else {
+		struct video_buffer *sc = bb->scratch;
+
+		sc->width = min(req.w, glyph->buf.width);
+		sc->height = min(req.h, glyph->buf.height);
+		memset(sc->data, 0, sc->width * sc->height * 4);
+
+		if (cell->underline > TSM_UNDERLINE_NONE && cell->underline < KMSCON_DECO_STRIKE)
+			compose_sprite(txt, cell->underline, ncells,
+				       ul_cursor ? cell->fg : kmscon_text_ul_color(txt, cell));
+		if (key)
+			compose(sc, &glyph->buf, 0, 0, cell->fg);
+		if (strike)
+			compose_sprite(txt, KMSCON_DECO_STRIKE, ncells,
+				       kmscon_text_strike_color(txt, cell));
+		req.buf = sc;
 	}
 
-	req.buf = &glyph->buf;
-	set_color(&req, cur_cell);
 	display_blend(txt->disp, &req);
 	bb->requests++;
-	return 0;
+	return ret;
 }
 
-static int bbulk_draw(struct kmscon_text *txt, const struct tsm_screen_cell *cells,
-		      struct kmscon_cursor *cursor)
+static bool is_vbar(enum tsm_screen_cursor_style style)
 {
-	unsigned int posx, posy, off;
+	return style == TSM_SCREEN_CURSOR_VBAR_BLINK || style == TSM_SCREEN_CURSOR_VBAR_STEADY;
+}
 
-	for (posy = 0; posy < txt->rows; posy++) {
-		for (posx = 0; posx < txt->cols; posx++) {
+static bool is_underline(enum tsm_screen_cursor_style style)
+{
+	return style == TSM_SCREEN_CURSOR_UNDERLINE_BLINK ||
+	       style == TSM_SCREEN_CURSOR_UNDERLINE_STEADY;
+}
+
+static int bbulk_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bool cursor_on)
+{
+	struct bbulk *bb = txt->data;
+	unsigned int posx, posy, off, cols, rows, ncells, width;
+	const struct tsm_frame_cell *fc, *cell;
+	bool is_cursor, hidden, changed;
+	cell_flags_t *f;
+	uint64_t key;
+
+	cols = min(txt->cols, frame->cols);
+	rows = min(txt->rows, frame->rows);
+
+	for (posy = 0; posy < rows; posy++) {
+		for (posx = 0; posx < cols; posx++) {
 			off = posx + posy * txt->cols;
+			fc = tsm_frame_cell_at(frame, posx, posy);
+			f = &bb->cell_flags[off];
 
-			if (cursor->visible && cursor->x == posx && cursor->y == posy)
-				bbulk_draw_cell(txt, &cursor->cell, posx, posy);
-			else if (cells[off].attr2.blink && txt->blinking) {
-				struct tsm_screen_cell cell = cells[off];
+			/* a trailing half is drawn by the wide cell before it */
+			if (!fc->width && posx)
+				continue;
 
-				cell.ch = ' ';
-				bbulk_draw_cell(txt, &cell, posx, posy);
-			} else
-				bbulk_draw_cell(txt, &cells[off], posx, posy);
+			ncells = fc->width == 2 && posx + 1 < cols ? 2 : 1;
+			is_cursor = cursor_on && frame->cursor.x == posx && frame->cursor.y == posy;
+			cell = is_cursor ? &frame->cursor.cell : fc;
+			hidden = !is_cursor && (fc->flags & TSM_FRAME_BLINK) && txt->blinking;
+
+			changed = (fc->flags & TSM_FRAME_CHANGED) || f->force ||
+				  f->cursor != is_cursor || f->hidden != hidden;
+			if (ncells == 2)
+				changed = changed || f[1].force;
+
+			/* drawn on the last frame: the back buffer still lacks it */
+			if (!changed && !f->damaged)
+				continue;
+
+			f->damaged = changed;
+			f->force = 0;
+			f->cursor = is_cursor;
+			f->hidden = hidden;
+			if (ncells == 2) {
+				f[1].damaged = changed;
+				f[1].force = 0;
+			}
+
+			key = hidden ? 0 : cell->key;
+			width = cell->width == 2 ? 2 : 1;
+			if (is_cursor && is_vbar(frame->cursor.style)) {
+				/* the bar, at the left of the cell; a wide cell's
+				 * second half is left empty */
+				key = FONT_VBAR;
+				width = 1;
+				if (ncells == 2)
+					bbulk_draw_cell(txt, cell, 0, 1, posx + 1, posy, 1, false);
+				ncells = 1;
+			}
+
+			/* not drawn: the frame will not mark it again, so we do */
+			if (bbulk_draw_cell(txt, cell, key, width, posx, posy, ncells,
+					    is_cursor && is_underline(frame->cursor.style))) {
+				f->force = 1;
+				if (ncells == 2)
+					f[1].force = 1;
+			}
 		}
 	}
 	return 0;
@@ -550,16 +739,13 @@ static int bbulk_draw_pointer(struct kmscon_text *txt, unsigned int pointer_x,
 	struct bbulk *bb = txt->data;
 	struct video_blend_req req;
 	struct kmscon_glyph *bb_glyph;
-	struct tsm_screen_cell pointer_cell = {0};
 	unsigned int fw2 = FONT_WIDTH(txt) / 2;
 	unsigned int fh2 = FONT_HEIGHT(txt) / 2;
-
-	pointer_cell.ch = 'I';
 
 	pointer_x = clamp(pointer_x, fw2, txt->cols * FONT_WIDTH(txt) - fw2);
 	pointer_y = clamp(pointer_y, fh2, txt->rows * FONT_HEIGHT(txt) - fh2);
 
-	bb_glyph = find_glyph(txt, &pointer_cell);
+	bb_glyph = find_glyph(txt, 'I', 0, 1);
 	if (!bb_glyph)
 		return -ENOMEM;
 
@@ -663,15 +849,18 @@ static int bbulk_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	bb->damage_rect_len = 0;
 
 	/*
-	 * if default colors have changed, or we switch from a dirty screen,
-	 * redraw completely the next 2 frames.
+	 * if default colors or decoration colors have changed, or we switch
+	 * from a dirty screen, redraw completely the next 2 frames.
 	 */
-	if (memcmp(&bb->attr, attr, sizeof(*attr)) || display_need_redraw(txt->disp))
+	if (memcmp(&bb->attr, attr, sizeof(*attr)) || memcmp(&bb->deco, &txt->deco, sizeof(bb->deco)) ||
+	    display_need_redraw(txt->disp))
 		bb->redraw = 2;
 
 	bb->attr = *attr;
+	bb->deco = txt->deco;
 
 	if (bb->redraw) {
+		kmscon_text_redraw_all(txt);
 		display_clear(txt->disp, attr->br, attr->bg, attr->bb);
 		for (i = 0; i < bb->cell_count; i++)
 			damage_cell(bb, i);
@@ -679,7 +868,7 @@ static int bbulk_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 		log_debug("Carry over damage from previous frame");
 		for (i = 0; i < bb->cell_count; i++) {
 			if (bb->cell_flags[i].damaged)
-				bb->cells[i].ch = ID_DAMAGED;
+				bb->cell_flags[i].force = 1;
 		}
 	}
 	if (bb->redraw)

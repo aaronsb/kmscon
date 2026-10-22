@@ -212,12 +212,225 @@ static void test_monospace_fallback_set(void)
 	kmscon_font_unregister(kmscon_font_freetype_ops.name);
 }
 
+/*
+ * copy_mono clips a 1-bit bitmap to the cell. One that starts right of the cell
+ * draws nothing, and nothing lands past the cell's buffer.
+ */
+static void test_copy_mono_clip(void)
+{
+	enum { W = 8, H = 16, GUARD = 64 };
+	uint8_t bits[H * 2];
+	FT_GlyphSlotRec slot = {0};
+	struct video_buffer *buf;
+	unsigned int i;
+
+	memset(bits, 0xff, sizeof(bits));
+	slot.bitmap.rows = H;
+	slot.bitmap.width = W;
+	slot.bitmap.pitch = 2;
+	slot.bitmap.buffer = bits;
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_MONO;
+	slot.bitmap_top = H;
+
+	buf = calloc(1, sizeof(*buf) + W * H + GUARD);
+	assert(buf);
+	buf->width = W;
+	buf->height = H;
+
+	/* starts two pixels past the right edge */
+	slot.bitmap_left = W + 2;
+	copy_mono(buf, &slot, H, 0);
+	for (i = 0; i < W * H + GUARD; i++)
+		assert(buf->data[i] == 0);
+
+	/* a dx that pushes it past the edge clips the same way */
+	slot.bitmap_left = 0;
+	copy_mono(buf, &slot, H, W + 1);
+	for (i = 0; i < W * H + GUARD; i++)
+		assert(buf->data[i] == 0);
+
+	/* in the cell it draws, and stays inside it */
+	copy_mono(buf, &slot, H, 4);
+	assert(buf->data[0] == 0 && buf->data[4] == 0xff && buf->data[W - 1] == 0xff);
+	assert(buf->data[(H - 1) * W + 4] == 0xff);
+	for (i = W * H; i < W * H + GUARD; i++)
+		assert(buf->data[i] == 0);
+
+	free(buf);
+}
+
+/*
+ * A cluster's codepoint the face lacks is left out, not drawn as the face's
+ * missing-glyph box: '1' with a keycap mark the face does not have draws as '1'
+ * with a variation selector, which shaping hides.
+ */
+static void test_cluster_missing_mark(void)
+{
+	static const uint32_t keycap[] = {'1', 0x20e3};
+	static const uint32_t plain[] = {'1', 0xfe0f};
+	struct kmscon_font font = {.width = 9, .height = 18};
+	struct kmscon_glyph *a, *b;
+	FT_Library ft;
+	FT_Face face;
+	unsigned int i, ink = 0;
+
+	assert(!FT_Init_FreeType(&ft));
+	assert(!FT_New_Face(ft, TEST_FONT_DIR "/DejaVuSansMono.ttf", 0, &face));
+	assert(!FT_Set_Pixel_Sizes(face, 0, 14));
+	/* the premise: the face has no keycap mark */
+	assert(!FT_Get_Char_Index(face, 0x20e3));
+
+	a = render_cluster(&font, face, keycap, 2, 2);
+	b = render_cluster(&font, face, plain, 2, 2);
+	assert(a && b);
+	assert(a->buf.width == b->buf.width && a->buf.height == b->buf.height);
+	for (i = 0; i < b->buf.width * b->buf.height; i++)
+		ink += b->buf.data[i] != 0;
+	assert(ink > 0);
+	assert(!memcmp(a->buf.data, b->buf.data, a->buf.width * a->buf.height));
+
+	free(a);
+	free(b);
+	FT_Done_Face(face);
+	FT_Done_FreeType(ft);
+}
+
+/*
+ * a + U+0303 + U+0300: HarfBuzz composes atilde, and the face does not place
+ * the grave on it. The grave is drawn above the tilde, over the base, and the
+ * base and tilde stay where they are drawn without it. The cell is the one
+ * kmscon uses for this face at 14 px.
+ */
+static void test_cluster_stacked_mark(void)
+{
+	static const uint32_t tilde[] = {'a', 0x303};
+	static const uint32_t both[] = {'a', 0x303, 0x300};
+	struct kmscon_font font = {.width = 8, .height = 16};
+	struct kmscon_glyph *t, *g;
+	FT_Library ft;
+	FT_Face face;
+	int x, y, w, h, t_top = -1, t_x0 = -1, t_x1 = -1;
+	int d_top = -1, d_bottom = -1, d_x0 = -1, d_x1 = -1;
+
+	assert(!FT_Init_FreeType(&ft));
+	assert(!FT_New_Face(ft, TEST_FONT_DIR "/DejaVuSansMono.ttf", 0, &face));
+	assert(!FT_Set_Pixel_Sizes(face, 0, 14));
+
+	t = render_cluster(&font, face, tilde, 2, 1);
+	g = render_cluster(&font, face, both, 3, 1);
+	assert(t && g);
+	w = t->buf.width;
+	h = t->buf.height;
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++) {
+			uint8_t tv = t->buf.data[y * w + x], gv = g->buf.data[y * w + x];
+
+			/* the base and its tilde did not move */
+			assert(gv >= tv);
+			if (tv) {
+				if (t_top < 0)
+					t_top = y;
+				if (t_x0 < 0 || x < t_x0)
+					t_x0 = x;
+				t_x1 = x > t_x1 ? x : t_x1;
+			}
+			/* the grave: ink the tilde alone does not have */
+			if (gv > tv) {
+				if (d_top < 0)
+					d_top = y;
+				d_bottom = y;
+				if (d_x0 < 0 || x < d_x0)
+					d_x0 = x;
+				d_x1 = x > d_x1 ? x : d_x1;
+			}
+		}
+	fprintf(stderr, "tilde top %d cols %d-%d; grave rows %d-%d cols %d-%d\n", t_top, t_x0, t_x1,
+		d_top, d_bottom, d_x0, d_x1);
+	assert(d_top >= 0);
+	/* above the tilde, and over the base's columns */
+	assert(d_top < t_top && d_bottom <= t_top);
+	assert(d_x0 > t_x0 && d_x1 < t_x1);
+
+	free(t);
+	free(g);
+	FT_Done_Face(face);
+	FT_Done_FreeType(ft);
+}
+
+/*
+ * render_cluster reads its glyph from canvas + gw - centre_dx() in a canvas
+ * three glyphs wide, so the offset stays within one glyph width either way,
+ * whatever the cluster's advance, a negative one included.
+ */
+static void test_centre_dx_bounded(void)
+{
+	static const long advs[] = {-100 * 64, -3 * 8 * 64, -64, 0, 4 * 64, 8 * 64, 16 * 64, 40 * 64};
+	struct kmscon_font font = {.width = 8, .height = 16};
+	struct kmscon_glyph glyph = {.double_width = true, .buf = {.width = 16, .height = 16}};
+	unsigned int i;
+	int dx;
+
+	for (i = 0; i < sizeof(advs) / sizeof(advs[0]); i++) {
+		dx = centre_dx(&font, &glyph, advs[i]);
+		assert(dx >= -16 && dx <= 16);
+	}
+	/* a narrow glyph is still centred in its two cells */
+	assert(centre_dx(&font, &glyph, 8 * 64) == 4);
+}
+
+/*
+ * A strike's 2- and 4-bit grey bitmap reaches the copy as one byte of coverage
+ * per pixel, scaled to 0-255; an 8-bit one is used as it is.
+ */
+static void test_coverage_grey_strikes(void)
+{
+	uint8_t gray4[] = {0xf0, 0x5a}, gray2[] = {0xe4};
+	FT_GlyphSlotRec slot = {0};
+	const FT_Bitmap *map;
+	FT_Bitmap tmp;
+	FT_Library ft;
+
+	assert(!FT_Init_FreeType(&ft));
+	slot.library = ft;
+	slot.bitmap.rows = 1;
+	slot.bitmap.width = 4;
+
+	slot.bitmap.pitch = 2;
+	slot.bitmap.buffer = gray4;
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_GRAY4;
+	map = coverage(&slot, &tmp);
+	assert(map && map->pixel_mode == FT_PIXEL_MODE_GRAY && map->width == 4 && map->rows == 1);
+	assert(map->buffer[0] == 255 && map->buffer[1] == 0 && map->buffer[2] == 85 &&
+	       map->buffer[3] == 170);
+	FT_Bitmap_Done(ft, &tmp);
+
+	slot.bitmap.pitch = 1;
+	slot.bitmap.buffer = gray2;
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_GRAY2;
+	map = coverage(&slot, &tmp);
+	assert(map && map->pixel_mode == FT_PIXEL_MODE_GRAY && map->width == 4);
+	assert(map->buffer[0] == 255 && map->buffer[1] == 170 && map->buffer[2] == 85 &&
+	       map->buffer[3] == 0);
+	FT_Bitmap_Done(ft, &tmp);
+
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_GRAY;
+	assert(coverage(&slot, &tmp) == &slot.bitmap);
+	FT_Bitmap_Done(ft, &tmp);
+
+	FT_Done_FreeType(ft);
+}
+
 int main(void)
 {
 	assert(FcInit());
 
 	test_filter_unit();
 	test_monospace_fallback_set();
+	test_copy_mono_clip();
+	test_cluster_missing_mark();
+	test_cluster_stacked_mark();
+	test_centre_dx_bounded();
+	test_coverage_grey_strikes();
 
 	FcFini();
 	return 0;

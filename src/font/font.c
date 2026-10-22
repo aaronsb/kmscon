@@ -262,31 +262,124 @@ void kmscon_font_unref(struct kmscon_font *font)
 	free(font);
 }
 
+/*
+ * Re-box @glyph to exactly @cwidth cells, centred, clipping what overflows,
+ * for backends whose glyphs have their own width (psf and 8x16 are always one
+ * cell, unifont carries its own). Frees @glyph when it makes a new one.
+ */
+static struct kmscon_glyph *fit_glyph(struct kmscon_font *font, struct kmscon_glyph *glyph,
+				      unsigned int cwidth)
+{
+	struct kmscon_glyph *out;
+	unsigned int w = cwidth * font->width;
+	unsigned int h = glyph->buf.height;
+	unsigned int sw = glyph->buf.width;
+	unsigned int bpp = glyph->buf.format == VIDEO_FORMAT_ARGB32 ? 4 : 1;
+	unsigned int dx = 0, sx = 0, n, i;
+
+	if (sw == w) {
+		glyph->double_width = cwidth == 2;
+		return glyph;
+	}
+
+	out = calloc(1, sizeof(*out) + (size_t)w * h * bpp);
+	if (!out) {
+		free(glyph);
+		return NULL;
+	}
+	out->double_width = cwidth == 2;
+	out->buf.width = w;
+	out->buf.height = h;
+	out->buf.format = glyph->buf.format;
+
+	if (sw < w)
+		dx = (w - sw) / 2;
+	else
+		sx = (sw - w) / 2;
+	n = sw < w ? sw : w;
+
+	for (i = 0; i < h; i++)
+		memcpy(&out->buf.data[(i * w + dx) * bpp], &glyph->buf.data[(i * sw + sx) * bpp],
+		       n * bpp);
+	free(glyph);
+	return out;
+}
+
 /**
  * kmscon_font_render:
  * @font: Valid font object
- * @ch: Symbol to find a glyph for
+ * @attr: bold and italic
+ * @cps: the cluster's codepoints
+ * @len: number of codepoints in @cps, at least 1
+ * @cwidth: width of the glyph in cells, 1 or 2, as the frame gives it
  *
- * Renders the glyph for symbol @ch and returns a pointer to the glyph.
- * If the glyph cannot be found or is invalid, NULL is returned.
+ * Renders the glyph for the cluster @cps, exactly @cwidth cells wide. If the
+ * glyph cannot be found or is invalid, the replacement character is drawn
+ * instead, and if that fails too, NULL is returned.
  *
  * Returns: a new allocated glyph object on success, NULL on failure
  */
 SHL_EXPORT
 struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
-					uint32_t ch)
+					const uint32_t *cps, size_t len, unsigned int cwidth)
 {
+	static const uint32_t replacement = FONT_REPLACEMENT_CHAR;
+	static const uint32_t question = '?';
 	struct kmscon_glyph *glyph;
 
-	if (!font)
+	if (!font || !cps || !len)
 		return NULL;
+	if (cwidth != 2)
+		cwidth = 1;
 
-	glyph = font->ops->render(font, attr, ch);
+	glyph = font->ops->render(font, attr, cps, len, cwidth);
 	if (!glyph)
-		glyph = font->ops->render(font, attr, FONT_REPLACEMENT_CHAR);
+		glyph = font->ops->render(font, attr, &replacement, 1, cwidth);
 	if (!glyph)
-		glyph = font->ops->render(font, attr, '?');
-	return glyph;
+		glyph = font->ops->render(font, attr, &question, 1, cwidth);
+	if (!glyph)
+		return NULL;
+	return fit_glyph(font, glyph, cwidth);
+}
+
+/**
+ * kmscon_font_get_deco:
+ * @font: Valid font object
+ * @out: the metrics
+ *
+ * Where underline and strike-through go in a cell of @font: the backend's own
+ * metrics when it has them, else lines derived from the cell height. Either
+ * way the result is clamped inside the cell.
+ */
+SHL_EXPORT
+void kmscon_font_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out)
+{
+	unsigned int h = font->height ? font->height : 1;
+	unsigned int max_thick = h / 4 ? h / 4 : 1;
+
+	memset(out, 0, sizeof(*out));
+	if (font->ops->get_deco) {
+		font->ops->get_deco(font, out);
+	} else {
+		out->ul_thick = h / 16;
+		out->ul_pos = h - (out->ul_thick ? out->ul_thick : 1);
+		out->strike_thick = out->ul_thick;
+		out->strike_pos = h / 2;
+	}
+
+	if (out->ul_thick < 1)
+		out->ul_thick = 1;
+	if (out->ul_thick > max_thick)
+		out->ul_thick = max_thick;
+	if (out->ul_pos + out->ul_thick > h)
+		out->ul_pos = h - out->ul_thick;
+
+	if (out->strike_thick < 1)
+		out->strike_thick = 1;
+	if (out->strike_thick > max_thick)
+		out->strike_thick = max_thick;
+	if (out->strike_pos + out->strike_thick > h)
+		out->strike_pos = h - out->strike_thick;
 }
 
 /**

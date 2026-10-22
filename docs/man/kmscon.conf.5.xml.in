@@ -83,7 +83,8 @@ font-engine=freetype
 font-size=18
 font-name=Ubuntu Mono
     </programlisting>
-    <para>In any line, every character are ignored after a # and considered to be a comment.
+    <para>In any line, every character are ignored after a # and considered to be a comment,
+          except a # that opens a #rrggbb colour value, as in <literal>underline-color=#ff8000</literal>.
           whitespace are ignored at begining and ending of a line, and around the '=' when
           assigning a parameter</para>
   </refsect1>
@@ -544,6 +545,57 @@ font-name=Ubuntu Mono
         <term><option>font-name</option></term>
         <listitem>
           <para>Font name to use. (default: monospace)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>grapheme-width</option></term>
+        <listitem>
+          <para>How printed text is divided into cells, for a new terminal.
+                <literal>unicode</literal> gives each grapheme cluster one
+                cell, as wide as its first codepoint, or two cells when an
+                emoji variation selector (VS16) follows a base that takes it.
+                <literal>wcwidth</literal> gives every codepoint with a width
+                its own cells, as programs that count per codepoint expect;
+                combining marks and other zero-width codepoints join the cell
+                before them. Programs can switch it with DEC private mode 2027,
+                and a terminal reset returns to this setting.
+                (default: unicode)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>underline-color</option></term>
+        <listitem>
+          <para>The color of underlines a program has not given a color
+                (SGR 58). <literal>fg</literal> follows the text's foreground
+                color; a palette index from <literal>0</literal> to
+                <literal>255</literal> takes that entry of the palette in use,
+                so it follows the palette; <literal>#rrggbb</literal> is a fixed
+                color. (default: fg)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>strike-color</option></term>
+        <listitem>
+          <para>The color of strike-through, as for
+                <option>underline-color</option>. No escape sequence sets a
+                strike-through color, so this is always the one drawn.
+                (default: fg)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>force-decoration-colors</option></term>
+        <listitem>
+          <para>Draw every underline and strike-through in the colors
+                <option>underline-color</option> and
+                <option>strike-color</option> configure, also where a program
+                set an underline color. It is meant for readers who cannot tell
+                the colors programs pick apart, or who run a high-contrast
+                palette. Programs are not told: the cells keep the color the
+                program set, and only the drawing changes. (default: off)</para>
         </listitem>
       </varlistentry>
 

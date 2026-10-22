@@ -28,6 +28,7 @@
  * Implementation of the configuration parsers.
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -385,6 +386,19 @@ static void strip_spaces(char **buf)
 		*tail-- = 0;
 }
 
+/* @s, @len begins with #rrggbb, ended by the line, a blank or a comment */
+static bool begins_rgb(const char *s, size_t len)
+{
+	size_t i;
+
+	if (len < 7 || s[0] != '#')
+		return false;
+	for (i = 1; i < 7; i++)
+		if (!isxdigit((unsigned char)s[i]))
+			return false;
+	return len == 7 || strchr(" \t\r\n#", s[7]);
+}
+
 static int parse_line(struct conf_option *opts, size_t olen, char **buf, size_t *size)
 {
 	char *key;
@@ -423,8 +437,16 @@ static int parse_line(struct conf_option *opts, size_t olen, char **buf, size_t 
 	*line++ = 0;
 	--len;
 
-	/* parse value */
+	/* parse value; a '#' that begins #rrggbb is part of it */
 	value = line;
+	while (len && (*line == ' ' || *line == '\t')) {
+		++line;
+		--len;
+	}
+	if (begins_rgb(line, len)) {
+		++line;
+		--len;
+	}
 	while (len) {
 		c = *line;
 		if (c == '\n' || c == '#')

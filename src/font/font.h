@@ -30,6 +30,7 @@
 #ifndef KMSCON_FONT_H
 #define KMSCON_FONT_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 #include "shl/module.h"
@@ -53,12 +54,54 @@ struct kmscon_font_ops;
 struct kmscon_font_attr {
 	bool bold;
 	bool italic;
-	bool underline;
 };
+
+/*
+ * A glyph is a sprite one or two cells wide (ADR-102). Its width in cells is
+ * the one the renderer asked for, from the frame, and its buffer is exactly
+ * that many cells. Underline and strike are not part of it: they are
+ * decoration sprites the renderer draws.
+ */
+/*
+ * What a renderer caches a glyph under (ADR-102): the frame's 64-bit glyph
+ * key, which never names two clusters, plus what changes the drawing. @extra
+ * is the renderer's own (gltex bakes decorations into its glyphs).
+ */
+struct kmscon_glyph_key {
+	uint64_t key;
+	uint8_t bold;
+	uint8_t italic;
+	uint8_t width;
+	uint8_t extra;
+};
+
+/* a 64-bit hash of @k for a hash table that compares the full key */
+static inline uint64_t kmscon_glyph_key_hash(const struct kmscon_glyph_key *k)
+{
+	uint64_t x = k->key;
+
+	x ^= (uint64_t)(k->bold | k->italic << 1 | k->width << 2 | k->extra << 8) *
+	     0x9e3779b97f4a7c15ULL;
+	/* splitmix64 finaliser */
+	x ^= x >> 30;
+	x *= 0xbf58476d1ce4e5b9ULL;
+	x ^= x >> 27;
+	x *= 0x94d049bb133111ebULL;
+	x ^= x >> 31;
+	return x;
+}
+
+static inline bool kmscon_glyph_key_equal(const struct kmscon_glyph_key *a,
+					  const struct kmscon_glyph_key *b)
+{
+	return a->key == b->key && a->bold == b->bold && a->italic == b->italic &&
+	       a->width == b->width && a->extra == b->extra;
+}
 
 struct kmscon_glyph {
 	bool double_width;
-	struct video_buffer buf; // Must be last
+	struct kmscon_glyph_key key; /* set by the renderer that caches it */
+	struct video_buffer buf;     // Must be last
 };
 
 static inline unsigned int kmscon_glyph_cwidth(const struct kmscon_glyph *glyph)
@@ -66,10 +109,16 @@ static inline unsigned int kmscon_glyph_cwidth(const struct kmscon_glyph *glyph)
 	return glyph->double_width ? 2 : 1;
 }
 
-static inline uint64_t kmscon_glyph_id(uint32_t ch, uint8_t u8)
-{
-	return (uint64_t)ch | (uint64_t)u8 << 32;
-}
+/*
+ * Where a font puts underline and strike-through, in pixel rows from the top
+ * of the cell, already clamped inside it.
+ */
+struct kmscon_font_deco {
+	unsigned int ul_pos;	   /* first row of the single underline */
+	unsigned int ul_thick;	   /* its thickness, at least 1 */
+	unsigned int strike_pos;   /* first row of the strike-through */
+	unsigned int strike_thick; /* its thickness, at least 1 */
+};
 
 struct kmscon_font {
 	unsigned long ref;
@@ -87,8 +136,14 @@ struct kmscon_font_ops {
 	int (*init)(struct kmscon_font *out, const char *name, unsigned int height);
 	void (*destroy)(struct kmscon_font *font);
 	bool (*has_glyph)(struct kmscon_font *font, struct kmscon_font_attr *attr, uint32_t ch);
+	/*
+	 * Draw the cluster @cps (@len codepoints, at least 1) as a glyph
+	 * @cwidth cells wide. A backend that cannot shape draws cps[0].
+	 */
 	struct kmscon_glyph *(*render)(struct kmscon_font *font, struct kmscon_font_attr *attr,
-				       uint32_t ch);
+				       const uint32_t *cps, size_t len, unsigned int cwidth);
+	/* optional: the font's own decoration metrics */
+	void (*get_deco)(struct kmscon_font *font, struct kmscon_font_deco *out);
 };
 
 int kmscon_font_register(const struct kmscon_font_ops *ops);
@@ -100,7 +155,8 @@ void kmscon_font_ref(struct kmscon_font *font);
 void kmscon_font_unref(struct kmscon_font *font);
 
 struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
-					uint32_t ch);
+					const uint32_t *cps, size_t len, unsigned int cwidth);
+void kmscon_font_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out);
 bool kmscon_font_has_glyph(struct kmscon_font *font, struct kmscon_font_attr *attr, uint32_t ch);
 
 /* modularized backends */

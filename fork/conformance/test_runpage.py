@@ -97,7 +97,7 @@ class Fixture:
                                       "2026/10/21", "packages": {"freetype2": "2.15.0-1"}}, "cases": [
             case("same", "pass", g + "same.ppm", "out/same.ppm", description="A line of text."),
             case("broken", "fail", g + "broken.ppm", "out/broken.ppm", pixels=6, description="Broken.",
-                 wrong="A gap between the cells."),
+                 wrong="A gap between *the* cells."),
             case("moved", "pass", g + "moved.ppm", "out/moved.ppm", description="Moved down.")]}
         Path("tier1.json").write_text(json.dumps(tier1))
         Path("tier2.json").write_text(json.dumps(tier2))
@@ -197,7 +197,7 @@ class RunPageTest(unittest.TestCase):
         self.assertIn("A line of text.", page)
         # A screen's wrong-looks-like guidance follows its caption; a case without
         # it shows none.
-        self.assertIn("Broken.\n\nWrong looks like: A gap between the cells.\n", page)
+        self.assertIn("Broken.\n\nWrong looks like: A gap between \\*the\\* cells.\n", page)
         self.assertEqual(page.count("Wrong looks like:"), 1)
         # Cropped to the drawn region with its margin, not the whole screen.
         thumb = read_png(out / "t2-same.png")

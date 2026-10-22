@@ -1,3 +1,4 @@
+#!/bin/bash
 # look-for: A wide character at the right edge fits the last two cells
 # look-for: (cases 1 and 4) or moves whole to the next line (2, 3 and 5).
 # wrong-looks-like: Half a character at the edge or one lost (stock kmscon

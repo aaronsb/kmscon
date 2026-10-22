@@ -10,7 +10,8 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 
 # Screens drawn by `t3 NAME` in the guest (fork/tier3/guest/screens/NAME.sh),
 # in the local VT demo's order (fork/demo/sections), except that cjk stays last:
-# vt-restore is compared with its golden.
+# vt-restore is compared with the last screen's golden, and its golden is the
+# cjk one (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
            "boxdraw", "wide-margin", "combining", "cjk"]
 # Every case of a variant: each screen, then the VT switch (a check without a
@@ -22,8 +23,8 @@ CHECKS = {
     "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
                  "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
                  "screen just left.",
-    "vt-restore": "Back on tty2 after Ctrl+Alt+F2, the cjk screen redrawn by the first "
-                  "instance. Correct: identical to the cjk golden.",
+    "vt-restore": "Back on tty2 after Ctrl+Alt+F2, the %s screen redrawn by the first "
+                  "instance. Correct: identical to the %s golden." % (SCREENS[-1], SCREENS[-1]),
 }
 
 # Seconds a screen script may run on the host before its text is given up.
@@ -43,6 +44,8 @@ def describe(case):
     fields = {"": [], "look-for": [], "wrong-looks-like": []}
     with open(os.path.join(GUEST, "screens", case + ".sh")) as f:
         for line in f:
+            if line.startswith("#!"):  # the script's interpreter
+                continue
             if not line.startswith("#"):
                 break
             key, sep, text = line[1:].strip().partition(": ")

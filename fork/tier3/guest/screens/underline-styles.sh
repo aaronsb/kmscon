@@ -1,3 +1,4 @@
+#!/bin/bash
 # look-for: Each line underlined in the shape it names, all distinct:
 # look-for: single, double, curly, dotted, dashed; 4:0 and 24 end it
 # look-for: mid-line.

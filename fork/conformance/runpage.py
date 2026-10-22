@@ -40,6 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from outdir import claim  # noqa: E402
 from pageimg import crop, crop_box, diff_image, load, step_for, strip, write_png  # noqa: E402
+from pagetext import prose  # noqa: E402
 
 OK = ("pass", "near")
 DIFF_LINES = 40         # a tier 1 text diff is cut after this many lines
@@ -429,9 +430,9 @@ class Page:
         name, status = case["name"], case["status"]
         self.w("%s %s" % (level, case_heading(tier, name, status)), "")
         if case.get("description"):
-            self.w(case["description"], "")
+            self.w(prose(case["description"]), "")
         if case.get("wrong"):
-            self.w("Wrong looks like: " + case["wrong"], "")
+            self.w("Wrong looks like: " + prose(case["wrong"]), "")
         stem = "t%d-%s" % (tier, re.sub(r"[^\w.-]", "-", name))
         golden, actual = load(case.get("golden")), load(case.get("actual"))
         changed = self.changed(tier, case)

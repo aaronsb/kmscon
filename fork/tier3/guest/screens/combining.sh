@@ -1,3 +1,4 @@
+#!/bin/bash
 # look-for: Each mark sits on its letter in one cell: the marks column
 # look-for: matches the one-code-point column, and the bars line up with
 # look-for: |x|.

@@ -40,6 +40,22 @@ class ScreenTextTest(unittest.TestCase):
         self.assertEqual(t3_evaluate.screen_text("vt-restore", LOG),
                          t3_evaluate.screen_text(t3_evaluate.SCREENS[-1], LOG))
         self.assertIsNone(t3_evaluate.screen_text("vt-switch", LOG))
+        # wide-margin moves the cursor to reach the screen's real edge, so it
+        # has no text on purpose; every other screen has its rows.
+        self.assertIsNone(t3_evaluate.screen_text("wide-margin", LOG))
+        for name in t3_evaluate.SCREENS:
+            if name != "wide-margin":
+                with self.subTest(name):
+                    self.assertTrue(t3_evaluate.screen_text(name, LOG))
+        # e and U+0301 between bars: one cell built from two code points.
+        self.assertEqual(t3_evaluate.screen_text("combining", LOG)[1][27:31], "|e\u0301|")
+
+    def test_cjk_last(self):
+        # vt-restore compares the screen left on tty2 with the last screen's
+        # golden; its caption and the tier 3 README name cjk. A screen added
+        # after cjk would move that check without a word.
+        self.assertEqual(t3_evaluate.SCREENS[-1], "cjk")
+        self.assertIn("the cjk golden", t3_evaluate.describe("vt-restore")[0])
 
     def text(self, name):
         with tempfile.TemporaryDirectory() as guest, contextlib.redirect_stderr(io.StringIO()):
@@ -97,8 +113,9 @@ class DescribeTest(unittest.TestCase):
                 t3_evaluate.GUEST = saved
 
     def test_guidance(self):
-        # The demo's guidance lines, in any order among the caption's.
-        self.assertEqual(self.describe("# look-for: Lines\n# look-for: joined.\n"
+        # The demo's guidance lines, in any order among the caption's, after
+        # the interpreter line.
+        self.assertEqual(self.describe("#!/bin/bash\n# look-for: Lines\n# look-for: joined.\n"
                                        "# wrong-looks-like: A gap.\n# A screen.\n"),
                          ("A screen. Correct: Lines joined.", "A gap."))
 

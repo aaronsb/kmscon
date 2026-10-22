@@ -1,3 +1,4 @@
+#!/bin/bash
 # look-for: In each group the colon row matches the semicolon row swatch
 # look-for: for swatch; both halves of the last line are bold green on blue.
 # wrong-looks-like: A colon row with default text and empty backgrounds, or

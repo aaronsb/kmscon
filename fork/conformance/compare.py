@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from outdir import claim  # noqa: E402
 from pageimg import crop, crop_box, diff_image, outline, step_for, strip, t3img, write_png  # noqa: E402
+from pagetext import prose  # noqa: E402
 
 REPO = "https://github.com/aaronsb/kmscon"
 SAVED = ".saved-run"        # marks a directory compare.py save wrote
@@ -360,11 +361,14 @@ class Page:
         case = self.a.cases[key]
         self.w("### " + self.heading(key), "")
         desc = case.get("description") or self.b.cases[key].get("description") or ""
+        wrong = case.get("wrong") or self.b.cases[key].get("wrong")
         shows, _, correct = desc.partition("Correct:")
         if shows.strip():
-            self.w("**What it shows:** " + shows.strip(), "")
+            self.w("**What it shows:** " + prose(shows.strip()), "")
         if correct.strip():
-            self.w("**What correct looks like:** " + correct.strip(), "")
+            self.w("**What correct looks like:** " + prose(correct.strip()), "")
+        if wrong:
+            self.w("**What wrong looks like:** " + prose(wrong), "")
         stem = slug(key[1])
         if status == "same":
             img = data[0]

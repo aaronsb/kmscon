@@ -1,3 +1,4 @@
+#!/bin/bash
 # look-for: Each underline in the colour its line names while the text
 # look-for: keeps its own; after 59 the line turns red with the text; 58
 # look-for: alone draws none.

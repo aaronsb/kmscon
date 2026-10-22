@@ -1,3 +1,4 @@
+#!/bin/bash
 # look-for: A line through the middle of each struck run, in the text's
 # look-for: colour and across CJK; it stops at 29 and before the trailing
 # look-for: spaces.

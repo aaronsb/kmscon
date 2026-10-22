@@ -297,8 +297,10 @@ static void copy_mono(struct video_buffer *buf, FT_GlyphSlot glyph, unsigned int
 	if (left < 0)
 		left = 0;
 
-	w = min(buf->width - left, map->width);
-	h = min(buf->height - top, map->rows);
+	w = min((int)buf->width - left, (int)map->width);
+	h = min((int)buf->height - top, (int)map->rows);
+	if (w <= 0 || h <= 0)
+		return;
 
 	for (i = 0; i < h; i++) {
 		for (j = 0; j < w; j++)

@@ -212,12 +212,60 @@ static void test_monospace_fallback_set(void)
 	kmscon_font_unregister(kmscon_font_freetype_ops.name);
 }
 
+/*
+ * copy_mono clips a 1-bit bitmap to the cell. One that starts right of the cell
+ * draws nothing, and nothing lands past the cell's buffer.
+ */
+static void test_copy_mono_clip(void)
+{
+	enum { W = 8, H = 16, GUARD = 64 };
+	uint8_t bits[H * 2];
+	FT_GlyphSlotRec slot = {0};
+	struct video_buffer *buf;
+	unsigned int i;
+
+	memset(bits, 0xff, sizeof(bits));
+	slot.bitmap.rows = H;
+	slot.bitmap.width = W;
+	slot.bitmap.pitch = 2;
+	slot.bitmap.buffer = bits;
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_MONO;
+	slot.bitmap_top = H;
+
+	buf = calloc(1, sizeof(*buf) + W * H + GUARD);
+	assert(buf);
+	buf->width = W;
+	buf->height = H;
+
+	/* starts two pixels past the right edge */
+	slot.bitmap_left = W + 2;
+	copy_mono(buf, &slot, H, 0);
+	for (i = 0; i < W * H + GUARD; i++)
+		assert(buf->data[i] == 0);
+
+	/* a dx that pushes it past the edge clips the same way */
+	slot.bitmap_left = 0;
+	copy_mono(buf, &slot, H, W + 1);
+	for (i = 0; i < W * H + GUARD; i++)
+		assert(buf->data[i] == 0);
+
+	/* in the cell it draws, and stays inside it */
+	copy_mono(buf, &slot, H, 4);
+	assert(buf->data[0] == 0 && buf->data[4] == 0xff && buf->data[W - 1] == 0xff);
+	assert(buf->data[(H - 1) * W + 4] == 0xff);
+	for (i = W * H; i < W * H + GUARD; i++)
+		assert(buf->data[i] == 0);
+
+	free(buf);
+}
+
 int main(void)
 {
 	assert(FcInit());
 
 	test_filter_unit();
 	test_monospace_fallback_set();
+	test_copy_mono_clip();
 
 	FcFini();
 	return 0;

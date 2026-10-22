@@ -84,6 +84,8 @@ struct kmscon_glyph *kmscon_deco_render(enum kmscon_deco kind, unsigned int w, u
 	struct kmscon_glyph *g = calloc(1, sizeof(*g) + w * h);
 	(void)kind;
 	(void)m;
+	/* solid, so a composed cell's first pixel is the decoration's colour */
+	memset(g->buf.data, 0xff, w * h);
 	g->buf.width = w;
 	g->buf.height = h;
 	return g;
@@ -99,11 +101,15 @@ const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, u
 	return one;
 }
 
+/* the configured underline colour, as underline-color= would set it */
+static const struct tsm_screen_color ul_conf = {.r = 1, .g = 2, .b = 3};
+
 struct tsm_screen_color kmscon_text_ul_color(struct kmscon_text *txt,
 					     const struct tsm_frame_cell *cell)
 {
 	(void)txt;
-	return cell->fg;
+	(void)cell;
+	return ul_conf;
 }
 
 struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
@@ -349,6 +355,43 @@ static void test_draw_failure_retried(struct kmscon_text *txt)
 	assert(n_blended == 0);
 }
 
+/*
+ * An underline cursor draws in the cursor's foreground, whatever colour the
+ * cell's underline would take; an underlined cell still takes its own.
+ */
+static void test_underline_cursor_colour(struct kmscon_text *txt)
+{
+	struct bbulk *bb = txt->data;
+	struct tsm_frame_cell *c;
+	unsigned int x, y;
+
+	draw_frame(txt, -1, -1);
+	draw_frame(txt, -1, -1);
+
+	blank_frame(txt);
+	/* an underlined cell, drawn in the configured underline colour */
+	c = cell_at(5, 1);
+	c->underline = TSM_UNDERLINE_SINGLE;
+	c->flags = TSM_FRAME_CHANGED;
+	/* the cursor on a cell whose SGR 58 colour is the background */
+	c = &frame.cursor.cell;
+	*c = *cell_at(3, 1);
+	c->fg = (struct tsm_screen_color){.r = 200, .g = 100, .b = 50};
+	c->underline = TSM_UNDERLINE_SINGLE;
+	c->flags |= TSM_FRAME_UL_SET;
+	frame.cursor.x = 3;
+	frame.cursor.y = 1;
+	frame.cursor.style = TSM_SCREEN_CURSOR_UNDERLINE_STEADY;
+	frame.cursor.visible = true;
+	run_frame(txt, true);
+
+	set_coordinate(txt, &x, &y, 3, 1);
+	assert(was_blended(x, y) && blended_at(x, y)->buf == bb->scratch);
+	assert(blended_at(x, y)->first == 0xffc86432);
+	set_coordinate(txt, &x, &y, 5, 1);
+	assert(was_blended(x, y) && blended_at(x, y)->buf == bb->scratch);
+	assert(blended_at(x, y)->first == 0xff010203);
+}
 
 int main(void)
 {
@@ -390,6 +433,7 @@ int main(void)
 
 	test_two_frame_rule(&txt);
 	test_draw_failure_retried(&txt);
+	test_underline_cursor_colour(&txt);
 
 	bbulk_unset(&txt);
 	assert(bb->cell_flags == NULL);

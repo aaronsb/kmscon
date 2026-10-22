@@ -496,11 +496,12 @@ static void compose_sprite(struct kmscon_text *txt, enum kmscon_deco kind, unsig
  * Draw @cell at @posx, @posy over @ncells cells (2 for a wide cell with room
  * for its second half), with glyph key @key (0: none) drawn @width cells wide.
  * When the glyph cannot be had, the cell is drawn without it and -ENOMEM
- * returned, for the caller to draw it again.
+ * returned, for the caller to draw it again. @ul_cursor: @cell's underline is
+ * an underline cursor, which is no decoration and draws in the foreground.
  */
 static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
 			   unsigned int width, unsigned int posx, unsigned int posy,
-			   unsigned int ncells)
+			   unsigned int ncells, bool ul_cursor)
 {
 	struct bbulk *bb = txt->data;
 	struct kmscon_glyph *glyph = bb->blank;
@@ -549,7 +550,7 @@ static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 
 		if (cell->underline > TSM_UNDERLINE_NONE && cell->underline < KMSCON_DECO_STRIKE)
 			compose_sprite(txt, cell->underline, ncells,
-				       kmscon_text_ul_color(txt, cell));
+				       ul_cursor ? cell->fg : kmscon_text_ul_color(txt, cell));
 		if (key)
 			compose(sc, &glyph->buf, 0, 0, cell->fg);
 		if (strike)
@@ -566,6 +567,12 @@ static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 static bool is_vbar(enum tsm_screen_cursor_style style)
 {
 	return style == TSM_SCREEN_CURSOR_VBAR_BLINK || style == TSM_SCREEN_CURSOR_VBAR_STEADY;
+}
+
+static bool is_underline(enum tsm_screen_cursor_style style)
+{
+	return style == TSM_SCREEN_CURSOR_UNDERLINE_BLINK ||
+	       style == TSM_SCREEN_CURSOR_UNDERLINE_STEADY;
 }
 
 static int bbulk_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bool cursor_on)
@@ -621,12 +628,13 @@ static int bbulk_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 				key = FONT_VBAR;
 				width = 1;
 				if (ncells == 2)
-					bbulk_draw_cell(txt, cell, 0, 1, posx + 1, posy, 1);
+					bbulk_draw_cell(txt, cell, 0, 1, posx + 1, posy, 1, false);
 				ncells = 1;
 			}
 
 			/* not drawn: the frame will not mark it again, so we do */
-			if (bbulk_draw_cell(txt, cell, key, width, posx, posy, ncells)) {
+			if (bbulk_draw_cell(txt, cell, key, width, posx, posy, ncells,
+					    is_cursor && is_underline(frame->cursor.style))) {
 				f->force = 1;
 				if (ncells == 2)
 					f[1].force = 1;

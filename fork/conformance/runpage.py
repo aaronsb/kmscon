@@ -159,6 +159,25 @@ def fork_goldens(path):
     return reasons
 
 
+def provenance(reports, kmscon, libtsm):
+    """Where a report says it measured other commits than the page records,
+    or commits with uncommitted changes: a stale tier 3 report, say."""
+    problems = []
+    for rep in sorted(reports, key=lambda r: r["tier"]):
+        for repo, want in (("kmscon", kmscon), ("libtsm", libtsm)):
+            got = (rep.get("tools") or {}).get(repo)
+            if not got:
+                continue
+            bare, _, dirty = got.partition("+")
+            if not (bare.startswith(want) or want.startswith(bare)):
+                problems.append("the tier %d report measured %s `%s`, not `%s`"
+                                % (rep["tier"], repo, bare, want))
+            elif dirty:
+                problems.append("the tier %d report measured %s `%s` with uncommitted changes"
+                                % (rep["tier"], repo, bare))
+    return problems
+
+
 def golden_keys(tier, case):
     """The (repo, path) of the files that judge a case: its golden and, for
     an image tier, the tolerance sidecar beside it."""
@@ -180,6 +199,7 @@ class Page:
         self.prev = previous_run(args.ledger)
         self.hist = read_history(args.history)
         self.reasons = fork_goldens(args.fork_goldens)
+        self.problems = provenance(reports, args.kmscon, args.libtsm)
         self.lines = []
         self.images = []
 
@@ -237,6 +257,9 @@ class Page:
         self.w("| Repository | Commit measured |", "|---|---|",
                "| kmscon | `%s` |" % a.kmscon,
                "| libtsm | [`%s`](%s/commit/%s) |" % (a.libtsm, LIBTSM_URL, a.libtsm), "")
+        if self.problems:
+            self.w("**Not what this page names:** %s. Those tiers' results describe other code "
+                   "than the commits above." % "; ".join(self.problems), "")
         self.w("| Tier | What it checks | Cases passing |", "|---|---|---|")
         for tier, (ok, n) in self.counts().items():
             title = "Tier %d: %s" % (tier, TIERS[tier][0])
@@ -509,6 +532,9 @@ def main(argv=None):
         ap.error("--append needs --ledger and --note")
 
     reports = [json.loads(Path(r).read_text()) for r in args.reports]
+    problems = provenance(reports, args.kmscon, args.libtsm)
+    if args.append and problems:
+        raise SystemExit("runpage: refusing a ledger row: %s" % "; ".join(problems))
     inputs = args.reports + [p for p in (args.ledger, args.history, args.fork_goldens) if p]
     out = claim("runpage.py", args.out, ".run-page", inputs)
     for old in out.glob("*.png"):

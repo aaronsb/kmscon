@@ -203,6 +203,24 @@ class RunPageTest(unittest.TestCase):
         self.fx.run("ledger/runs/now")
         self.assertFalse(Path("ledger/runs/now/stale.png").exists())
 
+    def test_report_from_other_commits(self):
+        # A tier 3 report left by a run of another commit, or of a dirty
+        # tree, is named on a preview and refused for a ledger row.
+        Path("tier3.json").write_text(json.dumps({"tier": 3, "tools": {
+            "kmscon": "eeeeeee+dirty", "libtsm": "ddddddd+dirty"}, "variants": {}, "cases": []}))
+        argv = ["tier3.json"]
+        page = self.fx.run("ledger/runs/now", *argv)
+        self.assertIn("**Not what this page names:** the tier 3 report measured kmscon `eeeeeee`, "
+                      "not `ccccccc`; the tier 3 report measured libtsm `ddddddd` with uncommitted "
+                      "changes.", page)
+        self.assertNotIn("Not what this page names", self.fx.run("ledger/runs/now"))
+        before = Path("ledger/LEDGER.md").read_text()
+        with self.assertRaises(SystemExit) as e:
+            self.fx.run("ledger/runs/then", "--append", "--note", "n", *argv)
+        self.assertIn("refusing a ledger row: the tier 3 report measured kmscon `eeeeeee`", str(e.exception))
+        self.assertEqual(Path("ledger/LEDGER.md").read_text(), before)
+        self.assertFalse(Path("ledger/runs/then").exists())
+
     def test_large_screen_scaled(self):
         # Content wider than MAX_W is kept one pixel in two, and a single
         # differing pixel still marks its block.

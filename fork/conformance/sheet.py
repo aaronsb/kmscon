@@ -367,6 +367,27 @@ def tiles_for_tier1(report):
     return tiles
 
 
+def tools_summary(reports):
+    """One header line naming the image and package versions, or None.
+
+    Reports from before the dev images were pinned carry no tools object, and
+    a sheet drawn only from those keeps its original header.
+    """
+    for rep in reports:
+        tools = rep.get("tools")
+        if not tools:
+            continue
+        base = tools.get("image_base") or ""
+        parts = []
+        if base:
+            parts.append("image " + base.split("sha256:")[-1][:12])
+        if tools.get("archive_date"):
+            parts.append("archive " + tools["archive_date"])
+        parts += [f"{n} {v}" for n, v in tools.get("packages", {}).items()]
+        return " · ".join(parts) if parts else None
+    return None
+
+
 def render(reports, args):
     tiles = []
     counts = []
@@ -381,7 +402,8 @@ def render(reports, args):
 
     # Lay tiles out in rows of COLUMNS, each grid row as tall as its tallest tile.
     layout, x, y, row_h, col = [], GAP, 0, 0, 0
-    header = 70
+    tools_line = tools_summary(reports)
+    header = 70 if tools_line is None else 82
     y = header
     width = GAP
     for t in tiles:
@@ -405,6 +427,9 @@ def render(reports, args):
     for tier, ok, n in counts:
         summary += f" · tier {tier}: {ok}/{n} cases pass"
     out.append(f'<text x="{GAP}" y="50" fill="{INK}" font-size="12">{escape(summary)}</text>')
+
+    if tools_line is not None:
+        out.append(f'<text x="{GAP}" y="68" fill="#8b93a1" font-size="10">{escape(tools_line)}</text>')
 
     for t, tx, ty, tw, th in layout:
         sc = STATUS_COLOR[t["status"]]

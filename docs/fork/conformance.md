@@ -56,6 +56,19 @@ A golden says what correct looks like, so it is treated with more care than the 
 
 Today's tier 1 goldens record upstream's behaviour as it is, including two defects the rebuild will fix: a colon sub-parameter (`SGR 4:3`) discards the whole sequence, and `SGR 4;58;5;196` turns on blink.
 
+## Pinned dev images
+
+The dev image is pinned two ways, so a rebuild installs the same packages: `DEV_BASE` in the Makefile is the digest of `archlinux:base-devel`, and `DEV_ARCHIVE` is a date of the Arch Linux Archive that pacman reads instead of the live mirrors.
+Both are passed to `fork/dev.Dockerfile` as build args, and the libtsm fork pins its image the same way.
+The tier 3 guest has its own archive date, `T3_ARCHIVE` in `fork/tier3.mk`.
+
+The tier 1 and tier 2 reports carry a `tools` object: the image digest, the archive date, and the versions of freetype2, fontconfig, harfbuzz, pixman, gcc and meson read inside the container. The tier 2 report also names the libtsm commit it built against, with `+dirty` when that checkout has uncommitted changes.
+A golden mismatch can be traced to a version change by comparing `tools` between the report that passed and the one that failed.
+The sheet header shows the same versions when a report has them; a sheet drawn only from reports without `tools` is unchanged.
+
+To move a pin, change `DEV_BASE` or `DEV_ARCHIVE` in one commit, run `make test`, and read `git status`.
+Nothing is regenerated unless a golden moves, and a moved golden lands in its own commit with the diff read, as for any golden.
+
 ## Contact sheets and the ledger
 
 Each recorded run produces a contact sheet: one SVG with a tile for every case and checkpoint. A passing tile shows the screen; a failing tile shows the golden beside the actual result with every region that differs outlined. Image tiers add the diff image, and a within-tolerance case is framed and outlined in amber. The sheet is drawn from the same report the verdict came from, so the two cannot disagree, and the same run always draws the same bytes.

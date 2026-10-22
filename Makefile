@@ -18,6 +18,12 @@
 # Further targets (conformance tiers, packaging) live in fork/*.mk, one file
 # per concern, so they can be added without editing this file.
 
+# Dev image pins (moving one is a one-line commit; see docs). DEV_BASE is the
+# archlinux:base-devel digest, DEV_ARCHIVE the Arch Linux Archive snapshot that
+# pacman installs from. Both are recorded in the conformance reports.
+DEV_BASE    := archlinux@sha256:ee205c220399524a683cf495d411691b921baed8ab47cdc6d732efa782fae484
+DEV_ARCHIVE := 2026/10/21
+
 IMAGE  ?= kmscon-dev
 BUILD  := fork/build
 LIBTSM ?=
@@ -39,7 +45,8 @@ help: ## Show this help
 
 .PHONY: image
 image: ## Build the dev image
-	docker build -t $(IMAGE) -f fork/dev.Dockerfile fork
+	docker build -t $(IMAGE) --build-arg BASE=$(DEV_BASE) --build-arg ARCHIVE_DATE=$(DEV_ARCHIVE) \
+		-f fork/dev.Dockerfile fork
 
 .PHONY: build
 build: image ## Configure and compile into fork/build

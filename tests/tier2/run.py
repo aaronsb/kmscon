@@ -27,10 +27,37 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pixcmp  # noqa: E402
 
 
-def write_report(path, cases):
+# Packages whose version can move a rendered pixel or a replayed cell.
+TOOL_PACKAGES = ("freetype2", "fontconfig", "harfbuzz", "pixman", "gcc", "meson")
+
+
+def tool_versions():
+    """The dev image's pins and package versions, read inside the container.
+
+    Outside the image (no DEV_* variables, no pacman) the fields are null, so a
+    report from a bare host says it does not know rather than guessing.
+    """
+    packages = {}
+    for pkg in TOOL_PACKAGES:
+        try:
+            out = subprocess.run(["pacman", "-Q", pkg], capture_output=True, text=True)
+        except OSError:
+            break
+        if out.returncode == 0:
+            packages[pkg] = out.stdout.split()[1]
+    return {
+        "image_base": os.environ.get("DEV_IMAGE_BASE"),
+        "archive_date": os.environ.get("DEV_ARCHIVE_DATE"),
+        "packages": packages,
+    }
+
+
+def write_report(path, cases, libtsm=None):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w") as f:
-        json.dump({"tier": 2, "cases": cases}, f, indent=2)
+        tools = tool_versions()
+        tools["libtsm"] = libtsm
+        json.dump({"tier": 2, "tools": tools, "cases": cases}, f, indent=2)
         f.write("\n")
 
 
@@ -41,6 +68,7 @@ def main():
     p.add_argument("--goldens")
     p.add_argument("--out")
     p.add_argument("--report")
+    p.add_argument("--libtsm-rev", help="commit of the libtsm the renderer was built against")
     p.add_argument("--root", default=os.getcwd())
     p.add_argument("--update", action="store_true")
     p.add_argument("--skip", metavar="REASON", help="exit 77 (meson: skip) with this reason")
@@ -78,7 +106,7 @@ def main():
         print("tier2: cannot run renderer: %s" % e, file=sys.stderr)
     if render_rc != 0:
         error_case("renderer", "renderer exited %d" % render_rc)
-        write_report(args.report, cases)
+        write_report(args.report, cases, args.libtsm_rev)
         return 1
 
     rendered = sorted(os.path.basename(f)[:-4] for f in glob.glob(os.path.join(actual_dir, "*.ppm")))
@@ -136,7 +164,7 @@ def main():
             print("FAIL    %s: %d pixel(s) differ, max channel delta %d, regions %s"
                   % (name, res["pixels"], res["max_delta"], res["bbox"]))
 
-    write_report(args.report, cases)
+    write_report(args.report, cases, args.libtsm_rev)
     bad = sum(c["status"] not in ("pass", "near") for c in cases)
     if not cases:
         print("tier2: no cases", file=sys.stderr)

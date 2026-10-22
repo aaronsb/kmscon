@@ -1,6 +1,10 @@
 #!/bin/bash
-# demo: Each line is underlined in the shape it names: single, double, curly,
-# demo: dotted, dashed. 4:0 and 24 end the underline; spaces after text have none.
+# look-for: Each line underlined in the shape it names, all distinct:
+# look-for: single, double, curly, dotted, dashed; 4:0 and 24 end it
+# look-for: mid-line.
+# wrong-looks-like: Every style drawn as one single line, or a line with
+# wrong-looks-like: none of its attributes: on stock kmscon only the plain
+# wrong-looks-like: 4 line is underlined.
 # Underline styles as sub-parameters of SGR 4 (CSI 4:n m). Upstream libtsm
 # discards a whole SGR sequence holding a colon, so there these lines show no
 # underline at all, except the plain SGR 4 line.

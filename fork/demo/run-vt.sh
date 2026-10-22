@@ -131,7 +131,8 @@ cat <<EOF
 
 kmscon dev build $build on VT $vt
   1. switch with Ctrl-Alt-F$vt
-  2. page with any key; press q in the demo to finish
+  2. rate each page with 1, 2 or 3 (c adds a comment, b goes back);
+     press q in the demo to finish
   3. $after;
      switch back to your desktop with Ctrl-Alt-F${fg:-N}
 manual restore: sudo systemctl start $unit

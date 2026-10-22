@@ -1,6 +1,10 @@
 #!/bin/bash
-# demo: A line through the middle of each struck run, in the text's colour,
-# demo: across wide characters too; 29 ends it, and spaces after text have none.
+# look-for: A line through the middle of each struck run, in the text's
+# look-for: colour and across CJK; it stops at 29 and before the trailing
+# look-for: spaces.
+# wrong-looks-like: No strike anywhere (stock kmscon has no SGR 9), a
+# wrong-looks-like: strike off the middle or in another colour, or one
+# wrong-looks-like: running on into the spaces.
 # Strikethrough, SGR 9 (set) and 29 (reset).
 row() {
 	printf '  %-16s \033[%sm%s\033[0m\n' "$1" "$2" "$3"

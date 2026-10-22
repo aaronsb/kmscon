@@ -1,6 +1,9 @@
 #!/bin/bash
-# demo: Each cluster draws as one picture two cells wide, never as pieces: the
-# demo: bars line up with the |ab| reference row.
+# look-for: Each cluster is one picture two cells wide, bars in line with
+# look-for: |ab|. Colour emoji are not implemented yet (ADR-102 step 4c).
+# wrong-looks-like: Clusters in pieces or bars out of line. A clipped
+# wrong-looks-like: corner or a monochrome emoji is expected until colour
+# wrong-looks-like: emoji land.
 # Emoji and multi-code-point clusters: a ZWJ sequence, a flag (two regional
 # indicators), a keycap, a skin-tone modifier and VS16, which turns a text
 # heart into an emoji one. Each sits between bars so its width shows. The

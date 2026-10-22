@@ -1,6 +1,9 @@
 #!/bin/bash
-# demo: In each group the rows match swatch for swatch: the colon form of SGR 38
-# demo: and 48 gives the colour the semicolon form gives.
+# look-for: In each group the colon row matches the semicolon row swatch
+# look-for: for swatch; both halves of the last line are bold green on blue.
+# wrong-looks-like: A colon row with default text and empty backgrounds, or
+# wrong-looks-like: a plain colon half of the last line: stock kmscon drops
+# wrong-looks-like: colon sequences.
 # Colour selection with sub-parameters (CSI 38:5:n m, CSI 38:2::r:g:b m) beside
 # the semicolon forms. Upstream libtsm discards a whole SGR sequence holding a
 # colon, so there the colon rows show no colour at all.

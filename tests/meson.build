@@ -176,3 +176,11 @@ else
         ],
     )
 endif
+
+# The local VT demo's feedback (#47): demo.sh driven through scripted keys on a
+# pty, then the file it records and what fork/demo/feedback.sh prints.
+test(
+    'demo_feedback',
+    python,
+    args: [files('demo/feedback.py'), '--root', meson.project_source_root()],
+)

@@ -15,7 +15,7 @@ sudo fork/demo/run-vt.sh 3 -- --mode=7680x2160 --no-use-original-mode
                                    # options after -- go to kmscon
 ```
 
-Then switch to the VT with Ctrl-Alt-F3 (or the VT's number), page with any key, and press q to finish. When the demonstration ends, kmscon exits and the stock console starts again on that VT. Switch back to the desktop with its own Ctrl-Alt-F key.
+Then switch to the VT with Ctrl-Alt-F3 (or the VT's number), judge each page with one key (below), and press q to finish. When the demonstration ends, kmscon exits and the stock console starts again on that VT. Switch back to the desktop with its own Ctrl-Alt-F key.
 
 If anything goes wrong and the stock console does not come back, start it by hand:
 
@@ -52,24 +52,75 @@ Display settings belong to one machine, so they are not in `fork/demo/kmscon.con
 
 ## The demonstration
 
-`fork/demo/demo.sh` shows a title page (`DEMO_LABEL`, `TERM`, the screen's size, the list of sections), then one page per section script in `fork/demo/sections/`, in file name order. Each page starts with the section's label: what a correct screen looks like. Then any key goes to the next page and q ends the demonstration.
+`fork/demo/demo.sh` shows a title page (`DEMO_LABEL`, `TERM`, the screen's size, where the answers go, the list of sections), then one page per section script in `fork/demo/sections/`, in file name order, then a summary page. Below each page a footer gives the section's guidance and asks for a judgement (#47):
+
+```
+right:    Each line underlined in the shape it names, all distinct: single,
+          double, curly, dotted, dashed; 4:0 and 24 end it mid-line.
+wrong:    Every style drawn as one single line, or a line with none of its
+          attributes: on stock kmscon only the plain 4 line is underlined.
+ 1 right  2 wrong  3 can't tell  n note  b back  q quit
+```
+
+| Key | What it does |
+|---|---|
+| `1` | the page looks right; records it and goes to the next page |
+| `2` | the page looks wrong |
+| `3` | can't tell |
+| `n` | types a one-line note (line editing works; Enter ends it), shows the page again with the note in its footer, and waits for the rating; `n` again edits the note |
+| `b` | back one page; a new rating there replaces the old one on the summary page and in `feedback.sh`, and the file keeps both lines |
+| `q` | quits: the summary page, then any key ends the demonstration |
+
+Any other key asks again. Keys typed before the footer appears are discarded, so a double press does not rate the next page unseen. The footer sits below the page when it fits there: demo.sh asks the terminal for the cursor's row (DSR) and compares it with the screen's height. When it does not fit, or the terminal does not answer within a second, a key shows the footer on a screen of its own. At 80x25 every section fits with its footer; the tallest, colour-forms, ends its prompt on row 25.
+
+The summary page lists this run's rating and note for each section and the file they went to.
+
+### Where the answers go
+
+Each rating appends one line to `$DEMO_FEEDBACK`, by default `/tmp/kmscon-demo/feedback.tsv`. `/tmp` is cleared on reboot, so copy the file elsewhere or set `DEMO_FEEDBACK` to keep it longer. The directory is created with mode 0755 and the file with mode 0644 and a header line, owned by whoever runs the demo. The dev build's demo runs as the invoking user (through `setpriv`), and the stock run in the comparison below is typed by the same user, so both runs append to the same file. If the file cannot be written, the title and summary pages say so and the demonstration runs without recording.
+
+| Column | Value |
+|---|---|
+| `time` | ISO 8601 time of the answer |
+| `run` | the run's start time and demo.sh's PID, the same for every line of one run |
+| `label` | `DEMO_LABEL`, or `unlabelled` |
+| `term` | `TERM` |
+| `size` | rows x columns, such as `25x80` |
+| `section` | the section's file name without `.sh`, such as `20-underline-styles` |
+| `rating` | `right`, `wrong` or `unsure` |
+| `note` | the note, tabs and line breaks turned to spaces; empty without one |
+
+`fork/demo/feedback.sh` prints the file as tables, one line per section with the last rating given for it:
+
+```sh
+fork/demo/feedback.sh                  # the latest run
+fork/demo/feedback.sh --run ID         # one run, by its run column
+fork/demo/feedback.sh --compare        # the latest run of each DEMO_LABEL, side by side
+fork/demo/feedback.sh --file PATH ...  # another file (default: $DEMO_FEEDBACK, then /tmp)
+```
+
+`DEMO_NOPROMPT=1` shows the guidance below each page and asks nothing: any key goes to the next page, q ends the demonstration, and nothing is recorded or created. It is for tier 3 and for testing. `DEMO_NOPAGE=1` implies it and waits for no key.
+
+`tests/demo/feedback.py`, part of `make test`, drives demo.sh through scripted keys on a pseudo-terminal of 80x25 and checks the lines it records and what `feedback.sh` prints.
 
 It runs in any terminal, as any user, and needs nothing from the dev build: no root, no staging directory. The pages are the same wherever it runs, so it can be shown on a stock kmscon VT beside the dev build (below). `DEMO_LABEL` names the terminal on the title page; `run-vt.sh` sets it to `dev build <git describe>`, and without it the title page says it is unlabelled.
 
-| Section | What it shows | What correct looks like |
-|---|---|---|
-| sgr | tier 3's `sgr` screen: the 16 colours as text and background, bold, underline, reverse, faint, italic, the 256-colour cube, a 24-bit ramp | every colour distinct, the ramp smooth |
-| colour-forms | SGR 38 and 48 in the semicolon forms (`38;5;n`, `38;2;r;g;b`) beside the colon forms (`38:5:n`, `38:2::r:g:b`) | in each group the two rows match swatch for swatch |
-| underline-styles | SGR `4:1` to `4:5`, ended by `4:0` and `24`, over colour, bold, reverse and CJK | each line underlined in the shape it names |
-| underline-colour | SGR 58 in both forms, with styles, and 59 | the underline in the named colour, the text in its own; 59 gives the line back the text's colour |
-| strike | SGR 9 and 29, with colour, underline, reverse and CJK | a line through the middle of each struck run |
-| boxdraw | tier 3's `boxdraw` screen: box drawing, shades and blocks | lines join with no gaps |
-| cjk | tier 3's `cjk` screen: CJK beside Latin | each CJK character two cells wide; the bar rows line up |
-| wide-margin | double-width characters placed and typed at the right margin | each either fits the last two cells or moves to the next line whole; no half character at the edge |
-| combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 | each pair in one cell, matching the precomposed column |
-| emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji | each one picture two cells wide, bars aligned with the reference row |
+What each page should and should not look like is in its section file's `# look-for:` and `# wrong-looks-like:` lines, which the footer shows.
 
-`sgr`, `boxdraw` and `cjk` run tier 3's screen scripts unchanged (`fork/tier3/guest/screens/`), so the demo shows what tier 3 captures. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap. Every other section fits 80 columns by 25 rows with its label and prompt.
+| Section | What it shows |
+|---|---|
+| sgr | tier 3's `sgr` screen: the 16 colours as text and background, bold, underline, reverse, faint, italic, the 256-colour cube, a 24-bit ramp |
+| colour-forms | SGR 38 and 48 in the semicolon forms (`38;5;n`, `38;2;r;g;b`) beside the colon forms (`38:5:n`, `38:2::r:g:b`) |
+| underline-styles | SGR `4:1` to `4:5`, ended by `4:0` and `24`, over colour, bold, reverse and CJK |
+| underline-colour | SGR 58 in both forms, with styles, and 59 |
+| strike | SGR 9 and 29, with colour, underline, reverse and CJK |
+| boxdraw | tier 3's `boxdraw` screen: box drawing, shades and blocks |
+| cjk | tier 3's `cjk` screen: CJK beside Latin |
+| wide-margin | double-width characters placed and typed at the right margin |
+| combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 |
+| emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji |
+
+`sgr`, `boxdraw` and `cjk` run tier 3's screen scripts unchanged (`fork/tier3/guest/screens/`), so the demo shows what tier 3 captures. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
 The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws: as of this page, libtsm parses the underline styles, underline colour and strike, but the renderer draws every underline style as a single line and draws neither strike nor underline colour until step 2.4 lands its decoration sprites.
 
@@ -80,6 +131,7 @@ Run the dev build on one VT and the same demonstration under stock kmscon on ano
 1. `sudo fork/demo/run-vt.sh 3` from the desktop.
 2. Ctrl-Alt-F4, log in on the stock kmscon there, and run `DEMO_LABEL="stock $(pacman -Q kmscon)" fork/demo/demo.sh` from the checkout.
 3. Ctrl-Alt-F3 shows the dev build; page both to the same page number and flip with Ctrl-Alt-F3 and Ctrl-Alt-F4. The title pages say which is which.
+4. Rate each page on both VTs. Both runs append to the same `/tmp/kmscon-demo/feedback.tsv` under their own labels, and `fork/demo/feedback.sh --compare` puts them side by side.
 
 The stock VT draws with `/etc/kmscon/kmscon.conf`, the dev build with `fork/demo/kmscon.conf`, so their fonts and grids can differ, while a fair comparison differs only in libtsm and the renderer. To compare like with like, pass the stock config's display and font settings to the dev build after `--` (for example `-- --font-engine=freetype --font-name="..." --font-size=N --mode=...`); kmscon logs the engine it used in the line `Display ... font engine [...]` (`journalctl -u kmsconvt@tty4`). pango falls back to other fonts for CJK and emoji and freetype does not, so with different engines some of the differences below are the font engine's.
 
@@ -112,9 +164,9 @@ The first real run, on 2026-10-22: Arch Linux, one output (DP-8) at 7680x2160, t
 A capability that adds something visible adds its section in the same PR. A section is one file, `fork/demo/sections/NN-name.sh`:
 
 - `NN` places it in the order; `name` is what the title page lists and what `demo.sh name` runs.
-- Its `# demo:` lines are the label: one or two lines, under 80 columns, saying what a correct screen looks like, in terms a person can check by eye.
-- It draws one screen and nothing else: deterministic output (no clock, no randomness, no dependence on the locale; write invisible code points as UTF-8 bytes, `$'\xcc\x81'`), self-contained so it can be copied into the tier 3 guest, and at most 19 lines (with a two-line label) and 80 columns, so the page fits 80x25 with its header and prompt. A section that must sit at the screen's edge reads the size from the terminal, as `55-wide-margin.sh` does.
+- Its guidance is two comment fields, each one or more lines that demo.sh joins with spaces, in terms a person can check by eye. `# look-for:` says what a correct screen looks like; `# wrong-looks-like:` says what a defect looks like, naming what stock kmscon is known to get wrong and any defect the fork already knows about (with its issue), so that one is not reported again. Keep each to about 130 characters of ASCII, so it wraps to two rows of the footer at 80 columns. `tests/demo/feedback.py` fails a section without both fields.
+- It draws one screen and nothing else: deterministic output (no clock, no randomness, no dependence on the locale; write invisible code points as UTF-8 bytes, `$'\xcc\x81'`), self-contained so it can be copied into the tier 3 guest, and at most 17 rows and 80 columns, so the page fits 80x25 with its header and a footer of two-row guidance. A taller page still works: its footer moves to a screen of its own. A section that must sit at the screen's edge reads the size from the terminal, as `55-wide-margin.sh` does.
 
-Check it outside a VT with `DEMO_NOPAGE=1 fork/demo/demo.sh name`, which runs without waiting for keys and leaves the page on the screen, then on a VT with `run-vt.sh`.
+Check it outside a VT with `DEMO_NOPAGE=1 fork/demo/demo.sh name`, which runs without waiting for keys and leaves the page and its guidance on the screen, then on a VT with `run-vt.sh`.
 
 The sections are meant to be tier 3's screens as well (#36): tier 3 would run each section in its guest and compare the capture with a golden, so every demonstration is also a check. Until tier 3 runs them (#22), only `sgr`, `boxdraw` and `cjk` are judged by tier 3.

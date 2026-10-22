@@ -45,7 +45,9 @@ unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_hei
 	return 480 / FAKE_CELL_H;
 }
 
-/* Stub font rendering APIs used by text_bbulk.c */
+/* Stub font rendering APIs used by text_bbulk.c; rendering fails while set */
+static bool fail_render;
+
 struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
 					const uint32_t *cps, size_t len, unsigned int cwidth)
 {
@@ -54,6 +56,8 @@ struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_
 	(void)attr;
 	(void)cps;
 	(void)len;
+	if (fail_render)
+		return NULL;
 	g = calloc(1, sizeof(*g) + cwidth * FAKE_CELL_W * FAKE_CELL_H);
 	g->buf.width = cwidth * FAKE_CELL_W;
 	g->buf.height = FAKE_CELL_H;
@@ -208,8 +212,11 @@ static void init_fake_txt(struct kmscon_text *txt)
 	txt->ref = 1;
 }
 
-/* one frame of blank cells; @changed_x, @changed_y is marked changed, if set */
-static void draw_frame(struct kmscon_text *txt, int changed_x, int changed_y)
+/*
+ * One frame of blank cells; @changed_x, @changed_y is marked changed and holds
+ * @key, if set.
+ */
+static void draw_frame_key(struct kmscon_text *txt, int changed_x, int changed_y, uint64_t key)
 {
 	static struct tsm_frame_cell cells[(640 / FAKE_CELL_W) * (480 / FAKE_CELL_H)];
 	struct tsm_frame frame = {0};
@@ -225,7 +232,7 @@ static void draw_frame(struct kmscon_text *txt, int changed_x, int changed_y)
 		cells[i].width = 1;
 	}
 	if (changed_x >= 0) {
-		cells[changed_y * frame.cols + changed_x].key = 'x';
+		cells[changed_y * frame.cols + changed_x].key = key;
 		cells[changed_y * frame.cols + changed_x].flags = TSM_FRAME_CHANGED;
 	}
 
@@ -233,6 +240,11 @@ static void draw_frame(struct kmscon_text *txt, int changed_x, int changed_y)
 	assert(bbulk_prepare(txt, &attr) == 0);
 	assert(bbulk_draw(txt, &frame, false) == 0);
 	assert(bbulk_render(txt) == 0);
+}
+
+static void draw_frame(struct kmscon_text *txt, int changed_x, int changed_y)
+{
+	draw_frame_key(txt, changed_x, changed_y, 'x');
 }
 
 static void test_two_frame_rule(struct kmscon_text *txt)
@@ -261,6 +273,30 @@ static void test_two_frame_rule(struct kmscon_text *txt)
 
 	/* frame N+2: both buffers hold it */
 	draw_frame(txt, -1, -1);
+	assert(n_blended == 0);
+}
+
+/* a cell whose glyph failed to draw is drawn on a later frame */
+static void test_draw_failure_retried(struct kmscon_text *txt)
+{
+	unsigned int x, y;
+
+	draw_frame(txt, -1, -1);
+	draw_frame(txt, -1, -1);
+	set_coordinate(txt, &x, &y, 7, 2);
+
+	/* the frame marks the cell changed, but its glyph cannot be had */
+	fail_render = true;
+	draw_frame_key(txt, 7, 2, 'q');
+	assert(!was_blended(x, y));
+	fail_render = false;
+
+	/* the frame's flag is spent; the cell is still drawn into both buffers */
+	draw_frame_key(txt, -1, -1, 'q');
+	assert(n_blended == 1 && was_blended(x, y));
+	draw_frame_key(txt, -1, -1, 'q');
+	assert(n_blended == 1 && was_blended(x, y));
+	draw_frame_key(txt, -1, -1, 'q');
 	assert(n_blended == 0);
 }
 
@@ -303,6 +339,7 @@ int main(void)
 	assert(bb->damage_rect_len > 0);
 
 	test_two_frame_rule(&txt);
+	test_draw_failure_retried(&txt);
 
 	bbulk_unset(&txt);
 	assert(bb->cell_flags == NULL);

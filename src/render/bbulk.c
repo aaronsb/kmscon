@@ -616,7 +616,12 @@ static int bbulk_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 				ncells = 1;
 			}
 
-			bbulk_draw_cell(txt, cell, key, width, posx, posy, ncells);
+			/* not drawn: the frame will not mark it again, so we do */
+			if (bbulk_draw_cell(txt, cell, key, width, posx, posy, ncells)) {
+				f->force = 1;
+				if (ncells == 2)
+					f[1].force = 1;
+			}
 		}
 	}
 	return 0;

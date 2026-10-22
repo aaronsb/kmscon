@@ -36,6 +36,7 @@
 #include <errno.h>
 #include <libtsm.h>
 #include <stdlib.h>
+#include <string.h>
 #include "font/font.h"
 #include "shl/module.h"
 #include "video/video.h"
@@ -82,6 +83,15 @@ struct kmscon_text {
 	bool blinking;
 	struct kmscon_text_deco deco;
 	struct tsm_screen *screen; /* the screen being drawn, for cluster lookups */
+
+	/*
+	 * This display's place in the history of the screen it draws, @drawn.
+	 * Each display keeps its own (libtsm's tsm_screen_frame_since), so one
+	 * console shown on several displays marks each display's changes. It
+	 * is zeroed whenever this display needs every cell redrawn.
+	 */
+	struct tsm_frame_age age;
+	struct tsm_screen *drawn;
 };
 
 
@@ -136,6 +146,15 @@ int kmscon_text_render(struct kmscon_text *txt);
 void kmscon_text_abort(struct kmscon_text *txt);
 
 /* helpers for backends */
+
+/*
+ * The next kmscon_text_draw() marks every cell of its frame changed. Call it
+ * when this display's buffers no longer hold what it last drew.
+ */
+static inline void kmscon_text_redraw_all(struct kmscon_text *txt)
+{
+	memset(&txt->age, 0, sizeof(txt->age));
+}
 
 const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, uint32_t *one,
 					size_t *len);

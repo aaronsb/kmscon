@@ -277,6 +277,7 @@ void kmscon_text_unset(struct kmscon_text *txt)
 	txt->cols = 0;
 	txt->rows = 0;
 	txt->rendering = false;
+	kmscon_text_redraw_all(txt);
 }
 
 /**
@@ -296,6 +297,7 @@ void kmscon_text_resize(struct kmscon_text *txt, unsigned int cols, unsigned int
 		return;
 	if (txt->ops->resize)
 		txt->ops->resize(txt, cols, rows);
+	kmscon_text_redraw_all(txt);
 }
 
 unsigned int kmscon_text_get_width(struct kmscon_text *txt)
@@ -372,6 +374,7 @@ enum Orientation kmscon_text_get_orientation(struct kmscon_text *txt)
  */
 int kmscon_text_rotate(struct kmscon_text *txt, enum Orientation orientation)
 {
+	kmscon_text_redraw_all(txt);
 	if (txt->ops->rotate)
 		return txt->ops->rotate(txt, orientation);
 	return 0;
@@ -497,6 +500,11 @@ static bool is_cursor_blinking(enum tsm_screen_cursor_style style)
  * This draws the screen's frame (ADR-102). The frame carries the cursor cell;
  * the renderer only decides whether the blink phase shows it.
  *
+ * The frame marks the cells changed since this display's last frame, from
+ * @txt's own age, so every display drawing @con sees each change. That covers
+ * one frame back; a double-buffered backend also keeps the previous frame's
+ * changes, as bbulk does, because its back buffer is two frames old.
+ *
  * Returns: 0 on success or negative error code if this glyph couldn't be drawn.
  */
 int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool cursor_blink)
@@ -508,7 +516,12 @@ int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool curso
 	if (!txt || !con)
 		return -EINVAL;
 
-	frame = tsm_screen_frame(con);
+	if (txt->drawn != con) {
+		kmscon_text_redraw_all(txt);
+		txt->drawn = con;
+	}
+
+	frame = tsm_screen_frame_since(con, &txt->age);
 	if (!frame)
 		return -ENOMEM;
 
@@ -518,6 +531,8 @@ int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool curso
 	txt->screen = con;
 	ret = txt->ops->draw(txt, frame, cursor_on);
 	txt->screen = NULL;
+	if (ret)
+		kmscon_text_redraw_all(txt);
 	return ret;
 }
 

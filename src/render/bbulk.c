@@ -34,8 +34,11 @@
  * It draws libtsm's frame (ADR-102). A cell is pushed when the frame marks it
  * changed, and once more on the next frame, as kmscon uses double buffering
  * and the back buffer is two frames old: cell_flags.damaged records that the
- * cell was drawn because it changed. Changes the frame cannot know about (the
- * cursor and text blink phases, the pointer, a full redraw) are tracked here.
+ * cell was drawn because it changed. The frame's changes are this display's
+ * own, since its last frame (kmscon_text_draw), so with damaged they span the
+ * two frames the back buffer is behind. Changes the frame cannot know about
+ * (the cursor and text blink phases, the pointer, a full redraw) are tracked
+ * here; a full redraw also asks the next frame for every cell.
  *
  * A cell draws its background, then its underline, then its glyph, then its
  * strike-through. An undecorated cell is one alpha-mask request; a decorated
@@ -843,6 +846,7 @@ static int bbulk_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	bb->deco = txt->deco;
 
 	if (bb->redraw) {
+		kmscon_text_redraw_all(txt);
 		display_clear(txt->disp, attr->br, attr->bg, attr->bb);
 		for (i = 0; i < bb->cell_count; i++)
 			damage_cell(bb, i);

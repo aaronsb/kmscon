@@ -906,6 +906,8 @@ static void draw_idle(struct kmscon_text *t, unsigned int n)
  * - when another display drops the placement that blocked it, and that
  *   display's next frame frees the picture;
  * - when a display is added and the budget grows.
+ * A placement left out stays wholly out while the budget is unchanged: a cell
+ * of it drawn again does not make room by freeing a picture this frame places.
  * "Draws" is checked as no placement of that display left out after the
  * frame, and where P covers cells of its own, as its pixels on them.
  */
@@ -913,8 +915,8 @@ static void test_starved_retry(void)
 {
 	struct kmscon_text a, b;
 	struct bbulk *ba, *bb;
-	unsigned int top;
-	uint32_t *src;
+	unsigned int top, half, x, y, i;
+	uint32_t *src, *other;
 
 	/*
 	 * one display, 7680x4320: two pictures of the top two thirds, 88 MB
@@ -932,6 +934,38 @@ static void test_starved_retry(void)
 	assert(draw_placements(&a, 2) == 0);
 	assert(!ba->starving && pictures_of(ba, 3) == 1 && picture_drawn(&a, top + 2));
 	close_txt(&a);
+
+	/*
+	 * 7680x4320: P1 the top half, a full screen over it, and P2 the bottom
+	 * half over that, in its own colour: P2 is left out. One cell under P2
+	 * then changes; P1, placed but not drawn on that frame, keeps its room,
+	 * so the cell shows the full screen and P2 stays out
+	 */
+	other = malloc((size_t)3840 * 2160 * 4);
+	assert(other);
+	for (i = 0; i < 3840 * 2160; i++)
+		other[i] = 0xff604020;
+	test_images[3].pixels = other;
+	ba = open_txt(&a, 0x37, 7680, 4320);
+	half = a.rows / 2;
+	set_band(0, 80, 1, 0, half);
+	set_band(1, 81, 2, 0, a.rows);
+	set_band(2, 82, 3, half, a.rows - half);
+	draw_idle(&a, 3);
+	assert(ba->starving && pictures_of(ba, 3) == 0);
+	blank_frame(&a);
+	frame.placement_size = sizeof(placements[0]);
+	frame.placement_count = 3;
+	frame.placements = placements;
+	cell_at(3, a.rows - 2)->key = 'x';
+	cell_at(3, a.rows - 2)->flags = TSM_FRAME_CHANGED;
+	assert(run_frame(&a, false) == 0);
+	set_coordinate(&a, &x, &y, 3, a.rows - 2);
+	assert(blended_at(x, y) && blended_at(x, y)->first == 0xff204060);
+	assert(ba->starving);
+	close_txt(&a);
+	test_images[3].pixels = src;
+	free(other);
 
 	/*
 	 * two displays at 7680x4320, each keeping 96 MiB between frames: one

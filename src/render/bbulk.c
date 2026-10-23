@@ -838,19 +838,26 @@ static void force_cells(struct kmscon_text *txt, const struct place *p)
 			bb->cell_flags[x + y * txt->cols].force = 1;
 }
 
+/* a placement of this frame shows @pic */
+static bool picture_placed(struct bbulk *bb, const struct picture *pic)
+{
+	unsigned int i;
+
+	for (i = 0; i < bb->n_places; i++)
+		if (bb->places[i].overlay == pic->overlay &&
+		    bb->places[i].fp.image_key == pic->image_key)
+			return true;
+	return false;
+}
+
 /* free the scaled pictures no placement of this frame shows */
 static void pictures_free_unused(struct bbulk *bb)
 {
 	struct picture **pp, *pic;
-	unsigned int i;
-	bool used;
 
 	for (pp = &bb->pictures; *pp;) {
 		pic = *pp;
-		for (i = 0, used = false; i < bb->n_places && !used; i++)
-			used = bb->places[i].overlay == pic->overlay &&
-			       bb->places[i].fp.image_key == pic->image_key;
-		if (used) {
+		if (picture_placed(bb, pic)) {
 			pp = &pic->next;
 			continue;
 		}
@@ -1005,7 +1012,10 @@ static size_t picture_limit(struct bbulk *bb)
 
 /*
  * Free the least recently used pictures until @want more bytes fit in
- * @limit, keeping those this frame draws when @keep_drawn is set.
+ * @limit, keeping those this frame places when @keep_drawn is set: one placed
+ * but not drawn yet may be drawn later in the frame, or its cells may not be
+ * drawn at all, and a picture made from its room would then draw only in the
+ * cells this frame draws, and stay left out of the rest of its box.
  */
 static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep_drawn)
 {
@@ -1014,7 +1024,8 @@ static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep
 	while (bb->picture_bytes + want > limit) {
 		lru = NULL;
 		for (pp = &bb->pictures; *pp; pp = &(*pp)->next) {
-			if (keep_drawn && (*pp)->last_use == bb->frame_count)
+			if (keep_drawn && ((*pp)->last_use == bb->frame_count ||
+					   picture_placed(bb, *pp)))
 				continue;
 			if (!lru || (*pp)->last_use < (*lru)->last_use)
 				lru = pp;

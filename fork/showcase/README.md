@@ -75,7 +75,7 @@ BAD_APPLE=... fork/showcase/bad-apple.sh --prepare                 # render the 
 fork/showcase/bad-apple.sh --fx plasma                             # one effect alone, with its frame rate
 ```
 
-`--audio` plays the soundtrack, `--no-wait` starts without waiting for a key. q or Ctrl-C ends the show at any point: the players stop, and the cursor, the main screen, the colours and the terminal's mode come back. Acts 2, 4 and 6, and act 7 with `--banner-only`, run without the video.
+`--audio` plays the soundtrack, `--no-wait` starts without waiting for a key. q or Ctrl-C ends the show at any point: the players stop, and the cursor, the main screen, the colours and the terminal's mode come back. mpv's video outputs turn on mouse tracking (`CSI ?1003 h`) and turn it off only when they exit cleanly, so a player stopped by q left a terminal reporting every mouse movement to the shell (#88); the show now turns off every mouse mode and encoding, focus events and bracketed paste on its way out. While mpv plays, a mouse report arriving as keys is read whole and dropped, so a byte of its coordinates is not taken for q. Acts 2, 4 and 6, and act 7 with `--banner-only`, run without the video.
 
 ## Pacing
 
@@ -125,7 +125,7 @@ The acts run these programs; `--dry-run` says which are missing and the Arch pac
 | chafa | chafa | not used | present |
 | mplayer | mplayer | not used (`-vo aa` would need it) | missing |
 
-The dev image (`fork/dev.Dockerfile`) carries none of the media tools and needs none: the show runs on the host, and `make test` runs only `--list`, `--dry-run`, the refusals and the pure helpers. Pinning them there would mean adding `ffmpeg mpv libcaca libsixel toilet` to its `pacman -S` line.
+The dev image (`fork/dev.Dockerfile`) carries none of the media tools and needs none: the show runs on the host, and `make test` runs only `--list`, `--dry-run`, the refusals, the pure helpers and act 4 on a pty (python3 alone), quit with q to check the modes it turns off. Pinning them there would mean adding `ffmpeg mpv libcaca libsixel toilet` to its `pacman -S` line.
 
 ## Files
 
@@ -142,4 +142,4 @@ The dev image (`fork/dev.Dockerfile`) carries none of the media tools and needs 
 
 The frame caches go to `~/.cache/kmscon-showcase/<video id>/` (`SHOWCASE_CACHE` moves them), keyed by the video's path, size and time and by each act's settings. A cache made for one grid size is not reused for another: act 1's grids and act 3's framed region shrink in a smaller terminal and render again there.
 
-`tests/showcase/showcase.py`, part of `make test`, checks the act and effect tables, the plan, the refusals and the pure helpers (the painter's diff, Braille dots, the outline table, img2txt's colours) without a video, a terminal or any media tool.
+`tests/showcase/showcase.py`, part of `make test`, checks the act and effect tables, the plan, the refusals and the pure helpers (the painter's diff, Braille dots, the outline table, img2txt's colours) without a video or any media tool, and quits act 4 on a pty to check that every mouse mode, focus events and bracketed paste are turned off.

@@ -329,14 +329,25 @@ pause() { fx pause "$1"; }
 
 clear_screen() { printf '%s[0m%s[2J%s[H' "$E" "$E" "$E"; }
 
+# The modes a player may leave on (#88): mpv's video outputs turn on mouse
+# tracking (CSI ?1003 h) and turn it off only when they exit cleanly, so a
+# player that is killed leaves the terminal reporting every mouse movement.
+# Every report mode and encoding, focus events and bracketed paste go off.
+MODES_OFF="$E[?1000l$E[?1002l$E[?1003l$E[?1005l$E[?1006l$E[?1015l$E[?1004l$E[?2004l"
+
 bg_pids=()
 audio_pid=
 
-# Waits for background process $1, reading keys: q ends the show.
+# Waits for background process $1, reading keys: q ends the show. A mouse
+# report (ESC [ M and three bytes, while mpv has tracking on) is read whole
+# and dropped, so a byte of its coordinates is never taken for q.
 wait_bg() {
 	local k
 	while kill -0 "$1" 2>/dev/null; do
-		if IFS= read -rsn1 -t 0.1 k && [[ $k == [qQ] ]]; then
+		IFS= read -rsn1 -t 0.1 k || continue
+		if [ "$k" = "$E" ]; then
+			IFS= read -rsn5 -t 0.05 k || true
+		elif [[ $k == [qQ] ]]; then
 			exit 0
 		fi
 	done
@@ -384,7 +395,7 @@ restore() {
 	if [ -n "$screen_taken" ]; then
 		[ -z "$resized_from" ] || printf '%s[8;%d;%dt' "$E" "${resized_from% *}" "${resized_from#* }"
 		[ -z "$have_kitty" ] || printf '%s_Ga=d,d=A%s' "$E" "$ST"
-		printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l' "$E" "$E" "$E" "$E" "$E"
+		printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l%s' "$E" "$E" "$E" "$E" "$E" "$MODES_OFF"
 	fi
 	[ -z "$saved_tty" ] || stty "$saved_tty" 2>/dev/null || true
 	exit "$st"
@@ -679,7 +690,7 @@ run_fx() {
 }
 
 restore_quietly() {
-	printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l' "$E" "$E" "$E" "$E" "$E"
+	printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l%s' "$E" "$E" "$E" "$E" "$E" "$MODES_OFF"
 	stty "$saved_tty"
 	screen_taken=
 	trap - EXIT INT TERM HUP

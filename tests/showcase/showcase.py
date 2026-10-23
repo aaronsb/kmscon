@@ -2,17 +2,21 @@
 """Checks fork/showcase/bad-apple.sh without a video, a terminal or any of
 the media tools: its act and effect tables (--list), its plan (--dry-run),
 its refusals, that every act listed has its function, and the pure helpers
-the acts draw with (screen.py, frames.py, effects.py).
+the acts draw with (screen.py, frames.py, effects.py), and, on a pty, that
+quitting turns off every mode a player may have left on (#88).
 
     showcase.py --root SOURCE_ROOT
 """
 
 import argparse
 import os
+import pty
 import re
+import select
 import subprocess
 import sys
 import tempfile
+import time
 
 EFFECTS = ["plasma", "shadebobs", "fire", "copper", "stars", "braille", "banner"]
 
@@ -131,6 +135,31 @@ def main():
         p = run("--act", "2")
         check("act 2 needs no video", p.returncode != 0 and "BAD_APPLE" not in p.stderr
               and ("needs a terminal" in p.stderr or "missing:" in p.stderr), p.stderr)
+
+        # Quitting turns off mouse tracking and the other report modes a
+        # killed mpv leaves on (#88). Act 4 needs python3 alone.
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execve("/bin/bash", ["bash", script, "--act", "4", "--no-wait"], env)
+        got, start, sent = b"", time.time(), False
+        while time.time() - start < 20:
+            if not sent and b"wait" in got:
+                os.write(fd, b"q")
+                sent = True
+            r, _, _ = select.select([fd], [], [], 0.1)
+            try:
+                d = os.read(fd, 65536) if r else b""
+            except OSError:
+                break
+            if r and not d:
+                break
+            got += d
+        _, st = os.waitpid(pid, 0)
+        tail = got[got.rfind(b"\x1b[?1049l"):]
+        check("q ends the show with every mouse mode, focus events and bracketed paste off",
+              os.waitstatus_to_exitcode(st) == 0
+              and all(b"\x1b[?%dl" % m in tail for m in (1000, 1002, 1003, 1005, 1006, 1015, 1004, 2004)),
+              repr(got[-200:]))
 
     # The helpers, imported without leaving bytecode in the tree.
     sys.dont_write_bytecode = True

@@ -170,12 +170,17 @@ class Qemu:
 
     def wait_serial(self, marker, timeout, log_path=None):
         """Wait for a line holding `marker` on the console log (or on
-        `log_path`), terminal escape sequences left out, and return it."""
+        `log_path`), terminal escape sequences left out, and return it.
+        Only lines ending in a newline count: the guest writes a line a few
+        bytes at a time, and the part of one that has arrived is not yet
+        the line (#61)."""
         log_path = log_path or self.serial
         deadline = time.time() + timeout
         while True:
             with open(log_path, "rb") as f:
-                text = _ESCAPES.sub("", f.read().decode(errors="replace"))
+                data = f.read()
+            data = data[:data.rfind(b"\n") + 1]
+            text = _ESCAPES.sub("", data.decode(errors="replace"))
             for line in text.splitlines():
                 if marker in line:
                     return line.strip()

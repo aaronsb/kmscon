@@ -456,6 +456,24 @@ const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, u
 }
 
 /**
+ * kmscon_text_get_image:
+ * @txt: valid text renderer, drawing
+ * @key: a frame placement's image key
+ * @out: the image's size and premultiplied ARGB32 pixels
+ *
+ * The image a placement of the frame being drawn shows (ADR-103). The pixels
+ * stay valid until the screen next changes.
+ *
+ * Returns: 0, or -ENOENT when the screen holds no such image.
+ */
+int kmscon_text_get_image(struct kmscon_text *txt, uint64_t key, struct tsm_frame_image *out)
+{
+	if (!txt->screen)
+		return -ENOENT;
+	return tsm_screen_frame_image(txt->screen, key, out);
+}
+
+/**
  * kmscon_text_prepare:
  * @txt: valid text renderer
  * @attr: glyph attributes

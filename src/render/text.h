@@ -177,6 +177,7 @@ struct tsm_screen_color kmscon_text_ul_color(struct kmscon_text *txt,
 					     const struct tsm_frame_cell *cell);
 struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
 						 const struct tsm_frame_cell *cell);
+int kmscon_text_get_image(struct kmscon_text *txt, uint64_t key, struct tsm_frame_image *out);
 
 /* modularized backends */
 

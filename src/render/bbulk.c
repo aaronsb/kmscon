@@ -53,6 +53,31 @@
  * strike-through. An undecorated cell is one alpha-mask request; a decorated
  * one is composed in system memory and sent as one premultiplied ARGB request
  * over its background, so the device's memory is never read back.
+ *
+ * Images (ADR-103) are the frame's placements, in three bands: below cell
+ * backgrounds, showing through cells on the default background only; below
+ * text; and above text. A cell no placement covers draws as above. A cell a
+ * placement covers is composed in system memory, from the highest layer that
+ * hides everything under it upwards: placements of the lowest band, the
+ * cell's background unless it is the default, placements of the middle band,
+ * the cell's decorations and glyph, placements of the top band. It is sent as
+ * one ARGB request over the default background. A cell wholly under an opaque
+ * placement that nothing draws over (no glyph or decoration, no later
+ * placement, and in the lowest band the default background) takes the
+ * picture's pixels as they are, and runs of such cells along a row go as one
+ * request: a full-screen picture is one request per row.
+ *
+ * A picture drawn at another size than its source, or on a rotated display, is
+ * scaled and rotated once and kept, per image and drawn size, up to twice the
+ * screen's size in ARGB; the least recently used goes first.
+ *
+ * Placement damage: this display keeps the placements it drew last. One added,
+ * removed, or changed in any way that changes what it draws (moved, resized,
+ * clipped, its band or z, its image) forces the cells of its old and new boxes,
+ * which are then drawn on this frame and the next, as changed cells are. A
+ * placement whose libtsm frame flag says changed but which draws the same is
+ * not redrawn: libtsm flags every placement when anything scrolls, a region
+ * beside a picture included.
  */
 
 #include <stdbool.h>
@@ -60,6 +85,7 @@
 #include <string.h>
 #include "deco.h"
 #include "font/font.h"
+#include "picture.h"
 #include "shl/log.h"
 #include "shl/lru.h"
 #include "shl/misc.h"
@@ -82,6 +108,36 @@ typedef union {
 	};
 	uint8_t u8;
 } cell_flags_t;
+
+/* a placement as this display draws it (ADR-103) */
+struct place {
+	struct tsm_frame_placement fp; /* the frame's, without TSM_FRAME_CHANGED */
+	/* its box's cells on the screen: [c0, c1) x [r0, r1) */
+	unsigned int c0, c1, r0, r1;
+	/*
+	 * 0 until a cell first needs it this frame; then 1 when it draws, -1
+	 * when it draws nothing, or -ENOMEM to try again on a later frame
+	 */
+	int state;
+	/* its picture's visible part in grid pixels, [x0, x1) x [y0, y1) */
+	unsigned int x0, x1, y0, y1;
+	/* those pixels on the screen, rotated: @stride pixels a row */
+	struct video_rect screen;
+	const uint32_t *pix;
+	size_t stride;
+};
+
+/* a picture scaled or rotated for drawing, kept between frames */
+struct picture {
+	struct picture *next;
+	uint64_t image_key;
+	unsigned int src_x, src_y, src_w, src_h; /* of the image */
+	unsigned int dw, dh;			 /* the size it is drawn at */
+	unsigned int u0, v0, u1, v1;		 /* the part of that kept */
+	uint64_t last_use;
+	size_t bytes;
+	uint32_t pixels[];
+};
 
 struct bbulk {
 	unsigned int sw;	     /* screen width */
@@ -106,6 +162,25 @@ struct bbulk {
 	struct video_rect *damage_rects;
 	unsigned int damage_rect_len;
 	uint8_t redraw;
+
+	/* the image layer (ADR-103) */
+	struct place *places;	     /* this frame's, in draw order */
+	unsigned int n_places;
+	struct place *prev;	     /* the last frame's, by key */
+	unsigned int n_prev;
+	unsigned int places_cap;     /* of both */
+	unsigned int *row_first;     /* per row, its first entry in row_places */
+	unsigned int *row_places;    /* placements by row, in draw order */
+	unsigned int row_places_cap;
+	unsigned int *cover;	     /* the placements over one cell */
+	unsigned int grid_w, grid_h; /* the frame's drawn cells, in pixels */
+	struct picture *pictures;
+	size_t picture_bytes;
+	uint64_t frame_count;
+	struct video_buffer *strip; /* a run of cells under an opaque picture */
+	struct {
+		unsigned int place, posx, posy, n;
+	} run;
 };
 
 static int bbulk_init(struct kmscon_text *txt)
@@ -230,12 +305,35 @@ static void free_sprites(struct bbulk *bb)
 	bb->blank = NULL;
 	free(bb->scratch);
 	bb->scratch = NULL;
+	free(bb->strip);
+	bb->strip = NULL;
+}
+
+static void free_images(struct bbulk *bb)
+{
+	struct picture *p, *next;
+
+	for (p = bb->pictures; p; p = next) {
+		next = p->next;
+		free(p);
+	}
+	bb->pictures = NULL;
+	bb->picture_bytes = 0;
+	free(bb->places);
+	free(bb->prev);
+	free(bb->row_first);
+	free(bb->row_places);
+	free(bb->cover);
+	bb->places = bb->prev = NULL;
+	bb->row_first = bb->row_places = bb->cover = NULL;
+	bb->n_places = bb->n_prev = bb->places_cap = bb->row_places_cap = 0;
 }
 
 /*
  * The decoration sprites for this font's cell size and metrics, rotated like
- * the glyphs; a blank two-cell glyph for empty cells; and the scratch buffer a
- * decorated cell, at most two cells, is composed in.
+ * the glyphs; a blank two-cell glyph for empty cells; the scratch buffer a
+ * decorated or covered cell, at most two cells, is composed in; and the strip
+ * a row of cells under an opaque picture is copied into.
  */
 static int make_sprites(struct kmscon_text *txt)
 {
@@ -270,6 +368,11 @@ static int make_sprites(struct kmscon_text *txt)
 	if (!bb->scratch)
 		goto err;
 	bb->scratch->format = VIDEO_FORMAT_ARGB32;
+
+	bb->strip = calloc(1, sizeof(*bb->strip) + (size_t)txt->max_cols * fw * fh * 4);
+	if (!bb->strip)
+		goto err;
+	bb->strip->format = VIDEO_FORMAT_ARGB32;
 	return 0;
 
 err:
@@ -316,11 +419,17 @@ static int bbulk_set(struct kmscon_text *txt)
 	if (!bb->glyphs)
 		goto free_r_damages;
 
+	bb->row_first = calloc(txt->max_rows + 1, sizeof(*bb->row_first));
+	if (!bb->row_first)
+		goto free_glyphs;
+
 	if (make_sprites(txt))
 		goto free_glyphs;
 	return 0;
 
 free_glyphs:
+	free(bb->row_first);
+	bb->row_first = NULL;
 	shl_lru_free(bb->glyphs);
 	bb->glyphs = NULL;
 free_r_damages:
@@ -341,6 +450,7 @@ static void bbulk_unset(struct kmscon_text *txt)
 	free(bb->damage_rects);
 	free(bb->cell_flags);
 	free_sprites(bb);
+	free_images(bb);
 	bb->glyphs = NULL;
 	bb->damage_rects = NULL;
 	bb->cell_flags = NULL;
@@ -512,12 +622,570 @@ static void compose_sprite(struct kmscon_text *txt, enum kmscon_deco kind, unsig
 			across ? 0 : i * FONT_WIDTH(txt), c);
 }
 
+/* ---- the image layer (ADR-103) ---- */
+
+/* the screen rectangle of the grid's pixels @x, @y, @w x @h, as rotated */
+static struct video_rect grid_to_screen(struct kmscon_text *txt, unsigned int x, unsigned int y,
+					unsigned int w, unsigned int h)
+{
+	struct bbulk *bb = txt->data;
+	struct video_rect r;
+
+	switch (txt->orientation) {
+	default:
+	case OR_NORMAL:
+		r.x1 = bb->off_x + x;
+		r.y1 = bb->off_y + y;
+		r.x2 = r.x1 + w;
+		r.y2 = r.y1 + h;
+		break;
+	case OR_UPSIDE_DOWN:
+		r.x2 = bb->max_x - x;
+		r.y2 = bb->max_y - y;
+		r.x1 = r.x2 - w;
+		r.y1 = r.y2 - h;
+		break;
+	case OR_RIGHT:
+		r.x2 = bb->max_x - y;
+		r.x1 = r.x2 - h;
+		r.y1 = bb->off_y + x;
+		r.y2 = r.y1 + w;
+		break;
+	case OR_LEFT:
+		r.x1 = bb->off_x + y;
+		r.x2 = r.x1 + h;
+		r.y2 = bb->max_y - x;
+		r.y1 = r.y2 - w;
+		break;
+	}
+	return r;
+}
+
+static bool default_bg(struct bbulk *bb, const struct tsm_frame_cell *cell)
+{
+	return cell->bg.r == bb->attr.br && cell->bg.g == bb->attr.bg && cell->bg.b == bb->attr.bb;
+}
+
+/* @a and @b draw the same pixels */
+static bool same_place(const struct tsm_frame_placement *a, const struct tsm_frame_placement *b)
+{
+	return a->image_key == b->image_key && a->row == b->row && a->col == b->col &&
+	       a->cols == b->cols && a->rows == b->rows && a->x == b->x && a->y == b->y &&
+	       a->width == b->width && a->height == b->height && a->src_x == b->src_x &&
+	       a->src_y == b->src_y && a->src_width == b->src_width &&
+	       a->src_height == b->src_height && a->cell_width == b->cell_width &&
+	       a->cell_height == b->cell_height && a->z == b->z && a->band == b->band &&
+	       a->flags == b->flags;
+}
+
+static int cmp_place_key(const void *a, const void *b)
+{
+	uint64_t x = ((const struct place *)a)->fp.key, y = ((const struct place *)b)->fp.key;
+
+	return (x > y) - (x < y);
+}
+
+static struct place *find_prev(struct bbulk *bb, uint64_t key)
+{
+	struct place probe;
+
+	probe.fp.key = key;
+	return bsearch(&probe, bb->prev, bb->n_prev, sizeof(*bb->prev), cmp_place_key);
+}
+
+static void force_cells(struct kmscon_text *txt, const struct place *p)
+{
+	struct bbulk *bb = txt->data;
+	unsigned int x, y, c1 = min(p->c1, txt->cols), r1 = min(p->r1, txt->rows);
+
+	for (y = p->r0; y < r1; y++)
+		for (x = p->c0; x < c1; x++)
+			bb->cell_flags[x + y * txt->cols].force = 1;
+}
+
+/*
+ * Take this frame's placements, @cols x @rows cells of it drawn; force the
+ * cells of every placement added, changed or removed since the last frame;
+ * and list each row's placements.
+ */
+static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
+			 unsigned int cols, unsigned int rows)
+{
+	struct bbulk *bb = txt->data;
+	unsigned int n = frame->placements ? frame->placement_count : 0, i, total, y;
+	unsigned int *cover;
+	size_t size = min(sizeof(struct tsm_frame_placement), frame->placement_size);
+	struct place *p, *old, *tmp;
+
+	if (n > bb->places_cap) {
+		tmp = realloc(bb->prev, n * sizeof(*tmp));
+		if (!tmp)
+			return -ENOMEM;
+		bb->prev = tmp;
+		tmp = realloc(bb->places, n * sizeof(*tmp));
+		if (!tmp)
+			return -ENOMEM;
+		bb->places = tmp;
+		cover = realloc(bb->cover, n * sizeof(*cover));
+		if (!cover)
+			return -ENOMEM;
+		bb->cover = cover;
+		bb->places_cap = n;
+	}
+
+	bb->grid_w = cols * FONT_WIDTH(txt);
+	bb->grid_h = rows * FONT_HEIGHT(txt);
+	total = 0;
+	for (i = 0; i < n; i++) {
+		long long r0, r1;
+
+		p = &bb->places[i];
+		memset(p, 0, sizeof(*p));
+		memcpy(&p->fp, tsm_frame_placement_at(frame, i), size);
+		p->fp.flags &= ~TSM_FRAME_CHANGED;
+		r0 = p->fp.row;
+		r1 = r0 + p->fp.rows;
+		p->c0 = min(p->fp.col, cols);
+		p->c1 = p->fp.cols < cols - p->c0 ? p->c0 + p->fp.cols : cols;
+		p->r0 = r0 < 0 ? 0 : r0 > rows ? rows : r0;
+		p->r1 = r1 < 0 ? 0 : r1 > rows ? rows : r1;
+		if (p->c0 == p->c1)
+			p->r1 = p->r0;
+		total += p->r1 - p->r0;
+	}
+	bb->n_places = n;
+
+	/* damage: prev's state marks the placements still here */
+	for (i = 0; i < bb->n_prev; i++)
+		bb->prev[i].state = 0;
+	for (i = 0; i < n; i++) {
+		p = &bb->places[i];
+		old = find_prev(bb, p->fp.key);
+		if (old)
+			old->state = 1;
+		if (old && same_place(&old->fp, &p->fp))
+			continue;
+		if (old)
+			force_cells(txt, old);
+		force_cells(txt, p);
+	}
+	for (i = 0; i < bb->n_prev; i++)
+		if (!bb->prev[i].state)
+			force_cells(txt, &bb->prev[i]);
+
+	memcpy(bb->prev, bb->places, n * sizeof(*bb->places));
+	bb->n_prev = n;
+	qsort(bb->prev, n, sizeof(*bb->prev), cmp_place_key);
+
+	/* each row's placements, in draw order */
+	if (total > bb->row_places_cap) {
+		cover = realloc(bb->row_places, total * sizeof(*cover));
+		if (!cover)
+			return -ENOMEM;
+		bb->row_places = cover;
+		bb->row_places_cap = total;
+	}
+	memset(bb->row_first, 0, (rows + 1) * sizeof(*bb->row_first));
+	for (i = 0; i < n; i++)
+		for (y = bb->places[i].r0; y < bb->places[i].r1; y++)
+			bb->row_first[y + 1]++;
+	for (y = 0; y < rows; y++)
+		bb->row_first[y + 1] += bb->row_first[y];
+	for (i = 0; i < n; i++)
+		for (y = bb->places[i].r0; y < bb->places[i].r1; y++)
+			bb->row_places[bb->row_first[y]++] = i;
+	/* each row's count was moved onto the next row's start; move it back */
+	for (y = rows; y > 0; y--)
+		bb->row_first[y] = bb->row_first[y - 1];
+	bb->row_first[0] = 0;
+	return 0;
+}
+
+/* the scaled pictures may hold twice the screen in ARGB between frames */
+static size_t picture_limit(struct bbulk *bb)
+{
+	return (size_t)bb->sw * bb->sh * 4 * 2;
+}
+
+/*
+ * Free the least recently used pictures until @want more bytes fit in
+ * @limit, keeping those this frame draws when @keep_drawn is set.
+ */
+static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep_drawn)
+{
+	struct picture **pp, **lru, *victim;
+
+	while (bb->picture_bytes + want > limit) {
+		lru = NULL;
+		for (pp = &bb->pictures; *pp; pp = &(*pp)->next) {
+			if (keep_drawn && (*pp)->last_use == bb->frame_count)
+				continue;
+			if (!lru || (*pp)->last_use < (*lru)->last_use)
+				lru = pp;
+		}
+		if (!lru)
+			return;
+		victim = *lru;
+		*lru = victim->next;
+		bb->picture_bytes -= victim->bytes;
+		free(victim);
+	}
+}
+
+/*
+ * Where @p's picture draws and its pixels, scaled and rotated for this display
+ * when its size or the orientation asks for it: 1, -1 when it draws nothing,
+ * or -ENOMEM.
+ */
+static int place_resolve(struct kmscon_text *txt, struct place *p)
+{
+	struct bbulk *bb = txt->data;
+	const struct tsm_frame_placement *fp = &p->fp;
+	long long fw = FONT_WIDTH(txt), fh = FONT_HEIGHT(txt), gx, gy, px0, px1, py0, py1;
+	long long x0, x1, y0, y1;
+	struct tsm_frame_image img;
+	const uint32_t *src;
+	struct picture *pic;
+	unsigned int dw, dh, u0, v0, u1, v1, w, h;
+	size_t stride, bytes;
+	uint32_t *tmp;
+	int ret;
+
+	if (!fp->cell_width || !fp->cell_height || !fp->width || !fp->height ||
+	    !fp->src_width || !fp->src_height)
+		return -1;
+
+	/* the picture in grid pixels, scaled from the cells it was made in */
+	gx = (long long)fp->col * fw;
+	gy = (long long)fp->row * fh;
+	px0 = gx + (long long)fp->x * fw / fp->cell_width;
+	px1 = gx + ((long long)fp->x + fp->width) * fw / fp->cell_width;
+	py0 = gy + (long long)fp->y * fh / fp->cell_height;
+	py1 = gy + ((long long)fp->y + fp->height) * fh / fp->cell_height;
+
+	/* its part inside its box and the grid */
+	x0 = px0 > gx ? px0 : gx;
+	y0 = py0 > gy ? py0 : gy;
+	x0 = x0 > 0 ? x0 : 0;
+	y0 = y0 > 0 ? y0 : 0;
+	x1 = px1 < gx + (long long)fp->cols * fw ? px1 : gx + (long long)fp->cols * fw;
+	y1 = py1 < gy + (long long)fp->rows * fh ? py1 : gy + (long long)fp->rows * fh;
+	x1 = x1 < bb->grid_w ? x1 : bb->grid_w;
+	y1 = y1 < bb->grid_h ? y1 : bb->grid_h;
+	if (x0 >= x1 || y0 >= y1)
+		return -1;
+
+	if (kmscon_text_get_image(txt, fp->image_key, &img))
+		return -1;
+	stride = img.stride / 4;
+	if (img.stride % 4 || stride < img.width || fp->src_x >= img.width ||
+	    fp->src_y >= img.height || fp->src_width > img.width - fp->src_x ||
+	    fp->src_height > img.height - fp->src_y)
+		return -1;
+	src = &img.pixels[(size_t)fp->src_y * stride + fp->src_x];
+
+	dw = px1 - px0;
+	dh = py1 - py0;
+	u0 = x0 - px0;
+	v0 = y0 - py0;
+	u1 = x1 - px0;
+	v1 = y1 - py0;
+	w = u1 - u0;
+	h = v1 - v0;
+	p->x0 = x0;
+	p->x1 = x1;
+	p->y0 = y0;
+	p->y1 = y1;
+	p->screen = grid_to_screen(txt, x0, y0, w, h);
+
+	/* drawn as it is */
+	if (txt->orientation == OR_NORMAL && dw == fp->src_width && dh == fp->src_height) {
+		p->pix = &src[(size_t)v0 * stride + u0];
+		p->stride = stride;
+		return 1;
+	}
+
+	for (pic = bb->pictures; pic; pic = pic->next) {
+		if (pic->image_key == fp->image_key && pic->src_x == fp->src_x &&
+		    pic->src_y == fp->src_y && pic->src_w == fp->src_width &&
+		    pic->src_h == fp->src_height && pic->dw == dw && pic->dh == dh &&
+		    pic->u0 == u0 && pic->v0 == v0 && pic->u1 == u1 && pic->v1 == v1)
+			break;
+	}
+	if (!pic) {
+		bytes = (size_t)w * h * 4;
+		pictures_trim(bb, bytes, picture_limit(bb), true);
+		/* a frame may pass the limit by as much again, no further */
+		if (bb->picture_bytes + bytes > 2 * picture_limit(bb))
+			return -1;
+		pic = malloc(sizeof(*pic) + bytes);
+		tmp = txt->orientation == OR_NORMAL ? NULL : malloc(bytes);
+		if (!pic || (txt->orientation != OR_NORMAL && !tmp)) {
+			free(pic);
+			return -ENOMEM;
+		}
+		ret = picture_scale(src, stride, fp->src_width, fp->src_height, dw, dh, u0, v0,
+				    u1, v1, tmp ? tmp : pic->pixels);
+		if (!ret && tmp)
+			picture_rotate(tmp, w, h, pic->pixels, txt->orientation);
+		free(tmp);
+		if (ret) {
+			free(pic);
+			return ret == -ENOMEM ? -ENOMEM : -1;
+		}
+		pic->image_key = fp->image_key;
+		pic->src_x = fp->src_x;
+		pic->src_y = fp->src_y;
+		pic->src_w = fp->src_width;
+		pic->src_h = fp->src_height;
+		pic->dw = dw;
+		pic->dh = dh;
+		pic->u0 = u0;
+		pic->v0 = v0;
+		pic->u1 = u1;
+		pic->v1 = v1;
+		pic->bytes = bytes;
+		pic->next = bb->pictures;
+		bb->pictures = pic;
+		bb->picture_bytes += bytes;
+	}
+	pic->last_use = bb->frame_count;
+	p->pix = pic->pixels;
+	p->stride = p->screen.x2 - p->screen.x1;
+	return 1;
+}
+
+/* @p's picture covers the cells [@posx, @posx + @n) of row @posy */
+static bool place_covers(struct kmscon_text *txt, const struct place *p, unsigned int posx,
+			 unsigned int posy, unsigned int n)
+{
+	unsigned int fw = FONT_WIDTH(txt), fh = FONT_HEIGHT(txt);
+
+	return p->x0 <= posx * fw && p->x1 >= (posx + n) * fw && p->y0 <= posy * fh &&
+	       p->y1 >= (posy + 1) * fh;
+}
+
+/*
+ * The placements whose pictures draw on the cells [@posx, @posx + @n) of row
+ * @posy, in draw order, into bb->cover; returns how many. @retry is set when
+ * one could not be had for lack of memory.
+ */
+static unsigned int cell_cover(struct kmscon_text *txt, unsigned int posx, unsigned int posy,
+			       unsigned int n, bool *retry)
+{
+	struct bbulk *bb = txt->data;
+	unsigned int fw = FONT_WIDTH(txt), fh = FONT_HEIGHT(txt), k, count = 0;
+	struct place *p;
+
+	if (!bb->n_places)
+		return 0;
+	for (k = bb->row_first[posy]; k < bb->row_first[posy + 1]; k++) {
+		p = &bb->places[bb->row_places[k]];
+		if (p->c0 >= posx + n || p->c1 <= posx)
+			continue;
+		if (!p->state)
+			p->state = place_resolve(txt, p);
+		if (p->state == -ENOMEM)
+			*retry = true;
+		if (p->state != 1 || p->x1 <= posx * fw || p->x0 >= (posx + n) * fw ||
+		    p->y1 <= posy * fh || p->y0 >= (posy + 1) * fh)
+			continue;
+		bb->cover[count++] = bb->row_places[k];
+	}
+	return count;
+}
+
+/* @p's picture over the scratch @dst, which holds the screen's rectangle @req */
+static void compose_place(struct video_buffer *dst, const struct video_blend_req *req,
+			  const struct place *p)
+{
+	int x1 = max((int)req->x, p->screen.x1), y1 = max((int)req->y, p->screen.y1);
+	int x2 = min((int)(req->x + req->w), p->screen.x2);
+	int y2 = min((int)(req->y + req->h), p->screen.y2);
+	bool opaque = p->fp.flags & TSM_FRAME_OPAQUE;
+	uint32_t *d;
+	const uint32_t *s;
+	int x, y;
+
+	for (y = y1; y < y2; y++) {
+		d = &((uint32_t *)dst->data)[(y - req->y) * dst->width + (x1 - req->x)];
+		s = &p->pix[(size_t)(y - p->screen.y1) * p->stride + (x1 - p->screen.x1)];
+		if (opaque) {
+			memcpy(d, s, (x2 - x1) * sizeof(*d));
+			continue;
+		}
+		for (x = 0; x < x2 - x1; x++) {
+			uint32_t a = s[x] >> 24, na = 255 - a, q = d[x];
+
+			if (!a)
+				continue;
+			d[x] = s[x] + ((over_div255((q >> 24) * na) << 24) |
+				       (over_div255(((q >> 16) & 0xff) * na) << 16) |
+				       (over_div255(((q >> 8) & 0xff) * na) << 8) |
+				       over_div255((q & 0xff) * na));
+		}
+	}
+}
+
+/*
+ * The placement whose pixels a cell takes as they are, or -1: the cell has no
+ * glyph and no decoration, and the last placement over it is opaque, covers it
+ * wholly, and is above the cell's background or on the default one.
+ */
+static int cell_fast(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
+		     unsigned int posx, unsigned int posy)
+{
+	struct bbulk *bb = txt->data;
+	const struct place *p;
+	unsigned int n;
+	bool retry = false;
+
+	if ((key && key != ' ') || cell->underline != TSM_UNDERLINE_NONE ||
+	    (cell->flags & TSM_FRAME_STRIKE))
+		return -1;
+	n = cell_cover(txt, posx, posy, 1, &retry);
+	if (!n || retry)
+		return -1;
+	p = &bb->places[bb->cover[n - 1]];
+	if (!(p->fp.flags & TSM_FRAME_OPAQUE) || !place_covers(txt, p, posx, posy, 1))
+		return -1;
+	if (p->fp.band == TSM_FRAME_BAND_BELOW_BG && !default_bg(bb, cell))
+		return -1;
+	return bb->cover[n - 1];
+}
+
+/* send the pending run of cells that take one opaque picture as they are */
+static void run_flush(struct kmscon_text *txt)
+{
+	struct bbulk *bb = txt->data;
+	const struct place *p;
+	struct video_blend_req req;
+	struct video_rect r;
+	unsigned int w, h, y;
+
+	if (!bb->run.n)
+		return;
+	p = &bb->places[bb->run.place];
+	r = grid_to_screen(txt, bb->run.posx * FONT_WIDTH(txt), bb->run.posy * FONT_HEIGHT(txt),
+			   bb->run.n * FONT_WIDTH(txt), FONT_HEIGHT(txt));
+	w = r.x2 - r.x1;
+	h = r.y2 - r.y1;
+	for (y = 0; y < h; y++)
+		memcpy(&((uint32_t *)bb->strip->data)[y * w],
+		       &p->pix[(size_t)(r.y1 - p->screen.y1 + y) * p->stride + (r.x1 - p->screen.x1)],
+		       w * 4);
+	bb->strip->width = w;
+	bb->strip->height = h;
+
+	memset(&req, 0, sizeof(req));
+	req.buf = bb->strip;
+	req.x = r.x1;
+	req.y = r.y1;
+	req.w = w;
+	req.h = h;
+	display_blend(txt->disp, &req);
+	bb->requests++;
+	bb->run.n = 0;
+}
+
+/* cell @posx, @posy takes placement @place's pixels: extend the run, or start one */
+static void run_add(struct kmscon_text *txt, unsigned int place, unsigned int posx,
+		    unsigned int posy)
+{
+	struct bbulk *bb = txt->data;
+
+	if (bb->run.n && bb->run.place == place && bb->run.posy == posy &&
+	    bb->run.posx + bb->run.n == posx) {
+		bb->run.n++;
+		return;
+	}
+	run_flush(txt);
+	bb->run.place = place;
+	bb->run.posx = posx;
+	bb->run.posy = posy;
+	bb->run.n = 1;
+}
+
+/*
+ * Paint @cell's decorations and glyph @glyph (none when @key is 0) over the
+ * scratch buffer, @ncells cells: underline, glyph, strike-through.
+ */
+static void compose_text(struct kmscon_text *txt, const struct tsm_frame_cell *cell,
+			 const struct kmscon_glyph *glyph, uint64_t key, unsigned int ncells,
+			 bool ul_cursor)
+{
+	struct bbulk *bb = txt->data;
+
+	if (cell->underline > TSM_UNDERLINE_NONE && cell->underline < KMSCON_DECO_STRIKE)
+		compose_sprite(txt, cell->underline, ncells,
+			       ul_cursor ? cell->fg : kmscon_text_ul_color(txt, cell));
+	if (key)
+		compose(bb->scratch, &glyph->buf, 0, 0, cell->fg);
+	if (cell->flags & TSM_FRAME_STRIKE)
+		compose_sprite(txt, KMSCON_DECO_STRIKE, ncells, kmscon_text_strike_color(txt, cell));
+}
+
+/*
+ * Compose the cells under @req, with @n placements over them in bb->cover,
+ * from the highest layer that hides everything below it upwards (ADR-103):
+ * the lowest band, the cell's background unless it is the default, the middle
+ * band, the text, the top band.
+ */
+static void compose_covered(struct kmscon_text *txt, struct video_blend_req *req,
+			    const struct tsm_frame_cell *cell, const struct kmscon_glyph *glyph,
+			    uint64_t key, unsigned int posx, unsigned int posy, unsigned int ncells,
+			    bool ul_cursor, unsigned int n)
+{
+	struct bbulk *bb = txt->data;
+	struct video_buffer *sc = bb->scratch;
+	const struct place *p;
+	unsigned int i = 0, k, x;
+	bool text = false;
+
+	sc->width = req->w;
+	sc->height = req->h;
+	if (default_bg(bb, cell)) {
+		memset(sc->data, 0, sc->width * sc->height * 4);
+	} else {
+		uint32_t bg = 0xff000000 | (cell->bg.r << 16) | (cell->bg.g << 8) | cell->bg.b;
+
+		for (x = 0; x < sc->width * sc->height; x++)
+			((uint32_t *)sc->data)[x] = bg;
+		while (i < n && bb->places[bb->cover[i]].fp.band == TSM_FRAME_BAND_BELOW_BG)
+			i++;
+	}
+	/* an opaque picture over every pixel hides what is under it */
+	for (k = n; k-- > i;) {
+		p = &bb->places[bb->cover[k]];
+		if ((p->fp.flags & TSM_FRAME_OPAQUE) && place_covers(txt, p, posx, posy, ncells)) {
+			i = k;
+			break;
+		}
+	}
+	for (; i < n; i++) {
+		p = &bb->places[bb->cover[i]];
+		if (!text && p->fp.band == TSM_FRAME_BAND_ABOVE_TEXT) {
+			compose_text(txt, cell, glyph, key, ncells, ul_cursor);
+			text = true;
+		}
+		compose_place(sc, req, p);
+	}
+	if (!text)
+		compose_text(txt, cell, glyph, key, ncells, ul_cursor);
+
+	req->buf = sc;
+	req->br = bb->attr.br;
+	req->bg = bb->attr.bg;
+	req->bb = bb->attr.bb;
+}
+
 /*
  * Draw @cell at @posx, @posy over @ncells cells (2 for a wide cell with room
  * for its second half), with glyph key @key (0: none) drawn @width cells wide.
- * When the glyph cannot be had, the cell is drawn without it and -ENOMEM
- * returned, for the caller to draw it again. @ul_cursor: @cell's underline is
- * an underline cursor, which is no decoration and draws in the foreground.
+ * When the glyph or a picture over the cell cannot be had, the cell is drawn
+ * without it and -ENOMEM returned, for the caller to draw it again.
+ * @ul_cursor: @cell's underline is an underline cursor, which is no
+ * decoration and draws in the foreground.
  */
 static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
 			   unsigned int width, unsigned int posx, unsigned int posy,
@@ -528,6 +1196,8 @@ static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 	struct video_blend_req req;
 	bool across = txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN;
 	bool strike = cell->flags & TSM_FRAME_STRIKE;
+	bool retry = false;
+	unsigned int n;
 	int ret = 0;
 
 	if (key) {
@@ -559,7 +1229,12 @@ static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 	req.bg = cell->bg.g;
 	req.bb = cell->bg.b;
 
-	if (cell->underline == TSM_UNDERLINE_NONE && !strike) {
+	n = cell_cover(txt, posx, posy, ncells, &retry);
+	if (retry)
+		ret = -ENOMEM;
+	if (n) {
+		compose_covered(txt, &req, cell, glyph, key, posx, posy, ncells, ul_cursor, n);
+	} else if (cell->underline == TSM_UNDERLINE_NONE && !strike) {
 		req.buf = &glyph->buf;
 	} else {
 		struct video_buffer *sc = bb->scratch;
@@ -567,15 +1242,7 @@ static int bbulk_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 		sc->width = min(req.w, glyph->buf.width);
 		sc->height = min(req.h, glyph->buf.height);
 		memset(sc->data, 0, sc->width * sc->height * 4);
-
-		if (cell->underline > TSM_UNDERLINE_NONE && cell->underline < KMSCON_DECO_STRIKE)
-			compose_sprite(txt, cell->underline, ncells,
-				       ul_cursor ? cell->fg : kmscon_text_ul_color(txt, cell));
-		if (key)
-			compose(sc, &glyph->buf, 0, 0, cell->fg);
-		if (strike)
-			compose_sprite(txt, KMSCON_DECO_STRIKE, ncells,
-				       kmscon_text_strike_color(txt, cell));
+		compose_text(txt, cell, glyph, key, ncells, ul_cursor);
 		req.buf = sc;
 	}
 
@@ -603,9 +1270,17 @@ static int bbulk_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 	bool is_cursor, hidden, changed;
 	cell_flags_t *f;
 	uint64_t key;
+	int place;
 
 	cols = min(txt->cols, frame->cols);
 	rows = min(txt->rows, frame->rows);
+
+	bb->frame_count++;
+	bb->run.n = 0;
+	if (places_update(txt, frame, cols, rows)) {
+		bb->n_places = 0;
+		return -ENOMEM;
+	}
 
 	for (posy = 0; posy < rows; posy++) {
 		for (posx = 0; posx < cols; posx++) {
@@ -644,6 +1319,17 @@ static int bbulk_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 
 			key = hidden ? 0 : cell->key;
 			width = cell->width == 2 ? 2 : 1;
+
+			/* a run of cells under one opaque picture goes as one request */
+			if (!is_cursor && ncells == 1) {
+				place = cell_fast(txt, cell, key, posx, posy);
+				if (place >= 0) {
+					run_add(txt, place, posx, posy);
+					continue;
+				}
+			}
+			run_flush(txt);
+
 			if (is_cursor && is_vbar(frame->cursor.style)) {
 				/* the bar, at the left of the cell; a wide cell's
 				 * second half is left empty */
@@ -662,7 +1348,10 @@ static int bbulk_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 					f[1].force = 1;
 			}
 		}
+		run_flush(txt);
 	}
+	/* between frames, the scaled pictures fit their limit */
+	pictures_trim(bb, 0, picture_limit(bb), false);
 	return 0;
 }
 

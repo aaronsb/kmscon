@@ -91,6 +91,18 @@ struct kmscon_glyph *kmscon_deco_render(enum kmscon_deco kind, unsigned int w, u
 	return g;
 }
 
+/* the images placements show, by key; test placements name them */
+static struct tsm_frame_image test_images[4];
+
+int kmscon_text_get_image(struct kmscon_text *txt, uint64_t key, struct tsm_frame_image *out)
+{
+	(void)txt;
+	if (key >= 4 || !test_images[key].pixels)
+		return -ENOENT;
+	*out = test_images[key];
+	return 0;
+}
+
 /* Stub text helpers used by text_bbulk.c */
 const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, uint32_t *one,
 					size_t *len)
@@ -214,6 +226,7 @@ void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y)
 #undef log_debug
 #define log_debug(f, ...)
 /* Pull in the implementation so we can call bbulk_set directly */
+#include "../src/render/picture.c"
 #include "../src/render/bbulk.c"
 
 /* Fake font objects with valid width/height for FONT_WIDTH/FONT_HEIGHT macros */
@@ -430,6 +443,175 @@ static void test_underline_cursor_colour(struct kmscon_text *txt)
 	assert(blended_at(x, y)->first == 0xff010203);
 }
 
+/* ---- the image layer (ADR-103) ---- */
+
+static uint32_t picture_px[128 * 32];
+static struct tsm_frame_placement placements[4];
+
+/* placement @i: image 1 (opaque, 128 x 32) over @cols x 2 cells at @col, @row */
+static void set_placement(unsigned int i, uint64_t key, int row, unsigned int col,
+			  unsigned int cols, uint8_t band)
+{
+	struct tsm_frame_placement *p = &placements[i];
+
+	memset(p, 0, sizeof(*p));
+	p->key = key;
+	p->image_key = 1;
+	p->row = row;
+	p->col = col;
+	p->cols = cols;
+	p->rows = 2;
+	p->width = cols * FAKE_CELL_W;
+	p->height = 2 * FAKE_CELL_H;
+	p->src_width = p->width;
+	p->src_height = p->height;
+	p->cell_width = FAKE_CELL_W;
+	p->cell_height = FAKE_CELL_H;
+	p->band = band;
+	p->flags = TSM_FRAME_OPAQUE | TSM_FRAME_CHANGED;
+}
+
+/* blank cells under the first @n placements; returns bbulk_render's result */
+static int draw_placements(struct kmscon_text *txt, unsigned int n)
+{
+	blank_frame(txt);
+	frame.placement_size = sizeof(placements[0]);
+	frame.placement_count = n;
+	frame.placements = n ? placements : NULL;
+	return run_frame(txt, false);
+}
+
+/* every cell of [@col, @col + @cols) x [@row, @row + 2) was blended */
+static bool box_blended(struct kmscon_text *txt, unsigned int col, unsigned int row,
+			unsigned int cols)
+{
+	unsigned int x, y, px, py, k;
+
+	for (y = row; y < row + 2; y++) {
+		for (x = col; x < col + cols; x++) {
+			set_coordinate(txt, &px, &py, x, y);
+			for (k = 0; k < n_blended; k++)
+				if (blended[k].y == py && blended[k].x <= px &&
+				    px < blended[k].x + blended[k].buf->width)
+					break;
+			if (k == n_blended)
+				return false;
+		}
+	}
+	return true;
+}
+
+static void settle(struct kmscon_text *txt, unsigned int n)
+{
+	while (draw_placements(txt, n) != KMSCON_TEXT_UNCHANGED)
+		;
+}
+
+/*
+ * A placement added, moved or removed draws its old and new boxes on that
+ * frame and the next, and then nothing; one libtsm flags changed that draws
+ * the same, as every placement is flagged when anything scrolls, is not drawn
+ * again.
+ */
+static void test_placement_damage(struct kmscon_text *txt)
+{
+	test_images[1] = (struct tsm_frame_image){
+		.width = 128, .height = 32, .stride = 128 * 4, .pixels = picture_px, .opaque = true};
+
+	settle(txt, 0);
+
+	/* added: drawn on two frames, as row strips */
+	set_placement(0, 7, 3, 4, 6, TSM_FRAME_BAND_ABOVE_TEXT);
+	assert(draw_placements(txt, 1) == 0);
+	assert(n_blended == 2 && box_blended(txt, 4, 3, 6));
+	placements[0].flags &= ~TSM_FRAME_CHANGED;
+	assert(draw_placements(txt, 1) == 0);
+	assert(n_blended == 2 && box_blended(txt, 4, 3, 6));
+	assert(draw_placements(txt, 1) == KMSCON_TEXT_UNCHANGED);
+
+	/* flagged changed by libtsm, drawing the same: nothing to draw */
+	placements[0].flags |= TSM_FRAME_CHANGED;
+	assert(draw_placements(txt, 1) == KMSCON_TEXT_UNCHANGED);
+
+	/* moved: the old box and the new, on two frames */
+	set_placement(0, 7, 6, 20, 6, TSM_FRAME_BAND_ABOVE_TEXT);
+	assert(draw_placements(txt, 1) == 0);
+	assert(box_blended(txt, 4, 3, 6) && box_blended(txt, 20, 6, 6));
+	assert(draw_placements(txt, 1) == 0);
+	assert(box_blended(txt, 4, 3, 6) && box_blended(txt, 20, 6, 6));
+	assert(draw_placements(txt, 1) == KMSCON_TEXT_UNCHANGED);
+
+	/* its image replaced: the same box again */
+	placements[0].image_key = 2;
+	test_images[2] = test_images[1];
+	assert(draw_placements(txt, 1) == 0);
+	assert(n_blended == 2 && box_blended(txt, 20, 6, 6));
+	assert(draw_placements(txt, 1) == 0);
+	assert(draw_placements(txt, 1) == KMSCON_TEXT_UNCHANGED);
+
+	/* removed: the old box, on two frames */
+	assert(draw_placements(txt, 0) == 0);
+	assert(n_blended == 12 && box_blended(txt, 20, 6, 6));
+	assert(blended_at(0, 0) == NULL);
+	assert(draw_placements(txt, 0) == 0);
+	assert(n_blended == 12 && box_blended(txt, 20, 6, 6));
+	assert(draw_placements(txt, 0) == KMSCON_TEXT_UNCHANGED);
+	test_images[2].pixels = NULL;
+}
+
+/*
+ * Cells wholly under an opaque picture with nothing over them go as one
+ * request per row; a glyph splits the run, and its cell is composed.
+ */
+static void test_opaque_runs(struct kmscon_text *txt)
+{
+	struct bbulk *bb = txt->data;
+	unsigned int x, y;
+
+	settle(txt, 0);
+	set_placement(0, 9, 1, 2, 10, TSM_FRAME_BAND_BELOW_TEXT);
+	draw_placements(txt, 1);
+	assert(n_blended == 2 && blended_at(16, 16)->buf == bb->strip);
+
+	/* a glyph in the middle of the first row */
+	blank_frame(txt);
+	frame.placement_size = sizeof(placements[0]);
+	frame.placement_count = 1;
+	frame.placements = placements;
+	cell_at(6, 1)->key = 'x';
+	cell_at(6, 1)->flags = TSM_FRAME_CHANGED;
+	run_frame(txt, false);
+	set_coordinate(txt, &x, &y, 6, 1);
+	assert(blended_at(x, y) && blended_at(x, y)->buf == bb->scratch);
+	set_coordinate(txt, &x, &y, 2, 1);
+	assert(blended_at(x, y) && blended_at(x, y)->buf == bb->strip);
+	set_coordinate(txt, &x, &y, 7, 1);
+	assert(blended_at(x, y) && blended_at(x, y)->buf == bb->strip);
+	assert(n_blended == 4);
+	settle(txt, 0);
+}
+
+/* the lowest band shows through the default background only */
+static void test_below_bg(struct kmscon_text *txt)
+{
+	struct bbulk *bb = txt->data;
+	unsigned int x, y;
+
+	settle(txt, 0);
+	set_placement(0, 11, 0, 0, 4, TSM_FRAME_BAND_BELOW_BG);
+	blank_frame(txt);
+	frame.placement_size = sizeof(placements[0]);
+	frame.placement_count = 1;
+	frame.placements = placements;
+	cell_at(1, 0)->bg = (struct tsm_screen_color){.r = 10, .g = 20, .b = 30};
+	run_frame(txt, false);
+	/* cell 0 starts a run; cell 1 is composed and takes its background */
+	assert(blended_at(0, 0)->buf == bb->strip);
+	set_coordinate(txt, &x, &y, 1, 0);
+	assert(blended_at(x, y)->buf == bb->scratch && blended_at(x, y)->first == 0xff0a141e);
+	settle(txt, 0);
+}
+
 int main(void)
 {
 	struct kmscon_text txt;
@@ -472,6 +654,9 @@ int main(void)
 	test_damage_measured(&txt);
 	test_draw_failure_retried(&txt);
 	test_underline_cursor_colour(&txt);
+	test_placement_damage(&txt);
+	test_opaque_runs(&txt);
+	test_below_bg(&txt);
 
 	bbulk_unset(&txt);
 	assert(bb->cell_flags == NULL);

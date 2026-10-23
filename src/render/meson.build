@@ -4,6 +4,7 @@ render_srcs = [
     'text.c',
     'bbulk.c',
     'deco.c',
+    'picture.c',
 ]
 
 render_dep = [

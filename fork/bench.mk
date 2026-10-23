@@ -1,14 +1,14 @@
 # ADR-103's synthetic scenarios S1 to S6, drawn by bbulk into memory
 # (tests/bench_compose.c) at the sizes ADR-103 names, on one CPU.
 #
-#   make bench-compose                  1366x768, 1920x1080 and 7680x2160
+#   make bench-compose                  1366x768, 1920x1080, 7680x2160 and 7680x4320
 #   make bench-compose BENCH_SIZES=1366x768 BENCH_FRAMES=120 BENCH_CPU=3
 #
 # One JSON line per scenario and size in fork/build/bench-compose.jsonl. The
 # container is pinned to the host CPU BENCH_CPU, a core like the small tier 3
 # machine's single vCPU; the figures move with the host's load and clock.
 
-BENCH_SIZES  ?= 1366x768 1920x1080 7680x2160
+BENCH_SIZES  ?= 1366x768 1920x1080 7680x2160 7680x4320
 BENCH_FRAMES ?= 60
 BENCH_CPU    ?= 2
 BENCH_RUN     = $(subst docker run ,docker run --cpuset-cpus=$(BENCH_CPU) ,$(RUN))

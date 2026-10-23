@@ -246,7 +246,7 @@ static void init_fake_txt(struct kmscon_text *txt)
 	txt->ref = 1;
 }
 
-static struct tsm_frame_cell cells[(7680 / FAKE_CELL_W) * (2160 / FAKE_CELL_H)];
+static struct tsm_frame_cell cells[(7680 / FAKE_CELL_W) * (4320 / FAKE_CELL_H)];
 static struct tsm_frame frame;
 
 /* a frame of blank, unchanged cells, with no cursor */
@@ -724,23 +724,24 @@ static void test_picture_cache(struct kmscon_text *txt)
 }
 
 /*
- * At 7680x2160 four frames are 265 MB, past the 192 MiB cap, so the budget is
- * the cap: three full-screen scaled pictures (199 MB) fit at once, a fourth
- * does not, and the frame's peak stays within the cap.
+ * At @w x @h, where four frames pass the 192 MiB cap, the budget is the cap:
+ * of four full-screen scaled pictures at once, the @fit that fit draw and the
+ * frame's peak stays within the cap; the rest are retried on every later
+ * frame (7680x2160: three fit; 7680x4320, 127 MiB a screen: one).
  */
-static void test_budget_8k(void)
+static void test_budget(unsigned int w, unsigned int h, size_t fit)
 {
 	struct kmscon_text txt;
 	struct bbulk *bb;
-	uint32_t *src = calloc(3840 * 1080, 4);
-	size_t pic = (size_t)7680 * 2160 * 4, base, fit;
+	uint32_t *src = calloc((size_t)w / 2 * (h / 2), 4);
+	size_t pic = (size_t)w * h * 4, base;
 	unsigned int i;
 
 	assert(src);
-	for (i = 0; i < 3840 * 1080; i++)
+	for (i = 0; i < w / 2 * (h / 2); i++)
 		src[i] = 0xff204060;
-	disp_w = 7680;
-	disp_h = 2160;
+	disp_w = w;
+	disp_h = h;
 	init_fake_txt(&txt);
 	assert(kmscon_text_bbulk_ops.init(&txt) == 0);
 	assert(bbulk_set(&txt) == 0);
@@ -748,20 +749,22 @@ static void test_budget_8k(void)
 	assert(image_budget() == IMAGE_BUDGET_MAX);
 	for (i = 1; i <= 4; i++) {
 		test_images[i] = (struct tsm_frame_image){
-			.width = 3840, .height = 1080, .stride = 3840 * 4, .pixels = src};
+			.width = w / 2, .height = h / 2, .stride = w / 2 * 4, .pixels = src};
 		set_scaled(i - 1, 60 + i, i);
 		placements[i - 1].flags = TSM_FRAME_OPAQUE;
 	}
 
 	/* other displays' pictures count against the same budget */
 	base = pictures_total;
-	fit = (IMAGE_BUDGET_MAX - base) / pic;
-	assert(base == 0 && fit == 3);
+	assert(base == 0 && (IMAGE_BUDGET_MAX - base) / pic == fit);
 	pictures_peak = pictures_total;
 	draw_placements(&txt, 4);
 	assert(pictures_peak <= IMAGE_BUDGET_MAX);
 	assert(pictures_peak == base + fit * pic);
 	assert(bb->picture_bytes <= picture_limit(bb));
+	/* the ones left out keep their cells drawn, frame after frame */
+	draw_placements(&txt, 4);
+	assert(draw_placements(&txt, 4) == 0 && n_blended > 0);
 
 	bbulk_unset(&txt);
 	kmscon_text_bbulk_ops.destroy(&txt);
@@ -861,7 +864,8 @@ int main(void)
 	test_opaque_runs(&txt);
 	test_below_bg(&txt);
 	test_picture_scale();
-	test_budget_8k();
+	test_budget(7680, 2160, 3);
+	test_budget(7680, 4320, 1);
 	test_picture_cache(&txt);
 
 	bbulk_unset(&txt);

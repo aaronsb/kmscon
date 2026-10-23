@@ -126,6 +126,14 @@ if enable_font_freetype
     test('test_font_freetype', test_font_freetype)
 endif
 
+test_render_timer = executable(
+    'test_render_timer',
+    'test_render_timer.c',
+    '../src/render_timer.c',
+    include_directories: src_inc,
+)
+test('test_render_timer', test_render_timer)
+
 test_conf = executable(
     'test_conf',
     'test_conf.c',

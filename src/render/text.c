@@ -574,6 +574,8 @@ int kmscon_text_render(struct kmscon_text *txt)
 	if (!txt || !txt->rendering)
 		return -EINVAL;
 
+	txt->frame_damage_px =
+		(uint64_t)display_get_width(txt->disp) * display_get_height(txt->disp);
 	if (txt->ops->render)
 		ret = txt->ops->render(txt);
 	txt->rendering = false;
@@ -592,12 +594,16 @@ int kmscon_text_render(struct kmscon_text *txt)
  * the back buffer stays the back buffer. On a display with damage clips, a
  * commit without clips updates the whole plane.
  *
+ * txt->frame_queued records whether it swapped.
+ *
  * Returns: 0 on success, negative error code if the swap failed.
  */
 int kmscon_text_present(struct kmscon_text *txt)
 {
+	txt->frame_queued = false;
 	if (kmscon_text_render(txt) == KMSCON_TEXT_UNCHANGED && !display_need_commit(txt->disp))
 		return 0;
+	txt->frame_queued = true;
 	return display_swap(txt->disp);
 }
 

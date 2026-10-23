@@ -92,6 +92,15 @@ struct kmscon_text {
 	 */
 	struct tsm_frame_age age;
 	struct tsm_screen *drawn;
+
+	/*
+	 * The last frame kmscon_text_present() handled, for the render timer:
+	 * whether it queued a flip, and the pixels in its damage rectangles.
+	 * kmscon_text_render() sets the whole display, and a renderer that
+	 * knows its damage replaces it.
+	 */
+	bool frame_queued;
+	uint64_t frame_damage_px;
 };
 
 

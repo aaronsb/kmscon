@@ -266,7 +266,13 @@ static void print_help()
 		"\t                                      the underline color programs set\n"
 		"\t    --emoji-color                   [on]\n"
 		"\t                                      Draw emoji in color; off draws\n"
-		"\t                                      them as text in the foreground\n",
+		"\t                                      them as text in the foreground\n"
+		"\n"
+		"Debug Options:\n"
+		"\t    --render-timer <mode>           [none]\n"
+		"\t                                      Frames presented, CPU time and\n"
+		"\t                                      damage per frame: none, osd, log\n"
+		"\t                                      or both (osd: not yet drawn)\n",
 		"kmscon");
 	/*
 	 * 80 char line:
@@ -940,6 +946,52 @@ static const struct conf_type conf_grapheme_width = {
 };
 
 /*
+ * Render timer type
+ * Parses foot's render-timer values, `none`, `osd`, `log` or `both`.
+ */
+
+static void conf_default_render_timer(struct conf_option *opt)
+{
+	*(enum kmscon_conf_render_timer *)opt->mem = KMSCON_RENDER_TIMER_NONE;
+}
+
+static int conf_parse_render_timer(struct conf_option *opt, bool on, const char *arg)
+{
+	static const struct {
+		const char *name;
+		enum kmscon_conf_render_timer value;
+	} values[] = {
+		{"none", KMSCON_RENDER_TIMER_NONE},
+		{"osd", KMSCON_RENDER_TIMER_OSD},
+		{"log", KMSCON_RENDER_TIMER_LOG},
+		{"both", KMSCON_RENDER_TIMER_BOTH},
+	};
+	size_t i;
+
+	for (i = 0; i < sizeof(values) / sizeof(*values); i++) {
+		if (!strcmp(arg, values[i].name)) {
+			*(enum kmscon_conf_render_timer *)opt->mem = values[i].value;
+			return 0;
+		}
+	}
+	log_error("invalid 'render-timer' value '%s': expected none, osd, log or both", arg);
+	return -EFAULT;
+}
+
+static int conf_copy_render_timer(struct conf_option *opt, const struct conf_option *src)
+{
+	*(enum kmscon_conf_render_timer *)opt->mem = *(enum kmscon_conf_render_timer *)src->mem;
+	return 0;
+}
+
+static const struct conf_type conf_render_timer = {
+	.flags = CONF_HAS_ARG,
+	.set_default = conf_default_render_timer,
+	.parse = conf_parse_render_timer,
+	.copy = conf_copy_render_timer,
+};
+
+/*
  * Custom Afterchecks
  * Several other options have side-effects on other options. We use afterchecks
  * to enforce these. They're pretty simple. See below.
@@ -1218,6 +1270,10 @@ int kmscon_conf_new(struct conf_ctx **out)
 		CONF_OPTION_BOOL(0, "force-decoration-colors", &conf->force_decoration_colors,
 				 false),
 		CONF_OPTION_BOOL(0, "emoji-color", &conf->emoji_color, true),
+
+		/* Debug Options */
+		CONF_OPTION(0, 0, "render-timer", &conf_render_timer, NULL, NULL, NULL,
+			    &conf->render_timer, NULL),
 	};
 
 	ret = conf_ctx_new(&ctx, options, sizeof(options) / sizeof(*options), conf);

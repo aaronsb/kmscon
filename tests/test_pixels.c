@@ -42,6 +42,7 @@
 #undef LOG_SUBSYSTEM
 #include "../src/video/drm2d_render.c"
 #include "config.h"
+#include "box_model.h"
 
 void shl_module_ref(struct shl_module *module) {}
 void shl_module_unref(struct shl_module *module) {}
@@ -127,10 +128,18 @@ int display_blend(struct display *disp, const struct video_blend_req *req)
  * 'c' the box holds colour: a pixel whose red, green and blue differ;
  * 'm' the box holds no colour: every pixel grey, as a mask in the grey
  *     default foreground draws it.
+ * The mosaic check judges Braille, sextants and octants (#76):
+ * 'p' each cell holds the next codepoint of @cells, row by row, and is
+ *     box_model.h's sprite of it exactly: every pixel the sprite covers in
+ *     one colour, every other pixel in another, the same two colours across
+ *     the rectangle. A cell's blocks reach its edges exactly, so blocks in
+ *     neighbouring cells meet with nothing between them.
  */
 struct check {
 	char kind;
 	unsigned int col, row, cols, rows;
+	/* 'p': the cells' codepoints, UTF-8 */
+	const char *cells;
 };
 
 struct screen {
@@ -153,6 +162,8 @@ struct screen {
 	const struct check *checks;
 	/* optional: kmscon.conf's no-emoji-color */
 	bool no_emoji_color;
+	/* optional: the screen's size in cells, COLS x ROWS if 0 */
+	unsigned int cols, rows;
 };
 
 /* the ADR-102 decoration settings the deco-* screens configure */
@@ -238,6 +249,74 @@ static const struct check blocks_checks[] = {
 	{'h', 29, 4, 5, 1}, /* ... */
 	{0},
 };
+
+#define MOSAIC_BRAILLE_0 "⠀⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠠⠡⠢⠣⠤⠥⠦⠧⠨⠩⠪⠫⠬⠭⠮⠯⠰⠱⠲⠳⠴⠵⠶⠷⠸⠹⠺⠻⠼⠽⠾⠿"
+#define MOSAIC_BRAILLE_1 "⡀⡁⡂⡃⡄⡅⡆⡇⡈⡉⡊⡋⡌⡍⡎⡏⡐⡑⡒⡓⡔⡕⡖⡗⡘⡙⡚⡛⡜⡝⡞⡟⡠⡡⡢⡣⡤⡥⡦⡧⡨⡩⡪⡫⡬⡭⡮⡯⡰⡱⡲⡳⡴⡵⡶⡷⡸⡹⡺⡻⡼⡽⡾⡿"
+#define MOSAIC_BRAILLE_2 "⢀⢁⢂⢃⢄⢅⢆⢇⢈⢉⢊⢋⢌⢍⢎⢏⢐⢑⢒⢓⢔⢕⢖⢗⢘⢙⢚⢛⢜⢝⢞⢟⢠⢡⢢⢣⢤⢥⢦⢧⢨⢩⢪⢫⢬⢭⢮⢯⢰⢱⢲⢳⢴⢵⢶⢷⢸⢹⢺⢻⢼⢽⢾⢿"
+#define MOSAIC_BRAILLE_3 "⣀⣁⣂⣃⣄⣅⣆⣇⣈⣉⣊⣋⣌⣍⣎⣏⣐⣑⣒⣓⣔⣕⣖⣗⣘⣙⣚⣛⣜⣝⣞⣟⣠⣡⣢⣣⣤⣥⣦⣧⣨⣩⣪⣫⣬⣭⣮⣯⣰⣱⣲⣳⣴⣵⣶⣷⣸⣹⣺⣻⣼⣽⣾⣿"
+#define MOSAIC_SEXTANTS "🬀🬁🬂🬃🬄🬅🬆🬇🬈🬉🬊🬋🬌🬍🬎🬏🬐🬑🬒🬓🬔🬕🬖🬗🬘🬙🬚🬛🬜🬝🬞🬟🬠🬡🬢🬣🬤🬥🬦🬧🬨🬩🬪🬫🬬🬭🬮🬯🬰🬱🬲🬳🬴🬵🬶🬷🬸🬹🬺🬻"
+#define MOSAIC_OCTANTS_0 "𜴀𜴁𜴂𜴃𜴄𜴅𜴆𜴇𜴈𜴉𜴊𜴋𜴌𜴍𜴎𜴏𜴐𜴑𜴒𜴓𜴔𜴕𜴖𜴗𜴘𜴙𜴚𜴛𜴜𜴝𜴞𜴟𜴠𜴡𜴢𜴣𜴤𜴥𜴦𜴧𜴨𜴩𜴪𜴫𜴬𜴭𜴮𜴯𜴰𜴱𜴲𜴳𜴴𜴵𜴶𜴷𜴸𜴹𜴺𜴻𜴼𜴽𜴾𜴿"
+#define MOSAIC_OCTANTS_1 "𜵀𜵁𜵂𜵃𜵄𜵅𜵆𜵇𜵈𜵉𜵊𜵋𜵌𜵍𜵎𜵏𜵐𜵑𜵒𜵓𜵔𜵕𜵖𜵗𜵘𜵙𜵚𜵛𜵜𜵝𜵞𜵟𜵠𜵡𜵢𜵣𜵤𜵥𜵦𜵧𜵨𜵩𜵪𜵫𜵬𜵭𜵮𜵯𜵰𜵱𜵲𜵳𜵴𜵵𜵶𜵷𜵸𜵹𜵺𜵻𜵼𜵽𜵾𜵿"
+#define MOSAIC_OCTANTS_2 "𜶀𜶁𜶂𜶃𜶄𜶅𜶆𜶇𜶈𜶉𜶊𜶋𜶌𜶍𜶎𜶏𜶐𜶑𜶒𜶓𜶔𜶕𜶖𜶗𜶘𜶙𜶚𜶛𜶜𜶝𜶞𜶟𜶠𜶡𜶢𜶣𜶤𜶥𜶦𜶧𜶨𜶩𜶪𜶫𜶬𜶭𜶮𜶯𜶰𜶱𜶲𜶳𜶴𜶵𜶶𜶷𜶸𜶹𜶺𜶻𜶼𜶽𜶾𜶿"
+#define MOSAIC_OCTANTS_3 "𜷀𜷁𜷂𜷃𜷄𜷅𜷆𜷇𜷈𜷉𜷊𜷋𜷌𜷍𜷎𜷏𜷐𜷑𜷒𜷓𜷔𜷕𜷖𜷗𜷘𜷙𜷚𜷛𜷜𜷝𜷞𜷟𜷠𜷡𜷢𜷣𜷤𜷥"
+#define MOSAIC_SEXT_A "🬗🬗🬗🬗🬗🬗🬗🬗"
+#define MOSAIC_SEXT_B "🬤🬤🬤🬤🬤🬤🬤🬤"
+#define MOSAIC_OCT "𜶉𜶉𜶉𜶉𜶉𜶉𜶉𜶉"
+#define MOSAIC_DOTS "⣿⣿⣿⣿⣿⣿⣿⣿"
+#define MOSAIC_WAVE_0 "⠀⡠⠔⠉⠉⠑⠤⡀⠀⠀⠀⠀⠀⠀⠀⠀"
+#define MOSAIC_WAVE_1 "⠜⠀⠀⠀⠀⠀⠀⠈⢢⠀⠀⠀⠀⠀⠀⢀"
+#define MOSAIC_WAVE_2 "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠑⠢⣀⣀⡠⠒⠁"
+#define MOSAIC_SEXT_BAND_0 "🬭🬭🬭🬭"
+#define MOSAIC_SEXT_BAND_1 "🬰🬰🬰🬰"
+#define MOSAIC_SEXT_BAND_2 "🬂🬂🬂🬂"
+#define MOSAIC_OCT_BAND_0 "𜷋𜷋𜷋𜷋"
+#define MOSAIC_OCT_BAND_1 "𜷒𜷒𜷒𜷒"
+#define MOSAIC_OCT_BAND_2 "𜴂𜴂𜴂𜴂"
+
+/*
+ * Braille, sextants and octants (#76): every Braille pattern, sextant and
+ * octant in codepoint order, then figures stacked across cells: checkerboards
+ * of sextants and octants, a grid of eight-dot Braille, a Braille wave, and
+ * bands of sextants and octants that cross the cell boundaries; then the
+ * checkerboards and the grid in yellow on blue.
+ */
+#define MOSAIC_BYTES                                                                               \
+	"braille " MOSAIC_BRAILLE_0 "\r\n        " MOSAIC_BRAILLE_1                                \
+	"\r\n        " MOSAIC_BRAILLE_2 "\r\n        " MOSAIC_BRAILLE_3                            \
+	"\r\nsextants" MOSAIC_SEXTANTS "\r\noctants " MOSAIC_OCTANTS_0                             \
+	"\r\n        " MOSAIC_OCTANTS_1 "\r\n        " MOSAIC_OCTANTS_2                            \
+	"\r\n        " MOSAIC_OCTANTS_3 "\r\n\r\n" MOSAIC_SEXT_A " " MOSAIC_OCT " " MOSAIC_DOTS    \
+	" " MOSAIC_WAVE_0 " " MOSAIC_SEXT_BAND_0 " " MOSAIC_OCT_BAND_0 "\r\n" MOSAIC_SEXT_B        \
+	" " MOSAIC_OCT " " MOSAIC_DOTS " " MOSAIC_WAVE_1 " " MOSAIC_SEXT_BAND_1                    \
+	" " MOSAIC_OCT_BAND_1 "\r\n" MOSAIC_SEXT_A " " MOSAIC_OCT " " MOSAIC_DOTS                  \
+	" " MOSAIC_WAVE_2 " " MOSAIC_SEXT_BAND_2 " " MOSAIC_OCT_BAND_2 "\r\n\r\n" ESC              \
+	"[33;44m" MOSAIC_SEXT_A " " MOSAIC_OCT " " MOSAIC_DOTS "\r\n" MOSAIC_SEXT_B " " MOSAIC_OCT \
+	" " MOSAIC_DOTS ESC "[0m"
+
+static const struct check mosaic_checks[] = {
+	{'p', 8, 0, 64, 4, MOSAIC_BRAILLE_0 MOSAIC_BRAILLE_1 MOSAIC_BRAILLE_2 MOSAIC_BRAILLE_3},
+	{'p', 8, 4, 60, 1, MOSAIC_SEXTANTS},
+	{'p', 8, 5, 64, 3, MOSAIC_OCTANTS_0 MOSAIC_OCTANTS_1 MOSAIC_OCTANTS_2},
+	{'p', 8, 8, 38, 1, MOSAIC_OCTANTS_3},
+	{'p', 0, 10, 8, 3, MOSAIC_SEXT_A MOSAIC_SEXT_B MOSAIC_SEXT_A},
+	{'p', 9, 10, 8, 3, MOSAIC_OCT MOSAIC_OCT MOSAIC_OCT},
+	{'p', 18, 10, 8, 3, MOSAIC_DOTS MOSAIC_DOTS MOSAIC_DOTS},
+	{'p', 27, 10, 16, 3, MOSAIC_WAVE_0 MOSAIC_WAVE_1 MOSAIC_WAVE_2},
+	{'p', 44, 10, 4, 3, MOSAIC_SEXT_BAND_0 MOSAIC_SEXT_BAND_1 MOSAIC_SEXT_BAND_2},
+	{'p', 49, 10, 4, 3, MOSAIC_OCT_BAND_0 MOSAIC_OCT_BAND_1 MOSAIC_OCT_BAND_2},
+	{'p', 0, 14, 8, 2, MOSAIC_SEXT_A MOSAIC_SEXT_B},
+	{'p', 9, 14, 8, 2, MOSAIC_OCT MOSAIC_OCT},
+	{'p', 18, 14, 8, 2, MOSAIC_DOTS MOSAIC_DOTS},
+	{0},
+};
+
+#define MOSAIC_DESC                                                                                \
+	"Every Braille pattern, sextant and octant in codepoint order; then checkerboards of "     \
+	"sextants and of octants, a grid of eight-dot Braille, a Braille wave, and sextant and "   \
+	"octant bands that cross the boundaries between rows; then the checkerboards and grid in " \
+	"yellow on blue. Correct: square dots on the same 2x4 grid in every cell; blocks on exact" \
+	" halves and thirds or quarters of the cell, so the checkerboards and bands run across "   \
+	"cells with no seam."
 
 #define BLOCKS_DESC                                                                                \
 	"Block elements and box drawing stacked across rows and columns: full blocks, halves "     \
@@ -450,6 +529,24 @@ static const struct screen screens[] = {
 		     " whose line height has spacing beyond its glyphs.",
 	 BLOCKS_BYTES, NULL, NULL, 22, 6, blocks_checks},
 
+	/* #76: Braille dots and mosaic blocks on the cell's grid */
+	{.name = "mosaic",
+	 .desc = MOSAIC_DESC " The cell is the font's own line height.",
+	 .bytes = MOSAIC_BYTES,
+	 .checks = mosaic_checks,
+	 .cols = 72,
+	 .rows = 16},
+	{.name = "mosaic-spaced",
+	 .desc = MOSAIC_DESC
+	 " The cell is 6 pixel rows taller than the font's line height, as with "
+	 "a font whose line height has spacing beyond its glyphs.",
+	 .bytes = MOSAIC_BYTES,
+	 .px = 22,
+	 .spacing = 6,
+	 .checks = mosaic_checks,
+	 .cols = 72,
+	 .rows = 16},
+
 	/* ADR-102 step 4c: colour emoji fitted to their cells */
 	{"emoji",
 	 EMOJI_DESC " Correct: each emoji in colour, whole and centred in its two cells with a "
@@ -544,6 +641,63 @@ static const char *check_box(char kind, unsigned int x0, unsigned int y0, unsign
 	return NULL;
 }
 
+/* the codepoint at *@s, which moves past it */
+static uint32_t utf8_next(const char **s)
+{
+	const unsigned char *p = (const unsigned char *)*s;
+	unsigned int n = *p < 0x80 ? 1 : *p < 0xe0 ? 2 : *p < 0xf0 ? 3 : 4;
+	uint32_t cp = n == 1 ? *p : *p & (0x3f >> (n - 1));
+
+	for (unsigned int i = 1; i < n; i++)
+		cp = cp << 6 | (p[i] & 0x3f);
+	*s += n;
+	return cp;
+}
+
+/* a 'p' check on the cells at @col, @row; NULL if it holds */
+static const char *check_mosaic(const struct check *c, unsigned int cw, unsigned int ch)
+{
+	static const char *const bad[2] = {
+		"a pixel the sprite leaves clear is not the background",
+		"a pixel the sprite covers is not the ink colour",
+	};
+	uint8_t *want = malloc((size_t)cw * ch);
+	const char *s = c->cells, *why = NULL;
+	uint32_t on = 0, off = 0;
+	bool seen_on = false, seen_off = false;
+
+	assert(want);
+	for (unsigned int r = 0; r < c->rows && !why; r++) {
+		for (unsigned int k = 0; k < c->cols && !why; k++) {
+			uint32_t cp = *s ? utf8_next(&s) : 0;
+			unsigned int x0 = (c->col + k) * cw, y0 = (c->row + r) * ch;
+
+			if (!model_render(cp, cw, ch, want)) {
+				why = "the check names a codepoint with no model";
+				break;
+			}
+			for (unsigned int i = 0; i < cw * ch && !why; i++) {
+				uint32_t p = fb[(y0 + i / cw) * fb_w + x0 + i % cw];
+				uint32_t *ref = want[i] ? &on : &off;
+				bool *seen = want[i] ? &seen_on : &seen_off;
+
+				if (!*seen) {
+					*ref = p;
+					*seen = true;
+				} else if (p != *ref) {
+					why = bad[!!want[i]];
+				}
+			}
+		}
+	}
+	if (!why && *s)
+		why = "the check names more codepoints than it has cells";
+	if (!why && seen_on && seen_off && on == off)
+		why = "ink and background are the same colour";
+	free(want);
+	return why;
+}
+
 /* @s's checks against the buffer last drawn, @cw x @ch cells; 0 if all hold */
 static int run_checks(const struct screen *s, unsigned int cw, unsigned int ch)
 {
@@ -554,8 +708,9 @@ static int run_checks(const struct screen *s, unsigned int cw, unsigned int ch)
 		unsigned int x0 = c->col * cw, x1 = (c->col + c->cols) * cw;
 		unsigned int y0 = c->row * ch, y1 = (c->row + c->rows) * ch;
 
-		if (c->kind == 'b' || c->kind == 'c' || c->kind == 'm') {
-			const char *why = check_box(c->kind, x0, y0, x1, y1);
+		if (c->kind == 'b' || c->kind == 'c' || c->kind == 'm' || c->kind == 'p') {
+			const char *why = c->kind == 'p' ? check_mosaic(c, cw, ch)
+							 : check_box(c->kind, x0, y0, x1, y1);
 
 			if (why) {
 				fprintf(stderr, "test_pixels: %s: check %c on cells %u,%u +%ux%u fails: %s\n",
@@ -634,7 +789,7 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	ret = tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL);
 	assert(ret == 0);
 	tsm_vte_set_palette(vte, "default");
-	ret = tsm_screen_resize(con, COLS, ROWS);
+	ret = tsm_screen_resize(con, s->cols ? s->cols : COLS, s->rows ? s->rows : ROWS);
 	assert(ret == 0);
 
 	/* hidden cursor: its blink state is not part of what is compared */
@@ -645,7 +800,7 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	assert(ret == 0);
 	ret = kmscon_text_set(txt, font);
 	assert(ret == 0);
-	assert(txt->cols == COLS && txt->rows == ROWS);
+	assert(txt->cols == (s->cols ? s->cols : COLS) && txt->rows == (s->rows ? s->rows : ROWS));
 
 	draw_frame(txt, con, vte, s->conf);
 	if (s->next) {
@@ -739,7 +894,7 @@ static void check_font_files(struct kmscon_font *font, const char *font_dir)
 
 /*
  * Draw @s with the pinned font at its size and line spacing, into a
- * framebuffer of COLS x ROWS of its cells.
+ * framebuffer of its size in cells, COLS x ROWS by default.
  */
 static int run_screen(const struct screen *s, const char *font_dir, const char *out_dir)
 {
@@ -759,8 +914,8 @@ static int run_screen(const struct screen *s, const char *font_dir, const char *
 	font->height += s->spacing;
 	font->emoji_color = !s->no_emoji_color;
 
-	fb_w = COLS * font->width;
-	fb_h = ROWS * font->height;
+	fb_w = (s->cols ? s->cols : COLS) * font->width;
+	fb_h = (s->rows ? s->rows : ROWS) * font->height;
 	fb = calloc((size_t)fb_w * fb_h, sizeof(*fb));
 	fb_back = calloc((size_t)fb_w * fb_h, sizeof(*fb));
 	assert(fb && fb_back);

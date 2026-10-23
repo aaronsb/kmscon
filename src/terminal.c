@@ -557,10 +557,16 @@ static int font_set(struct kmscon_terminal *term, unsigned int new_size)
 	int ret;
 	struct kmscon_font *font;
 
+retry:
 	ret = kmscon_font_find(&font, term->conf->font_name, new_size, term->conf->font_engine);
-	if (ret)
+	if (ret) {
+		/* if it fails due to incorrect size, retry with 16px */
+		if (!term->font) {
+			new_size = 16;
+			goto retry;
+		}
 		return ret;
-
+	}
 	kmscon_font_unref(term->font);
 	term->font = font;
 	term->font_size = new_size;
@@ -739,14 +745,12 @@ static bool terminal_update_size(struct kmscon_terminal *term)
 	if (term->auto_font_size) {
 		unsigned int new_font_size = terminal_get_auto_font_size(term);
 
-		if (new_font_size != term->font_size) {
+		if (new_font_size != term->font_size)
 			font_set(term, new_font_size);
-			font_update_all(term);
-		}
-	} else if (!term->font) {
+	} else if (!term->font)
 		font_set(term, term->font_size);
-		font_update_all(term);
-	}
+
+	font_update_all(term);
 
 	if (term->conf->multi_monitor && !strcmp(term->conf->multi_monitor, "largest")) {
 		terminal_update_size_largest(term);
@@ -1195,6 +1199,9 @@ static void pointer_event(struct input *input, struct input_pointer_event *ev, v
 {
 	struct kmscon_terminal *term = data;
 
+	if (!term->opened || !term->awake || !kmscon_session_get_foreground(term->session))
+		return;
+
 	if (ev->event == POINTER_MOVED) {
 		term->pointer.x = ev->pointer_x;
 		term->pointer.y = ev->pointer_y;
@@ -1259,14 +1266,32 @@ static void rm_all_screens(struct kmscon_terminal *term)
 	term->rows = 0;
 }
 
-static void kmscon_issue_write(struct kmscon_terminal *term)
+static void get_pty_str(struct kmscon_terminal *term, char *buf, size_t buflen)
 {
 	char pty_name[128] = {0};
+	const char *short_pty_name;
+	const char *prefix = "/dev/";
+
+	kmscon_pty_get_slave_name(term->pty, pty_name, sizeof(pty_name));
+	short_pty_name = shl_strip_prefix(prefix, pty_name);
+
+	if (term->conf->vt)
+		snprintf(buf, buflen, "%s (%s)", short_pty_name,
+			 shl_strip_prefix(prefix, term->conf->vt));
+	else
+		strncpy(buf, short_pty_name, buflen);
+}
+
+static void kmscon_issue_write(struct kmscon_terminal *term)
+{
+
+	char pty_str[128] = {0};
 	char *issue;
 	size_t issue_len;
 
-	kmscon_pty_get_slave_name(term->pty, pty_name, sizeof(pty_name));
-	issue = kmscon_issue_get_buffer(term->conf->issue_path, pty_name, &issue_len);
+	get_pty_str(term, pty_str, sizeof(pty_str));
+
+	issue = kmscon_issue_get_buffer(term->conf->issue_path, pty_str, &issue_len);
 	if (!issue || !issue_len)
 		return;
 

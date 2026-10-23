@@ -37,7 +37,6 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <zlib.h>
 #include "font.h"
 #include "shl/log.h"
@@ -377,6 +376,7 @@ uint8_t psf2_unicode_table_parse(unicode_table_t *self, void *file)
 	uint32_t ucode_idx = 0;
 	uint32_t ucode_size;
 	uint16_t ch = 0;
+	uint8_t len;
 
 	union {
 		uint32_t val;
@@ -392,14 +392,14 @@ uint8_t psf2_unicode_table_parse(unicode_table_t *self, void *file)
 				ch++;
 				break;
 			default:
-				uint8_t i = utf8_len(code.map[0]);
-				if (i) {
-					code.val = ((uint32_t)(code.map[0] & (0xFF >> (2 + i)))
-						    << i * 6);
+				len = utf8_len(code.map[0]);
+				if (len) {
+					code.val = ((uint32_t)(code.map[0] & (0xFF >> (2 + len)))
+						    << len * 6);
 
-					for (; i; i--)
+					for (; len; len--)
 						code.val |= ((uint32_t)(ucode[ucode_idx++] & 0x3f)
-							     << (i - 1) * 6);
+							     << (len - 1) * 6);
 				}
 
 				if (unicode_table_add(self, code.val, ch))

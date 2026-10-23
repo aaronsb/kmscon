@@ -340,20 +340,63 @@ MODES_OFF="$E[?1000l$E[?1002l$E[?1003l$E[?1005l$E[?1006l$E[?1015l$E[?1004l$E[?20
 bg_pids=()
 audio_pid=
 
-# Waits for background process $1, reading keys: q ends the show. A mouse
-# report (ESC [ M and three bytes, while mpv has tracking on) is read whole
-# and dropped, so a byte of its coordinates is never taken for q.
-wait_bg() {
-	local k
-	while kill -0 "$1" 2>/dev/null; do
-		IFS= read -rsn1 -t 0.1 k || continue
+# The keys read while a player runs, one byte at a time: q ends the show.
+# While mpv has mouse tracking on, the terminal sends reports as input: X10
+# (ESC [ M and three bytes, any of which can be q, as column or row 81 is)
+# and SGR (ESC [ < digits and semicolons, then M or m). A report is dropped
+# only once it is whole, and keybuf carries a partial one from one read to
+# the next; bytes that turn out not to be a report are taken as keys.
+keybuf=
+take_key() {
+	local LC_ALL=C k=$1 s i
+	local partial='^'$E'(\[(M.{0,2}|<[0-9;]*)?)?$' whole='^'$E'\[(M...|<[0-9;]*[Mm])$'
+	if [ -z "$keybuf" ]; then
 		if [ "$k" = "$E" ]; then
-			IFS= read -rsn5 -t 0.05 k || true
+			keybuf=$E
 		elif [[ $k == [qQ] ]]; then
 			exit 0
 		fi
+		return 0
+	fi
+	keybuf+=$k
+	if [[ $keybuf =~ $whole ]]; then
+		keybuf=
+	elif [[ ! $keybuf =~ $partial ]]; then
+		s=${keybuf#"$E"}
+		keybuf=
+		for ((i = 0; i < ${#s}; i++)); do
+			take_key "${s:i:1}"
+		done
+	fi
+}
+
+read_key() { LC_ALL=C IFS= read -rsn1 -d '' -t "$1" k; }
+
+# Waits for background process $1, reading keys through take_key.
+wait_bg() {
+	local k
+	while kill -0 "$1" 2>/dev/null; do
+		read_key 0.1 || continue
+		take_key "$k"
 	done
 	wait "$1" 2>/dev/null || true
+}
+
+# After a player stops: turns its mouse tracking off, in case it did not
+# (#88), then reads what the terminal sent before that took effect through
+# take_key, until 0.2 s pass with no input and no partial report (1 s at
+# most), so no report reaches fx.py's keys, which take any q as quit.
+player_done() {
+	local k end=$((${EPOCHREALTIME/./} + 1000000))
+	printf '%s' "$MODES_OFF"
+	while ((${EPOCHREALTIME/./} < end)); do
+		if read_key 0.2; then
+			take_key "$k"
+		elif [ -z "$keybuf" ]; then
+			break
+		fi
+	done
+	keybuf=
 }
 
 stop_bg() {
@@ -479,13 +522,20 @@ ask_winops() {
 
 # The cell size in the answers to XTWINOPS 16 (CSI 6 ; height ; width t),
 # else XTWINOPS 14 (CSI 4 ; height ; width t, the text area) over the cells.
+# Numbers are read as decimal whatever their leading zeros, and a cell is
+# kept within 1 to 1000 pixels a side.
 winops_cell() {
-	if [[ $1 =~ \[6\;([0-9]+)\;([0-9]+)t ]] && [ "${BASH_REMATCH[1]}" -gt 0 ] && [ "${BASH_REMATCH[2]}" -gt 0 ]; then
-		cell_h=${BASH_REMATCH[1]}
-		cell_w=${BASH_REMATCH[2]}
-	elif [[ $1 =~ \[4\;([0-9]+)\;([0-9]+)t ]] && [ "${BASH_REMATCH[1]}" -ge "$screen_rows" ] && [ "${BASH_REMATCH[2]}" -ge "$screen_cols" ]; then
-		cell_h=$((BASH_REMATCH[1] / screen_rows))
-		cell_w=$((BASH_REMATCH[2] / screen_cols))
+	local h=0 w=0
+	if [[ $1 =~ \[6\;([0-9]{1,9})\;([0-9]{1,9})t ]]; then
+		h=$((10#${BASH_REMATCH[1]}))
+		w=$((10#${BASH_REMATCH[2]}))
+	elif [[ $1 =~ \[4\;([0-9]{1,9})\;([0-9]{1,9})t ]]; then
+		h=$((10#${BASH_REMATCH[1]} / screen_rows))
+		w=$((10#${BASH_REMATCH[2]} / screen_cols))
+	fi
+	if [ "$h" -gt 0 ] && [ "$w" -gt 0 ]; then
+		cell_h=$((h > 1000 ? 1000 : h))
+		cell_w=$((w > 1000 ? 1000 : w))
 	fi
 }
 
@@ -641,6 +691,7 @@ act_5() {
 	bg_pids=($!)
 	wait_bg "${bg_pids[0]}"
 	bg_pids=()
+	player_done
 	pause "$ACT5_HOLD"
 }
 
@@ -692,6 +743,7 @@ act_7() {
 	bg_pids+=($!)
 	wait_bg "${bg_pids[1]}"
 	stop_bg
+	player_done
 	printf '%s_Ga=d,d=A%s' "$E" "$ST"
 	clear_screen
 }

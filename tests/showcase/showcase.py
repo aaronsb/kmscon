@@ -150,11 +150,53 @@ def main():
                   p.stdout.strip() == want, p.stdout + p.stderr)
         # The cell size from XTWINOPS 16, else 14 over the cells.
         for reply, want in (("\x1b[4;2128;7676t\x1b[6;38;19t\x1b[?62;4c", "19 38"),
-                            ("\x1b[4;2128;7676t\x1b[?62;4c", "19 38"), ("\x1b[?62;4c", "0 0")):
+                            ("\x1b[4;2128;7676t\x1b[?62;4c", "19 38"), ("\x1b[?62;4c", "0 0"),
+                            ("\x1b[6;038;019t", "19 38"), ("\x1b[6;99999;7t", "7 1000"),
+                            ("\x1b[6;0;19t", "0 0")):
             p = shell('screen_cols=404 screen_rows=56 cell_w=0 cell_h=0; winops_cell "$REPLY"; echo $cell_w $cell_h',
                       REPLY=reply)
             check(f"XTWINOPS answers {reply.replace(chr(27), 'ESC')} give the cell {want}",
                   p.stdout.strip() == want, p.stdout + p.stderr)
+
+        # While a player runs, keys are read through a filter that drops the
+        # mouse reports mpv's tracking sends, whole or split across reads,
+        # and keeps q as quit; after it, the modes go off and what the
+        # terminal had already sent is read through the same filter (#88).
+        def keys(code, feed):
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.execve("/bin/bash", ["bash", "-c", 'source "$1"; fx_py=$here/fx.py; '
+                                        "stty -echo -icanon min 1 time 0; " + code + "; echo SURVIVED",
+                                        "sh", script], env)
+            time.sleep(0.3)
+            for chunk in feed:
+                os.write(fd, chunk)
+                time.sleep(0.08)
+            got = b""
+            while True:
+                r, _, _ = select.select([fd], [], [], 5)
+                try:
+                    d = os.read(fd, 4096) if r else b""
+                except OSError:
+                    break
+                if not d:
+                    break
+                got += d
+            os.waitpid(pid, 0)
+            return got
+        report = b"\x1b[M#q5"  # a press at column 81 (q), row 21
+        for name, feed, survives in (
+                ("a mouse report at column 81 is dropped", [report], True),
+                ("a report split across reads is dropped", [b"\x1b[", b"M#", b"q5"], True),
+                ("an SGR report is dropped", [b"\x1b[<0;81;21M"], True),
+                ("q quits", [b"q"], False),
+                ("q right after Esc quits", [b"\x1bq"], False),
+                ("q after an arrow key quits", [b"\x1b[A", b"q"], False)):
+            got = keys("sleep 1.5 & wait_bg $!", feed)
+            check(f"while a player runs, {name}", (b"SURVIVED" in got) == survives, repr(got[-120:]))
+        got = keys("sleep 0.6; player_done; IFS= read -rsn1 -t 0.3 k && echo LEFT", [report])
+        check("after a player, tracking goes off and a report already sent is read and dropped",
+              b"SURVIVED" in got and b"\x1b[?1003l" in got and b"LEFT" not in got, repr(got[-200:]))
 
         # Quitting turns off mouse tracking and the other report modes a
         # killed mpv leaves on (#88). Act 4 needs python3 alone.

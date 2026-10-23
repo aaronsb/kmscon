@@ -384,15 +384,15 @@ wait_bg() {
 
 # After a player stops: turns its mouse tracking off, in case it did not
 # (#88), then reads what the terminal sent before that took effect through
-# take_key, until 0.2 s pass with no input and no partial report (1 s at
-# most), so no report reaches fx.py's keys, which take any q as quit.
+# take_key, until 0.2 s pass with no input and no partial report, or stdin
+# ends (1 s at most), so no report reaches fx.py's keys, which take any q as quit.
 player_done() {
-	local k end=$((${EPOCHREALTIME/./} + 1000000))
+	local k end=$((${EPOCHREALTIME//[!0-9]/} + 1000000))
 	printf '%s' "$MODES_OFF"
-	while ((${EPOCHREALTIME/./} < end)); do
+	while ((${EPOCHREALTIME//[!0-9]/} < end)); do
 		if read_key 0.2; then
 			take_key "$k"
-		elif [ -z "$keybuf" ]; then
+		elif (($? <= 128)) || [ -z "$keybuf" ]; then
 			break
 		fi
 	done

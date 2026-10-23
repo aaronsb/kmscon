@@ -198,6 +198,15 @@ def main():
         check("after a player, tracking goes off and a report already sent is read and dropped",
               b"SURVIVED" in got and b"\x1b[?1003l" in got and b"LEFT" not in got, repr(got[-200:]))
 
+        # With half a report buffered and stdin closed, the drain stops at
+        # once; it used to spin for its second, writing read errors.
+        start = time.monotonic()
+        p = shell('keybuf=$E[; player_done 0<&- 2>&1 | wc -c')
+        took = time.monotonic() - start
+        check("after a player, a closed stdin ends the drain at once",
+              p.returncode == 0 and int(p.stdout.strip() or 0) < 1000 and took < 0.9,
+              f"{p.stdout.strip()} bytes in {took:.2f} s {p.stderr}")
+
         # Quitting turns off mouse tracking and the other report modes a
         # killed mpv leaves on (#88). Act 4 needs python3 alone.
         pid, fd = pty.fork()

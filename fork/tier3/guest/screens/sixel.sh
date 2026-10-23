@@ -2,27 +2,37 @@
 # look-for: Left: bars red, yellow, green, cyan, blue, magenta, white and grey
 # look-for: over a checkerboard, TEXT across the checkerboard as text. Right: a
 # look-for: blue disc in an orange ring, the text behind it showing past its edge.
-# look-for: Below: six discs, each above its name: red, green, blue, cyan,
-# look-for: magenta and yellow. Each picture fills whole cells.
+# look-for: Below: seven discs, red, green, blue, cyan, magenta, yellow and
+# look-for: orange, each with a square of text cells in its colour to its right
+# look-for: and its name under both; then the same pairs as squares on mid-grey.
+# look-for: Each disc matches its square. Each picture fills whole cells.
 # wrong-looks-like: No pictures (stock kmscon has no sixel; the page says so), a
-# wrong-looks-like: disc not the colour of its name, a ring that is not orange,
-# wrong-looks-like: bars out of order, a box hiding the text around the ring, bars
-# wrong-looks-like: behind TEXT, or a picture running into its label or the row below.
+# wrong-looks-like: disc or square not the colour of its name, a disc unlike its
+# wrong-looks-like: square (kmscon draws one path wrong; both off alike is the
+# wrong-looks-like: display), bars out of order, a box hiding the text around the
+# wrong-looks-like: ring, bars behind TEXT, or a picture running into a label.
 # screen-text: none, sixel pictures and cursor moves do not print as rows
 # Sixel graphics (DCS q ... ST) drawn through the pty, as a program such as
 # img2sixel sends them. The pictures are made here at run time, sized in
 # whole cells from the cell size the terminal reports (XTWINOPS 16): the bars
-# 8 columns by 2 rows, the ring 4 by 2 and each disc 3 by 2, so they line up
-# with the text at any font size. Without an answer they are made for 12x24
-# cells, which the page says. The bars are opaque: the letters written over
-# them afterwards remove the picture under their cells. The ring and the
-# discs have transparent pixels (P2=1); the ring is drawn over text already
-# on the screen, which shows outside it. The six discs are the primaries and
-# secondaries at full strength, as sixel RGB percentages (#R;2;r;g;b):
-# red 100;0;0, green 0;100;0, blue 0;0;100, cyan 0;100;100, magenta
-# 100;0;100, yellow 100;100;0. The ring is orange, 100;50;0, around blue
-# 0;0;100. The tier 3 goldens are compared exactly, so they pin each colour.
-# The last line is the cell size the terminal reports.
+# 8 columns by 2 rows, the ring 4 by 2, each disc 3 by 2 and each swatch 4 by
+# 3, so they line up with the text at any font size. Without an answer they
+# are made for 12x24 cells, which the page says. The bars and swatches are
+# opaque: the letters written over the bars afterwards remove the picture
+# under their cells. The ring and the discs have transparent pixels (P2=1);
+# the ring is drawn over text already on the screen, which shows outside it.
+# The discs and swatches are the primaries, the secondaries and the ring's
+# orange, as sixel RGB percentages (#R;2;r;g;b): red 100;0;0, green 0;100;0,
+# blue 0;0;100, cyan 0;100;100, magenta 100;0;100, yellow 100;100;0, orange
+# 100;50;0; the ring is orange around blue 0;0;100. Beside each, the same
+# colour comes through the text path as a background (SGR 48;2;r;g;b) on
+# spaces, in 8 bits: 255 for 100%, 128 for 50% (127.5, which kmscon rounds
+# up). The two paths share nothing before the display, so a disc unlike its
+# square is a kmscon fault, and a pair off alike is the display's doing: a
+# colour profile, or dimming of a small bright patch on a black screen. The
+# swatches repeat the pairs on mid-grey (128;128;128), so no colour is judged
+# against black alone. The tier 3 goldens are compared exactly, so they pin
+# each colour. The last line is the cell size the terminal reports.
 esc=$'\033'
 # the sixel data characters, for the six-pixel columns 0 to 63
 six='?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~'
@@ -149,28 +159,78 @@ circles() {
 	printf '%s' "$s$esc\\"
 }
 
+# An opaque sixel picture $1 by $2 pixels in one colour (r,g,b percentages).
+swatch() {
+	local w=$1 h=$2 y s=$esc'Pq"1;1;'$1';'$2"#1;2;${3//,/;}"
+	for ((y = 0; y < h; y += 6)); do
+		bits $y 0 $((h - 1))
+		s+="#1!$w${six:m:1}\$-"
+	done
+	printf '%s' "$s$esc\\"
+}
+
+# $2 cells of colour $1 (r,g,b, 0 to 255) through the text path: spaces on
+# an SGR 48;2 background.
+block() {
+	printf '%s[48;2;%sm%*s%s[0m' "$esc" "${1//,/;}" "$2" '' "$esc"
+}
+
+# The colours of the discs and swatches, as sixel percentages and as the
+# 8-bit values of their text twins.
+names=(red green blue cyan magenta yellow orange)
+pct=(100,0,0 0,100,0 0,0,100 0,100,100 100,0,100 100,100,0 100,50,0)
+rgb=(255,0,0 0,255,0 0,0,255 0,255,255 255,0,255 255,255,0 255,128,0)
+grey=128,128,128
+
 # The text first, then the pictures over it, each placed from the saved
-# cursor at the start of the third row.
+# cursor at the start of the third row. Each colour has a slot 10 columns
+# wide from column 3: its disc, then its text square one column further; on
+# the grey band its swatch, then its text square touching it.
 printf 'Sixel pictures, sent through the pty as a program sends them:\n\n'
 for i in 1 2 3 4; do
 	printf '%38s%s\n' '' 'text behind the ring shows past its edge'
 done
 printf '%38s%s\n\n' '' 'The ring is orange: red 100%, green 50%.'
-printf 'Primaries and secondaries, each component at 100%% or 0%%:\n\n\n'
-printf '  %-10s%-10s%-10s%-10s%-10s%s\n' red green blue cyan magenta yellow
-printf '%s[10A%s7  ' "$esc" "$esc"
+printf 'Each colour as a sixel disc, then as text (SGR 48;2); the two should match:\n'
+for r in 1 2; do
+	printf '  '
+	for k in "${!rgb[@]}"; do
+		printf '%4s' ''
+		block ${rgb[k]} 3
+		printf '%3s' ''
+	done
+	printf '\n'
+done
+printf '  '
+printf '%-10s' "${names[@]}"
+printf '\n\nThe same on mid-grey: sixel left, text right, each 4 cells by 3:\n'
+block $grey 72
+printf '\n'
+for r in 1 2 3; do
+	block $grey 2
+	for k in "${!rgb[@]}"; do
+		block $grey 4
+		block ${rgb[k]} 4
+		block $grey 2
+	done
+	printf '\n'
+done
+printf '%s[30;48;2;%sm  ' "$esc" "${grey//,/;}"
+printf '%-10s' "${names[@]}"
+printf '%s[0m\n\n' "$esc"
+printf '%s[18A%s7  ' "$esc" "$esc"
 bars
 printf '%s8%s[B%s[6CTEXT' "$esc" "$esc" "$esc"
 d=$((4 * cw < 2 * ch ? 4 * cw : 2 * ch))
 printf '%s8%s[B%s[40C' "$esc" "$esc" "$esc"
 circles $((4 * cw)) $((2 * ch)) 100,50,0 $d 0,0,100 $((d / 2))
 d=$((3 * cw < 2 * ch ? 3 * cw : 2 * ch))
-i=2
-for rgb in 100,0,0 0,100,0 0,0,100 0,100,100 100,0,100 100,100,0; do
-	printf '%s8%s[7B%s[%dC' "$esc" "$esc" "$esc" $i
-	circles $((3 * cw)) $((2 * ch)) $rgb $d
-	((i += 10))
+for k in "${!pct[@]}"; do
+	printf '%s8%s[7B%s[%dC' "$esc" "$esc" "$esc" $((2 + 10 * k))
+	circles $((3 * cw)) $((2 * ch)) ${pct[k]} $d
+	printf '%s8%s[13B%s[%dC' "$esc" "$esc" "$esc" $((2 + 10 * k))
+	swatch $((4 * cw)) $((3 * ch)) ${pct[k]}
 done
-printf '%s8%s[11B' "$esc" "$esc"
+printf '%s8%s[18B' "$esc" "$esc"
 [ "$note" ] && printf '%s\n' "$note"
 printf 'Cells of %sx%s pixels, as XTWINOPS 16 reports them.\n' "${rw:-?}" "${rh:-?}"

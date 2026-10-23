@@ -105,7 +105,6 @@ int drm_display_swap(struct display *disp, uint32_t fb);
 bool drm_is_swapping(struct display *disp);
 void drm_display_free_properties(struct display *disp);
 void drm_display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages);
-bool drm_display_has_damage(struct display *disp);
 
 /* drm video */
 

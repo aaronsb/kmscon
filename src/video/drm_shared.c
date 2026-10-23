@@ -825,13 +825,6 @@ void drm_display_set_damage(struct display *disp, size_t n_rect, struct video_re
 		log_warn("Cannot create damage property %d, [%zu]", ret, n_rect);
 }
 
-bool drm_display_has_damage(struct display *disp)
-{
-	struct drm_display *ddrm = disp->data;
-
-	return ddrm->damage_blob_id != 0;
-}
-
 int drm_display_wait_pflip(struct display *disp)
 {
 	struct video *video = disp->video;

@@ -411,17 +411,6 @@ void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *
 }
 
 SHL_EXPORT
-bool display_has_damage(struct display *disp)
-{
-	if (!disp || !display_is_online(disp) || !video_is_awake(disp->video))
-		return false;
-
-	if (disp->ops->has_damage)
-		return disp->ops->has_damage(disp);
-	return false;
-}
-
-SHL_EXPORT
 int video_new(struct video **out, struct ev_eloop *eloop, int fd, const char *backend,
 	      struct video_cb *cb, void *data, bool use_original, const char *pathname)
 {

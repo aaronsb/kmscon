@@ -120,12 +120,6 @@ bool display_supports_damage(struct display *disp)
 	return output_of(disp)->damage;
 }
 
-/* drm_display_has_damage: the last frame left a damage blob */
-bool display_has_damage(struct display *disp)
-{
-	return output_of(disp)->n_rects != 0;
-}
-
 void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages)
 {
 	struct output *o = output_of(disp);

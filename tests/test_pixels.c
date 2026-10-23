@@ -65,10 +65,6 @@ bool display_need_redraw(struct display *disp)
 {
 	return false;
 }
-bool display_has_damage(struct display *disp)
-{
-	return false;
-}
 bool display_supports_damage(struct display *disp)
 {
 	return false;

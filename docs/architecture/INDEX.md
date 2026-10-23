@@ -22,6 +22,7 @@ _Glyphs, images and cells to pixels - fonts, text renderers, video backends_
 | [ADR-101](./render/ADR-101-rebuild-the-screen-model-and-render-path-around-sprites-and-an-image-layer.md) | Rebuild the screen model and render path around sprites and an image layer | accepted |
 | [ADR-102](./render/ADR-102-cells-carry-clusters-and-unresolved-colour-glyphs-and-underlines-become-sprites.md) | Cells carry clusters and unresolved colour; glyphs and underlines become sprites | accepted |
 | [ADR-103](./render/ADR-103-images-are-placements-that-travel-with-lines-sixel-and-the-kitty-graphics-protocol-feed-one-store.md) | Images are placements that travel with lines; sixel and the kitty graphics protocol feed one store | accepted |
+| [ADR-104](./render/ADR-104-first-measurement-of-bbulk-image-composition-s1-to-s6-at-three-sizes.md) | First measurement of bbulk image composition, S1 to S6 at three sizes | accepted |
 
 ## Fork
 _Carrying this fork - upstream tracking, packaging, contribution back_

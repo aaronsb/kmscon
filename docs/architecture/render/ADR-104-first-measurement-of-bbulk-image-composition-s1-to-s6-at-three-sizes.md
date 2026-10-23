@@ -2,7 +2,7 @@
 contract: adr/v1
 kind: evidence
 capability: images
-status: proposed
+status: accepted
 date: 2026-10-23
 deciders:
   - aaronsb
@@ -100,3 +100,7 @@ The common-size targets hold with a wide margin on this host's core; whether to 
 ## What this does not measure
 
 A1 to A7, which need the parsers; S2 to S6 on the small tier 3 machine and on the operator's hardware; a 1920x1080 tier 3 variant; the write bandwidth of real scanout buffers; scaled pictures (every scenario draws at the picture's own size, so the scaler and its cache are not in these figures); and gltex, which draws no placements until step 3f.
+
+## Acceptance (2026-10-23)
+
+Accepted by the operator (aaronsb) in the steering session, relayed by the team lead on kmscon #127. ADR-103's note of the same date adopts the 7680x2160 number and tightens the common-size targets from these figures.

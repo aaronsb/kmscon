@@ -49,14 +49,16 @@ class ScreenTextTest(unittest.TestCase):
         self.assertEqual(t3_evaluate.screen_text("vt-restore", LOG),
                          t3_evaluate.screen_text(t3_evaluate.SCREENS[-1], LOG))
         self.assertIsNone(t3_evaluate.screen_text("vt-switch", LOG))
-        # wide-margin moves the cursor to reach the screen's real edge, and
+        # wide-margin moves the cursor to reach the screen's real edge,
         # s1-scroll prints 500 000 lines of which the screen shows the last,
-        # so they have no text on purpose; every other screen has its rows.
+        # and sixel draws pictures between cursor moves, so they have no text
+        # on purpose; every other screen has its rows.
+        textless = ("wide-margin", "s1-scroll", "sixel")
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertIsNone(t3_evaluate.screen_text("wide-margin", LOG))
-            self.assertIsNone(t3_evaluate.screen_text("s1-scroll", LOG))
+            for name in textless:
+                self.assertIsNone(t3_evaluate.screen_text(name, LOG))
         for name in t3_evaluate.SCREENS:
-            if name not in ("wide-margin", "s1-scroll"):
+            if name not in textless:
                 with self.subTest(name):
                     self.assertTrue(t3_evaluate.screen_text(name, LOG))
         # e and U+0301 between bars: one cell built from two code points.

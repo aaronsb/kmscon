@@ -161,8 +161,9 @@ What each page should and should not look like is in its section file's `# look-
 | wide-margin | double-width characters placed and typed at the right margin |
 | combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 |
 | emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji, each between bars; the text heart alone and with VS15; emoji in a line, underlined and reversed |
+| sixel | two sixel pictures the page makes and sends through the pty: opaque colour bars over a checkerboard with TEXT written across them, and a ring with transparent corners over text; then the cell size the terminal reports (XTWINOPS 16). When the DA1 reply lacks attribute 4, the page says so and sends no picture |
 
-Every section but blink is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, mosaic, wide-margin, combining and emoji are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+Every section but blink is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, mosaic, wide-margin, combining, emoji and sixel are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
 blink is not a tier 3 screen: tier 3's guest runs kmscon with `no-blink`, and a capture would catch whichever phase the timer was in. The demo leaves blinking on, kmscon's default, since a person watches it: the blink page blinks and so does the cursor. `-- --no-blink` turns it off for one run. `tests/test_blink.c`, part of `make test`, checks both phases through both of bbulk's buffers.
 
@@ -194,6 +195,7 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 | wide-margin | A wide character placed or typed at the last column is cut at the edge instead of moving to the next line, so case 2, case 3 and the emoji in case 5 show half a character or none. |
 | combining | The decomposed column is blank: kmscon draws a cell of more than one code point as nothing. The precomposed column is right except its last row, which is a precomposed letter plus a mark. |
 | emoji | Every cluster (family, flag, keycap, skin tone, VS16 heart) is drawn blank or as separate pieces, so its bars do not line up. Each emoji is the grey top-left corner of the colour font's large bitmap, cut at its cells: kmscon has no colour glyphs and does not scale them. |
+| sixel | No pictures: stock kmscon's DA1 reply has no attribute 4, so the page says so and sends none. Sent anyway, a sixel string would be skipped. |
 
 ## Seen on hardware
 

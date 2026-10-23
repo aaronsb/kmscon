@@ -57,7 +57,9 @@ set -euo pipefail
 : "${ACT5_START:=38}"            # sixel: plays small
 : "${ACT5_SECONDS:=6}"
 : "${ACT5_GLITCH:=2}"            #   then glitches (one RGB channel, a tear)
-: "${ACT5_WIDTH:=480}"           #   pixels wide
+: "${ACT5_SIZE:=0.5}"            #   this share of the screen's rows tall (mpv scales the clip)
+: "${ACT5_WIDTH:=960}"           #   the clip is rendered this many pixels wide
+: "${ACT5_DITHER:=none}"         #   mpv's --vo-sixel-dither (none keeps the frames small)
 : "${ACT5_HOLD:=2.5}"            #   the halted frame stays this long
 
 : "${ACT6_FIRE:=5}"              # the fire wipe
@@ -106,7 +108,7 @@ ACT_NEEDS=(""
 	"python3 toilet"
 	"ffmpeg img2txt python3"
 	"python3"
-	"ffmpeg mpv img2sixel python3"
+	"ffmpeg mpv python3"
 	"python3"
 	"mpv toilet python3")
 ACT_VIDEO=("" 1 0 1 0 1 0 1)
@@ -115,7 +117,7 @@ ACT_WHAT=(""
 	"black, a pause, then \"$ACT2_TEXT\" in big block letters, then a plasma and shadebobs behind them"
 	"libcaca's img2txt in 80x25 at ${ACT3_FPS} fps (a real 80x25 grid where CSI 8;25;80 t takes, else a framed region), then it freezes, broken"
 	"\"wait a minute... don't we have ... LIBSIXEL?\" typed over the frozen frame"
-	"sixel (DA1 attribute 4): mpv --vo=sixel plays it ${ACT5_WIDTH}px wide, it glitches to one channel and tears, img2sixel holds the halted frame; else a placeholder"
+	"sixel (DA1 attribute 4): mpv --vo=sixel plays it ${ACT5_SIZE} of the screen's height, sized from the cell size the terminal reports (XTWINOPS 16), it glitches to one channel and tears, and its last frame stays; else a placeholder"
 	"a fire wipe, \"hold on, we also have kitty. hold on, feeding the cats\", a crowd of colour cats"
 	"kitty graphics (a=q): mpv --vo=kitty full size above a scroller of the fork's features over copper bars; else a placeholder above the scroller; --banner-only: the scroller alone")
 ACT_KMSCON=(""
@@ -123,7 +125,7 @@ ACT_KMSCON=(""
 	"plays"
 	"plays"
 	"plays"
-	"placeholder: sixel arrives in step 3 of ADR-101"
+	"plays (sixel, ADR-103 step 3)"
 	"plays"
 	"placeholder and scroller: kitty graphics arrive in steps 4 and 5")
 LAST_ACT=7
@@ -140,7 +142,7 @@ EFFECTS=(
 
 # Arch Linux package of each program.
 declare -A PKG=([ffmpeg]=ffmpeg [ffprobe]=ffmpeg [python3]=python [img2txt]=libcaca
-	[img2sixel]=libsixel [mpv]=mpv [toilet]=toilet [figlet]=figlet [chafa]=chafa)
+	[mpv]=mpv [toilet]=toilet [figlet]=figlet [chafa]=chafa)
 
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 
@@ -285,24 +287,24 @@ prepare_act() {
 		;;
 	5)
 		f=$(act5_clip)
-		[ -s "$f" ] && [ -s "${f%.mkv}.png" ] && return
+		[ ! -s "$f" ] || return 0
 		echo "rendering act 5's clip into $f"
 		# The clip: ACT5_SECONDS as it is, then ACT5_GLITCH with only the red
 		# channel, shifted, and a band of it torn sideways. The soundtrack
-		# runs straight through. The halted frame is its last.
-		local total
+		# runs straight through. Its last frame is the halted one.
+		# The shift and the tear scale with the clip's width.
+		local total w=$ACT5_WIDTH
 		total=$(awk -v a="$ACT5_SECONDS" -v b="$ACT5_GLITCH" 'BEGIN { print a + b }')
-		local graph="[0:v]scale=${ACT5_WIDTH}:-2,format=rgb24,split[a][b];"
+		local graph="[0:v]scale=${w}:-2,format=rgb24,split[a][b];"
 		graph+="[a]trim=0:${ACT5_SECONDS},setpts=PTS-STARTPTS[n];"
 		graph+="[b]trim=${ACT5_SECONDS}:${total},setpts=PTS-STARTPTS,"
-		graph+="lutrgb=g=0:b=0,rgbashift=rh=-12:rv=3,split[g][t];"
-		graph+="[t]crop=iw:ih/6:0:ih*2/5[band];[g][band]overlay=x=28:y=main_h*2/5[gl];"
+		graph+="lutrgb=g=0:b=0,rgbashift=rh=-$((w / 40)):rv=$((w / 160)),split[g][t];"
+		graph+="[t]crop=iw:ih/6:0:ih*2/5[band];[g][band]overlay=x=$((w * 7 / 120)):y=main_h*2/5[gl];"
 		graph+="[n][gl]concat=n=2:v=1:a=0,format=yuv420p[v]"
 		ffmpeg -v error -nostdin -y -ss "$ACT5_START" -t "$total" \
 			-i "$BAD_APPLE" -filter_complex "$graph" -map '[v]' -map '0:a?' \
 			-c:v libx264 -crf 18 -c:a aac "$f.part.mkv"
 		mv "$f.part.mkv" "$f"
-		ffmpeg -v error -nostdin -y -sseof -0.3 -i "$f" -update 1 "${f%.mkv}.png"
 		;;
 	esac
 }
@@ -329,18 +331,72 @@ pause() { fx pause "$1"; }
 
 clear_screen() { printf '%s[0m%s[2J%s[H' "$E" "$E" "$E"; }
 
+# The modes a player may leave on (#88): mpv's video outputs turn on mouse
+# tracking (CSI ?1003 h) and turn it off only when they exit cleanly, so a
+# player that is killed leaves the terminal reporting every mouse movement.
+# Every report mode and encoding, focus events and bracketed paste go off.
+MODES_OFF="$E[?1000l$E[?1002l$E[?1003l$E[?1005l$E[?1006l$E[?1015l$E[?1004l$E[?2004l"
+
 bg_pids=()
 audio_pid=
 
-# Waits for background process $1, reading keys: q ends the show.
+# The keys read while a player runs, one byte at a time: q ends the show.
+# While mpv has mouse tracking on, the terminal sends reports as input: X10
+# (ESC [ M and three bytes, any of which can be q, as column or row 81 is)
+# and SGR (ESC [ < digits and semicolons, then M or m). A report is dropped
+# only once it is whole, and keybuf carries a partial one from one read to
+# the next; bytes that turn out not to be a report are taken as keys.
+keybuf=
+take_key() {
+	local LC_ALL=C k=$1 s i
+	local partial='^'$E'(\[(M.{0,2}|<[0-9;]*)?)?$' whole='^'$E'\[(M...|<[0-9;]*[Mm])$'
+	if [ -z "$keybuf" ]; then
+		if [ "$k" = "$E" ]; then
+			keybuf=$E
+		elif [[ $k == [qQ] ]]; then
+			exit 0
+		fi
+		return 0
+	fi
+	keybuf+=$k
+	if [[ $keybuf =~ $whole ]]; then
+		keybuf=
+	elif [[ ! $keybuf =~ $partial ]]; then
+		s=${keybuf#"$E"}
+		keybuf=
+		for ((i = 0; i < ${#s}; i++)); do
+			take_key "${s:i:1}"
+		done
+	fi
+}
+
+read_key() { LC_ALL=C IFS= read -rsn1 -d '' -t "$1" k; }
+
+# Waits for background process $1, reading keys through take_key.
 wait_bg() {
 	local k
 	while kill -0 "$1" 2>/dev/null; do
-		if IFS= read -rsn1 -t 0.1 k && [[ $k == [qQ] ]]; then
-			exit 0
-		fi
+		read_key 0.1 || continue
+		take_key "$k"
 	done
 	wait "$1" 2>/dev/null || true
+}
+
+# After a player stops: turns its mouse tracking off, in case it did not
+# (#88), then reads what the terminal sent before that took effect through
+# take_key, until 0.2 s pass with no input and no partial report, or stdin
+# ends (1 s at most), so no report reaches fx.py's keys, which take any q as quit.
+player_done() {
+	local k end=$((${EPOCHREALTIME//[!0-9]/} + 1000000))
+	printf '%s' "$MODES_OFF"
+	while ((${EPOCHREALTIME//[!0-9]/} < end)); do
+		if read_key 0.2; then
+			take_key "$k"
+		elif (($? <= 128)) || [ -z "$keybuf" ]; then
+			break
+		fi
+	done
+	keybuf=
 }
 
 stop_bg() {
@@ -384,7 +440,7 @@ restore() {
 	if [ -n "$screen_taken" ]; then
 		[ -z "$resized_from" ] || printf '%s[8;%d;%dt' "$E" "${resized_from% *}" "${resized_from#* }"
 		[ -z "$have_kitty" ] || printf '%s_Ga=d,d=A%s' "$E" "$ST"
-		printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l' "$E" "$E" "$E" "$E" "$E"
+		printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l%s' "$E" "$E" "$E" "$E" "$E" "$MODES_OFF"
 	fi
 	[ -z "$saved_tty" ] || stty "$saved_tty" 2>/dev/null || true
 	exit "$st"
@@ -427,28 +483,59 @@ probe() {
 }
 
 # cols rows cell-width cell-height of the screen, read again before each act
-# so a resized window is followed. The cell size comes from the terminal's
-# pixel size, else from CSI 16 t (asked once), else is taken as 10x20.
+# so a resized window and a changed font are followed. Once the show has the
+# screen, the cell size is the terminal's answer to XTWINOPS 16 (CSI 16 t),
+# else its text area (XTWINOPS 14) over the cells; before that, or where the
+# terminal answers neither, the pty's pixel size over the cells, else 10x20.
+# DA1 follows the two queries, so a terminal that ignores them answers DA1
+# alone and is not waited for; one that does is not asked again.
 cell_w=0
 cell_h=0
+winops=yes
 read_geometry() {
-	local xp yp reply='' c
+	local xp yp
 	read -r screen_cols screen_rows xp yp < <(python3 -B "$fx_py" geom)
-	if [ "${xp:-0}" -gt 0 ] && [ "${yp:-0}" -gt 0 ]; then
+	cell_w=0
+	cell_h=0
+	if [ -n "$screen_taken" ] && [ "$winops" = yes ]; then
+		ask_winops
+	fi
+	if [ "$cell_w" = 0 ] && [ "${xp:-0}" -gt 0 ] && [ "${yp:-0}" -gt 0 ]; then
 		cell_w=$((xp / screen_cols))
 		cell_h=$((yp / screen_rows))
-	elif [ "$cell_w" = 0 ] && [ -n "$screen_taken" ]; then
-		printf '%s[16t' "$E"
-		while IFS= read -rsn1 -d '' -t "$PROBE_TIMEOUT" c; do
-			reply+=$c
-			[[ $reply != *t ]] || break
-		done
-		if [[ $reply =~ \[6\;([0-9]+)\;([0-9]+)t$ ]]; then
-			cell_h=${BASH_REMATCH[1]}
-			cell_w=${BASH_REMATCH[2]}
-		fi
-		[ "$cell_w" -gt 0 ] || cell_w=10
-		[ "$cell_h" -gt 0 ] || cell_h=20
+	fi
+	[ "$cell_w" -gt 0 ] || cell_w=10
+	[ "$cell_h" -gt 0 ] || cell_h=20
+}
+
+ask_winops() {
+	local reply='' c
+	local da_end=$'\e''\[\?[0-9;]*c$'
+	printf '%s[14t%s[16t%s[c' "$E" "$E" "$E"
+	while IFS= read -rsn1 -d '' -t "$PROBE_TIMEOUT" c; do
+		reply+=$c
+		[[ ! $reply =~ $da_end ]] || break
+	done
+	winops_cell "$reply"
+	[ "$cell_w" != 0 ] || winops=no
+}
+
+# The cell size in the answers to XTWINOPS 16 (CSI 6 ; height ; width t),
+# else XTWINOPS 14 (CSI 4 ; height ; width t, the text area) over the cells.
+# Numbers are read as decimal whatever their leading zeros, and a cell is
+# kept within 1 to 1000 pixels a side.
+winops_cell() {
+	local h=0 w=0
+	if [[ $1 =~ \[6\;([0-9]{1,9})\;([0-9]{1,9})t ]]; then
+		h=$((10#${BASH_REMATCH[1]}))
+		w=$((10#${BASH_REMATCH[2]}))
+	elif [[ $1 =~ \[4\;([0-9]{1,9})\;([0-9]{1,9})t ]]; then
+		h=$((10#${BASH_REMATCH[1]} / screen_rows))
+		w=$((10#${BASH_REMATCH[2]} / screen_cols))
+	fi
+	if [ "$h" -gt 0 ] && [ "$w" -gt 0 ]; then
+		cell_h=$((h > 1000 ? 1000 : h))
+		cell_w=$((w > 1000 ? 1000 : w))
 	fi
 }
 
@@ -555,33 +642,56 @@ act_4() {
 		"wait a minute..." "don't we have ... LIBSIXEL?"
 }
 
+# Act 5's picture for a clip of $1 x $2 pixels: ACT5_SIZE of the screen's
+# rows tall, narrower where the screen's columns run out, centred in whole
+# cells. Prints its width in pixels, the rows it covers, and the column and
+# row of its top left cell. Its height is a multiple of 6, as mpv rounds a
+# sixel picture's.
+act5_box() {
+	awk -v w="$1" -v h="$2" -v cols="$screen_cols" -v rows="$screen_rows" \
+		-v cw="$cell_w" -v ch="$cell_h" -v share="$ACT5_SIZE" 'BEGIN {
+		r = int(rows * share)
+		if (r > rows - 2) r = rows - 2
+		if (r < 1) r = 1
+		ph = r * ch
+		if (ph * w / h > (cols - 2) * cw) ph = (cols - 2) * cw * h / w
+		ph = int(ph / 6) * 6
+		pw = int(ph * w / h)
+		vc = int((pw + cw - 1) / cw)
+		vr = int((ph + ch - 1) / ch)
+		printf "%d %d %d %d\n", pw, vr, int((cols - vc) / 2) + 1, int((rows - vr) / 2) + 1
+	}'
+}
+
+# Act 5 plays the clip through mpv's sixel output (libsixel), sized from the
+# cell size the terminal reports; its last frame, glitched, stays on screen
+# as the halted frame. mpv takes all but the last of the rows it is told it
+# has for the picture's height, so it is told one row more than the picture
+# covers and fits the picture to its width.
 act_5() {
-	local clip png w h left top
+	local clip w h pw vr left top
 	clear_screen
-	if [ -z "$have_sixel" ] || ! have mpv || ! have img2sixel; then
-		local why="[sixel arrives in step 3]"
-		[ -z "$have_sixel" ] || why="[sixel: mpv and img2sixel are needed]"
+	if [ -z "$have_sixel" ] || ! have mpv; then
+		local why="[no sixel: DA1 lacks attribute 4]"
+		[ -z "$have_sixel" ] || why="[sixel: mpv is needed]"
 		fx placeholder --title "libsixel" --text "$why" --cols 48 --rows 18 --seconds "$PLACEHOLDER_SECONDS"
 		return
 	fi
 	clip=$(act5_clip)
-	png=${clip%.mkv}.png
 	read -r w h < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$clip" | tr ',' ' ')
-	left=$(((screen_cols - (w + cell_w - 1) / cell_w) / 2 + 1))
-	top=$(((screen_rows - (h + cell_h - 1) / cell_h) / 2 + 1))
-	[ "$left" -ge 1 ] || left=1
-	[ "$top" -ge 1 ] || top=1
+	read -r pw vr left top < <(act5_box "$w" "$h")
 	local sound=(--no-audio)
 	[ "$audio" != 1 ] || sound=()
 	mpv --no-config --really-quiet --no-input-terminal --vo=sixel --vo-sixel-alt-screen=no \
-		--vo-sixel-config-clear=no --vo-sixel-cols="$screen_cols" --vo-sixel-rows="$screen_rows" \
-		--vo-sixel-width="$w" --vo-sixel-height="$h" --vo-sixel-left="$left" --vo-sixel-top="$top" \
+		--vo-sixel-config-clear=no --vo-sixel-dither="$ACT5_DITHER" \
+		--vo-sixel-cols="$screen_cols" --vo-sixel-rows=$((vr + 1)) \
+		--vo-sixel-width="$pw" --vo-sixel-height=$(((vr + 1) * cell_h)) \
+		--vo-sixel-left="$left" --vo-sixel-top="$top" \
 		"${sound[@]}" -- "$clip" </dev/null 2>/dev/null &
 	bg_pids=($!)
 	wait_bg "${bg_pids[0]}"
 	bg_pids=()
-	printf '%s[%d;%dH' "$E" "$top" "$left"
-	img2sixel "$png"
+	player_done
 	pause "$ACT5_HOLD"
 }
 
@@ -633,6 +743,7 @@ act_7() {
 	bg_pids+=($!)
 	wait_bg "${bg_pids[1]}"
 	stop_bg
+	player_done
 	printf '%s_Ga=d,d=A%s' "$E" "$ST"
 	clear_screen
 }
@@ -679,7 +790,7 @@ run_fx() {
 }
 
 restore_quietly() {
-	printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l' "$E" "$E" "$E" "$E" "$E"
+	printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l%s' "$E" "$E" "$E" "$E" "$E" "$MODES_OFF"
 	stty "$saved_tty"
 	screen_taken=
 	trap - EXIT INT TERM HUP
@@ -728,8 +839,8 @@ main() {
 			die "BAD_APPLE is unset: set it to your own copy of the Bad Apple!! video (BAD_APPLE=/path/to/video); it is never downloaded"
 		[ -f "$BAD_APPLE" ] && [ -r "$BAD_APPLE" ] || die "BAD_APPLE=$BAD_APPLE is not a readable file"
 	fi
-	# What every act needs before it starts; mpv and img2sixel are needed
-	# only where the terminal has the protocol, so their acts check later.
+	# What every act needs before it starts; mpv is needed only where the
+	# terminal has the protocol, so acts 5 and 7 check for it later.
 	have python3 || missing+=("python3 (python)")
 	if [ "$video" = 1 ]; then
 		have ffmpeg || missing+=("ffmpeg (ffmpeg)")

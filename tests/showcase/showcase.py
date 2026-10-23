@@ -2,17 +2,22 @@
 """Checks fork/showcase/bad-apple.sh without a video, a terminal or any of
 the media tools: its act and effect tables (--list), its plan (--dry-run),
 its refusals, that every act listed has its function, and the pure helpers
-the acts draw with (screen.py, frames.py, effects.py).
+the acts draw with (screen.py, frames.py, effects.py and act 5's sizing in
+bad-apple.sh), and, on a pty, that quitting turns off every mode a player
+may have left on (#88).
 
     showcase.py --root SOURCE_ROOT
 """
 
 import argparse
 import os
+import pty
 import re
+import select
 import subprocess
 import sys
 import tempfile
+import time
 
 EFFECTS = ["plasma", "shadebobs", "fire", "copper", "stars", "braille", "banner"]
 
@@ -62,8 +67,8 @@ def main():
               f"{got!r}\n{p.stderr}")
         needs = {l[:4].strip(): l[29:60].split() for l in rows}
         check("each act lists what it needs", all(needs.get(n) for n, _ in ACTS), repr(needs))
-        check("acts 5 and 7 are placeholders on kmscon today, the rest play",
-              all(("placeholder" in l) == (l[:4].strip() in ("5", "7")) for l in rows), p.stdout)
+        check("act 7 is a placeholder on kmscon today, the rest play",
+              all(("placeholder" in l) == (l[:4].strip() == "7") for l in rows), p.stdout)
 
         effects = [l.split()[0] for l in blocks[1].splitlines()[1:] if l.strip()] if len(blocks) > 1 else []
         check("--list names the effects --fx runs", effects == EFFECTS, repr(effects))
@@ -131,6 +136,101 @@ def main():
         p = run("--act", "2")
         check("act 2 needs no video", p.returncode != 0 and "BAD_APPLE" not in p.stderr
               and ("needs a terminal" in p.stderr or "missing:" in p.stderr), p.stderr)
+
+        # Act 5's picture: half the rows tall, centred in whole cells, its
+        # height a multiple of 6; narrower where the columns run out.
+        def shell(code, **extra):
+            return subprocess.run(["bash", "-c", 'source "$1"; ' + code, "sh", script], env=dict(env, **extra),
+                                  capture_output=True, text=True, timeout=30)
+        for (cols, rows, cw, ch), want in (((404, 56, 19, 38), "1419 28 165 15"),
+                                           ((136, 40, 10, 19), "505 20 43 11"),
+                                           ((40, 40, 10, 20), "377 15 2 13")):
+            p = shell(f"screen_cols={cols} screen_rows={rows} cell_w={cw} cell_h={ch}; act5_box 960 718")
+            check(f"act 5's picture of a 960x718 clip at {cols}x{rows} cells of {cw}x{ch} is {want}",
+                  p.stdout.strip() == want, p.stdout + p.stderr)
+        # The cell size from XTWINOPS 16, else 14 over the cells.
+        for reply, want in (("\x1b[4;2128;7676t\x1b[6;38;19t\x1b[?62;4c", "19 38"),
+                            ("\x1b[4;2128;7676t\x1b[?62;4c", "19 38"), ("\x1b[?62;4c", "0 0"),
+                            ("\x1b[6;038;019t", "19 38"), ("\x1b[6;99999;7t", "7 1000"),
+                            ("\x1b[6;0;19t", "0 0")):
+            p = shell('screen_cols=404 screen_rows=56 cell_w=0 cell_h=0; winops_cell "$REPLY"; echo $cell_w $cell_h',
+                      REPLY=reply)
+            check(f"XTWINOPS answers {reply.replace(chr(27), 'ESC')} give the cell {want}",
+                  p.stdout.strip() == want, p.stdout + p.stderr)
+
+        # While a player runs, keys are read through a filter that drops the
+        # mouse reports mpv's tracking sends, whole or split across reads,
+        # and keeps q as quit; after it, the modes go off and what the
+        # terminal had already sent is read through the same filter (#88).
+        def keys(code, feed):
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.execve("/bin/bash", ["bash", "-c", 'source "$1"; fx_py=$here/fx.py; '
+                                        "stty -echo -icanon min 1 time 0; " + code + "; echo SURVIVED",
+                                        "sh", script], env)
+            time.sleep(0.3)
+            for chunk in feed:
+                os.write(fd, chunk)
+                time.sleep(0.08)
+            got = b""
+            while True:
+                r, _, _ = select.select([fd], [], [], 5)
+                try:
+                    d = os.read(fd, 4096) if r else b""
+                except OSError:
+                    break
+                if not d:
+                    break
+                got += d
+            os.waitpid(pid, 0)
+            return got
+        report = b"\x1b[M#q5"  # a press at column 81 (q), row 21
+        for name, feed, survives in (
+                ("a mouse report at column 81 is dropped", [report], True),
+                ("a report split across reads is dropped", [b"\x1b[", b"M#", b"q5"], True),
+                ("an SGR report is dropped", [b"\x1b[<0;81;21M"], True),
+                ("q quits", [b"q"], False),
+                ("q right after Esc quits", [b"\x1bq"], False),
+                ("q after an arrow key quits", [b"\x1b[A", b"q"], False)):
+            got = keys("sleep 1.5 & wait_bg $!", feed)
+            check(f"while a player runs, {name}", (b"SURVIVED" in got) == survives, repr(got[-120:]))
+        got = keys("sleep 0.6; player_done; IFS= read -rsn1 -t 0.3 k && echo LEFT", [report])
+        check("after a player, tracking goes off and a report already sent is read and dropped",
+              b"SURVIVED" in got and b"\x1b[?1003l" in got and b"LEFT" not in got, repr(got[-200:]))
+
+        # With half a report buffered and stdin closed, the drain stops at
+        # once; it used to spin for its second, writing read errors.
+        start = time.monotonic()
+        p = shell('keybuf=$E[; player_done 0<&- 2>&1 | wc -c')
+        took = time.monotonic() - start
+        check("after a player, a closed stdin ends the drain at once",
+              p.returncode == 0 and int(p.stdout.strip() or 0) < 1000 and took < 0.9,
+              f"{p.stdout.strip()} bytes in {took:.2f} s {p.stderr}")
+
+        # Quitting turns off mouse tracking and the other report modes a
+        # killed mpv leaves on (#88). Act 4 needs python3 alone.
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execve("/bin/bash", ["bash", script, "--act", "4", "--no-wait"], env)
+        got, start, sent = b"", time.time(), False
+        while time.time() - start < 20:
+            if not sent and b"wait" in got:
+                os.write(fd, b"q")
+                sent = True
+            r, _, _ = select.select([fd], [], [], 0.1)
+            try:
+                d = os.read(fd, 65536) if r else b""
+            except OSError:
+                break
+            if r and not d:
+                break
+            got += d
+        _, st = os.waitpid(pid, 0)
+        tail = got[got.rfind(b"\x1b[?1049l"):]
+        check("q ends the show with every mouse mode, focus events and bracketed paste off",
+              os.waitstatus_to_exitcode(st) == 0
+              and all(b"\x1b[?%dl" % m in tail for m in (1000, 1002, 1003, 1005, 1006, 1015, 1004, 2004)),
+              repr(got[-200:]))
 
     # The helpers, imported without leaving bytecode in the tree.
     sys.dont_write_bytecode = True

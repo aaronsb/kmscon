@@ -7,9 +7,9 @@
 #   sudo fork/demo/run-vt.sh [--dry-run] [N] [-- kmscon-option...]
 #
 # N is the VT, 2-12, default 3. Options after -- go to kmscon, for display
-# settings of one machine (--mode=..., --no-use-original-mode, --font-size=...);
-# options that would move kmscon to another VT, replace the demo session or its
-# config, or let it switch VTs are refused.
+# settings of one machine (--mode=..., --no-use-original-mode, --font-size=...).
+# Only display, font, palette, text and input options are accepted, each as one
+# word: --name=value, or --name / --no-name for a switch.
 # --dry-run prints every command and runs none; it needs no root.
 #
 # kmscon loads its backend modules from a path compiled in (/usr/lib/kmscon)
@@ -66,13 +66,35 @@ run() {
 
 [[ $vt =~ ^[1-9][0-9]*$ ]] && [ "$vt" -ge 2 ] && [ "$vt" -le 12 ] ||
 	die "VT must be a number from 2 to 12, not '$vt'"
-# The checks below are made for VT $vt with the demo as the session; these
-# options, after the fixed ones, would override that.
+# The checks below are made for VT $vt with the demo as the session, and the
+# extra options come after the fixed ones, so only options that cannot change
+# that are let through: an allowlist of exact names, since getopt_long also
+# takes a unique prefix (--lo for --login). An option with a value must carry
+# it in the same word: getopt_long would take a separate word as the value,
+# and it moves stray words to the end of argv, into the login command. Left
+# out on purpose: the VT, seat and session options, --login, --configdir,
+# --oneshot, the grabs (one reboots), and options naming files (asciicast,
+# issue-path, xkb-keymap, xkb-compose-file).
+valued=" font-engine font-name font-size mode multi-monitor gpus term sb-size
+	palette palette-black palette-red palette-green palette-yellow palette-blue
+	palette-magenta palette-cyan palette-light-grey palette-dark-grey
+	palette-light-red palette-light-green palette-light-yellow palette-light-blue
+	palette-light-magenta palette-light-cyan palette-white palette-foreground
+	palette-background underline-color strike-color grapheme-width xkb-model
+	xkb-layout xkb-variant xkb-options xkb-repeat-delay xkb-repeat-rate
+	dpms-timeout "
+switches=" drm hwaccel use-original-mode blink bell soft-cursor mouse
+	natural-scrolling force-decoration-colors backspace-delete verbose debug silent "
+valued=$(tr -s ' \t\n' ' ' <<<"$valued")
+switches=$(tr -s ' \t\n' ' ' <<<"$switches")
 for o in "${extra[@]}"; do
-	case $o in
-	-- | --login | --login=* | --vt | --vt=* | --configdir | --configdir=* | --switchvt | --switchvt=* | -[lc]* | -[!-]*[lc]*)
-		die "kmscon option '$o' is refused: the VT, the session, the config and --no-switchvt are fixed" ;;
-	esac
+	name=${o#--}
+	if [[ $o == --?*=* ]]; then
+		[[ $valued == *" ${name%%=*} "* ]] && continue
+	elif [[ $o == --?* ]]; then
+		[[ $switches == *" ${name#no-} "* ]] && continue
+	fi
+	die "kmscon option '$o' is refused. Accepted: display, font, palette, text and input options, one word each: --name=value (quoted as one word: --font-name=\"Monoid Nerd Font Mono\"), or --name / --no-name for a switch (see docs/fork/demo.md)"
 done
 [ -n "$dry" ] || [ "$(id -u)" -eq 0 ] || die "run as root, through sudo"
 [ -x "$kmscon" ] && [ -d "$modules" ] || die "nothing staged in $stage: run make demo first"
@@ -120,6 +142,11 @@ restore() {
 	trap '' INT TERM HUP PIPE
 	if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
 		run kill -TERM "$child" || true
+		for _ in $(seq 50); do
+			kill -0 "$child" 2>/dev/null || break
+			sleep 0.1
+		done
+		! kill -0 "$child" 2>/dev/null || run kill -KILL "$child" || true
 		wait "$child" 2>/dev/null || true
 	fi
 	if [ -n "$was_active" ]; then

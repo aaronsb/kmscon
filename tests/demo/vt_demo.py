@@ -240,18 +240,35 @@ def main():
                   p.returncode != 0 and "/usr is a symlink, or not a directory of yours" in p.stderr,
                   p.stderr)
 
-        # run-vt.sh refuses kmscon options that would override what it checked.
+        # run-vt.sh lets through only allowlisted kmscon options, by exact name
+        # (getopt_long takes unique prefixes), each one word: a separate word
+        # would be taken as a value or moved into the login command.
         run_vt = os.path.join(root, "fork/demo/run-vt.sh")
-        for opt in ("--", "-l", "-vl", "--login", "--login=/bin/sh", "--vt", "--vt=tty2",
-                    "--configdir=/tmp", "-c", "--switchvt"):
-            p = subprocess.run(["bash", run_vt, "--dry-run", "3", "--", opt],
-                               capture_output=True, text=True, timeout=30)
-            check(f"run-vt.sh refuses {opt}",
-                  p.returncode != 0 and f"kmscon option '{opt}' is refused" in p.stderr, p.stderr)
-        for opt in ("--font-size=30", "--no-switchvt", "--mode=7680x2160"):
-            p = subprocess.run(["bash", run_vt, "--dry-run", "3", "--", opt],
-                               capture_output=True, text=True, timeout=30)
-            check(f"run-vt.sh lets {opt} through", "is refused" not in p.stderr, p.stderr)
+
+        def run_vt_with(opts):
+            return subprocess.run(["bash", run_vt, "--dry-run", "3", "--", *opts],
+                                  capture_output=True, text=True, timeout=30)
+
+        for opts in (["--"], ["-l"], ["-vl"], ["--login"], ["--login=/bin/sh"], ["--lo"],
+                     ["--vt=tty2"], ["--configdir=/tmp"], ["--conf=/x"], ["-c"],
+                     ["--switchvt"], ["--switch"], ["--oneshot"], ["--no-oneshot"],
+                     ["--asciicast=/x"], ["--grab-reboot=<Ctrl>r"], ["--blink=1"],
+                     ["Nerd"], ["/path/x"], ["--font-name", "Monoid"],
+                     ["--font-name=Monoid", "Nerd", "Font", "Mono"]):
+            p = run_vt_with(opts)
+            bad = next(o for o in opts if not o.startswith("--font-name=")) if len(opts) > 1 else opts[0]
+            check(f"run-vt.sh refuses {' '.join(opts)}",
+                  p.returncode != 0 and f"kmscon option '{bad}' is refused" in p.stderr
+                  and '--font-name="Monoid Nerd Font Mono"' in p.stderr, p.stderr)
+        operator = ["--font-name=Monoid Nerd Font Mono", "--font-size=30", "--mode=7680x2160",
+                    "--no-use-original-mode"]
+        p = run_vt_with(operator + ["--no-blink", "--palette-red=255,0,0", "--hwaccel"])
+        # Past the option checks, a dry run stops at the staging check (no
+        # make demo here) or prints its commands.
+        check("run-vt.sh accepts the operator's options",
+              "is refused" not in p.stderr
+              and (p.returncode == 0 or "nothing staged" in p.stderr or "does not exist" in p.stderr),
+              p.stderr)
         p = subprocess.run(["bash", run_vt, "--dry-run", "05"], capture_output=True, text=True, timeout=30)
         check("run-vt.sh refuses VT 05", p.returncode != 0 and "not '05'" in p.stderr, p.stderr)
 

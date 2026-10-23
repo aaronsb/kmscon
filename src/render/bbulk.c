@@ -389,6 +389,10 @@ static void display_uncount(struct display *disp)
 	displays_px -= displays[i].px;
 	displays[i] = displays[--n_displays];
 	budget_gen++;
+	if (!n_displays) {
+		free(displays);
+		displays = NULL;
+	}
 }
 
 static size_t image_budget(void)

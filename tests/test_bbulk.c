@@ -1092,6 +1092,8 @@ int main(void)
 	bbulk_unset(&txt);
 	assert(bb->cell_flags == NULL);
 	assert(bb->damage_rects == NULL);
+	/* the last display gone: the list of them freed */
+	assert(!n_displays && !displays);
 	kmscon_text_bbulk_ops.destroy(&txt);
 	return 0;
 }

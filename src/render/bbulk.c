@@ -69,17 +69,19 @@
  *
  * A picture drawn at another size than its source, or on a rotated display, is
  * scaled and rotated once and kept, per image and drawn size, up to twice the
- * screen's size in ARGB; the least recently used goes first. All displays'
- * pictures together never pass ADR-103's auto image budget, not even within a
- * frame: a picture that would is left out until the budget changes (pictures
- * freed, a display added or removed) or this display's placements change, and
- * idle frames do not compose it again. While one is left out on any display,
- * each display frees the pictures no placement of its shows any more as its
- * frame starts, and that frame tries its own left-out placements again.
- * A terminal whose session leaves the foreground frees its pictures. The
- * scaler's working memory (at most 16 MiB) and the buffer a picture is
- * rotated in (at most one screen) live only while one picture is made and are
- * not counted.
+ * screen's size in ARGB; the least recently used goes first. The pictures draw
+ * on ADR-103's image budget (image_budget.c), which libtsm's images share, and
+ * with them never pass it, not even within a frame: a picture that would is
+ * left out until the room in the budget grows (pictures or images freed, a
+ * display added or removed, a larger limit) or this display's placements
+ * change, and idle frames do not compose it again. A libtsm image that needs
+ * room takes it first from the pictures the last frame did not draw. While
+ * one is left out on any display, each display frees the pictures no placement
+ * of its shows any more as its frame starts, and that frame tries its own
+ * left-out placements again. A terminal whose session leaves the foreground
+ * frees its pictures. The scaler's working memory (at most 16 MiB) and the
+ * buffer a picture is rotated in (at most one screen) live only while one
+ * picture is made and are not counted.
  *
  * Placement damage: this display keeps the placements it drew last. One added,
  * removed, or changed in any way that changes what it draws (moved, resized,
@@ -95,6 +97,7 @@
 #include <string.h>
 #include "deco.h"
 #include "font/font.h"
+#include "image_budget.h"
 #include "picture.h"
 #include "shl/log.h"
 #include "shl/lru.h"
@@ -154,6 +157,8 @@ struct picture {
 };
 
 struct bbulk {
+	/* first, so bbulk_trim finds bbulk by it; in the budget while counted is set */
+	struct image_budget_cache cache;
 	unsigned int sw;	     /* screen width */
 	unsigned int sh;	     /* screen height */
 	unsigned int off_x;	     /* offset of the first cell */
@@ -190,8 +195,8 @@ struct bbulk {
 	unsigned int grid_w, grid_h; /* the frame's drawn cells, in pixels */
 	struct picture *pictures;
 	size_t picture_bytes;
-	struct display *counted; /* the display counted in displays_px, while set */
-	uint64_t starved_gen;	 /* budget_gen when this display last gave up */
+	struct display *counted; /* the display counted in the image budget, while set */
+	uint64_t starved_gen;	 /* image_budget_gen() when this display last gave up */
 	bool starving;		 /* a placement left out: counted in starving */
 	uint64_t frame_count;
 	struct video_buffer *strip; /* a run of cells under an opaque picture */
@@ -199,6 +204,8 @@ struct bbulk {
 		unsigned int place, posx, posy, n;
 	} run;
 };
+
+static void bbulk_trim(struct image_budget_cache *cache, size_t want);
 
 static int bbulk_init(struct kmscon_text *txt)
 {
@@ -328,89 +335,13 @@ static void free_sprites(struct bbulk *bb)
 	bb->strip = NULL;
 }
 
-/*
- * ADR-103's image budget for the scaled pictures of every display in the
- * process: image-storage-limit=auto, four frames of the process's displays in
- * ARGB, at least 16 MiB and at most 192 MiB. It holds at every moment, a
- * frame's peak included. The setting, and the one budget shared with libtsm's
- * image stores, come with ADR-103 step 3d (#125); until then the pictures
- * have the auto value to themselves.
- */
-#define IMAGE_BUDGET_MIN ((size_t)16 << 20)
-#define IMAGE_BUDGET_MAX ((size_t)192 << 20)
-
-static uint64_t displays_px;  /* the pixels of every display bbulk draws */
-static size_t pictures_total; /* the scaled pictures of all of them */
-static size_t pictures_peak;  /* the most pictures_total has held */
-static uint64_t budget_gen;   /* moves when the budget or the room in it grows */
-static unsigned int starving; /* the renderers with a placement left out */
-
-/*
- * Each display counts once, however many terminals draw it: every session
- * has a renderer on every display, and only the foreground one draws.
- */
-static struct {
-	struct display *disp;
-	unsigned int users;
-	uint64_t px;
-} *displays;
-static unsigned int n_displays;
-
-static int display_count(struct display *disp, uint64_t px)
-{
-	unsigned int i;
-	void *tmp;
-
-	for (i = 0; i < n_displays && displays[i].disp != disp; i++)
-		;
-	if (i == n_displays) {
-		tmp = realloc(displays, (n_displays + 1) * sizeof(*displays));
-		if (!tmp)
-			return -ENOMEM;
-		displays = tmp;
-		displays[n_displays].disp = disp;
-		displays[n_displays].users = 0;
-		displays[n_displays].px = 0;
-		n_displays++;
-	}
-	displays_px += px - displays[i].px;
-	displays[i].px = px;
-	displays[i].users++;
-	budget_gen++;
-	return 0;
-}
-
-static void display_uncount(struct display *disp)
-{
-	unsigned int i;
-
-	for (i = 0; i < n_displays && displays[i].disp != disp; i++)
-		;
-	if (i == n_displays || --displays[i].users)
-		return;
-	displays_px -= displays[i].px;
-	displays[i] = displays[--n_displays];
-	budget_gen++;
-	if (!n_displays) {
-		free(displays);
-		displays = NULL;
-	}
-}
-
-static size_t image_budget(void)
-{
-	uint64_t b = displays_px * 4 * 4;
-
-	return b < IMAGE_BUDGET_MIN   ? IMAGE_BUDGET_MIN
-	       : b > IMAGE_BUDGET_MAX ? IMAGE_BUDGET_MAX
-				      : b;
-}
+/* the renderers with a placement left out for the budget */
+static unsigned int starving;
 
 static void picture_free(struct bbulk *bb, struct picture *p)
 {
 	bb->picture_bytes -= p->bytes;
-	pictures_total -= p->bytes;
-	budget_gen++;
+	image_budget_remove_picture(p->bytes);
 	free(p);
 }
 
@@ -542,9 +473,11 @@ static int bbulk_set(struct kmscon_text *txt)
 
 	if (make_sprites(txt))
 		goto free_glyphs;
-	if (display_count(txt->disp, (uint64_t)bb->sw * bb->sh))
+	if (image_budget_count_display(txt->disp, (uint64_t)bb->sw * bb->sh))
 		goto free_sprites;
 	bb->counted = txt->disp;
+	bb->cache.trim = bbulk_trim;
+	image_budget_add_cache(&bb->cache);
 	return 0;
 
 free_sprites:
@@ -573,8 +506,10 @@ static void bbulk_unset(struct kmscon_text *txt)
 	free(bb->cell_flags);
 	free_sprites(bb);
 	free_images(bb);
-	if (bb->counted)
-		display_uncount(bb->counted);
+	if (bb->counted) {
+		image_budget_remove_cache(&bb->cache);
+		image_budget_uncount_display(bb->counted);
+	}
 	bb->counted = NULL;
 	bb->glyphs = NULL;
 	bb->damage_rects = NULL;
@@ -937,7 +872,7 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 
 	if (starving)
 		pictures_free_unused(bb);
-	retry = bb->starved_gen != budget_gen;
+	retry = bb->starved_gen != image_budget_gen();
 
 	/* damage: prev's state marks the placements still here */
 	for (i = 0; i < bb->n_prev; i++)
@@ -1008,9 +943,9 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
  */
 static size_t picture_limit(struct bbulk *bb)
 {
-	uint64_t px = (uint64_t)bb->sw * bb->sh, share;
+	uint64_t px = (uint64_t)bb->sw * bb->sh, all = image_budget_displays_px(), share;
 
-	share = displays_px ? image_budget() * px / displays_px : image_budget();
+	share = all ? image_budget_limit() * px / all : image_budget_limit();
 	return px * 4 * 2 < share ? px * 4 * 2 : share;
 }
 
@@ -1043,6 +978,18 @@ static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep
 }
 
 /*
+ * The budget asks for @want bytes between frames, for one of libtsm's images
+ * or a limit that shrank: the pictures the last frame did not draw go, least
+ * recently used first (ADR-103's first step of eviction).
+ */
+static void bbulk_trim(struct image_budget_cache *cache, size_t want)
+{
+	struct bbulk *bb = (struct bbulk *)cache;
+
+	pictures_trim(bb, 0, want < bb->picture_bytes ? bb->picture_bytes - want : 0, true);
+}
+
+/*
  * Between frames: the scaled pictures fit this display's limit. Pictures freed
  * to fit it do not try a placement left out here again, or two pictures over
  * the same cells would take turns being scaled on every frame.
@@ -1056,7 +1003,7 @@ static void pictures_settle(struct bbulk *bb)
 		starved |= bb->prev[i].starved;
 	starving_set(bb, starved);
 	pictures_trim(bb, 0, picture_limit(bb), false);
-	bb->starved_gen = budget_gen;
+	bb->starved_gen = image_budget_gen();
 }
 
 /*
@@ -1143,13 +1090,14 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 	if (!pic) {
 		bytes = (size_t)w * h * 4;
 		pictures_trim(bb, bytes, picture_limit(bb), true);
-		pictures_trim(bb, bytes + pictures_total - bb->picture_bytes, image_budget(), true);
+		pictures_trim(bb, bytes + image_budget_used() - bb->picture_bytes,
+			      image_budget_limit(), true);
 		/*
 		 * a frame may pass this display's limit, never the budget: past
 		 * it the cells are drawn without the picture, and drawn again
 		 * once the budget has changed
 		 */
-		if (pictures_total + bytes > image_budget())
+		if (image_budget_used() + bytes > image_budget_limit())
 			return -ENOSPC;
 		pic = malloc(sizeof(*pic) + bytes);
 		tmp = txt->orientation == OR_NORMAL ? NULL : malloc(bytes);
@@ -1182,9 +1130,7 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 		pic->next = bb->pictures;
 		bb->pictures = pic;
 		bb->picture_bytes += bytes;
-		pictures_total += bytes;
-		if (pictures_total > pictures_peak)
-			pictures_peak = pictures_total;
+		image_budget_add_picture(bytes);
 	}
 	pic->last_use = bb->frame_count;
 	p->pix = pic->pixels;

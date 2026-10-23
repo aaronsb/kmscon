@@ -48,6 +48,15 @@ test_bbulk = executable(
 )
 test('test_bbulk', test_bbulk)
 
+# ADR-103's image budget against real libtsm screens, made through its test calls
+test_image_budget = executable(
+    'test_image_budget',
+    'test_image_budget.c',
+    include_directories: src_inc,
+    dependencies: [subproject('libtsm').get_variable('libtsm_test_dep')],
+)
+test('test_image_budget', test_image_budget)
+
 if enable_renderer_gltex
     # GL is stubbed in the test; only its headers are used.
     test_gltex = executable(

@@ -163,6 +163,7 @@ int display_swap(struct display *disp);
 bool display_is_swapping(struct display *disp);
 void display_set_need_redraw(struct display *disp);
 bool display_need_redraw(struct display *disp);
+bool display_need_commit(struct display *disp);
 
 int display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b);
 
@@ -177,7 +178,6 @@ void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y);
 
 int display_blend(struct display *disp, const struct video_blend_req *req);
 void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages);
-bool display_has_damage(struct display *disp);
 
 /* video interface */
 

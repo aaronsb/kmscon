@@ -143,7 +143,11 @@ int kmscon_text_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr, b
 int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool cursor_blink);
 int kmscon_text_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned int y);
 int kmscon_text_render(struct kmscon_text *txt);
+int kmscon_text_present(struct kmscon_text *txt);
 void kmscon_text_abort(struct kmscon_text *txt);
+
+/* kmscon_text_render(): the frame drew nothing, so the display needs no swap */
+#define KMSCON_TEXT_UNCHANGED 1
 
 /* helpers for backends */
 

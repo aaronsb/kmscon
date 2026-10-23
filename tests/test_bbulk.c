@@ -149,11 +149,6 @@ bool display_need_redraw(struct display *disp)
 	(void)disp;
 	return false;
 }
-bool display_has_damage(struct display *disp)
-{
-	(void)disp;
-	return false;
-}
 bool display_supports_damage(struct display *disp)
 {
 	(void)disp;
@@ -258,39 +253,43 @@ static struct tsm_frame_cell *cell_at(unsigned int x, unsigned int y)
 	return &cells[y * frame.cols + x];
 }
 
-static void run_frame(struct kmscon_text *txt, bool cursor_on)
+/* returns bbulk_render's result: 0, or KMSCON_TEXT_UNCHANGED */
+static int run_frame(struct kmscon_text *txt, bool cursor_on)
 {
 	struct tsm_screen_attr attr = {0};
+	int ret;
 
 	n_blended = 0;
 	assert(bbulk_prepare(txt, &attr) == 0);
 	assert(bbulk_draw(txt, &frame, cursor_on) == 0);
-	assert(bbulk_render(txt) == 0);
+	ret = bbulk_render(txt);
+	assert(ret == 0 || ret == KMSCON_TEXT_UNCHANGED);
+	return ret;
 }
 
 /* blank cells, but @x, @y holds @key with @flags, if @x is set */
-static void draw_frame_cell(struct kmscon_text *txt, int x, int y, uint64_t key, uint16_t flags)
+static int draw_frame_cell(struct kmscon_text *txt, int x, int y, uint64_t key, uint16_t flags)
 {
 	blank_frame(txt);
 	if (x >= 0) {
 		cell_at(x, y)->key = key;
 		cell_at(x, y)->flags = flags;
 	}
-	run_frame(txt, false);
+	return run_frame(txt, false);
 }
 
 /*
  * One frame of blank cells; @changed_x, @changed_y is marked changed and holds
  * @key, if set.
  */
-static void draw_frame_key(struct kmscon_text *txt, int changed_x, int changed_y, uint64_t key)
+static int draw_frame_key(struct kmscon_text *txt, int changed_x, int changed_y, uint64_t key)
 {
-	draw_frame_cell(txt, changed_x, changed_y, key, TSM_FRAME_CHANGED);
+	return draw_frame_cell(txt, changed_x, changed_y, key, TSM_FRAME_CHANGED);
 }
 
-static void draw_frame(struct kmscon_text *txt, int changed_x, int changed_y)
+static int draw_frame(struct kmscon_text *txt, int changed_x, int changed_y)
 {
-	draw_frame_key(txt, changed_x, changed_y, 'x');
+	return draw_frame_key(txt, changed_x, changed_y, 'x');
 }
 
 static void test_two_frame_rule(struct kmscon_text *txt)
@@ -308,18 +307,22 @@ static void test_two_frame_rule(struct kmscon_text *txt)
 
 	/* frame N: the changed cell is drawn and reported as damage */
 	set_coordinate(txt, &x, &y, 5, 3);
-	draw_frame(txt, 5, 3);
+	assert(draw_frame(txt, 5, 3) == 0);
 	assert(n_blended == 1 && was_blended(x, y));
 	assert(bb->damage_rect_len == 1);
+	assert(bb->damage_rects[0].x1 == x && bb->damage_rects[0].y1 == y);
 
-	/* frame N+1: unchanged, but drawn again into the other buffer */
-	draw_frame(txt, -1, -1);
+	/* frame N+1: unchanged, but drawn again into the other buffer, and
+	 * that buffer's damage */
+	assert(draw_frame(txt, -1, -1) == 0);
 	assert(n_blended == 1 && was_blended(x, y));
-	assert(bb->damage_rect_len == 0);
+	assert(bb->damage_rect_len == 1);
+	assert(bb->damage_rects[0].x1 == x && bb->damage_rects[0].y1 == y);
 
-	/* frame N+2: both buffers hold it */
-	draw_frame(txt, -1, -1);
+	/* frame N+2: both buffers hold it; nothing drawn, nothing to present */
+	assert(draw_frame(txt, -1, -1) == KMSCON_TEXT_UNCHANGED);
 	assert(n_blended == 0);
+	assert(bb->damage_rect_len == 0);
 }
 
 /*

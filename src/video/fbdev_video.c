@@ -417,7 +417,6 @@ static const struct display_ops fbdev_display_ops = {
 	.blend = fbdev_display_blend,
 	.clear = fbdev_display_clear,
 	.set_damage = NULL,
-	.has_damage = NULL,
 };
 
 static void intro_idle_event(struct ev_eloop *eloop, void *unused, void *data)

@@ -432,7 +432,6 @@ static const struct display_ops drm_display_ops = {
 	.blend = NULL,
 	.clear = NULL,
 	.set_damage = NULL,
-	.has_damage = NULL,
 	.setup_cursor = drm_display_setup_cursor,
 	.destroy_cursor = drm_display_destroy_cursor,
 	.show_cursor = drm_display_show_cursor,

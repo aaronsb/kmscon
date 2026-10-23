@@ -18,6 +18,14 @@ void kmscon_font_ref(struct kmscon_font *font) {}
 void kmscon_font_unref(struct kmscon_font *font) {}
 void display_ref(struct display *disp) {}
 void display_unref(struct display *disp) {}
+int display_swap(struct display *disp)
+{
+	return 0;
+}
+bool display_need_commit(struct display *disp)
+{
+	return false;
+}
 unsigned int display_get_height(struct display *disp)
 {
 	return 0;

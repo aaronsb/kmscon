@@ -478,6 +478,9 @@ int drm_display_show_cursor(struct display *disp, int32_t x, int32_t y)
 	if (!cursor->active)
 		return -EINVAL;
 
+	/* the cursor plane changes with the next commit */
+	if (!cursor->visible || cursor->x != x || cursor->y != y)
+		disp->flags |= DISPLAY_NEED_COMMIT;
 	cursor->x = x;
 	cursor->y = y;
 	cursor->visible = true;
@@ -494,6 +497,7 @@ int drm_display_hide_cursor(struct display *disp)
 		return 0;
 
 	cursor->visible = false;
+	disp->flags |= DISPLAY_NEED_COMMIT;
 
 	return 0;
 }
@@ -503,6 +507,8 @@ void drm_display_set_cursor_offset(struct display *disp, int32_t x, int32_t y)
 	struct drm_display *ddrm = disp->data;
 	struct drm_cursor *cursor = &ddrm->cursor;
 
+	if (cursor->off_x != x || cursor->off_y != y)
+		disp->flags |= DISPLAY_NEED_COMMIT;
 	cursor->off_x = x;
 	cursor->off_y = y;
 }
@@ -825,13 +831,6 @@ void drm_display_set_damage(struct display *disp, size_t n_rect, struct video_re
 		log_warn("Cannot create damage property %d, [%zu]", ret, n_rect);
 }
 
-bool drm_display_has_damage(struct display *disp)
-{
-	struct drm_display *ddrm = disp->data;
-
-	return ddrm->damage_blob_id != 0;
-}
-
 int drm_display_wait_pflip(struct display *disp)
 {
 	struct video *video = disp->video;
@@ -1082,7 +1081,7 @@ int drm_display_swap(struct display *disp, uint32_t fb)
 	 * callback occurs */
 	display_ref(disp);
 	disp->flags |= DISPLAY_VSYNC;
-	disp->flags &= ~DISPLAY_NEED_REDRAW;
+	disp->flags &= ~(DISPLAY_NEED_REDRAW | DISPLAY_NEED_COMMIT);
 
 	return 0;
 }

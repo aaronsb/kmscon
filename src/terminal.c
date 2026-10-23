@@ -335,9 +335,8 @@ static void do_redraw_screen(struct screen *scr)
 	kmscon_text_prepare(scr->txt, &attr, scr->term->blinking);
 	kmscon_text_draw(scr->txt, scr->term->console, scr->term->cursor_blinking);
 	draw_pointer(scr);
-	kmscon_text_render(scr->txt);
 
-	ret = display_swap(scr->disp);
+	ret = kmscon_text_present(scr->txt);
 	if (ret && ret != -EBUSY)
 		log_warning("cannot swap display [%s] %d", display_name(scr->disp), ret);
 }

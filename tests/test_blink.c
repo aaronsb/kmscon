@@ -12,12 +12,14 @@
  * render of the same screen in the same blink phase. A second display draws
  * the same console on some frames only, skipping frames that change the
  * screen, so its own frame age spans those changes. Each run is drawn again
- * with damage reporting on, as on a plane with FB_DAMAGE_CLIPS, and every
- * pixel that differs from the frame on screen must lie in a reported rect.
- * That check finds a cell left out of the damage, not damage that is too
- * large: bbulk's carry-over keeps every damaged cell damaged while the
- * display has damage (#67), so after the first frames the rects cover the
- * whole screen, and the damage runs redraw every cell.
+ * with damage reporting on, as on a plane with FB_DAMAGE_CLIPS: every pixel
+ * that differs from the frame on screen must lie in a reported rect, and a
+ * display's frame that follows one of its frames with no change, and brings
+ * none itself, must report no damage. A scripted run of single-cell writes and
+ * blink flips then holds each frame's damage to exactly the cells changed on
+ * that frame or the one before, the two frames its buffer is behind: damage
+ * that outlives them (#67) fails, and so does a change left out. The run
+ * prints how many cells it damaged.
  *
  * What a phase looks like is judged against plain screens: in the visible
  * phase the blinking screen equals the same text without SGR 5, and in the
@@ -103,9 +105,15 @@ struct output {
 	struct drm2d_display d2d;
 	struct kmscon_text *txt;
 	unsigned int frames;
+	unsigned int swaps;
 	bool damage;			      /* reports damage, as with FB_DAMAGE_CLIPS */
 	struct video_rect rects[COLS * ROWS]; /* the damage of the last frame */
 	size_t n_rects;
+	const unsigned int *pointer; /* the next frame draws the pointer here, if set */
+	/* the hardware cursor, which only a swap puts on screen, as on drm */
+	bool cursor_visible;
+	int32_t cursor_x, cursor_y;
+	bool need_commit;
 };
 
 static struct output *output_of(struct display *disp)
@@ -118,10 +126,42 @@ bool display_supports_damage(struct display *disp)
 	return output_of(disp)->damage;
 }
 
-/* drm_display_has_damage: the last frame left a damage blob */
-bool display_has_damage(struct display *disp)
+int display_swap(struct display *disp)
 {
-	return output_of(disp)->n_rects != 0;
+	struct output *o = output_of(disp);
+
+	o->d2d.current_rb ^= 1;
+	o->swaps++;
+	o->need_commit = false;
+	return 0;
+}
+
+bool display_need_commit(struct display *disp)
+{
+	return output_of(disp)->need_commit;
+}
+
+/* drm_display_show_cursor and drm_display_hide_cursor: the state waits for a swap */
+int display_show_cursor(struct display *disp, int32_t x, int32_t y)
+{
+	struct output *o = output_of(disp);
+
+	if (!o->cursor_visible || o->cursor_x != x || o->cursor_y != y)
+		o->need_commit = true;
+	o->cursor_visible = true;
+	o->cursor_x = x;
+	o->cursor_y = y;
+	return 0;
+}
+
+int display_hide_cursor(struct display *disp)
+{
+	struct output *o = output_of(disp);
+
+	if (o->cursor_visible)
+		o->need_commit = true;
+	o->cursor_visible = false;
+	return 0;
 }
 
 void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages)
@@ -193,9 +233,25 @@ static void check_damage(struct output *o, const uint32_t *drawn, const uint32_t
 	}
 }
 
+/* the cells @o's damage covers */
+static void damage_cells(const struct output *o, bool cells[ROWS][COLS])
+{
+	unsigned int fw = FONT_WIDTH(o->txt), fh = FONT_HEIGHT(o->txt);
+
+	memset(cells, 0, sizeof(bool) * ROWS * COLS);
+	for (size_t i = 0; i < o->n_rects; i++) {
+		const struct video_rect *r = &o->rects[i];
+
+		for (unsigned int row = r->y1 / fh; row * fh < (unsigned int)r->y2; row++)
+			for (unsigned int col = r->x1 / fw; col * fw < (unsigned int)r->x2; col++)
+				cells[row][col] = true;
+	}
+}
+
 /*
- * Draw one frame of @con in phase @hidden; returns the buffer it went to.
- * With damage on, checks the damage against the frame on screen before it.
+ * Draw and present one frame of @con in phase @hidden, as terminal.c does;
+ * returns the buffer on screen after it. With damage on, checks the damage
+ * against the frame on screen before it.
  */
 static const uint32_t *output_frame(struct output *o, struct tsm_screen *con, struct tsm_vte *vte,
 				    bool hidden, const char *what)
@@ -211,13 +267,16 @@ static const uint32_t *output_frame(struct output *o, struct tsm_screen *con, st
 	assert(ret == 0);
 	ret = kmscon_text_draw(o->txt, con, false);
 	assert(ret == 0);
-	ret = kmscon_text_render(o->txt);
+	if (o->pointer) {
+		ret = kmscon_text_draw_pointer(o->txt, o->pointer[0], o->pointer[1]);
+		assert(ret == 0);
+	}
+	ret = kmscon_text_present(o->txt);
 	assert(ret == 0);
 	if (o->damage && o->frames)
 		check_damage(o, drawn, shown, what);
-	o->d2d.current_rb ^= 1;
 	o->frames++;
-	return drawn;
+	return o->d2d.rb[o->d2d.current_rb].map;
 }
 
 /* ---- the screen ---- */
@@ -363,10 +422,11 @@ static void console_new(struct tsm_screen **con, struct tsm_vte **vte)
 }
 
 /*
- * @bytes drawn by a new display in phase @hidden, into @out: its first frame,
- * every cell drawn over a cleared buffer.
+ * @bytes drawn by a new display in phase @hidden, with the pointer at
+ * @pointer if set, into @out: its first frame, every cell drawn over a cleared
+ * buffer.
  */
-static void fresh(uint32_t *out, const char *bytes, bool hidden)
+static void fresh(uint32_t *out, const char *bytes, bool hidden, const unsigned int *pointer)
 {
 	struct tsm_screen *con;
 	struct tsm_vte *vte;
@@ -376,6 +436,7 @@ static void fresh(uint32_t *out, const char *bytes, bool hidden)
 	console_new(&con, &vte);
 	tsm_vte_input(vte, bytes, strlen(bytes));
 	output_init(&o, "fresh", font, false);
+	o.pointer = pointer;
 	drawn = output_frame(&o, con, vte, hidden, "fresh");
 	memcpy(out, drawn, fb_bytes);
 	output_destroy(&o);
@@ -427,12 +488,12 @@ static void test_phases(void)
 	screen_bytes(visible, sizeof(visible), VISIBLE);
 	screen_bytes(hidden, sizeof(hidden), HIDDEN);
 
-	fresh(on, blinking, false);
-	fresh(ref, visible, false);
+	fresh(on, blinking, false, NULL);
+	fresh(ref, visible, false, NULL);
 	same(on, ref, "visible phase against the text without SGR 5");
 
-	fresh(off, blinking, true);
-	fresh(ref, hidden, false);
+	fresh(off, blinking, true, NULL);
+	fresh(ref, hidden, false, NULL);
 	same(off, ref, "hidden phase against the attributes over spaces");
 
 	/* the phase moves the blinking cells and nothing else */
@@ -458,13 +519,13 @@ static void test_phases(void)
 	}
 
 	/* hidden-phase rendering of a screen with no SGR 5 is the visible one */
-	fresh(off, visible, true);
-	fresh(ref, visible, false);
+	fresh(off, visible, true, NULL);
+	fresh(ref, visible, false, NULL);
 	same(off, ref, "a screen without SGR 5 in the hidden phase");
 
 	/* "ab" rewritten with SGR 25 shows in the hidden phase; "blink" still hides */
 	strncat(blinking, SGR25_BYTES, sizeof(blinking) - strlen(blinking) - 1);
-	fresh(off, blinking, true);
+	fresh(off, blinking, true, NULL);
 	compared++;
 	if (!same_cells(off, on, 0, ROWS_USED - 1, 2) || same_cells(off, on, 6, 0, 5)) {
 		fprintf(stderr, "test_blink: SGR 25 does not end the blink of \"ab\" alone\n");
@@ -475,8 +536,8 @@ static void test_phases(void)
 	 * blinking cell beside it hides */
 	screen_bytes(blinking, sizeof(blinking), BLINKING);
 	strncat(blinking, CURSOR_BYTES, sizeof(blinking) - strlen(blinking) - 1);
-	fresh(on, blinking, false);
-	fresh(off, blinking, true);
+	fresh(on, blinking, false, NULL);
+	fresh(off, blinking, true, NULL);
 	compared++;
 	if (!same_cells(off, on, 6, 0, 1) || same_cells(off, on, 7, 0, 1)) {
 		fprintf(stderr, "test_blink: the cursor's blinking cell hides, or its "
@@ -503,7 +564,9 @@ struct step {
  * Every frame each display draws must equal a fresh render of the screen as
  * it is, in the frame's phase. @mask: which of the two displays draws at each
  * step (bit 0 the first, drawing every step unless @mask says otherwise).
- * @damage: the displays report damage.
+ * @damage: the displays report damage. A display's frame changes nothing when
+ * no bytes were written since its last frame and its phase is that frame's;
+ * its first two frames redraw every cell.
  */
 static void run_steps(const char *what, const struct step *steps, size_t n, const char *initial,
 		      const unsigned int *mask, bool damage)
@@ -514,6 +577,10 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 	struct output outs[2];
 	uint32_t *ref = malloc(fb_bytes);
 	char label[256];
+	/* per display: bytes written since its last frame, that frame's phase,
+	 * and whether it changed anything */
+	bool pending[2] = {false, false}, last_hidden[2] = {false, false};
+	bool last_changed[2] = {true, true};
 
 	console_new(&con, &vte);
 	tsm_vte_input(vte, initial, strlen(initial));
@@ -527,14 +594,19 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 		if (steps[i].bytes) {
 			tsm_vte_input(vte, steps[i].bytes, strlen(steps[i].bytes));
 			strncat(bytes, steps[i].bytes, sizeof(bytes) - strlen(bytes) - 1);
+			pending[0] = pending[1] = true;
 		}
-		fresh(ref, bytes, steps[i].hidden);
+		fresh(ref, bytes, steps[i].hidden, NULL);
 
 		for (int d = 0; d < 2; d++) {
 			const uint32_t *drawn;
+			unsigned int swaps = outs[d].swaps;
+			bool changed;
 
 			if (!(draws & (1u << d)))
 				continue;
+			changed = pending[d] || steps[i].hidden != last_hidden[d] ||
+				  outs[d].frames < 2;
 			snprintf(label, sizeof(label),
 				 "%s%s: step %zu (%s phase), display '%s' frame %u into buffer %d",
 				 what, damage ? " with damage" : "", i,
@@ -542,6 +614,19 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 				 outs[d].frames + 1, outs[d].d2d.current_rb ^ 1);
 			drawn = output_frame(&outs[d], con, vte, steps[i].hidden, label);
 			same(drawn, ref, label);
+			if (damage && !changed && !last_changed[d]) {
+				compared++;
+				if (outs[d].n_rects || outs[d].swaps != swaps) {
+					fprintf(stderr,
+						"test_blink: %s: %zu damage rects and %u swaps after "
+						"two frames without change\n",
+						label, outs[d].n_rects, outs[d].swaps - swaps);
+					failures++;
+				}
+			}
+			pending[d] = false;
+			last_hidden[d] = steps[i].hidden;
+			last_changed[d] = changed;
 		}
 	}
 
@@ -614,6 +699,239 @@ static void test_buffers(void)
 	}
 }
 
+/*
+ * Whether @r is one row of cells that starts and ends on a cell of @want,
+ * with no run of other cells inside it as long as DAMAGE_MERGE_LEN.
+ */
+static bool rect_fits(const struct output *o, const struct video_rect *r, bool want[ROWS][COLS])
+{
+	unsigned int fw = FONT_WIDTH(o->txt), fh = FONT_HEIGHT(o->txt);
+	unsigned int row = r->y1 / fh, first = r->x1 / fw, last = (r->x2 - 1) / fw, run = 0;
+
+	if (r->y1 % fh || r->y2 - r->y1 != (int)fh || r->x1 % fw || r->x2 % fw)
+		return false;
+	if (!want[row][first] || !want[row][last])
+		return false;
+	for (unsigned int col = first; col <= last; col++) {
+		run = want[row][col] ? 0 : run + 1;
+		if (run >= DAMAGE_MERGE_LEN)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * One display with damage draws the blinking screen for EXTENT_FRAMES frames,
+ * as a shell prompt would see it. One frame in three writes one cell of the
+ * free rows, every fourth of them a wide character over two cells; the blink
+ * phase flips every eight frames, which changes the blinking cells; a steady
+ * bar cursor shows on a wide cell for a few frames, which changes both of its
+ * cells; and the pointer shows for one frame, which changes the four cells
+ * around its centre on that frame and the next. Each frame's damage must cover
+ * exactly the cells changed on that frame or the one before, give or take
+ * bbulk's merging: a rect starts and ends on such a cell, and a run of other
+ * cells inside it is shorter than DAMAGE_MERGE_LEN. A frame is presented
+ * (swapped) when its damage is not empty, and only then. The first three
+ * frames are left out: the first two redraw every cell, so the third draws
+ * every cell again into the buffer the second left behind.
+ */
+#define EXTENT_FRAMES 100
+#define CURSOR_ON 50  /* the bar cursor shows on the first wide character */
+#define CURSOR_OFF 54 /* and hides */
+#define POINTER 70    /* the frame that draws the pointer */
+
+static void test_damage_extent(void)
+{
+	static char bytes[8192];
+	static bool now[ROWS][COLS], before[ROWS][COLS], want[ROWS][COLS], got[ROWS][COLS];
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	struct output o;
+	uint32_t *ref = malloc(fb_bytes);
+	unsigned int typed = 0, total = 0, judged = 0, most = 0, none = 0;
+	unsigned int row = ROWS_USED, col = 0, wide_row = ROWS, wide_col = 0;
+	unsigned int fw = font->width, fh = font->height;
+	/* the pointer's centre: its cells are columns 20-21, rows 4-5, all blank */
+	const unsigned int pointer[2] = {21 * fw, 5 * fh};
+	bool hidden = false;
+	char label[128], cell[64];
+
+	screen_bytes(bytes, sizeof(bytes), BLINKING);
+	console_new(&con, &vte);
+	tsm_vte_input(vte, bytes, strlen(bytes));
+	output_init(&o, "extent", font, true);
+
+	for (unsigned int f = 0; f < EXTENT_FRAMES; f++) {
+		unsigned int n = 0, swaps = o.swaps;
+		bool reported = false, any = false;
+
+		memset(now, 0, sizeof(now));
+		cell[0] = 0;
+		if (f && f % 8 == 0) {
+			hidden = !hidden;
+			memcpy(now, blink_cell, sizeof(now));
+		}
+		if (f >= 4 && f % 3 == 1 && (f < CURSOR_ON || f > CURSOR_OFF)) {
+			bool wide = typed % 4 == 3;
+			unsigned int w = wide ? 2 : 1;
+
+			if (col + w > COLS - 1) {
+				row++;
+				col = 0;
+			}
+			assert(row < ROWS);
+			snprintf(cell, sizeof(cell), ESC "[%u;%uH%s", row + 1, col + 1,
+				 wide ? "日" : (char[]){'a' + typed % 26, 0});
+			if (wide && wide_row == ROWS) {
+				wide_row = row;
+				wide_col = col;
+			}
+			for (unsigned int c = 0; c < w; c++)
+				now[row][col + c] = true;
+			col += w;
+			typed++;
+		}
+		if (f == CURSOR_ON || f == CURSOR_OFF) {
+			assert(wide_row < ROWS);
+			/* moved first: libtsm marks the cursor's cell changed on a
+			 * style change, hidden or not */
+			if (f == CURSOR_ON)
+				snprintf(cell, sizeof(cell), ESC "[%u;%uH" ESC "[6 q" ESC "[?25h",
+					 wide_row + 1, wide_col + 1);
+			else
+				snprintf(cell, sizeof(cell), ESC "[?25l");
+			now[wide_row][wide_col] = now[wide_row][wide_col + 1] = true;
+		}
+		if (f == POINTER || f == POINTER + 1)
+			for (unsigned int c = 20; c < 22; c++)
+				now[4][c] = now[5][c] = true;
+		o.pointer = f == POINTER ? pointer : NULL;
+		if (cell[0]) {
+			tsm_vte_input(vte, cell, strlen(cell));
+			strncat(bytes, cell, sizeof(bytes) - strlen(bytes) - 1);
+		}
+
+		fresh(ref, bytes, hidden, o.pointer);
+		snprintf(label, sizeof(label), "damage extent: frame %u (%s phase)", f + 1,
+			 hidden ? "hidden" : "visible");
+		same(output_frame(&o, con, vte, hidden, label), ref, label);
+
+		damage_cells(&o, got);
+		for (unsigned int y = 0; y < ROWS; y++) {
+			for (unsigned int x = 0; x < COLS; x++) {
+				n += got[y][x];
+				want[y][x] = now[y][x] || before[y][x];
+				any = any || want[y][x];
+				if (f >= 3 && want[y][x] && !got[y][x] && !reported) {
+					fprintf(stderr,
+						"test_blink: %s: cell %u,%u changed but left out of "
+						"the damage\n",
+						label, x, y);
+					reported = true;
+					failures++;
+				}
+			}
+		}
+		if (f >= 3) {
+			compared++;
+			for (size_t i = 0; i < o.n_rects && !reported; i++) {
+				if (!rect_fits(&o, &o.rects[i], want)) {
+					fprintf(stderr,
+						"test_blink: %s: damage rect %d,%d-%d,%d reaches "
+						"past the cells changed in two frames\n",
+						label, o.rects[i].x1, o.rects[i].y1, o.rects[i].x2,
+						o.rects[i].y2);
+					reported = true;
+					failures++;
+				}
+			}
+		}
+		if (o.swaps - swaps != (f < 3 || any)) {
+			fprintf(stderr, "test_blink: %s: %s\n", label,
+				f < 3 || any ? "a frame with damage was not presented"
+					     : "a frame without change was presented");
+			failures++;
+		}
+		total += n;
+		if (f >= 3) {
+			judged += n;
+			most = n > most ? n : most;
+			none += !n;
+		}
+		memcpy(before, now, sizeof(now));
+	}
+	fprintf(stderr,
+		"test_blink: damage extent: %u frames, %u cells damaged, %u in frames 4-%u "
+		"(at most %u in one frame, %u frames with none), %u swaps\n",
+		EXTENT_FRAMES, total, judged, EXTENT_FRAMES, most, none, o.swaps);
+
+	output_destroy(&o);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+	free(ref);
+}
+
+/*
+ * The hardware cursor on a display with damage: terminal.c shows, moves and
+ * hides it through the display, which puts it on screen only with a swap, and
+ * then redraws, so the frame draws nothing. Each such frame must still be
+ * swapped, once; a frame after it without change must not be. The steps are
+ * those of a pointer that appears, moves, stays put, and hides when idle.
+ */
+static void test_hw_cursor(void)
+{
+	static char bytes[4096];
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	struct output o;
+	uint32_t *ref = malloc(fb_bytes);
+	static const struct {
+		const char *what;
+		int show; /* 1: show at x, y; -1: hide; 0: leave */
+		int32_t x, y;
+		unsigned int swaps;
+	} steps[] = {
+		{"no change", 0, 0, 0, 0},  {"shown", 1, 40, 30, 1},
+		{"no change", 0, 0, 0, 0},  {"moved", 1, 90, 50, 1},
+		{"shown in place", 1, 90, 50, 0}, {"hidden after the timeout", -1, 0, 0, 1},
+		{"hidden again", -1, 0, 0, 0}, {"no change", 0, 0, 0, 0},
+		{"shown again", 1, 10, 10, 1}, {"no change", 0, 0, 0, 0},
+	};
+	char label[128];
+
+	screen_bytes(bytes, sizeof(bytes), BLINKING);
+	console_new(&con, &vte);
+	tsm_vte_input(vte, bytes, strlen(bytes));
+	output_init(&o, "hw cursor", font, true);
+	fresh(ref, bytes, false, NULL);
+
+	/* the full redraws and their catch-up */
+	for (int i = 0; i < 3; i++)
+		output_frame(&o, con, vte, false, "hw cursor: first frames");
+
+	for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+		unsigned int swaps = o.swaps;
+
+		if (steps[i].show > 0)
+			display_show_cursor(&o.disp, steps[i].x, steps[i].y);
+		else if (steps[i].show < 0)
+			display_hide_cursor(&o.disp);
+		snprintf(label, sizeof(label), "hw cursor: step %zu (%s)", i, steps[i].what);
+		same(output_frame(&o, con, vte, false, label), ref, label);
+		compared++;
+		if (o.n_rects || o.swaps - swaps != steps[i].swaps) {
+			fprintf(stderr, "test_blink: %s: %zu damage rects and %u swaps, not %u\n",
+				label, o.n_rects, o.swaps - swaps, steps[i].swaps);
+			failures++;
+		}
+	}
+
+	output_destroy(&o);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+	free(ref);
+}
+
 /* Replace the process's fontconfig with one that knows only the pinned files. */
 static void pin_fonts(void)
 {
@@ -664,6 +982,8 @@ int main(int argc, char **argv)
 
 	test_phases();
 	test_buffers();
+	test_damage_extent();
+	test_hw_cursor();
 
 	kmscon_font_unref(font);
 	fprintf(stderr, "test_blink: %u screens compared, %d failures\n", compared, failures);

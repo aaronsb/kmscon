@@ -49,7 +49,6 @@ struct display_ops {
 	int (*blend)(struct display *disp, const struct video_blend_req *req);
 	int (*clear)(struct display *disp, uint8_t r, uint8_t g, uint8_t b);
 	void (*set_damage)(struct display *disp, size_t n_rect, struct video_rect *damages);
-	bool (*has_damage)(struct display *disp);
 	int (*setup_cursor)(struct display *disp, const uint32_t *pixels, unsigned int width,
 			    unsigned int height, int hot_x, int hot_y);
 	void (*destroy_cursor)(struct display *disp);
@@ -81,6 +80,7 @@ struct video_ops {
 #define DISPLAY_INUSE 0x100
 #define DISPLAY_DAMAGE 0x200
 #define DISPLAY_NEED_REDRAW 0x400
+#define DISPLAY_NEED_COMMIT 0x800 /* state outside the primary plane waits for a swap */
 
 struct display {
 	char *name;

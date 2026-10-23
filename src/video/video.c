@@ -349,6 +349,20 @@ bool display_need_redraw(struct display *disp)
 	return (disp->flags & DISPLAY_NEED_REDRAW) != 0;
 }
 
+/*
+ * Whether state that reaches the screen only with the next swap, such as the
+ * hardware cursor, has changed since the last one: a frame that drew nothing
+ * must still be swapped.
+ */
+SHL_EXPORT
+bool display_need_commit(struct display *disp)
+{
+	if (!disp || !display_is_online(disp) || !video_is_awake(disp->video))
+		return false;
+
+	return (disp->flags & DISPLAY_NEED_COMMIT) != 0;
+}
+
 SHL_EXPORT
 int display_setup_cursor(struct display *disp, const uint32_t *pixels, unsigned int width,
 			 unsigned int height, int hot_x, int hot_y)
@@ -408,17 +422,6 @@ void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *
 
 	if (disp->ops->set_damage)
 		disp->ops->set_damage(disp, n_rect, damages);
-}
-
-SHL_EXPORT
-bool display_has_damage(struct display *disp)
-{
-	if (!disp || !display_is_online(disp) || !video_is_awake(disp->video))
-		return false;
-
-	if (disp->ops->has_damage)
-		return disp->ops->has_damage(disp);
-	return false;
 }
 
 SHL_EXPORT

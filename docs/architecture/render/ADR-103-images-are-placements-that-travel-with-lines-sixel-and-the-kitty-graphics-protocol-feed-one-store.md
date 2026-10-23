@@ -96,6 +96,13 @@ considered:
     said: "Keep the K, M and G suffixes on image-storage-limit; accept the shrinking auto limit evicting at the next reservation, with a note"
     via: "operator's replies in the steering session, 2026-10-23, relayed by the team lead as answers to kmscon #133's questions 3 and 4"
     paraphrase: true
+  - operator: aaronsb
+    said: "I have typically been using chafa"
+    via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to kmscon #145's question 1 (img2sixel writes nothing on Arch; which encoder draws A1's photographs)"
+  - operator: aaronsb
+    said: "Carry A2 at the two 7680x2160 variants as a known failure naming #139, in the capability-probe style: green while it fails, red once it passes with the entry still there"
+    via: "steering session, 2026-10-23, relayed by the team lead as the answer to kmscon #145's question 2"
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -541,3 +548,11 @@ Recorded as considered entries above; what they change:
 - **Sixel only where it can be drawn** ("why not sketch the outline and include the flag to deactivate it so that sixel support is truthfully unavailable"). Each renderer declares whether it draws image placements: bbulk does, gltex does not until step 3f, and any other renderer without placement drawing does not. A terminal offers sixel (DA1 attribute 4, XTSMGRAPHICS) and stores pictures only while every display it draws on has a renderer that does; otherwise it behaves as if `sixel` were off, offering nothing and storing no new picture. Pictures it stored before such a display arrived stay, counted in the budget and not drawn, until they are cleared or evicted, and show again when the display goes. Displays drawn by a renderer without placements do not count toward `image-storage-limit=auto`. gltex keeps the hook where step 3f will compose placements (`gltex_draw_placements`).
 - **A shrinking auto limit evicts at the next reservation**, accepted by the operator. This refines the Memory section's "A smaller budget evicts down to fit": a renderer is unset and set again on every font change and zoom, which uncounts its display and counts it back at once, and evicting on that dip threw away pictures the budget could hold. The auto limit therefore follows the displays without evicting, and the next reservation evicts down to the limit it finds. A set limit that shrinks still evicts at once.
 - **`image-storage-limit` takes K, M and G** (KiB, MiB, GiB) beside plain bytes, kept by the operator, and at most 1 TiB: a display's share of the budget is the limit times its pixels over all the displays', computed in 64 bits.
+
+## Notes (2026-10-23, operator answers from step 3e, kmscon #145)
+
+Recorded as considered entries above; what they change:
+
+- **A1 uses chafa and mpv, not img2sixel** ("I have typically been using chafa"). img2sixel writes nothing on Arch with libsixel 1.10.5 and gdk-pixbuf 2.44 (glycin), for any input: libsixel's `load_with_gdkpixbuf` (src/loader.c) calls `gdk_pixbuf_loader_get_pixbuf` right after the write and before `gdk_pixbuf_loader_close`, gets no picture from glycin, and returns success with no frame, which also skips its built-in loaders. A1's photographs are therefore drawn by chafa (`chafa -f sixels`, sized in cells), the operator's everyday tool, with libsixel's encoder drawing the day photograph a second time by way of mpv (`--vo=sixel`, ffmpeg decoding). The page prints how many bytes img2sixel wrote, so a libsixel that reads images again shows by itself. This replaces "img2sixel pictures" in the Acceptance scenarios and img2sixel in Testing's tier 3 line.
+- **The photographs** are NASA Visible Earth images of the Earth by day and by night, 2048x1024 (`/usr/share/xplanet/images/earth.jpg` and `night.jpg` from xplanet 1.3.1, Arch extra). xplanet's images/README cites visibleearth.nasa.gov and says "These images are not copyrighted", NASA imagery being usable for educational and informational purposes. Nothing is downloaded at test time and no picture is committed.
+- **A2 at 7680x2160 is a known failure** while kmscon is the bottleneck there (aaronsb/kmscon#139): tier 3's `mpv-sixel` case at both 7680x2160 variants passes with a note naming the issue while it fails, and fails once it passes with the entry still in place, in the style of the capability probes. ADR-104's "A1, A2 and A4 in tier 3" has the figures.

@@ -40,11 +40,15 @@ test_text = executable(
 )
 test('test_text', test_text)
 
+# libtsm's test calls make the images a scaled picture evicts
 test_bbulk = executable(
     'test_bbulk',
     'test_bbulk.c',
     include_directories: src_inc,
-    dependencies: [libtsm_deps, htable_deps],
+    dependencies: [
+        subproject('libtsm').get_variable('libtsm_test_dep'),
+        htable_deps,
+    ],
 )
 test('test_bbulk', test_bbulk)
 

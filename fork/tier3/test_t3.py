@@ -55,7 +55,7 @@ class ScreenTextTest(unittest.TestCase):
         # and the sixel screens draw pictures, so they have no text on
         # purpose; every other screen has its rows.
         textless = ("wide-margin", "s1-scroll", "sixel", "sixel-ramps", "sixel-article",
-                    "sixel-bound")
+                    "sixel-bound", "sixel-evict")
         with contextlib.redirect_stderr(io.StringIO()):
             for name in textless:
                 self.assertIsNone(t3_evaluate.screen_text(name, LOG))

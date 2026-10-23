@@ -15,16 +15,37 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 # golden is the cjk one (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
            "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "sixel",
-           "sixel-ramps", "sixel-article", "sixel-bound", "s1-scroll", "cjk"]
+           "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict", "s1-scroll", "cjk"]
+# Cases captured after a screen is drawn, by pressing kmscon's grabs: each is
+# (screen, case, the chords pressed before its capture). After the last, the
+# chords in KEYS_AFTER put the terminal back as the screen left it. The
+# rotate grab is Logo with plus or equal, zoom Ctrl with the same, and both
+# match equal unshifted.
+KEYED = [
+    ("sixel-evict", "sixel-evict-rotated", [("meta_l", "equal")]),
+    ("sixel-evict", "sixel-evict-history", [("meta_l", "minus")] + [("shift", "pgup")] * 30),
+    ("sixel-evict", "sixel-evict-zoomed", [("shift", "pgdn")] * 30 + [("ctrl", "equal")]),
+]
+KEYS_AFTER = {"sixel-evict": [("ctrl", "minus")]}
 # The screens that are also ADR-103 benchmark scenarios: each reports its
 # window on the event port, and the report carries its figures (t3_bench.py).
 BENCHMARKS = ["s1-scroll"]
 # Every case of a variant: each screen, then the VT switch (a check without a
 # golden) and the restore after it (compared with the last screen's golden).
-CASES = SCREENS + ["vt-switch", "vt-restore"]
+CASES = SCREENS + [case for _, case, _ in KEYED] + ["vt-switch", "vt-restore"]
 # What each check shows and what correct looks like, for the conformance run
 # page; a screen's comes from the header comment of its script (describe).
 CHECKS = {
+    "sixel-evict-rotated": "The sixel-evict screen turned with Logo+=: a scaled copy of the last "
+                           "picture, which fits the full image budget only once picture 1 is "
+                           "evicted from scrollback (ADR-103's Q1 note). Correct: the last "
+                           "picture drawn, turned, under its caption.",
+    "sixel-evict-history": "Turned back with Logo+-, then Shift+PageUp to the top of the "
+                           "scrollback. Correct: picture 1's caption over blank cells, the "
+                           "pictures after it drawn under theirs.",
+    "sixel-evict-zoomed": "Scrolled down, then zoomed with Ctrl+=: a scaled copy of the last "
+                          "picture for the larger cells. Correct: the last picture drawn, "
+                          "scaled to the larger cells, under its caption.",
     "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
                  "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
                  "screen just left.",

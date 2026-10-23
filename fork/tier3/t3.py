@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3_runner  # noqa: E402
 import t3_scenario  # noqa: E402
 from t3_common import BASE, GUEST, PKGOUT, REPORT, ROOT, VM, Logger, rel  # noqa: E402
-from t3_evaluate import SCREENS, golden_for  # noqa: E402
+from t3_evaluate import KEYED, SCREENS, golden_for  # noqa: E402
 from t3_qemu import Qemu, make_iso  # noqa: E402
 
 
@@ -130,7 +130,8 @@ def _bless(args, log):
         report = json.load(f)
     for c in report["cases"]:
         variant, case = c["name"].split("/", 1)
-        if case not in SCREENS or not c["actual"]:
+        # a screen or a case keyed from one; vt-restore's golden is cjk's
+        if (case not in SCREENS and case not in [k for _, k, _ in KEYED]) or not c["actual"]:
             continue
         if args.variants and variant not in args.variants:
             continue

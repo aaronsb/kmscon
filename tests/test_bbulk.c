@@ -100,7 +100,9 @@ static struct tsm_frame_image test_images[16];
 int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
 			  struct tsm_frame_image *out)
 {
-	(void)txt;
+	/* a libtsm key, of the screen a test set */
+	if (!overlay && key >= 16 && txt->screen)
+		return tsm_screen_frame_image(txt->screen, key, out);
 	if (overlay || key >= 16 || !test_images[key].pixels)
 		return -ENOENT;
 	*out = test_images[key];
@@ -1095,6 +1097,225 @@ static void test_budget_images(void)
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 }
 
+/* a libtsm screen's image @id of 320 x 240, 40 x 15 cells, placed at the top left
+ * of the screen unless @unplaced; its key */
+static uint64_t screen_image(struct tsm_screen *con, uint32_t id, bool unplaced)
+{
+	static uint32_t px[320 * 240];
+	struct tsm_test_image img = {
+		.width = 320, .height = 240, .pixels = px, .kind = TSM_IMAGE_KITTY, .id = id};
+	struct tsm_test_placement pl = {0};
+	uint64_t key, pkey;
+
+	assert(tsm_screen_test_image(con, &img, &key) == 0);
+	pl.image = key;
+	if (!unplaced)
+		assert(tsm_screen_test_place(con, &pl, &pkey) == 0);
+	return key;
+}
+
+static bool screen_holds(struct tsm_screen *con, uint64_t key)
+{
+	struct tsm_frame_image img;
+
+	return tsm_screen_frame_image(con, key, &img) == 0;
+}
+
+/*
+ * On a display that scales pictures, a picture on screen takes its room from
+ * the terminal's history (operator's answer to ADR-103 Q1, 2026-10-23), in
+ * ADR-103's order: another display's picture its last frame did not draw,
+ * then the images unplaced, then those placed only in scrollback. An image
+ * placed on the screen's lines stays, and so does one the frame draws from
+ * scrollback, as when the view is scrolled back: a picture that needs its
+ * room is left out, and idle frames do not try it again.
+ */
+static void test_budget_history(void)
+{
+	struct kmscon_text a, b;
+	struct bbulk *ba = open_txt(&a, 0x46, 640, 480), *bb = open_txt(&b, 0x47, 640, 480);
+	uint32_t *src = half_images(640, 480, 2);
+	size_t pic = (size_t)640 * 480 * 4, img = (size_t)320 * 240 * 4 + TSM_SCREEN_IMAGE_OVERHEAD;
+	const struct tsm_frame *lf;
+	struct tsm_frame_age age = {0};
+	struct tsm_screen *con;
+	uint64_t scrolled, unplaced, viewed, onscreen;
+	unsigned int i, n;
+
+	image_budget_set_limit(16 * pic);
+	/* the other display keeps a picture of two rows its last frame did not draw */
+	set_band(0, 95, 2, 0, 2);
+	draw_idle(&b, 1);
+	draw_idle(&b, 0);
+	assert(pictures_of(bb, 2) == 1 && bb->picture_bytes < img);
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, a.cols, a.rows) == 0);
+	tsm_screen_set_max_sb(con, 200);
+	assert(image_budget_add_screen(con) == 0);
+
+	/* one far up the scrollback; one unplaced; one at the scrollback's end
+	 * the view is scrolled back to; one on the screen's lines */
+	scrolled = screen_image(con, 1, false);
+	for (i = 0; i < 100; i++)
+		tsm_screen_newline(con);
+	viewed = screen_image(con, 2, false);
+	unplaced = screen_image(con, 3, true);
+	for (i = 0; i < a.rows; i++)
+		tsm_screen_newline(con);
+	onscreen = screen_image(con, 4, false);
+	assert(image_budget_used() == 4 * img + bb->picture_bytes);
+	tsm_screen_sb_up(con, a.rows);
+
+	/* the frame libtsm gives: the viewed image, at the view's top */
+	lf = tsm_screen_frame_since(con, &age);
+	for (i = n = 0; i < lf->placement_count; i++) {
+		assert(tsm_frame_placement_at(lf, i)->image_key == viewed);
+		placements[n++] = *tsm_frame_placement_at(lf, i);
+	}
+	assert(n == 1 && placements[0].row == 0);
+	a.screen = con;
+
+	/* a picture over it takes the other display's picture's room, then the unplaced image's */
+	image_budget_set_limit(pic + 3 * img);
+	set_scaled(1, 90, 1);
+	assert(draw_placements(&a, 2) == 0);
+	assert(!ba->starving && picture_drawn(&a, 20));
+	assert(pictures_of(bb, 2) == 0 && !screen_holds(con, unplaced));
+	assert(screen_holds(con, scrolled) && screen_holds(con, viewed) &&
+	       screen_holds(con, onscreen));
+	settle(&a, 2);
+
+	/*
+	 * a second would need the viewed one's room as well as the scrolled
+	 * one's: it is left out, and the scrolled one is not evicted for nothing,
+	 * on that frame or the idle ones after
+	 */
+	set_scaled(2, 91, 2);
+	assert(draw_placements(&a, 3) == 0);
+	assert(ba->starving && picture_drawn(&a, 20));
+	assert(screen_holds(con, scrolled) && screen_holds(con, viewed) &&
+	       screen_holds(con, onscreen));
+	assert(draw_placements(&a, 3) == 0);
+	assert(draw_placements(&a, 3) == KMSCON_TEXT_UNCHANGED);
+	assert(ba->starving && screen_holds(con, scrolled) && screen_holds(con, viewed));
+
+	/* a limit that lets the scrolled one's room make it fit: it goes, and the second draws */
+	image_budget_set_limit(2 * pic + 2 * img);
+	assert(draw_placements(&a, 3) == 0);
+	assert(!ba->starving);
+	assert(!screen_holds(con, scrolled));
+	assert(screen_holds(con, viewed) && screen_holds(con, onscreen));
+
+	a.screen = NULL;
+	close_txt(&b);
+	close_txt(&a);
+	image_budget_remove_screen(con);
+	tsm_screen_unref(con);
+	drop_images(src, 2);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+
+/*
+ * Another display's picture its last frame did not draw is room too, counted
+ * before anything is freed: with no image to evict, it alone lets a picture
+ * here fit, and goes for it.
+ */
+static void test_budget_cache_room(void)
+{
+	struct kmscon_text a, b;
+	struct bbulk *ba = open_txt(&a, 0x49, 640, 480), *bb = open_txt(&b, 0x4a, 640, 480);
+	uint32_t *src = half_images(640, 480, 2);
+	size_t pic = (size_t)640 * 480 * 4;
+
+	image_budget_set_limit(16 * pic);
+	scaled_screens(0, 1, 2);
+	draw_idle(&b, 1);
+	draw_idle(&b, 0);
+	assert(pictures_of(bb, 2) == 1 && image_budget_used() == pic);
+
+	image_budget_set_limit(pic + pic / 2);
+	scaled_screens(0, 1, 1);
+	assert(draw_placements(&a, 1) == 0);
+	assert(!ba->starving && picture_drawn(&a, 20) && pictures_of(bb, 2) == 0);
+
+	close_txt(&b);
+	close_txt(&a);
+	drop_images(src, 2);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+
+/*
+ * The room a picture takes from history comes from every terminal's screen,
+ * main and alternate, each screen's as far as the first image the frame draws
+ * and no further: another session's images go even when they are newer than
+ * the image this frame draws from scrollback, while the images placed on
+ * either screen's lines stay.
+ */
+static void test_budget_history_screens(void)
+{
+	struct kmscon_text a;
+	struct bbulk *ba = open_txt(&a, 0x48, 640, 480);
+	uint32_t *src = half_images(640, 480, 1);
+	size_t pic = (size_t)640 * 480 * 4, img = (size_t)320 * 240 * 4 + TSM_SCREEN_IMAGE_OVERHEAD;
+	const struct tsm_frame *lf;
+	struct tsm_frame_age age = {0};
+	struct tsm_screen *con, *other;
+	uint64_t viewed, onscreen, scrolled, alt_unplaced, alt_onscreen;
+	unsigned int i;
+
+	image_budget_set_limit(16 * pic);
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, a.cols, a.rows) == 0);
+	tsm_screen_set_max_sb(con, 200);
+	assert(image_budget_add_screen(con) == 0);
+	/* the cursor reaches the bottom, then the image's rows scroll off */
+	viewed = screen_image(con, 1, false);
+	for (i = 0; i < 2 * a.rows - 1; i++)
+		tsm_screen_newline(con);
+	onscreen = screen_image(con, 2, false);
+	tsm_screen_sb_up(con, a.rows);
+	lf = tsm_screen_frame_since(con, &age);
+	assert(lf->placement_count == 1);
+	placements[0] = *tsm_frame_placement_at(lf, 0);
+	assert(placements[0].image_key == viewed);
+	a.screen = con;
+
+	/*
+	 * another session, made after that frame: an image scrolled off its main
+	 * screen, then on its alternate screen one placed and one unplaced
+	 */
+	assert(tsm_screen_new(&other, NULL, NULL) == 0);
+	assert(tsm_screen_resize(other, a.cols, a.rows) == 0);
+	tsm_screen_set_max_sb(other, 200);
+	assert(image_budget_add_screen(other) == 0);
+	scrolled = screen_image(other, 1, false);
+	for (i = 0; i < 100; i++)
+		tsm_screen_newline(other);
+	tsm_screen_set_flags(other, TSM_SCREEN_ALTERNATE);
+	alt_onscreen = screen_image(other, 2, false);
+	alt_unplaced = screen_image(other, 3, true);
+	assert(image_budget_used() == 5 * img);
+
+	/* the picture takes both of the other session's images that are off its lines */
+	image_budget_set_limit(pic + 3 * img);
+	set_scaled(1, 92, 1);
+	assert(draw_placements(&a, 2) == 0);
+	assert(!ba->starving && picture_drawn(&a, 20));
+	assert(!screen_holds(other, scrolled) && !screen_holds(other, alt_unplaced));
+	assert(screen_holds(other, alt_onscreen) && screen_holds(con, viewed) &&
+	       screen_holds(con, onscreen));
+
+	a.screen = NULL;
+	close_txt(&a);
+	image_budget_remove_screen(other);
+	tsm_screen_unref(other);
+	image_budget_remove_screen(con);
+	tsm_screen_unref(con);
+	drop_images(src, 1);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+
 /*
  * The largest set limit, 1 TiB, on a 7680x4320 display: its share of the
  * budget by size is exact, not a product of limit and pixels that wrapped 64
@@ -1222,6 +1443,9 @@ int main(void)
 	test_starved_retry();
 	test_budget_trim();
 	test_budget_images();
+	test_budget_history();
+	test_budget_history_screens();
+	test_budget_cache_room();
 	test_budget_huge();
 	test_picture_cache(&txt);
 

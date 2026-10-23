@@ -241,6 +241,12 @@ A change that adds something visible adds its demo section in the same PR. [demo
 
 A PR that changes what kmscon draws merges only after the operator has looked at it live on a VT, in the regular demo feedback review (`~/demo-dev` or `make vt-demo` with the PR's build staged), and the run's answers have been read back. In the operator's words: "I'd still like to be involved in a visual review before merge (viewing live in the vtty - not the bad apple demo but our regular feedback review)". The PR body names the demo sections to look at and what right and wrong look like; a page rated wrong or unsure is resolved before the merge. The review is of the regular demo, not the showcase (#75).
 
+Two kinds of change are discussed with the operator before they merge, whatever they draw, and are raised as questions rather than left as notes in a PR body:
+- **A security change:** anything that changes what runs as root, what a program in the session can make kmscon read, write or execute, a trust boundary, a privilege, or a resource limit that guards against abuse.
+- **A change in approach:** a departure from an accepted ADR, or a design choice the ADR leaves open, made because of a limitation found on the way, an opportunity, or the architecture.
+
+In the operator's words: "if there's a security change or a change in approach (necessary because limitations, opportunity, or archictechture I'd like to discuss)". The steering session raises each one with the operator as a numbered question, and an accepted ADR it changes gets an appended note recording the answer.
+
 Changes that draw nothing new merge after code review alone: libtsm internals that kmscon does not yet draw (the ADR-103 image store and the sixel decoder before they are wired in), harness and tooling changes, and documentation. The first PR that puts such work on screen takes the visual review.
 
 ## The conformance record

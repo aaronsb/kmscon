@@ -15,15 +15,18 @@
 #include "../src/font/font.h"	/* for kmscon_font_* */
 #include "../src/render/deco.h"
 #include "../src/video/video.h" /* for display_* prototypes */
+/* the fake display's size; test_budget_8k changes it */
+static unsigned int disp_w = 640, disp_h = 480;
+
 unsigned int display_get_width(struct display *disp)
 {
 	(void)disp;
-	return 640;
+	return disp_w;
 }
 unsigned int display_get_height(struct display *disp)
 {
 	(void)disp;
-	return 480;
+	return disp_h;
 }
 
 /* Keep geometry tiny to minimize allocations */
@@ -35,14 +38,14 @@ unsigned int kmscon_text_get_cols(struct kmscon_text *txt, unsigned int font_wid
 {
 	(void)txt;
 	(void)font_width;
-	return 640 / FAKE_CELL_W;
+	return disp_w / FAKE_CELL_W;
 }
 
 unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_height)
 {
 	(void)txt;
 	(void)font_height;
-	return 480 / FAKE_CELL_H;
+	return disp_h / FAKE_CELL_H;
 }
 
 /* Stub font rendering APIs used by text_bbulk.c; rendering fails while set */
@@ -92,13 +95,13 @@ struct kmscon_glyph *kmscon_deco_render(enum kmscon_deco kind, unsigned int w, u
 }
 
 /* the images placements show, by key; test placements name them */
-static struct tsm_frame_image test_images[8];
+static struct tsm_frame_image test_images[16];
 
 int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
 			  struct tsm_frame_image *out)
 {
 	(void)txt;
-	if (overlay || key >= 8 || !test_images[key].pixels)
+	if (overlay || key >= 16 || !test_images[key].pixels)
 		return -ENOENT;
 	*out = test_images[key];
 	return 0;
@@ -243,7 +246,7 @@ static void init_fake_txt(struct kmscon_text *txt)
 	txt->ref = 1;
 }
 
-static struct tsm_frame_cell cells[(640 / FAKE_CELL_W) * (480 / FAKE_CELL_H)];
+static struct tsm_frame_cell cells[(7680 / FAKE_CELL_W) * (2160 / FAKE_CELL_H)];
 static struct tsm_frame frame;
 
 /* a frame of blank, unchanged cells, with no cursor */
@@ -447,7 +450,7 @@ static void test_underline_cursor_colour(struct kmscon_text *txt)
 /* ---- the image layer (ADR-103) ---- */
 
 static uint32_t picture_px[128 * 32];
-static struct tsm_frame_placement placements[8];
+static struct tsm_frame_placement placements[16];
 
 /* placement @i: image 1 (opaque, 128 x 32) over @cols x 2 cells at @col, @row */
 static void set_placement(unsigned int i, uint64_t key, int row, unsigned int col,
@@ -636,8 +639,8 @@ static void set_scaled(unsigned int i, uint64_t key, uint64_t image)
 	memset(p, 0, sizeof(*p));
 	p->key = key;
 	p->image_key = image;
-	p->cols = 640 / FAKE_CELL_W;
-	p->rows = 480 / FAKE_CELL_H;
+	p->cols = disp_w / FAKE_CELL_W;
+	p->rows = disp_h / FAKE_CELL_H;
 	p->width = p->cols * FAKE_CELL_W / 2;
 	p->height = p->rows * FAKE_CELL_H / 2;
 	p->src_width = p->width;
@@ -660,8 +663,8 @@ static unsigned int pictures_of(struct bbulk *bb, uint64_t image)
  * The scaled pictures stay within twice the screen between frames, however
  * many a run of frames draws; within a frame, a picture the frame draws is
  * never freed to make room, so three half-transparent full-screen pictures
- * past the limit still compose from all three; past twice the limit a
- * picture is left out and its cells retried on later frames.
+ * past the limit still compose from all three; past the process's image
+ * budget a picture is left out and its cells retried on later frames.
  */
 static void test_picture_cache(struct kmscon_text *txt)
 {
@@ -672,7 +675,7 @@ static void test_picture_cache(struct kmscon_text *txt)
 
 	for (i = 0; i < 320 * 240; i++)
 		half[i] = 0x80404040;
-	for (i = 1; i <= 5; i++)
+	for (i = 1; i <= 14; i++)
 		test_images[i] = (struct tsm_frame_image){
 			.width = 320, .height = 240, .stride = 320 * 4, .pixels = half};
 	settle(txt, 0);
@@ -699,23 +702,74 @@ static void test_picture_cache(struct kmscon_text *txt)
 	assert(bb->picture_bytes <= picture_limit(bb));
 
 	/*
-	 * five at once pass the in-frame cap of twice the limit: the last is
-	 * left out, and its cells are drawn again on every later frame until
-	 * it fits, not only on the two frames that follow the change
+	 * fourteen at once, 17.2 MB, pass the 16 MiB budget: the last is left
+	 * out, and its cells are drawn again on every later frame until it
+	 * fits, not only on the two frames that follow the change
 	 */
-	for (i = 0; i < 5; i++)
+	for (i = 0; i < 14; i++)
 		set_scaled(i, 50 + i, i + 1);
-	assert(draw_placements(txt, 5) == 0);
-	assert(draw_placements(txt, 5) == 0);
-	assert(draw_placements(txt, 5) == 0 && n_blended > 0);
+	pictures_peak = pictures_total;
+	assert(draw_placements(txt, 14) == 0);
+	assert(pictures_peak <= image_budget() && pictures_peak > 12 * 640 * 480 * 4);
+	assert(draw_placements(txt, 14) == 0);
+	assert(draw_placements(txt, 14) == 0 && n_blended > 0);
 	set_scaled(0, 50, 1);
 	draw_placements(txt, 1);
 	assert(draw_placements(txt, 1) == 0);
 	assert(draw_placements(txt, 1) == KMSCON_TEXT_UNCHANGED);
 
 	settle(txt, 0);
-	for (i = 1; i <= 5; i++)
+	for (i = 1; i <= 14; i++)
 		test_images[i].pixels = NULL;
+}
+
+/*
+ * At 7680x2160 four frames are 265 MB, past the 192 MiB cap, so the budget is
+ * the cap: three full-screen scaled pictures (199 MB) fit at once, a fourth
+ * does not, and the frame's peak stays within the cap.
+ */
+static void test_budget_8k(void)
+{
+	struct kmscon_text txt;
+	struct bbulk *bb;
+	uint32_t *src = calloc(3840 * 1080, 4);
+	size_t pic = (size_t)7680 * 2160 * 4, base, fit;
+	unsigned int i;
+
+	assert(src);
+	for (i = 0; i < 3840 * 1080; i++)
+		src[i] = 0xff204060;
+	disp_w = 7680;
+	disp_h = 2160;
+	init_fake_txt(&txt);
+	assert(kmscon_text_bbulk_ops.init(&txt) == 0);
+	assert(bbulk_set(&txt) == 0);
+	bb = txt.data;
+	assert(image_budget() == IMAGE_BUDGET_MAX);
+	for (i = 1; i <= 4; i++) {
+		test_images[i] = (struct tsm_frame_image){
+			.width = 3840, .height = 1080, .stride = 3840 * 4, .pixels = src};
+		set_scaled(i - 1, 60 + i, i);
+		placements[i - 1].flags = TSM_FRAME_OPAQUE;
+	}
+
+	/* other displays' pictures count against the same budget */
+	base = pictures_total;
+	fit = (IMAGE_BUDGET_MAX - base) / pic;
+	assert(base == 0 && fit == 3);
+	pictures_peak = pictures_total;
+	draw_placements(&txt, 4);
+	assert(pictures_peak <= IMAGE_BUDGET_MAX);
+	assert(pictures_peak == base + fit * pic);
+	assert(bb->picture_bytes <= picture_limit(bb));
+
+	bbulk_unset(&txt);
+	kmscon_text_bbulk_ops.destroy(&txt);
+	for (i = 1; i <= 4; i++)
+		test_images[i].pixels = NULL;
+	free(src);
+	disp_w = 640;
+	disp_h = 480;
 }
 
 /* the scaler: copies at 1:1, means when it shrinks, keeps opaque pictures
@@ -807,6 +861,7 @@ int main(void)
 	test_opaque_runs(&txt);
 	test_below_bg(&txt);
 	test_picture_scale();
+	test_budget_8k();
 	test_picture_cache(&txt);
 
 	bbulk_unset(&txt);

@@ -69,7 +69,9 @@
  *
  * A picture drawn at another size than its source, or on a rotated display, is
  * scaled and rotated once and kept, per image and drawn size, up to twice the
- * screen's size in ARGB; the least recently used goes first.
+ * screen's size in ARGB; the least recently used goes first. All displays'
+ * pictures together never pass ADR-103's auto image budget, not even within a
+ * frame: a picture that would is drawn on a later frame.
  *
  * Placement damage: this display keeps the placements it drew last. One added,
  * removed, or changed in any way that changes what it draws (moved, resized,
@@ -178,6 +180,7 @@ struct bbulk {
 	unsigned int grid_w, grid_h; /* the frame's drawn cells, in pixels */
 	struct picture *pictures;
 	size_t picture_bytes;
+	uint64_t display_px; /* its share of displays_px, while set */
 	uint64_t frame_count;
 	struct video_buffer *strip; /* a run of cells under an opaque picture */
 	struct {
@@ -311,16 +314,44 @@ static void free_sprites(struct bbulk *bb)
 	bb->strip = NULL;
 }
 
+/*
+ * ADR-103's image budget for the scaled pictures of every display in the
+ * process: image-storage-limit=auto, four frames of the process's displays in
+ * ARGB, at least 16 MiB and at most 192 MiB. It holds at every moment, a
+ * frame's peak included. The setting, and the one budget shared with libtsm's
+ * image stores, come with ADR-103 step 3d (#125); until then the pictures
+ * have the auto value to themselves.
+ */
+#define IMAGE_BUDGET_MIN ((size_t)16 << 20)
+#define IMAGE_BUDGET_MAX ((size_t)192 << 20)
+
+static uint64_t displays_px;   /* the pixels of every display bbulk draws */
+static size_t pictures_total;  /* the scaled pictures of all of them */
+static size_t pictures_peak;   /* the most pictures_total has held */
+
+static size_t image_budget(void)
+{
+	uint64_t b = displays_px * 4 * 4;
+
+	return b < IMAGE_BUDGET_MIN ? IMAGE_BUDGET_MIN : b > IMAGE_BUDGET_MAX ? IMAGE_BUDGET_MAX : b;
+}
+
+static void picture_free(struct bbulk *bb, struct picture *p)
+{
+	bb->picture_bytes -= p->bytes;
+	pictures_total -= p->bytes;
+	free(p);
+}
+
 static void free_images(struct bbulk *bb)
 {
 	struct picture *p, *next;
 
 	for (p = bb->pictures; p; p = next) {
 		next = p->next;
-		free(p);
+		picture_free(bb, p);
 	}
 	bb->pictures = NULL;
-	bb->picture_bytes = 0;
 	free(bb->places);
 	free(bb->prev);
 	free(bb->row_first);
@@ -427,6 +458,8 @@ static int bbulk_set(struct kmscon_text *txt)
 
 	if (make_sprites(txt))
 		goto free_glyphs;
+	bb->display_px = (uint64_t)bb->sw * bb->sh;
+	displays_px += bb->display_px;
 	return 0;
 
 free_glyphs:
@@ -453,6 +486,8 @@ static void bbulk_unset(struct kmscon_text *txt)
 	free(bb->cell_flags);
 	free_sprites(bb);
 	free_images(bb);
+	displays_px -= bb->display_px;
+	bb->display_px = 0;
 	bb->glyphs = NULL;
 	bb->damage_rects = NULL;
 	bb->cell_flags = NULL;
@@ -813,10 +848,17 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 	return 0;
 }
 
-/* the scaled pictures may hold twice the screen in ARGB between frames */
+/*
+ * This display's scaled pictures between frames: twice its screen in ARGB, or
+ * its share of the budget by size if that is less, so the displays' pictures
+ * together stay within it and leave a frame room to scale more
+ */
 static size_t picture_limit(struct bbulk *bb)
 {
-	return (size_t)bb->sw * bb->sh * 4 * 2;
+	uint64_t px = (uint64_t)bb->sw * bb->sh, share;
+
+	share = displays_px ? image_budget() * px / displays_px : image_budget();
+	return px * 4 * 2 < share ? px * 4 * 2 : share;
 }
 
 /*
@@ -839,8 +881,7 @@ static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep
 			return;
 		victim = *lru;
 		*lru = victim->next;
-		bb->picture_bytes -= victim->bytes;
-		free(victim);
+		picture_free(bb, victim);
 	}
 }
 
@@ -928,12 +969,13 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 	if (!pic) {
 		bytes = (size_t)w * h * 4;
 		pictures_trim(bb, bytes, picture_limit(bb), true);
+		pictures_trim(bb, bytes + pictures_total - bb->picture_bytes, image_budget(), true);
 		/*
-		 * a frame may pass the limit by as much again, no further; past
-		 * that the cells are drawn without the picture and drawn again
-		 * on a later frame, as for a failed allocation
+		 * a frame may pass this display's limit, never the budget: past
+		 * it the cells are drawn without the picture and drawn again on
+		 * later frames until it fits, as after a failed allocation
 		 */
-		if (bb->picture_bytes + bytes > 2 * picture_limit(bb))
+		if (pictures_total + bytes > image_budget())
 			return -ENOMEM;
 		pic = malloc(sizeof(*pic) + bytes);
 		tmp = txt->orientation == OR_NORMAL ? NULL : malloc(bytes);
@@ -966,6 +1008,9 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 		pic->next = bb->pictures;
 		bb->pictures = pic;
 		bb->picture_bytes += bytes;
+		pictures_total += bytes;
+		if (pictures_total > pictures_peak)
+			pictures_peak = pictures_total;
 	}
 	pic->last_use = bb->frame_count;
 	p->pix = pic->pixels;

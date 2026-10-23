@@ -235,6 +235,8 @@ struct kmscon_conf_t {
 	struct kmscon_conf_color strike_color;
 	/* configured decoration colours win over SGR 58 */
 	bool force_decoration_colors;
+	/* emoji in colour; off draws them as text, in the foreground */
+	bool emoji_color;
 };
 
 /*

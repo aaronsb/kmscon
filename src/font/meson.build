@@ -72,6 +72,7 @@ if enable_font_freetype
         'mod-freetype',
         [
             'font_freetype.c',
+            'font_colour.c',
             'mod_freetype.c',
         ],
         name_prefix: '',
@@ -80,6 +81,7 @@ if enable_font_freetype
             freetype_deps,
             fontconfig_deps,
             harfbuzz_deps,
+            harfbuzz_raster_deps,
             threads_deps,
             shl_deps,
         ],
@@ -93,10 +95,20 @@ if enable_font_pango
         'mod-pango',
         [
             'font_pango.c',
+            'font_colour.c',
             'mod_pango.c',
         ],
         name_prefix: '',
-        dependencies: [libtsm_deps, pango_deps, threads_deps, shl_deps],
+        dependencies: [
+            libtsm_deps,
+            pango_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            harfbuzz_raster_deps,
+            threads_deps,
+            shl_deps,
+        ],
         install: true,
         install_dir: moduledir,
     )

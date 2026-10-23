@@ -166,3 +166,7 @@
 ## Draw every underline and strike-through in the colors above, also where a
 ## program set an underline color (disabled by default).
 #force-decoration-colors
+## Draw emoji in color, fitted to their cells (enabled by default). With
+## no-emoji-color, every emoji draws as text in the foreground color, still
+## fitted, so it follows the palette like any other text.
+#no-emoji-color

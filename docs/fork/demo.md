@@ -156,13 +156,13 @@ What each page should and should not look like is in its section file's `# look-
 | cjk | CJK beside Latin |
 | wide-margin | double-width characters placed and typed at the right margin |
 | combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 |
-| emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji |
+| emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji, each between bars; the text heart alone and with VS15; emoji in a line, underlined and reversed |
 
-Every section but blink and emoji is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin and combining are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. emoji is not a tier 3 screen until colour emoji land (ADR-102 step 4c). The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+Every section but blink is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin, combining and emoji are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
 blink is not a tier 3 screen: tier 3's guest runs kmscon with `no-blink`, and a capture would catch whichever phase the timer was in. The demo leaves blinking on, kmscon's default, since a person watches it: the blink page blinks and so does the cursor. `-- --no-blink` turns it off for one run. `tests/test_blink.c`, part of `make test`, checks both phases through both of bbulk's buffers.
 
-The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws. The fork draws every one of them that way except emoji, which stay clipped or monochrome until colour emoji land (ADR-102 step 4c).
+The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws, and the fork draws every one of them that way. Emoji need a colour emoji font installed (Noto Color Emoji is the common one); without one they draw as the text font's missing-glyph box, fitted to their cells.
 
 ## Compare with stock kmscon
 
@@ -173,7 +173,7 @@ Run the dev build on one VT and the same demonstration under stock kmscon on ano
 3. Ctrl-Alt-F3 shows the dev build; page both to the same page number and flip with Ctrl-Alt-F3 and Ctrl-Alt-F4. The title pages say which is which.
 4. Rate each page on both VTs. Both runs append to the same `/tmp/kmscon-demo/feedback.tsv` under their own labels, and `fork/demo/feedback.sh --compare` puts them side by side.
 
-The stock VT draws with `/etc/kmscon/kmscon.conf`, the dev build with `fork/demo/kmscon.conf`, so their fonts and grids can differ, while a fair comparison differs only in libtsm and the renderer. To compare like with like, pass the stock config's display and font settings to the dev build after `--` (for example `-- --font-engine=freetype --font-name="..." --font-size=N --mode=...`); kmscon logs the engine it used in the line `Display ... font engine [...]` (`journalctl -u kmsconvt@tty4`). pango falls back to other fonts for CJK and emoji and freetype does not, so with different engines some of the differences below are the font engine's.
+The stock VT draws with `/etc/kmscon/kmscon.conf`, the dev build with `fork/demo/kmscon.conf`, so their fonts and grids can differ, while a fair comparison differs only in libtsm and the renderer. To compare like with like, pass the stock config's display and font settings to the dev build after `--` (for example `-- --font-engine=freetype --font-name="..." --font-size=N --mode=...`); kmscon logs the engine it used in the line `Display ... font engine [...]` (`journalctl -u kmsconvt@tty4`). pango falls back to any installed font for CJK and freetype only to monospaced ones (both take emoji from a colour emoji font), so with different engines some of the differences below are the font engine's.
 
 What stock kmscon is expected to get wrong, page by page. The list comes from upstream's code as ADR-100 records it and from the libtsm changes the fork carries; it has not yet been checked side by side.
 
@@ -188,7 +188,7 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 | blink | Upstream blinks too, drawing a blinking cell as a space in the hidden phase. The `5;9` line blinks without a strike, the `5;4:3;58:5:196` line is plain and steady (the colon voids the whole sequence), and the combining line is blank. Stock's own config decides whether anything blinks (`blink` is on by default). |
 | wide-margin | A wide character placed or typed at the last column is cut at the edge instead of moving to the next line, so case 2, case 3 and the emoji in case 5 show half a character or none. |
 | combining | The decomposed column is blank: kmscon draws a cell of more than one code point as nothing. The precomposed column is right except its last row, which is a precomposed letter plus a mark. |
-| emoji | Every cluster (family, flag, keycap, skin tone, VS16 heart) is drawn blank or as separate pieces, so its bars do not line up. The single emoji is monochrome at best: kmscon has no colour glyphs. |
+| emoji | Every cluster (family, flag, keycap, skin tone, VS16 heart) is drawn blank or as separate pieces, so its bars do not line up. Each emoji is the grey top-left corner of the colour font's large bitmap, cut at its cells: kmscon has no colour glyphs and does not scale them. |
 
 ## Seen on hardware
 
@@ -196,7 +196,7 @@ The first real run, on 2026-10-22: Arch Linux, one output (DP-8) at 7680x2160, t
 
 - The handoff, the staged modules, the demo running as the user, and the stock unit's return after `q` all worked.
 - The operator found these pages correct: sgr, colour forms, underline styles and colours, strike, wide characters at the margin, combining marks and CJK.
-- Emoji draw as a clipped corner. The fallback emoji font's bitmaps are larger than the cell, and nothing scales them until colour emoji land (ADR-102 step 4c).
+- Emoji draw as a clipped corner. The fallback emoji font's bitmaps are larger than the cell, and nothing scales them. ADR-102 step 4c draws them in colour, fitted to their cells, on both font engines; that is not yet checked on this machine.
 - Stacked block elements show a one-pixel gap between rows (#46).
 - Stock kmscon 10.0.4 on that machine never repaints after a switch from the desktop. Its journal repeats `drm_shared: test-only atomic commit failed, -22`, then `vt_timeout: failed to wake up after 20 retries`. The dev build, on newer code, takes the display. The comparison with stock could not be made there, so the table above is still a prediction.
 - `run-vt.sh` refuses a VT that has a login on it, and a login on a stock kmscon VT counts as one. Pick a VT nobody is logged into; `make vt-demo` picks one.
@@ -211,4 +211,4 @@ A capability that adds something visible adds its section in the same PR. A sect
 
 Check it outside a VT with `DEMO_NOPAGE=1 fork/demo/demo.sh name`, which runs without waiting for keys and leaves the page and its guidance on the screen, then on a VT with `make vt-demo`.
 
-Each section is a tier 3 screen as well (#36): tier 3 runs it in its guest and compares the capture with a golden, so every demonstration is also a check. A new section adds its name to `SCREENS` in `fork/tier3/t3_evaluate.py`, before `cjk`, which stays last because `vt-restore` is compared with its golden (`test_t3.py` fails otherwise), and its goldens with `make tier3-bless`, in a commit of their own. Its `# look-for:` and `# wrong-looks-like:` lines are also its case's caption on the run page. Tier 3 does not judge emoji yet (ADR-102 step 4c), nor blink, which it runs without.
+Each section is a tier 3 screen as well (#36): tier 3 runs it in its guest and compares the capture with a golden, so every demonstration is also a check. A new section adds its name to `SCREENS` in `fork/tier3/t3_evaluate.py`, before `cjk`, which stays last because `vt-restore` is compared with its golden (`test_t3.py` fails otherwise), and its goldens with `make tier3-bless`, in a commit of their own. Its `# look-for:` and `# wrong-looks-like:` lines are also its case's caption on the run page. Tier 3 does not judge blink, which it runs without.

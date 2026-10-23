@@ -130,6 +130,7 @@ static int init_font(struct kmscon_font *font, struct shl_register_record *recor
 	font->ref = 1;
 	font->record = record;
 	font->ops = record->data;
+	font->emoji_color = true;
 
 	if (font->ops->init)
 		return font->ops->init(font, name, height);
@@ -316,9 +317,13 @@ static struct kmscon_glyph *fit_glyph(struct kmscon_font *font, struct kmscon_gl
  *
  * Renders the glyph for the cluster @cps, exactly @cwidth cells wide. A single
  * box drawing or block element codepoint is drawn to fill the cell
- * (font_box.c), not taken from the font. If the glyph cannot be found or is
- * invalid, the replacement character is drawn instead, and if that fails too,
- * NULL is returned.
+ * (font_box.c), not taken from the font. A cluster whose first codepoint the
+ * font lacks, or whose glyph cannot be drawn, is drawn as the replacement
+ * character, and if that fails too, NULL is returned. A cluster the font
+ * lacks that asks for emoji presentation, which is any wide cluster (an
+ * unassigned or uncovered CJK ideograph too, see kmscon_font_wants_colour),
+ * goes to a backend that draws its own missing glyph (draws_missing), which
+ * the freetype backend fits to the cells (ADR-102).
  *
  * Returns: a new allocated glyph object on success, NULL on failure
  */
@@ -349,7 +354,10 @@ struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_
 		}
 	}
 
-	glyph = font->ops->render(font, attr, cps, len, cwidth);
+	glyph = NULL;
+	if (kmscon_font_has_glyph(font, attr, cps[0]) ||
+	    (font->ops->draws_missing && kmscon_font_wants_colour(cps, len, cwidth)))
+		glyph = font->ops->render(font, attr, cps, len, cwidth);
 	if (!glyph)
 		glyph = font->ops->render(font, attr, &replacement, 1, cwidth);
 	if (!glyph)

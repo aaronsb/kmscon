@@ -126,8 +126,36 @@ struct kmscon_font {
 	unsigned int height;
 	unsigned int width;
 	unsigned increase_step;
+	/* draw emoji presentation in colour (kmscon.conf emoji-color, on by
+	 * default); off draws every glyph as a mask */
+	bool emoji_color;
 	void *data;
 };
+
+/*
+ * Whether the cluster @cps, drawn @cwidth cells wide, asks for emoji
+ * presentation (ADR-102, UTS #51): never with VS15; always with VS16; else
+ * when the cell is wide. libtsm makes a cell wide from the same tables that
+ * define emoji presentation (Emoji_Presentation, East Asian Width and the
+ * emoji variation sequences), so the width carries the answer and kmscon needs
+ * no table of its own. A wide CJK character asks too, and draws from a text
+ * face because no colour face covers it; the few wide codepoints a colour face
+ * does cover without Emoji_Presentation (U+3030, U+303D, U+3297, U+3299) draw
+ * in colour.
+ */
+static inline bool kmscon_font_wants_colour(const uint32_t *cps, size_t len, unsigned int cwidth)
+{
+	bool vs16 = false;
+	size_t i;
+
+	for (i = 1; i < len; i++) {
+		if (cps[i] == 0xfe0e)
+			return false;
+		if (cps[i] == 0xfe0f)
+			vs16 = true;
+	}
+	return vs16 || cwidth == 2;
+}
 
 struct kmscon_font_ops {
 	const char *name;
@@ -141,6 +169,12 @@ struct kmscon_font_ops {
 	 */
 	struct kmscon_glyph *(*render)(struct kmscon_font *font, struct kmscon_font_attr *attr,
 				       const uint32_t *cps, size_t len, unsigned int cwidth);
+	/*
+	 * render draws the font's missing glyph for a cluster no face covers
+	 * that asks for emoji presentation (any wide one); for other backends
+	 * kmscon_font_render draws the replacement character instead
+	 */
+	bool draws_missing;
 	/* optional: the font's own decoration metrics */
 	void (*get_deco)(struct kmscon_font *font, struct kmscon_font_deco *out);
 };

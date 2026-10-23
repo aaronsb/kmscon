@@ -420,6 +420,24 @@ static void bake_deco(struct kmscon_text *txt, struct kmscon_glyph *glyph, enum 
 	free(sprite);
 }
 
+/*
+ * Until gltex has an RGBA atlas (ADR-102, step 6), a colour glyph goes into
+ * the alpha atlas as its alpha, drawn in the foreground like text: the right
+ * shape and size, without its colours.
+ */
+static void colour_to_mask(struct kmscon_glyph *glyph)
+{
+	const uint32_t *px = (const uint32_t *)glyph->buf.data;
+	size_t i, n = (size_t)glyph->buf.width * glyph->buf.height;
+
+	if (glyph->buf.format != VIDEO_FORMAT_ARGB32)
+		return;
+	/* byte i is written after pixel i, at or past it, has been read */
+	for (i = 0; i < n; i++)
+		glyph->buf.data[i] = px[i] >> 24;
+	glyph->buf.format = VIDEO_FORMAT_A8;
+}
+
 static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16_t flags,
 				   unsigned int width, unsigned int underline, bool strike)
 {
@@ -456,11 +474,6 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 	}
 
 	cps = kmscon_text_get_cluster(txt, k.key, &one, &len);
-	if (!kmscon_font_has_glyph(font, &attr, cps[0])) {
-		one = FONT_REPLACEMENT_CHAR;
-		cps = &one;
-		len = 1;
-	}
 
 	glglyph = calloc(1, sizeof(*glglyph));
 	if (!glglyph)
@@ -471,6 +484,7 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 		free(glglyph);
 		return NULL;
 	}
+	colour_to_mask(glyph);
 	if (underline > KMSCON_DECO_NONE && underline < KMSCON_DECO_STRIKE)
 		bake_deco(txt, glyph, underline);
 	if (strike)

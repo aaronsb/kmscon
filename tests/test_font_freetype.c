@@ -36,6 +36,8 @@
 #include "../src/font/font_box.c"
 #undef LOG_SUBSYSTEM		       /* font.c and font_freetype.c both define it */
 #include "../src/font/font_freetype.c" /* backend ops + ft_data layout */
+#undef LOG_SUBSYSTEM
+#include "../src/font/font_colour.c"
 
 #define ARABIC_ALEF 0x0627u
 
@@ -421,6 +423,171 @@ static void test_coverage_grey_strikes(void)
 	FT_Done_FreeType(ft);
 }
 
+/* ADR-102 step 4c: which clusters ask for emoji presentation */
+static void test_wants_colour(void)
+{
+	static const uint32_t grin[] = {0x1f600};
+	static const uint32_t heart16[] = {0x2764, 0xfe0f};
+	static const uint32_t heart15[] = {0x2764, 0xfe0e};
+	static const uint32_t keycap[] = {'1', 0xfe0f, 0x20e3};
+	static const uint32_t text_keycap[] = {'1', 0x20e3};
+	static const uint32_t wide15[] = {0x1f600, 0xfe0e};
+
+	assert(kmscon_font_wants_colour(grin, 1, 2));
+	assert(!kmscon_font_wants_colour(grin, 1, 1));
+	assert(kmscon_font_wants_colour(heart16, 2, 2));
+	/* the wcwidth method keeps it narrow; VS16 still asks */
+	assert(kmscon_font_wants_colour(heart16, 2, 1));
+	assert(!kmscon_font_wants_colour(heart15, 2, 1));
+	assert(kmscon_font_wants_colour(keycap, 3, 2));
+	assert(!kmscon_font_wants_colour(text_keycap, 2, 1));
+	assert(!kmscon_font_wants_colour(wide15, 2, 2));
+}
+
+/*
+ * The box filter averages the area under each output pixel exactly, and the
+ * fit leaves a pixel clear on every side of the box, centred.
+ */
+static void test_colour_fit(void)
+{
+	uint32_t src[4 * 2], out[2];
+	struct kmscon_glyph *g;
+	unsigned int x, y, i;
+
+	/* two 2x2 blocks: opaque white and half-transparent grey */
+	for (i = 0; i < 8; i++)
+		src[i] = (i % 4) < 2 ? 0xffffffff : 0x80404040;
+	assert(!colour_box_filter(src, 4, 2, out, 2, 1));
+	assert(out[0] == 0xffffffff && out[1] == 0x80404040);
+
+	/* 3 to 2: the middle pixel is split between the two outputs */
+	src[0] = 0xff000000;
+	src[1] = 0xff000000 | 0x00ff0000;
+	src[2] = 0xff000000 | 0x000000ff;
+	assert(!colour_box_filter(src, 3, 1, out, 2, 1));
+	assert(out[0] == 0xff550000 && out[1] == 0xff5500aa);
+
+	/* a wide picture in a 10x16 box: 8 wide, a pixel each side */
+	for (i = 0; i < 8; i++)
+		src[i] = 0xffffffff;
+	g = colour_fit(src, 4, 2, 10, 16, 1, false);
+	assert(g && g->buf.format == VIDEO_FORMAT_A8 && g->buf.width == 10 && g->buf.height == 16);
+	for (y = 0; y < 16; y++)
+		for (x = 0; x < 10; x++)
+			assert(g->buf.data[y * 10 + x] == ((x >= 1 && x < 9 && y >= 6 && y < 10) ? 255 : 0));
+	free(g);
+
+	/* a tall one in a two-cell 20x8 box: 6 tall, centred across */
+	g = colour_fit(src, 2, 4, 20, 8, 2, true);
+	assert(g && g->buf.format == VIDEO_FORMAT_ARGB32 && g->double_width);
+	for (y = 0; y < 8; y++)
+		for (x = 0; x < 20; x++)
+			assert(((uint32_t *)g->buf.data)[y * 20 + x] ==
+			       ((x >= 8 && x < 11 && y >= 1 && y < 7) ? 0xffffffff : 0));
+	free(g);
+}
+
+/*
+ * An up-flow BGRA bitmap (negative pitch) starts at its bottom row in memory:
+ * the piece's top row is the one at the far end. The bitmap sits between
+ * guard pixels, so reading from the wrong end shows as a guard value.
+ */
+static void test_colour_up_flow(void)
+{
+	/* guard, bottom row (red), top row (blue), guard; bytes B, G, R, A */
+	uint8_t mem[] = {0xee, 0xee, 0xee, 0xee, 0x00, 0x00, 0xff, 0xff,
+			 0xff, 0x00, 0x00, 0xff, 0xee, 0xee, 0xee, 0xee};
+	FT_GlyphSlotRec slot = {0};
+	struct colour_piece p = {0};
+
+	slot.bitmap.rows = 2;
+	slot.bitmap.width = 1;
+	slot.bitmap.pitch = -4;
+	slot.bitmap.buffer = &mem[4];
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_BGRA;
+	slot.bitmap_top = 2;
+	assert(!colour_from_slot(&slot, &p));
+	assert(p.colour && p.w == 1 && p.h == 2 && p.y == -2);
+	assert(p.px[0] == 0xff0000ff && p.px[1] == 0xffff0000);
+	free(p.px);
+
+	/* the same memory read top-down: red is now the top row */
+	slot.bitmap.pitch = 4;
+	assert(!colour_from_slot(&slot, &p));
+	assert(p.px[0] == 0xffff0000 && p.px[1] == 0xff0000ff);
+	free(p.px);
+}
+
+/*
+ * ColrTest.ttf (tests/fonts/make-colr-test.py) is a text font that also has
+ * colour tables. Its 'A' has no colour, so it draws as text, exactly as from
+ * the face directly, on the baseline and unfitted; its COLRv1 and COLRv0
+ * glyphs draw in colour, upright. Neither path resizes the face the backend
+ * draws text with.
+ */
+static void test_colour_table_text_face(void)
+{
+	static const uint32_t a = 'A', colrv1 = 0x1f600, colrv0 = 0x1f601;
+	struct kmscon_font_attr attr = {0};
+	struct kmscon_font *font = NULL;
+	struct kmscon_glyph *g, *ref;
+	struct ft_data *ftd;
+	FT_Size_Metrics before;
+	FcConfig *cfg = FcConfigCreate();
+	unsigned int x, y, w, h;
+	uint32_t px;
+
+	assert(cfg && FcConfigAppFontAddFile(cfg, (const FcChar8 *)TEST_FONT_DIR "/ColrTest.ttf"));
+	assert(FcConfigSetCurrent(cfg));
+	assert(!kmscon_font_register(&kmscon_font_freetype_ops));
+	assert(!kmscon_font_find(&font, "ColrTest", 20, "freetype"));
+	ftd = font->data;
+	assert(FT_HAS_COLOR(ftd->regular.face));
+	before = ftd->regular.face->size->metrics;
+
+	g = kmscon_font_render(font, &attr, &a, 1, 1);
+	ref = render_glyph(font, ftd->regular.face, FT_Get_Char_Index(ftd->regular.face, 'A'), 1);
+	assert(g && ref && g->buf.format == VIDEO_FORMAT_A8);
+	assert(g->buf.width == ref->buf.width && g->buf.height == ref->buf.height);
+	assert(!memcmp(g->buf.data, ref->buf.data, (size_t)g->buf.width * g->buf.height));
+	/* on the baseline: ink in the row above it, none below */
+	y = (ftd->regular.face->size->metrics.ascender >> 6) - 1;
+	for (x = 0, px = 0; x < g->buf.width; x++)
+		px |= g->buf.data[y * g->buf.width + x];
+	assert(px);
+	for (y++; y < g->buf.height; y++)
+		for (x = 0; x < g->buf.width; x++)
+			assert(!g->buf.data[y * g->buf.width + x]);
+	free(g);
+	free(ref);
+
+	/* COLRv0: blue, through FreeType */
+	g = kmscon_font_render(font, &attr, &colrv0, 1, 2);
+	assert(g && g->buf.format == VIDEO_FORMAT_ARGB32);
+	w = g->buf.width;
+	h = g->buf.height;
+	px = ((uint32_t *)g->buf.data)[(h / 4) * w + w / 2];
+	assert(px >> 24 == 0xff && (px & 0xff) == 0xff && !(px & 0xffff00));
+	free(g);
+
+#ifdef KMSCON_COLRV1
+	/* COLRv1: red over the top half and a stub at the bottom left, so the
+	 * bottom right is empty when the picture is upright */
+	g = kmscon_font_render(font, &attr, &colrv1, 1, 2);
+	assert(g && g->buf.format == VIDEO_FORMAT_ARGB32);
+	px = ((uint32_t *)g->buf.data)[(h / 4) * w + w / 2];
+	assert(px == 0xffff0000);
+	assert(!((uint32_t *)g->buf.data)[(3 * h / 4) * w + w / 2 + 2]);
+	free(g);
+#else
+	(void)colrv1;
+#endif
+
+	assert(!memcmp(&before, &ftd->regular.face->size->metrics, sizeof(before)));
+	kmscon_font_unref(font);
+	kmscon_font_unregister(kmscon_font_freetype_ops.name);
+}
+
 int main(void)
 {
 	assert(FcInit());
@@ -432,6 +599,10 @@ int main(void)
 	test_cluster_stacked_mark();
 	test_centre_dx_bounded();
 	test_coverage_grey_strikes();
+	test_wants_colour();
+	test_colour_fit();
+	test_colour_up_flow();
+	test_colour_table_text_face();
 
 	FcFini();
 	return 0;

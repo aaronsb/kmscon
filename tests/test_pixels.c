@@ -32,6 +32,8 @@
 #undef LOG_SUBSYSTEM
 #include "../src/font/font_freetype.c"
 #undef LOG_SUBSYSTEM
+#include "../src/font/font_colour.c"
+#undef LOG_SUBSYSTEM
 #include "../src/render/text.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/bbulk.c"
@@ -117,6 +119,14 @@ int display_blend(struct display *disp, const struct video_blend_req *req)
  * 'v' every pixel row holds a pixel that is not the background (a line that
  *     runs down from row to row);
  * 'h' the same for every pixel column (a line that runs across).
+ * The emoji checks judge a glyph's box, one or two cells, against its own
+ * background, the colour of its top-left pixel:
+ * 'b' the glyph is inside its box: the box's outermost ring of pixels is all
+ *     background and something is drawn inside it, so no ink was cut at an
+ *     edge (ADR-102 step 4c: an emoji is fitted to its cells, not clipped);
+ * 'c' the box holds colour: a pixel whose red, green and blue differ;
+ * 'm' the box holds no colour: every pixel grey, as a mask in the grey
+ *     default foreground draws it.
  */
 struct check {
 	char kind;
@@ -141,6 +151,8 @@ struct screen {
 	unsigned int spacing;
 	/* optional: checks, ended by kind 0 */
 	const struct check *checks;
+	/* optional: kmscon.conf's no-emoji-color */
+	bool no_emoji_color;
 };
 
 /* the ADR-102 decoration settings the deco-* screens configure */
@@ -165,6 +177,18 @@ static const struct kmscon_conf_t conf_deco_force = {
 #define HEART "\xe2\x9d\xa4"
 #define VS15 "\xef\xb8\x8e"
 #define VS16 "\xef\xb8\x8f"
+#define ZWJ "\xe2\x80\x8d"
+#define KEYCAP "\xe2\x83\xa3"
+#define GRIN "\xf0\x9f\x98\x80"	    /* U+1F600 */
+#define THUMB "\xf0\x9f\x91\x8d"	    /* U+1F44D */
+#define TONE3 "\xf0\x9f\x8f\xbd"	    /* U+1F3FD, medium skin tone */
+#define MAN "\xf0\x9f\x91\xa8"	    /* U+1F468 */
+#define WOMAN "\xf0\x9f\x91\xa9"	    /* U+1F469 */
+#define GIRL "\xf0\x9f\x91\xa7"	    /* U+1F467 */
+#define RI_J "\xf0\x9f\x87\xaf"	    /* U+1F1EF, regional indicator J */
+#define RI_P "\xf0\x9f\x87\xb5"	    /* U+1F1F5, regional indicator P */
+#define SMILE "\xe2\x98\xba"	    /* U+263A, text presentation */
+#define SHAKING "\xf0\x9f\xab\xa8" /* U+1FAE8, in no pinned font */
 
 #define DECO_CONFIG_BYTES                                                                          \
 	ESC "[4mconfigured underline" ESC "[0m " ESC "[9mconfigured strike" ESC "[0m\r\n" ESC        \
@@ -221,6 +245,61 @@ static const struct check blocks_checks[] = {
 	"double, heavy, rounded, diagonal and dashed lines, then blocks and lines in yellow on "   \
 	"blue. Correct: blocks fill their cells and lines run from cell to cell with no gap "      \
 	"between rows or columns."
+
+/*
+ * Emoji (ADR-102 step 4c), each drawn from the pinned Noto Color Emoji subset
+ * where it asks for emoji presentation: wide emoji beside a narrow text one, a
+ * ZWJ family, a skin tone, a flag and a keycap shaped to one glyph each, a
+ * heart with VS16, VS15 and neither, an emoji between letters, under
+ * underline, strike, reverse and a curly SGR 58 underline, a codepoint no font
+ * covers, and an emoji written at the last column, which wraps.
+ */
+#define EMOJI_BYTES                                                                                \
+	GRIN " " THUMB " a" SMILE "b  wide, wide, narrow text\r\n" MAN ZWJ WOMAN ZWJ GIRL " " THUMB    \
+	TONE3 " " RI_J RI_P " 1" VS16 KEYCAP "  family, tone, flag, keycap\r\n" HEART VS16 " " HEART  \
+	VS15 " " HEART "  VS16, VS15, none\r\n"                                                       \
+	"a" GRIN "b  between letters\r\n" ESC "[4m" GRIN ESC "[0m " ESC "[9m" GRIN ESC "[0m " ESC     \
+	"[7m" GRIN ESC "[0m " ESC "[4:3;58:5:196m" THUMB TONE3 ESC "[0m  under, strike, reverse, "  \
+	"curl\r\n" SHAKING "  missing\r\n" ESC "[7;48H" GRIN
+
+/* the boxes of the emoji drawn on the default background, and in reverse */
+#define EMOJI_BOXES(kind)                                                                          \
+	{kind, 0, 0, 2, 1}, /* grin */                                                             \
+	{kind, 3, 0, 2, 1}, /* thumb */                                                            \
+	{kind, 0, 1, 2, 1}, /* family */                                                           \
+	{kind, 3, 1, 2, 1}, /* skin tone */                                                        \
+	{kind, 6, 1, 2, 1}, /* flag */                                                             \
+	{kind, 9, 1, 2, 1}, /* keycap */                                                           \
+	{kind, 0, 2, 2, 1}, /* VS16 heart */                                                       \
+	{kind, 1, 3, 2, 1}, /* between letters */                                                  \
+	{kind, 6, 4, 2, 1}  /* reverse */
+
+/* Noto Color Emoji draws the family in greys, so it is left out of 'c' */
+static const struct check emoji_checks[] = {
+	EMOJI_BOXES('b'),
+	{'c', 0, 0, 2, 1},
+	{'c', 3, 0, 2, 1},
+	{'c', 3, 1, 2, 1},
+	{'c', 6, 1, 2, 1},
+	{'c', 9, 1, 2, 1},
+	{'c', 0, 2, 2, 1},
+	{'c', 1, 3, 2, 1},
+	{'c', 6, 4, 2, 1},
+	{'b', 0, 5, 2, 1}, /* missing */
+	{0},
+};
+
+static const struct check emoji_mono_checks[] = {
+	EMOJI_BOXES('b'),
+	EMOJI_BOXES('m'),
+	{0},
+};
+
+#define EMOJI_DESC                                                                                 \
+	"Emoji: two wide emoji and a narrow text smiley; a ZWJ family, a skin tone, a flag and a "  \
+	"keycap; a heart with VS16, VS15 and no selector; an emoji between letters; emoji under "  \
+	"underline, strike, reverse and a red curl; a codepoint no font covers; an emoji written " \
+	"at the last column, which wraps to the next line."
 
 static const struct screen screens[] = {
 	{"ascii",
@@ -343,12 +422,11 @@ static const struct screen screens[] = {
 	 COMB_GRAVE ESC "[0m\r\n"
 	 "bold: " ESC "[1me" COMB_ACUTE " a" COMB_TILDE COMB_GRAVE " n" COMB_DIAER ESC "[0m\r\n"},
 
-	/* a heart with VS16 takes two cells; until colour glyphs (step 4c) it
-	 * draws as the text heart, centred in them */
+	/* a heart with VS16 takes two cells and draws as the colour emoji */
 	{"vs16",
 	 "A heart with VS16 (two cells), with no selector and with VS15 (one cell each), and the "
 	 "VS16 heart underlined. Correct: the b after the VS16 heart one column further right; "
-	 "until colour glyphs land, that heart is the text glyph centred in its two cells.",
+	 "that heart is the red colour emoji fitted to its two cells, the others the text heart.",
 	 "a" HEART VS16 "b  VS16, wide\r\n"
 	 "a" HEART "b  no selector, narrow\r\n"
 	 "a" HEART VS15 "b  VS15, narrow\r\n" ESC "[4ma" HEART VS16 "b" ESC "[0m  underlined\r\n"},
@@ -371,6 +449,24 @@ static const struct screen screens[] = {
 	 BLOCKS_DESC " The cell is 6 pixel rows taller than the font's line height, as with a font"
 		     " whose line height has spacing beyond its glyphs.",
 	 BLOCKS_BYTES, NULL, NULL, 22, 6, blocks_checks},
+
+	/* ADR-102 step 4c: colour emoji fitted to their cells */
+	{"emoji",
+	 EMOJI_DESC " Correct: each emoji in colour, whole and centred in its two cells with a "
+		    "pixel clear at every edge; the family, tone, flag and keycap one picture each; the"
+		    " VS15 and plain hearts and the smiley narrow text; the missing one the text font's"
+		    " missing-glyph box, fitted the same way.",
+	 EMOJI_BYTES, NULL, NULL, 0, 0, emoji_checks},
+	{"emoji-spaced",
+	 EMOJI_DESC " The font is larger and the cell is 6 pixel rows taller than its line height. "
+		    "Correct: as the emoji screen, each emoji fitted to the taller cell and centred in "
+		    "it.",
+	 EMOJI_BYTES, NULL, NULL, 22, 6, emoji_checks},
+	{"emoji-mono",
+	 EMOJI_DESC " With no-emoji-color. Correct: every emoji drawn in the grey text colour, as "
+		    "its shape, at the size and place the emoji screen draws it in colour; the hearts "
+		    "and the smiley from the text font.",
+	 EMOJI_BYTES, NULL, NULL, 0, 0, emoji_mono_checks, true},
 
 	/* frame N changes cells that frame N+1 must draw again into the other
 	 * buffer */
@@ -416,6 +512,38 @@ static int write_text(const char *path, const char *text)
 	return fclose(f) ? -errno : 0;
 }
 
+static bool is_grey(uint32_t p)
+{
+	return ((p >> 16) & 0xff) == ((p >> 8) & 0xff) && ((p >> 8) & 0xff) == (p & 0xff);
+}
+
+/* an emoji check ('b', 'c' or 'm') on the box x0,y0 to x1,y1; NULL if it holds */
+static const char *check_box(char kind, unsigned int x0, unsigned int y0, unsigned int x1,
+			     unsigned int y1)
+{
+	uint32_t bg = fb[y0 * fb_w + x0];
+	bool ink = false, colour = false;
+
+	for (unsigned int y = y0; y < y1; y++) {
+		for (unsigned int x = x0; x < x1; x++) {
+			uint32_t p = fb[y * fb_w + x];
+			bool ring = x == x0 || x == x1 - 1 || y == y0 || y == y1 - 1;
+
+			if (kind == 'b' && ring && p != bg)
+				return "ink on the edge of the box (cut, or not fitted)";
+			ink |= p != bg;
+			colour |= !is_grey(p);
+		}
+	}
+	if (kind == 'b' && !ink)
+		return "nothing drawn in the box";
+	if (kind == 'c' && !colour)
+		return "no colour in the box";
+	if (kind == 'm' && colour)
+		return "colour in the box";
+	return NULL;
+}
+
 /* @s's checks against the buffer last drawn, @cw x @ch cells; 0 if all hold */
 static int run_checks(const struct screen *s, unsigned int cw, unsigned int ch)
 {
@@ -425,6 +553,17 @@ static int run_checks(const struct screen *s, unsigned int cw, unsigned int ch)
 	for (const struct check *c = s->checks; c && c->kind; c++) {
 		unsigned int x0 = c->col * cw, x1 = (c->col + c->cols) * cw;
 		unsigned int y0 = c->row * ch, y1 = (c->row + c->rows) * ch;
+
+		if (c->kind == 'b' || c->kind == 'c' || c->kind == 'm') {
+			const char *why = check_box(c->kind, x0, y0, x1, y1);
+
+			if (why) {
+				fprintf(stderr, "test_pixels: %s: check %c on cells %u,%u +%ux%u fails: %s\n",
+					s->name, c->kind, c->col, c->row, c->cols, c->rows, why);
+				ret = -EINVAL;
+			}
+			continue;
+		}
 		unsigned int outer0 = c->kind == 'h' ? x0 : y0, outer1 = c->kind == 'h' ? x1 : y1;
 		uint32_t first = fb[y0 * fb_w + x0];
 
@@ -552,7 +691,8 @@ static void check_font_files(struct kmscon_font *font, const char *font_dir);
 static void pin_fonts(const char *font_dir)
 {
 	static const char *const files[] = {"DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf",
-					    "NotoSansMonoCJKJP-Subset.otf"};
+					    "NotoSansMonoCJKJP-Subset.otf",
+					    "NotoColorEmoji-Subset.ttf"};
 	FcConfig *cfg = FcConfigCreate();
 	char path[4096];
 
@@ -617,6 +757,7 @@ static int run_screen(const struct screen *s, const char *font_dir, const char *
 	}
 	check_font_files(font, font_dir);
 	font->height += s->spacing;
+	font->emoji_color = !s->no_emoji_color;
 
 	fb_w = COLS * font->width;
 	fb_h = ROWS * font->height;

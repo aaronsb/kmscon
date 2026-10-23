@@ -46,12 +46,14 @@
 #include <glib.h>
 #include <libtsm.h>
 #include <pango/pango.h>
+#include <pango/pangofc-font.h>
 #include <pango/pangoft2.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include "font.h"
+#include "font_colour.h"
 #include "shl/log.h"
 #include "video/video.h"
 
@@ -60,6 +62,9 @@
 struct face {
 	unsigned int baseline;
 	PangoContext *ctx;
+	/* faces with colour, opened through FreeType (ADR-102) */
+	FT_Library ft;
+	struct kmscon_colour_faces colour;
 };
 
 static pthread_mutex_t manager_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -98,6 +103,37 @@ static void manager__unref()
 	}
 }
 
+/*
+ * The face with colour pango chose for @line's first run, or NULL. pangoft2
+ * would draw its strike uncut and unscaled, as grey, so such a run is drawn
+ * through font_colour.c instead.
+ */
+static FT_Face colour_face_of(struct face *face, PangoLayoutLine *line)
+{
+	PangoLayoutRun *run;
+	FcPattern *pattern;
+	FcBool colour = FcFalse;
+
+	if (!line->runs)
+		return NULL;
+	run = line->runs->data;
+	if (!run || !run->item || !PANGO_IS_FC_FONT(run->item->analysis.font))
+		return NULL;
+	pattern = pango_fc_font_get_pattern(PANGO_FC_FONT(run->item->analysis.font));
+	if (!pattern || FcPatternGetBool(pattern, FC_COLOR, 0, &colour) != FcResultMatch ||
+	    !colour)
+		return NULL;
+	return kmscon_colour_face_open(&face->colour, pattern);
+}
+
+/*
+ * ADR-102: an emoji cluster draws from the best face with colour that covers
+ * its first codepoint, fitted to its cells, unless emoji-color is off. Pango
+ * draws the rest, from the faces it chooses; a glyph with colour it takes from
+ * a face with colour tables is drawn fitted too, as the mask of its colour
+ * glyph when it is not an emoji or emoji-color is off. A glyph without colour
+ * from such a face is text, drawn by pango.
+ */
 static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *face,
 				      const struct kmscon_font_attr *attr, const uint32_t *cps,
 				      size_t len, unsigned int cwidth)
@@ -108,10 +144,19 @@ static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *fac
 	PangoRectangle rec, logical_rec;
 	PangoLayoutLine *line;
 	FT_Bitmap bitmap;
+	FT_Face cface;
+	bool colour = font->emoji_color && kmscon_font_wants_colour(cps, len, cwidth);
 	size_t ulen, cnt;
 	char *val;
 
 	manager_lock();
+
+	if (colour) {
+		cface = kmscon_colour_face_for(&face->colour, cps[0]);
+		glyph = cface ? kmscon_colour_render(font, cface, cps, len, cwidth, false) : NULL;
+		if (glyph)
+			goto out_unlock;
+	}
 
 	layout = pango_layout_new(face->ctx);
 	attrlist = pango_layout_get_attributes(layout);
@@ -152,6 +197,13 @@ static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *fac
 		goto out_layout;
 
 	line = pango_layout_get_line_readonly(layout, 0);
+
+	cface = colour_face_of(face, line);
+	if (cface) {
+		glyph = kmscon_colour_render(font, cface, cps, len, cwidth, !colour);
+		if (glyph)
+			goto out_layout;
+	}
 
 	pango_layout_line_get_extents(line, &logical_rec, &rec);
 	pango_extents_to_pixels(&rec, &logical_rec);
@@ -257,6 +309,13 @@ static int manager_get_face(struct face **out, struct kmscon_font *font, const c
 		goto err_manager;
 	}
 
+	if (FT_Init_FreeType(&face->ft)) {
+		log_error("cannot initialise FreeType for colour glyphs");
+		ret = -EFAULT;
+		goto err_alloc;
+	}
+	kmscon_colour_faces_init(&face->colour, face->ft);
+
 	face->ctx = pango_font_map_create_context(manager__lib);
 	pango_context_set_base_dir(face->ctx, PANGO_DIRECTION_LTR);
 	pango_context_set_language(face->ctx, pango_language_get_default());
@@ -302,6 +361,9 @@ static int manager_get_face(struct face **out, struct kmscon_font *font, const c
 
 err_face:
 	g_object_unref(face->ctx);
+	kmscon_colour_faces_free(&face->colour);
+	FT_Done_FreeType(face->ft);
+err_alloc:
 	free(face);
 err_manager:
 	manager__unref();
@@ -349,6 +411,8 @@ static void kmscon_font_pango_destroy(struct kmscon_font *font)
 	manager_lock();
 
 	g_object_unref(face->ctx);
+	kmscon_colour_faces_free(&face->colour);
+	FT_Done_FreeType(face->ft);
 	free(face);
 	manager__unref();
 

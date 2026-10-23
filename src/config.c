@@ -263,7 +263,10 @@ static void print_help()
 		"\t                                      Strike-through color, as above\n"
 		"\t    --force-decoration-colors       [off]\n"
 		"\t                                      The configured colors win over\n"
-		"\t                                      the underline color programs set\n",
+		"\t                                      the underline color programs set\n"
+		"\t    --emoji-color                   [on]\n"
+		"\t                                      Draw emoji in color; off draws\n"
+		"\t                                      them as text in the foreground\n",
 		"kmscon");
 	/*
 	 * 80 char line:
@@ -1214,6 +1217,7 @@ int kmscon_conf_new(struct conf_ctx **out)
 			    &conf->strike_color, (void *)&def_deco_color),
 		CONF_OPTION_BOOL(0, "force-decoration-colors", &conf->force_decoration_colors,
 				 false),
+		CONF_OPTION_BOOL(0, "emoji-color", &conf->emoji_color, true),
 	};
 
 	ret = conf_ctx_new(&ctx, options, sizeof(options) / sizeof(*options), conf);

@@ -29,11 +29,12 @@ write_files:
       pac -Syyuu
       # Runtime dependencies of kmscon-aaronsb and its modules, and the fonts
       # the scenario draws with: DejaVu Sans Mono for Latin and box drawing,
-      # WenQuanYi Micro Hei as pango's fallback for CJK.
+      # WenQuanYi Micro Hei as pango's fallback for CJK, Noto Color Emoji
+      # for colour emoji.
       pac -S --needed \
         bash dbus glib2 libdrm libxkbcommon systemd-libs zlib \
-        pango freetype2 fontconfig libglvnd mesa \
-        ttf-dejavu wqy-microhei
+        pango freetype2 fontconfig harfbuzz libglvnd mesa \
+        ttf-dejavu wqy-microhei noto-fonts-emoji
       echo LANG=C.UTF-8 > /etc/locale.conf
       # VTs that logind spawns on switch (tty2 and up) run kmscon.
       ln -sfn /usr/lib/systemd/system/kmsconvt@.service /etc/systemd/system/autovt@.service

@@ -43,6 +43,8 @@
 #undef LOG_SUBSYSTEM
 #include "../src/font/font_freetype.c"
 #undef LOG_SUBSYSTEM
+#include "../src/font/font_colour.c"
+#undef LOG_SUBSYSTEM
 #include "../src/render/text.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/bbulk.c"

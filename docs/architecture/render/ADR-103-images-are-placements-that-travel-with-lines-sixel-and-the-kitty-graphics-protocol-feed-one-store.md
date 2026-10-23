@@ -5,10 +5,13 @@ verb: add
 capability: images
 basis:
   - operator: aaronsb
-    level: directed
-    paraphrase: true
-    said: "Support all four kitty transmission media (direct, file, temporary file, shared memory). Invent no new security conventions: kmscon runs as root, so file and shared-memory opens happen in a helper running with the session user's identity, the owner of the session's tty as login sets it, with sudoedit and OpenSSH privilege separation as precedent, plus the kitty spec's own file rules."
-    via: relayed by the team lead in the brief for this record, 2026-10-22; not the operator's own words
+    level: guided
+    said: "but I also want to avoid limiting kitty and sixel sources"
+    via: Claude Code session, relayed verbatim by the team lead, on which kitty transmission media and sixel sources to support; read as all four kitty media
+  - operator: aaronsb
+    level: guided
+    said: "I'd rather not invent new security conventions if possible"
+    via: Claude Code session, relayed verbatim by the team lead, on reading files that kitty commands name while kmscon runs as root
   - precedent: ADR-101
   - precedent: ADR-102
   - precedent: ADR-300
@@ -21,7 +24,12 @@ basis:
   - evidence: "Code map of libtsm d1ab10e and kmscon b989c61, 2026-10-22: the DCS start, collect and end actions do nothing and APC goes to the ignore state (tsm-vte.c); DA1 replies ?60;1;6;9;15c; a line is an object holding its cells that moves whole between the screen and scrollback, and resize grows lines without reflow (tsm-screen.c); kmscon sets no pixel size with TIOCSWINSZ and libtsm answers no XTWINOPS size report"
   - evidence: "Survey of Ghostty 08a9518 src/terminal/kitty (MIT), 2026-10-22: file path checked after open from the opened handle, refusing /proc, /sys and /dev except /dev/shm; temporary files read only inside /tmp, /dev/shm or the temp directory and with tty-graphics-protocol in the path, else refused; shared memory unlinked once opened; eviction order transient-unplaced, unplaced, transient-placed, placed, oldest first; 320 MB total and 10000-pixel dimension limits; cursor after a placement indexes rows-1 times, bounded, then moves past the image or wraps"
   - evidence: "Survey of foot sixel.c (MIT), 2026-10-22: text and erase split a sixel into the parts left uncovered; cursor ends on the text row holding the image's last pixel row, at the image's left column, or past its right edge with mode 8452; DECSDM set places the image at the top left without scrolling or moving the cursor; P2=1 is transparent, else unset pixels take register 0; aspect from P1 and raster attributes"
-  - evidence: "aaronsb/kmscon issues #17 (gltex upload failures under virgl), #67 (bbulk damage carry-over, being fixed), #68 (gltex has no RGBA path until ADR-102 step 6), #75 (the showcase asks this record for performance targets and a frame counter)"
+  - evidence: "Check by the team lead, 2026-10-22: desktop terminals (kitty, Ghostty, WezTerm, foot, Konsole) run as the desktop user, so sudo mpv --vo=kitty inside one still has the terminal open files as that user and root-only files fail to load; sudoedit opens files as the invoking user"
+  - upstream: "kmscon/kmscon#138: trollyjolly (2026-07-26) proposed handing DCS strings that start with a sixel introducer to a decoder through a new tsm_vte callback; jholt0147 (2026-08-29) attached a libtsm patch and a kmscon patch, with no licence statement, read here as prior art only and no code taken"
+  - standard: "mpv manual, DOCS/man/vo.rst: vo=sixel; vo=kitty with --vo-kitty-use-shm (shared memory, local only) and --vo-kitty-auto-multiplexer-passthrough (tmux and GNU screen)"
+  - standard: "foot.ini(5): render-timer=none|osd|log|both, a frame rendering timer shown on screen, logged, or both"
+  - evidence: "tmux CHANGES: basic SIXEL support from 3.4 when built with --enable-sixel, at most 20 SIXEL images since 3.7; Arch's tmux PKGBUILD configures --enable-sixel. WezTerm attaches sixel images to cells (term/src/terminalstate/sixel.rs, assign_image_to_cells)"
+  - evidence: "aaronsb/kmscon issues #17 (gltex upload failures under virgl), #67 (bbulk damage carry-over, being fixed), #68 (gltex has no RGBA path until ADR-102 step 6), #75 (the showcase asks this record for performance targets and a frame counter), #77 (OSC 50 font paths named by programs)"
 agent:
   name: claude
   model: claude-opus-5-5
@@ -32,11 +40,18 @@ deciders:
 related: []
 extends: ADR-101
 amends: "ADR-101#parsing"
+considered:
+  - operator: aaronsb
+    said: "on 5, I would think the tty owner would be the right move, but I'd defer to other systems that use this"
+    via: "Claude Code session, relayed verbatim by the team lead, 2026-10-22; '5' was the fifth point of the team lead's summary of the image-access design, the sudo identity question. The team lead then checked other systems: desktop terminals and sudoedit read as the session's user"
+    covers: [sudo-identity]
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
   - "A kitty client run by the logged-in user that names a root-only file with t=f gets EBADF:Failed to read image file, the same reply as for a missing file"
-  - "The tier 2 screens for each composition band, and the benchmark scenarios S1 to S6 recorded as an evidence record"
+  - "mpv --vo=sixel and mpv --vo=kitty (inline and with --vo-kitty-use-shm=yes) play an animation full screen on drm2d with bbulk at 1920x1080 and 7680x2160, and the render timer's presented rate matches mpv's output rate"
+  - "tmux in a 3x3 grid of panes, each running mpv --vo=sixel, plays all nine and leaves no stale pixels when the panes close"
+  - "The tier 2 screens for each composition band, and the render timer's figures for acceptance scenarios A1 to A7 recorded as an evidence record"
 ---
 
 # ADR-103: Images are placements that travel with lines; sixel and the kitty graphics protocol feed one store
@@ -45,21 +60,23 @@ observable:
 
 - **Decided:** Steps 3 and 4 of ADR-101, made concrete.
   - **Store:** one image store per screen buffer, capped by `image-storage-limit` (320 MB, the kitty and Ghostty default). A new image evicts images with no placement first, then images placed only in scrollback. An image placed on the screen is never evicted; a new image that still does not fit is refused.
-  - **Placements:** each is anchored to the line holding its top row, so it travels into scrollback and back with the text. A sixel behaves as cell content: text written or erased over it removes that part, as on the VT340's single bitmap. A kitty placement follows the kitty spec: of the erase commands only ED 2 touches it.
+  - **Placements:** each is anchored to the line holding its top row, so it travels into scrollback and back with the text. A sixel behaves as cell content: text written or erased over it removes that part, as foot does and as terminals that keep image tiles in cells behave. A kitty placement follows the kitty spec: of the erase commands only ED 2 touches it.
   - **Parsing:** sixel and kitty payloads are decoded as they stream in, never buffered whole.
-  - **Files:** all four kitty media are supported. Opening files and shared memory, and decoding PNG and zlib, happen in a per-session helper process running as the tty's owner, under the kitty spec's file rules and Ghostty's checks. kmscon, which runs as root, decodes only sixel and base64 itself.
-  - **Drawing:** bbulk composes the three placement bands per covered cell, sends cells wholly under an opaque top-band picture as one blit, and damages placement rectangles on both buffers. gltex follows with a texture per image, after ADR-102 step 6.
-  - **Settings:** `image-storage-limit` (Ghostty), `max-graphic-size`, `num-color-registers` and `private-color-registers` (xterm).
+  - **Files:** all four kitty media are supported. Opening files and shared memory, and decoding PNG and zlib, happen in a per-session helper process running as the session's user, never as the foreground process, as a desktop terminal reads as its desktop user. It follows the kitty spec's file rules and Ghostty's checks. kmscon, which runs as root, decodes only sixel and base64 itself.
+  - **Drawing:** bbulk composes the three placement bands per covered cell, sends cells nothing draws over an opaque picture as row strips, and damages placement rectangles on both buffers. gltex follows with a texture per image, after ADR-102 step 6.
+  - **Acceptance:** full-motion video through mpv (`--vo=sixel`, and `--vo=kitty` inline and over shared memory) on drm2d with bbulk at 1920x1080 and 7680x2160, the showcase's text banner over a full-screen video, and tmux grids of sixel videos. No frame rate can be justified before measuring, so the first measurement is an early step and sets the targets. A `render-timer` overlay (foot's option) shows frames presented, CPU time and damaged area per frame, drawn as a top-band placement.
+  - **Settings:** `image-storage-limit` (Ghostty), `max-graphic-size`, `num-color-registers` and `private-color-registers` (xterm), and `render-timer` (foot).
 - **Trades away:**
-  - A program run under sudo cannot show root's files through the file media, because the helper reads as the logged-in user (probe 1).
+  - A program run under `sudo` cannot show root-only files through the file media, because the helper reads as the session's user, as a desktop terminal does under `sudo mpv`.
+  - An optional dependency on sd-login (systemd's or elogind's) to find the session's user.
   - A file or PNG image costs a round trip to the helper, and that VT's output pauses until the reply.
   - Animation, relative placements and Unicode placeholders wait for step 5. Clients that use them get EINVAL.
   - Byte-for-byte agreement with upstream on every tier 1 golden that records the DA1 reply, which gains attribute 4.
 - **One-way?** No. `image-storage-limit=0` turns both protocols off. Reversing becomes expensive once programs rely on the replies, and once the helper protocol and the frame's placement list are interfaces both kmscon and libtsm build on.
 - **Probes:**
-  1. *Not confident (sudo identity):* the helper reads files as the user who owns the console's tty, the one who logged in. Under `sudo`, a program running as root that asks to show `/root/picture.png` is refused with the protocol's generic error, though it could read the file itself. The alternative reads as whichever program is in the foreground, root in that case. Which identity do you want?
-  2. *Confident (decoding in the helper):* a PNG or compressed image from any program, remote ones included, is decoded by the helper running as you, so a fault in the PNG library cannot become a root fault. The cost is that every PNG image, even one sent inline, passes through that helper.
-  3. *Not confident (memory default):* each screen may hold 320 MB of images, kitty's and Ghostty's default, so a VT whose programs fill both screens holds up to 640 MB, and six such VTs nearly 4 GB. Is that right for a console, or should the default be lower?
+  1. *Not confident (sudo-identity):* answered. The helper reads files as the session's user. Under `sudo`, a program running as root that asks to show `/root/picture.png` is refused with the protocol's generic error, though it could read the file itself. The alternative was to read as whichever program is in the foreground. The operator chose the session's user, deferring to what other systems do, and desktop terminals and sudoedit read as the session's user. The image helper section says how that user is found.
+  2. *Confident (helper-decoding):* a PNG or compressed image from any program, remote ones included, is decoded by the helper running as you, so a fault in the PNG library cannot become a root fault. The cost is that every PNG image, even one sent inline, passes through that helper.
+  3. *Not confident (memory-default):* each screen may hold 320 MB of images, kitty's and Ghostty's default, so a VT whose programs fill both screens holds up to 640 MB, and six such VTs nearly 4 GB. Is that right for a console, or should the default be lower?
 - **Inversion:** Between "images are cell content" (sixel's own model; mlterm and WezTerm store tiles in cells) and "images are a free layer text never touches" (the kitty spec's model). The answer keeps ADR-101's one layer and gives each protocol the erase rules its own specification describes.
 
 ## Context
@@ -76,6 +93,8 @@ The code as it stands (libtsm d1ab10e, kmscon b989c61):
 The two protocols disagree about erase. The kitty spec says "the other commands to erase text must have no effect on graphics"; only ED 2 clears images. Sixel comes from terminals with one bitmap, where text written over pixels replaces them: foot (MIT) splits an image into the parts text and erase leave uncovered, and WezTerm and mlterm store image tiles in cells.
 
 Three open issues bear on the renderers: bbulk's damage carry-over keeps every damaged cell damaged on displays with damage clips (#67, being fixed), gltex has no RGBA path until ADR-102 step 6 (#68), and gltex's tier 3 variant is outside the default run (#17). The showcase (#75) asks this record for performance targets and a frame counter.
+
+Upstream's sixel request (kmscon/kmscon#138) carries a proposal to route sixel DCS strings to a decoder through a vte callback, and a pair of patches that decode sixel in libtsm and blit it in kmscon. Alternatives says what this record takes from them.
 
 ## Decision
 
@@ -180,12 +199,16 @@ This replaces ADR-101's Parsing bullet on DCS and APC: payloads are decoded as t
 ### The image helper (kmscon)
 
 - **Process.** A separate executable, `kmscon-image-helper`, installed beside kmscon's modules. kmscon starts one per terminal session at its first request: it forks, takes on the identity below, and execs the helper, so the helper starts with nothing of kmscon's memory.
-- **Identity.** The owner of the session's pty, as `/bin/login` sets it, read with `fstat` on the pty's slave:
-  - that uid, its primary gid, and the user's supplementary groups through `initgroups`;
-  - then `PR_SET_NO_NEW_PRIVS`, working directory `/`, every descriptor closed but its socket, and a memory limit derived from the image limits.
-  - When the owner is root (no login, or root logged in), the helper runs as root, which is then the session's identity.
-- **Owner changes.** Before each request kmscon reads the tty's owner again. When it differs from the helper's (a logout and a new login), the helper is stopped and a new one started.
-- **Precedent.** sudoedit opens files as the invoking user rather than as root, and OpenSSH's privilege separation parses untrusted input in an unprivileged process. The helper applies both; it introduces no convention of its own.
+- **Identity.** The session's user, never the foreground process's:
+  - When kmscon is built with sd-login (systemd's or elogind's) and the process it started is in a logind session, the session's uid: `sd_pid_get_session` on that process, then `sd_session_get_uid`. pam_systemd registers the session when login authenticates the user.
+  - Otherwise (built without sd-login, no logind running, or a command kmscon started without login), the owner of the session's pty, as `/bin/login` sets it, read with `fstat` on the pty's slave.
+  - logind's answer comes first because it is the identity PAM authenticated, held by logind for the session's life. The pty's owner is file metadata: any root process in the session, a `sudo chown` among them, can hand the pty to another user, root included, and every program in the session would then have files read as that user. When the two disagree, kmscon logs it and uses logind's.
+  - kmscon uses systemd today only to find its unit directory (meson.build). sd-login becomes an optional dependency, and a build without it uses the pty's owner.
+  - The helper takes that uid, its primary gid and the user's supplementary groups (`initgroups`), then `PR_SET_NO_NEW_PRIVS`, working directory `/`, every descriptor closed but its socket, and a memory limit derived from the image limits.
+  - When the session's user is root (root logged in, or no login and the pty still root's), the helper runs as root, which is then the session's identity.
+- **User changes.** Before each request kmscon finds the session's user again. When it differs from the helper's (a logout and a new login), the helper is stopped and a new one started.
+- **Precedent.** Desktop terminals (kitty, Ghostty, WezTerm, foot, Konsole) run as the desktop user, so `sudo mpv --vo=kitty` inside one still has the terminal open files as that user, and root-only files fail to load. sudoedit opens files as the invoking user, and OpenSSH's privilege separation parses untrusted input in an unprivileged process. kmscon matches the desktop terminals and introduces no convention of its own.
+- **Font paths.** OSC 50 font paths (#77) are opened by the same helper, with the same identity and path rules. What it returns for a font is settled with #77.
 - **Files** (`t=f`, `t=t`):
   - Before opening, the path is resolved (`realpath`, following symlinks, failing on loops, as the spec asks) and refused when it lies in `/proc`, `/sys` or `/dev` other than `/dev/shm`. `stat` must show a regular file. Checking before opening honours the spec's warning that opening can have side effects.
   - After opening (`O_RDONLY`, `O_NOCTTY`, `O_NONBLOCK`), `fstat` must show a regular file again, and the path of the opened descriptor must pass the same check. This is Ghostty's check: it catches a symlink swapped between the first check and the open.
@@ -205,15 +228,16 @@ This replaces ADR-101's Parsing bullet on DCS and APC: payloads are decoded as t
   - P3, the grid size, is ignored, as xterm ignores it.
 - **Data:** `#Pc;Pu;Px;Py;Pz` selects or defines a register, in HLS (`Pu=1`, hue in degrees with blue at 0) or RGB percentages (`Pu=2`); `!Pn` repeats; `$` returns to the band's start; `-` starts the next band. Other bytes are ignored. A register number never indexes outside the table.
 - **Registers:** `num-color-registers` of them, 0 to 15 starting from the VT340's default colour map. With mode 1070 set (its initial state from `private-color-registers`), each image starts from the defaults; reset, registers are shared and persist across images until RIS.
-- **Limits:** the decoded width and height stop at `max-graphic-size`, and pixels past it are discarded, as xterm truncates at `maxGraphicSize`. A repeat count is bounded by the same width.
+- **Limits:** the decoded width and height stop at `max-graphic-size`, and pixels past it are discarded. xterm's `maxGraphicSize` likewise bounds "the maximum size of a graph which can be displayed". A repeat count is bounded by the same width.
 - The image is created and placed when ST ends the DCS. CAN or SUB discards it.
 - **Placement and cursor,** with sixel scrolling on (DECSDM reset, the default):
   - the picture's top left is the cursor's cell, and its box is its pixel size over the cell size, rounded up;
   - the screen scrolls, as index does, whenever the picture would pass the bottom margin;
-  - the cursor ends on the text row holding the picture's last pixel row, at the picture's left column (xterm and foot), or with mode 8452 set, in the column after the picture's right edge on that row, clamped to the last column;
+  - the cursor ends on the text row holding the picture's last pixel row, at the picture's left column (foot), or with mode 8452 set, in the column after the picture's right edge on that row, clamped to the last column;
   - a picture wider than the columns left is clipped at the right edge.
-- With DECSDM set, the picture is placed at the screen's top left, clipped to the screen, and the cursor does not move (VT340 manual; foot).
-- Text already in the covered cells stays; it shows through transparent pixels, as it would on a VT340.
+- With DECSDM set, the picture is placed at the screen's top left, clipped to the screen, and the cursor does not move (foot).
+- **DECSDM's sense follows xterm:** set turns sixel scrolling off. xterm's ctlseqs notes that the VT330/VT340 graphics manual (second edition) says the opposite, while the VT382 manuals say "Disable sixel scroll" and "No Sixel scrolling"; xterm's `sixelScrolling` resource is documented as the opposite of DECSDM. foot follows xterm's sense, and so does this record.
+- Text already in the covered cells stays and shows through transparent pixels.
 - Cursor positions in the tier 1 goldens are checked against xterm, MIT-X11 licensed, running the same bytes as a black box and answering DSR.
 
 ### Kitty graphics protocol (libtsm, with the host for media)
@@ -236,7 +260,7 @@ A frame is drawn in ADR-101's order, shown in figure A: the default background; 
 
 - A cell no placement covers draws as it does today.
 - A cell some placement covers is composed in system memory in the order above and sent as one opaque ARGB request, the path decorated cells already take.
-- **Opaque fast path.** Cells wholly under an opaque placement in the top band are not composed. The placement's picture is sent over them as row strips, so a full-screen video above the text is one large blit per frame.
+- **Opaque fast path.** A cell wholly under an opaque placement that nothing draws over takes the picture's pixels as they are: no glyph or decoration, no higher placement, and, when the placement is in the lowest band, a default background. Runs of such cells go as row strips. A full-screen video with a banner over its bottom rows is then strips for the picture and per-cell composition for the banner's cells only.
 - **Scaled pictures** are cached per image key and drawn size: box filter down (ADR-102's filter), bilinear up. The cache holds at most twice the screen's size in ARGB and drops the least recently used.
 - **Damage.** bbulk keeps this display's previous placement list. A placement added, removed, moved, resized, clipped differently or given new image data damages its old and new rectangles. The cells there are drawn on this frame and the next, the two-frame rule cells follow. This depends on #67's fix and is tested on displays with and without damage clips.
 - Rotated screens rotate pictures with the cells.
@@ -254,21 +278,50 @@ A frame is drawn in ADR-101's order, shown in figure A: the default background; 
 - bbulk's scaled pictures, or gltex's textures: at most twice the screen's ARGB size per display, 132 MB at 7680x2160.
 - The helper: one decode at a time, bounded by `max-graphic-size` x 4 plus the compressed input.
 
-### Performance
+### Render timer (kmscon)
 
-The risk ADR-101 named stands: at 7680x2160 a screen is 16.6 million pixels, 66 MB in ARGB, and bbulk composes on the CPU.
+- `render-timer=none|osd|log|both` in kmscon.conf, foot's option with foot's values; the default is `none`.
+- For each display it reports:
+  - frames presented per second, counted as page flips complete;
+  - CPU time per frame, kmscon's thread CPU time from preparing the frame to queuing its flip;
+  - damaged area per frame, the pixels in the frame's damage rectangles and their share of the screen.
+- `log` writes one line per display per second to kmscon's log. `osd` draws the figures in a corner as a top-band placement that kmscon appends to the display's placement list after libtsm's. It passes through the same composition, damage and blit as any picture, and it belongs to no libtsm store, so no program can erase, delete or replace it. Its own redraw, once a second, is part of what it reports.
+- It measures what kmscon presents. mpv's own statistics report what mpv decodes and outputs; a frame mpv outputs that kmscon never presents shows as the gap between the two rates.
+- Tier 2 and tier 3 goldens are taken with it off.
 
-- **Measurement.** A benchmark draws through bbulk into the in-memory display tier 2 uses, at 1920x1080, 3840x2160 and 7680x2160, and reports milliseconds per frame (median and 95th percentile) and bytes sent:
-  - S1: text scrolling, no image: the baseline against main.
-  - S2: text scrolling in a region beside a static half-screen image.
-  - S3: one line of scroll with a full-width image on screen, so every cell under it moves.
-  - S4: a full-screen opaque image replaced every frame, a 480x360 source scaled up: the showcase's video.
-  - S5: S4 under text, the image in the middle band: the showcase's banner over the video.
-  - S6: fifty small images.
-- The same scenarios then run in tier 3 on drm2d at 7680x2160, and the showcase runs on the operator's display.
-- **Targets**, recorded as targets until measured: S1 within 5% of main; S3 at least 30 lines per second at 7680x2160; S4 at least 30 frames per second at 1920x1080 and 24 at 7680x2160 on the operator's hardware.
-- **If a target is missed,** the remedies in order: splitting composition across threads by rows, SIMD scaling and blending, and gltex for video where GL is available. The measurements go in an evidence record, and the remedy chosen in a decision that cites it.
-- **Frame counter.** kmscon counts completed page flips per display and logs the rate each second at debug level. The on-screen counter the showcase films is a debug overlay drawn from that count, added in its own change with its own option, since it touches every renderer and tier 2 must leave it out.
+### Acceptance scenarios
+
+The risk ADR-101 named stands: at 7680x2160 a screen is 16.6 million pixels, 66 MB in ARGB, and bbulk composes on the CPU. These scenarios judge it. Each runs on drm2d with bbulk at 1920x1080 and at 7680x2160, on the operator's hardware and in tier 3, with the render timer on. Each run records frames presented per second, CPU time per frame and damaged area per frame (median and 95th percentile), with mpv's output frame rate beside them where mpv plays.
+
+Step 3, sixel:
+
+- **A1.** img2sixel pictures: placed, scrolled into scrollback and back, cleared.
+- **A2.** `mpv --vo=sixel` playing an animation full screen, Bad Apple!! for the showcase.
+- **A3.** The showcase's act 5: a small sixel video, then a deliberate glitch and a halt. Clearing the screen afterwards leaves no stale pixels.
+- **A4,** step 3's final scenario: tmux, which supports sixel from 3.4 when built with `--enable-sixel` (Arch builds it so), in a 2x2 and then a 3x3 grid of panes, each running `mpv --vo=sixel`. tmux sends every pane's pictures on to kmscon, so many sixel streams and placements change at once.
+
+Step 4, kitty:
+
+- **A5.** `mpv --vo=kitty`, inline (its default, chunked through the pty) and with `--vo-kitty-use-shm=yes` (shared memory, `t=s`, through the helper).
+- **A6,** the showcase's finale: a video full screen through the kitty protocol with a scrolling banner of text and colour emoji over its bottom rows, the text moving every frame while the picture changes every frame. It runs twice: the picture below cell backgrounds (z < -1,073,741,824), where the banner's coloured backgrounds cover it, and below text only (-1,073,741,824 <= z < 0), where only glyphs cover it. mpv's manual documents no z-index option for `vo=kitty`, so the case uses the spec-written client to place the picture; the showcase may use either that or mpv sized to leave the banner's rows free (`--vo-kitty-rows`).
+- **A7.** Several videos at once as separate kitty placements from one client, with no multiplexer.
+- The same grid of kitty videos inside tmux needs mpv's multiplexer passthrough (`--vo-kitty-auto-multiplexer-passthrough`) and Unicode placeholders to keep each picture in its pane, so it is step 5's final scenario.
+
+The public post's footage is captured with ffmpeg's `kmsgrab` device. Runs with capture are recorded apart from runs without it, since reading the scanout buffer takes time on the same machine.
+
+### Frame-rate target
+
+- No number can be justified before measuring. bbulk has never drawn a full-screen picture, and at 7680x2160 each frame writes 66 MB to the scanout buffer, so the ceiling is that hardware's write bandwidth, which has not been measured.
+- The criterion that holds without a number: kmscon is not the bottleneck. In A2, A5 and A6 the render timer's presented rate matches mpv's output rate (or the client's send rate in A6), and kmscon's CPU time per frame stays below the frame interval.
+- The first measurement is an early step (3b below): a synthetic full-screen picture replaced every frame, in the top band and in the middle band under a scrolling text band, drawn through bbulk on drm2d at both resolutions. Its figures go in an evidence record together with a frame-rate target for each acceptance scenario, and the scenarios are judged against those.
+- **If a target is missed,** the remedies in order: splitting composition across threads by rows, SIMD scaling and blending, and gltex for video where GL is available. The remedy chosen is a decision that cites the evidence record.
+
+### Damage for moving text over a changing picture
+
+- A placement whose image changes damages its whole rectangle on that frame and the next. In A2, A5 and A6 that is the whole picture every frame, so damage saves nothing there; the cost is composition, which CPU time per frame shows.
+- The banner's cells change every frame and are damaged as cells always are. The union is the frame's damage.
+- Within that damage, the opaque fast path sends the cells nothing draws over as strips, and only the banner's cells are composed one by one: picture, then a non-default background in the lowest-band run, then glyph and decorations. The per-frame cost is one strip copy of the picture plus the banner's rows.
+- Both depend on two prerequisites: #67's fix, without which every damaged cell stays damaged on every later frame, and placement damage (3b).
 
 ### Settings (kmscon.conf)
 
@@ -280,6 +333,7 @@ Each setting takes the name an existing terminal gives it, written in kmscon.con
 | `max-graphic-size` | xterm `maxGraphicSize` | 10000x10000 | The largest image in pixels, for both protocols. xterm's 1000x1000 is smaller than this console's screens; 10000 is Ghostty's dimension limit. |
 | `num-color-registers` | xterm `numColorRegisters` | 1024 (xterm's value for terminal ids that are not DEC models) | Sixel colour registers. |
 | `private-color-registers` | xterm `privateColorRegisters` | true | The initial state of mode 1070. |
+| `render-timer` | foot `render-timer` | none | `osd`, `log` or `both` turn on the render timer. |
 
 ### Testing (ADR-301)
 
@@ -290,8 +344,8 @@ Each setting takes the name an existing terminal gives it, written in kmscon.con
   - Goldens come from the fork, as upstream has no images, and each is reviewed in its own commit. The DA1 goldens change in their own commit.
 - **Unit tests** (kmscon) for the helper: each refusal (`/proc`, `/sys`, `/dev`, a FIFO, a socket, a device, a directory, a symlink loop, a symlink swapped between check and open, a file shorter than `S`, `t=t` outside a temporary directory or without the name, shared memory names with extra slashes or too long) answers byte-identical EBADF; refused temporary files survive; accepted `t=t` files and `t=s` objects are removed.
 - **Fuzzing.** The sixel decoder and the kitty command parser run in kmscon's root process on bytes any program sends. Each has a fuzz target, run for a fixed budget before a change to it lands.
-- **Tier 2** (pixels): each band with text over and under it; the lowest band under default and non-default backgrounds; transparent and opaque sixels; a sixel split by text; a region scroll clipping a placement; scaled and letterboxed placements; a changed cell size. Incremental frames on a display with damage clips: a placement added, moved and removed leaves no stale pixels, the failure that ruled out the community patch (ADR-101).
-- **Tier 3** (VM): the guest gains img2sixel (libsixel) and viu (MIT), both in Arch's extra repository, and the fork's spec-written client for `t=f`, `t=t` and `t=s`. Screens: a picture from img2sixel, scrolled into scrollback and back, then cleared; kitty pictures through each medium; text over a middle-band picture; a root-owned file refused to the logged-in user; and the sudo case as probe 1 settles it. bbulk variants first; GL after #17 and ADR-102 step 6.
+- **Tier 2** (pixels): each band with text over and under it; the lowest band under default and non-default backgrounds; transparent and opaque sixels; a sixel split by text; a region scroll clipping a placement; scaled and letterboxed placements; a changed cell size. Incremental frames on a display with damage clips: a placement added, moved and removed leaves no stale pixels, the failure that ruled out the community patch (ADR-101); a changing picture under a text band that scrolls every frame, as A6; a sixel cleared by ED 2 after a run of frames, as A3.
+- **Tier 3** (VM): the guest gains img2sixel (libsixel) and viu (MIT), both in Arch's extra repository, and the fork's spec-written client for `t=f`, `t=t` and `t=s`. Screens: a picture from img2sixel, scrolled into scrollback and back, then cleared; kitty pictures through each medium; text over a middle-band picture; a root-owned file refused to the logged-in user, also under `sudo`; the acceptance scenarios that tier 3 can run (mpv, tmux), with the render timer logging. bbulk variants first; GL after #17 and ADR-102 step 6.
 - **Demo.** The VT demo gains an images section, and its screens become tier 3 screens as the others did. The showcase's acts 5 and 7 (#75) run on top.
 
 ### Order of work
@@ -301,18 +355,21 @@ Each item lands behind the harness, with goldens changed only in their own commi
 Step 3, the image layer and sixel:
 
 1. **3a, libtsm store and placements.** The store, placements, every screen event in the table, the frame's placement list, the image call, and the cell size from the host. Unit tests build placements through a test-only call; `tsm-replay` prints them.
-2. **3b, libtsm sixel.** DCS streaming, the decoder, registers, modes 80, 1070 and 8452, DA1 attribute 4, XTSMGRAPHICS, XTWINOPS 14, 16 and 18. A fuzz target. Tier 1 cases from img2sixel streams.
-3. **3c, kmscon.** The cell size to libtsm and `TIOCSWINSZ`, the settings, and bbulk's bands, scaled-picture cache, opaque fast path and placement damage, after #67. Tier 2 screens.
-4. **3d, evidence.** Tier 3 sixel screens, the demo section, and benchmark scenarios S1 to S4 recorded as an evidence record.
-5. **3e, gltex images,** after ADR-102 step 6 and #17.
+2. **3b, kmscon composition, the render timer, and the first measurement.** bbulk's bands, scaled-picture cache, opaque fast path and placement damage, after #67. The render timer comes next, as the first placement bbulk draws, so the measuring tool exists before anything it measures. Then the synthetic measurement at both resolutions, recorded as an evidence record with the frame-rate targets. Tier 2 screens for each band draw placements made through libtsm's test-only call.
+3. **3c, libtsm sixel.** DCS streaming, the decoder, registers, modes 80, 1070 and 8452, DA1 attribute 4, XTSMGRAPHICS, XTWINOPS 14, 16 and 18. A fuzz target. Tier 1 cases from img2sixel streams.
+4. **3d, kmscon wiring.** The cell size to libtsm and `TIOCSWINSZ`, and the settings. Tier 2 sixel screens.
+5. **3e, acceptance.** Tier 3 sixel screens and the demo section; A1, A2 and A3; then A4, step 3's final scenario.
+6. **3f, gltex images,** after ADR-102 step 6 and #17.
 
 Step 4, the kitty graphics protocol:
 
 1. **4a, libtsm kitty.** APC framing, control keys, inline `f=24` and `f=32`, chunking, the actions, ids, numbers and placement ids, bands, cursor movement, deletes, replies, and eviction with ENOSPC. A fuzz target. Tier 1 through the spec-written client. Without a host, the other media answer EBADF and PNG and zlib EINVAL.
 2. **4b, the host and the helper.** The vte's host hook and the input call that reports what it consumed; `kmscon-image-helper` with its identity, file and shared memory rules, PNG and zlib, and memfd results. Unit tests for every rule, and the fixture host in `tsm-replay`.
-3. **4c, kmscon.** Tier 2 screens for the lower two bands and text over pictures; benchmark scenarios S5 and S6.
-4. **4d, evidence.** Tier 3 with viu and the spec-written client through each medium, the root-file refusal, the sudo case, the demo, and the showcase's act 7.
-5. **4e, gltex** for the lower two bands, with 3e.
+3. **4c, kmscon.** Tier 2 screens for the lower two bands, text over pictures, and A6's banner over a changing picture.
+4. **4d, acceptance.** Tier 3 with viu and the spec-written client through each medium, the root-file refusal, and the demo; A5 through both media, A6 in both bands, and A7.
+5. **4e, gltex** for the lower two bands, with 3f.
+
+Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` in each pane.
 
 ## Consequences
 
@@ -326,12 +383,13 @@ Step 4, the kitty graphics protocol:
 
 ### Negative
 
-- A program under sudo cannot show root-only files through the file media, unless probe 1 changes the identity.
+- A program under `sudo` cannot show root-only files through the file media, as in a desktop terminal.
+- Finding the session's user through logind adds an optional dependency on sd-login.
 - A VT's output pauses while a helper request is out. A slow file system stalls that VT for up to 2 seconds per command.
 - The helper is a new executable to package, and a new process for each session that shows a file or PNG image.
 - What an erase does to a picture depends on which protocol drew it. A reader who does not know the source cannot predict what `EL` does.
 - ICH and DCH remove part of a sixel instead of shifting it.
-- CPU composition at 7680x2160 is unmeasured, and video on bbulk may miss its target there.
+- CPU composition at 7680x2160 is unmeasured, and the acceptance scenarios have no frame-rate target until 3b measures one. Video on bbulk may fall short at that size.
 - At the default limit, a hostile program can make one VT hold 640 MB of images.
 
 ### Neutral
@@ -343,13 +401,16 @@ Step 4, the kitty graphics protocol:
 
 ## Alternatives Considered
 
+- **The patches attached to kmscon/kmscon#138.** As their commit messages describe them, they buffer a DCS payload up to 1 MiB and decode a sixel at its end; anchor each image to the line holding its top row, the anchor this record also uses; skip drawing an image whose anchor line has scrolled into scrollback or while the alternate screen is shown; drop a whole image when text, an erase or a new image touches its cells; and blit images after the glyph pass through a new display operation, without rotation and with no gltex path. Their author reports artifacts on drm2d with bbulk. Not adopted: 1 MiB holds only a small picture; a picture that vanishes once its top line enters scrollback breaks scrolling back; dropping a whole image on any overwrite loses pictures kitty clients draw text over; and a blit after the glyphs, outside the renderer's damage, is what leaves stale pixels. They carry no licence statement, so they were read as prior art and no code was taken.
+- **A sixel callback out of the vte** (trollyjolly on #138), handing DCS strings that start with a sixel introducer to a decoder through a new `tsm_vte` callback. Taken in part: Parsing routes by the introducer. The decoder and the store stay in libtsm, because placements must follow screen events the host never sees; the callback shape serves what libtsm cannot do itself, the host hook for files and PNG.
 - **Collect each DCS and APC payload whole, then decode,** as ADR-101 worded it. Rejected: an 8K picture's encoded payload is tens of megabytes held beside the decoded image. Streaming bounds memory by the decoded result.
 - **Store image tiles in cells** (mlterm, WezTerm). Rejected by ADR-101. Splitting placements reproduces sixel's cell behaviour without it.
 - **One erase rule for both protocols.** Kitty's rule for sixel lets a picture survive text written over it, which no DEC-derived terminal does, and leaves stale pictures under programs that redraw over their sixel output. Sixel's rule for kitty breaks the spec's statement that erase commands do not affect graphics, and removes pictures that kitty clients draw text over on purpose.
 - **Open files in kmscon itself, with only the spec's checks,** as a terminal running as its user does. Rejected: as root, a remote program could have the console display any file on the machine as raw pixels, and a `t=t` command would delete as root.
 - **Switch kmscon's file-system identity to the user for each open** (`setfsuid`), with no helper. Cheaper, but the process stays root, PNG and zlib still decode as root, and the identity switch is per thread in a process whose libraries may start threads.
 - **Open in the helper but decode in kmscon,** the narrowest reading of the operator's direction. Rejected for PNG and zlib, library decoders whose faults would run as root. Sixel and base64 stay in kmscon: they are byte state machines written in the fork and fuzzed like the parser.
-- **The foreground process's identity for the helper.** The other answer to probe 1. The tty's owner is the default here because login sets it, a program in the session cannot change it, and reading it cannot race a process exiting. The foreground process group can belong to a setuid program and can change between the command and the open.
+- **The foreground process's identity for the helper.** Rejected by the operator's answer to the sudo-identity probe, and by precedent: desktop terminals read as their desktop user under `sudo`. The foreground process group can also belong to a setuid program and can change between the command and the open.
+- **The pty's owner as the only source of the session's user.** No new dependency, and it is what login sets. It stays as the fallback. Rejected as the first source because it is file metadata a root process in the session can change, which would change the identity every program in the session reads with.
 - **Refuse the file media,** as some terminals do. Rejected by the operator: all four media are supported.
 - **Call the helper synchronously.** Simpler, but it blocks kmscon's event loop, and with it drawing and VT switching, for up to the timeout.
 - **libtsm reports removed placements to each caller.** Rejected: libtsm does not know its callers, and keeping removals until every caller has seen them needs that knowledge.

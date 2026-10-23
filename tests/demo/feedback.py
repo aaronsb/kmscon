@@ -9,6 +9,11 @@ row (DSR 6) to decide whether the footer fits below the page; this driver is
 no terminal emulator, so it answers with a row it is told to: row 5, where
 every footer fits, or row 25, where none does.
 
+A key the driver sends may reach the terminal while demo.sh draws, between two
+of its reads. Each time it reads the screen, the driver also notes whether the
+terminal is editing lines then (#131): a Ctrl-D sent to a line-editing
+terminal is an end of file, never a key.
+
     feedback.py --root SOURCE_ROOT
 """
 
@@ -48,6 +53,7 @@ class Demo:
         self.seen = 0
         self.asked = 0
         self.row = 5
+        self.canonical = 0
 
     def pump(self, timeout):
         ready, _, _ = select.select([self.fd], [], [], timeout)
@@ -74,6 +80,10 @@ class Demo:
             if time.monotonic() > end or not self.pump(end - time.monotonic()):
                 tail = ESC.sub(b"", self.out[self.seen:])[-600:]
                 raise AssertionError(f"waiting for {text!r}; the screen shows:\n{tail.decode(errors='replace')}")
+            # From the title page, drawn once demo.sh has set the terminal up,
+            # to the last key, after which demo.sh restores it.
+            if b"local VT demo" in self.out and termios.tcgetattr(self.fd)[3] & termios.ICANON:
+                self.canonical += 1
         start, self.seen = self.seen, at + len(text)
         return ESC.sub(b"", self.out[start:self.seen]).decode(errors="replace")
 
@@ -223,6 +233,8 @@ def main():
         "\n".join(summary_rows(page)))
     d.send("q")
     check(d.wait() == 0, "q on the summary ends the run with status 0")
+    check(not d.canonical, "the terminal never edits lines between keys, so a Ctrl-D sent then is a key",
+          f"{d.canonical} reads of the screen found it editing lines")
 
     rows = rows_of(path)
     run1 = rows[1][1] if len(rows) > 1 else "(none)"

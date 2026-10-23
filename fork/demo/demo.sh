@@ -6,13 +6,14 @@
 # like ("# wrong-looks-like:"). Then one key records a judgement (#47):
 #
 #   1 looks right   2 looks wrong   3 unsure
+#   s skips the page for now: not reviewed this time, still to review
 #   c types a comment of any length, then asks for a rating (Enter: none)
 #   b goes back one page   q quits
 #
 # Each judgement is appended as one TSV line to $DEMO_FEEDBACK, by default
 # /tmp/kmscon-demo/feedback.tsv; feedback.sh prints it. A summary page with
-# this pass's ratings ends the run, and r there goes through the pages again
-# as a new run.
+# this pass's ratings ends the run, naming the pages skipped, and r there goes
+# through the pages again as a new run.
 #
 # It runs in any terminal as any user and needs nothing from the dev build, so
 # the same pages can be compared on a dev-build VT and a stock kmscon VT.
@@ -211,6 +212,8 @@ read_comment() {
 	note=$(printf '%s\n' "${lines[@]}")
 }
 
+ask_keys='1 right  2 wrong  3 unsure  s skip for now  c comment  b back  q quit'
+
 # Shows page I with its footer and reads keys until one rates the page, goes
 # back or quits; go says which. When the footer does not fit below the page,
 # it gets a screen of its own.
@@ -231,13 +234,14 @@ ask() {
 		fi
 		printf '%s\n' "${foot[@]}"
 		drain
-		prompt '1 right  2 wrong  3 unsure  c comment  b back  q quit'
+		prompt "$ask_keys"
 		while :; do
 			read_key
 			case $key in
 			1) rate "$i" right; go=next; return ;;
 			2) rate "$i" wrong; go=next; return ;;
 			3) rate "$i" unsure; go=next; return ;;
+			s | S) rate "$i" skipped; go=next; return ;;
 			c | C)
 				read_comment
 				# An empty comment changes nothing: the page again.
@@ -249,7 +253,7 @@ ask() {
 			b | B) [ "$i" -eq 0 ] || { go=back; return; } ;;
 			q | Q) go=quit; return ;;
 			esac
-			prompt '1 right  2 wrong  3 unsure  c comment  b back  q quit'
+			prompt "$ask_keys"
 		done
 	done
 }
@@ -257,22 +261,23 @@ ask() {
 # Records the comment of page I with the one-key rating that follows it.
 ask_rating() {
 	drain
-	prompt '1 right  2 wrong  3 unsure  Enter no rating'
+	prompt '1 right  2 wrong  3 unsure  s skip for now  Enter no rating'
 	while :; do
 		read_key
 		case $key in
 		1) rate "$1" right; return ;;
 		2) rate "$1" wrong; return ;;
 		3) rate "$1" unsure; return ;;
+		s | S) rate "$1" skipped; return ;;
 		'') rate "$1" none; return ;;
 		esac
-		prompt '1 right  2 wrong  3 unsure  Enter no rating'
+		prompt '1 right  2 wrong  3 unsure  s skip for now  Enter no rating'
 	done
 }
 
 # The answers of this pass, then r or q; returns 0 for r.
 summary() {
-	local i id nt
+	local i id nt skipped=0
 	clear_screen
 	printf '\033[1mkmscon fork: local VT demo, answers of this pass\033[0m\n\n'
 	for i in "${!sections[@]}"; do
@@ -280,8 +285,10 @@ summary() {
 		nt=${notes[$i]:-}
 		nt=${nt//$'\n'/ / }
 		printf '  %-22s %-7s %s\n' "$id" "${rating[$i]:--}" "${nt:0:$((cols - 35))}"
+		[ "${rating[$i]:-}" != skipped ] || skipped=$((skipped + 1))
 	done
 	echo
+	[ "$skipped" -eq 0 ] || printf '  skipped: %d, still to review\n\n' "$skipped"
 	if [ -n "$recording" ]; then
 		printf '  recorded as run %s in\n  %s\n' "$run" "$feedback"
 		printf '  fork/demo/feedback.sh prints them\n\n'
@@ -329,8 +336,8 @@ printf '  running   %s\n' "${DEMO_LABEL:-unlabelled (DEMO_LABEL not set; run-vt.
 printf '  terminal  TERM=%s, %s rows by %s columns\n\n' "${TERM:-unset}" "$rows" "$cols"
 printf '  Below each page: what a right and a wrong screen look like.\n'
 if [ -z "$noprompt" ]; then
-	printf '  Then one key: 1 looks right, 2 looks wrong, 3 unsure,\n'
-	printf '  c types a comment first, b goes back a page, q quits.\n'
+	printf '  Then one key: 1 looks right, 2 looks wrong, 3 unsure, s skips it for now\n'
+	printf '  (still to review), c types a comment first, b goes back a page, q quits.\n'
 	if [ -n "$recording" ]; then
 		printf '  Answers go to %s.\n' "$feedback"
 	else

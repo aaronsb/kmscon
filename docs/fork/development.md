@@ -241,7 +241,12 @@ A change that adds something visible adds its demo section in the same PR. [demo
 
 The operator asked to look at changes live before they merge: "I'd still like to be involved in a visual review before merge (viewing live in the vtty - not the bad apple demo but our regular feedback review)". The review is the regular demo feedback run (`make vt-demo` with the PR's build staged), not the showcase (#75); the run's answers are read back, and a page rated wrong or unsure is resolved before the merge. The PR body names the demo sections to look at and what right and wrong look like.
 
-Which PRs take it is the steering session's reading of those words, not yet ruled on by the operator: every PR that can change what appears on a VT. That includes kmscon's render, font and video code, libtsm changes to screen behaviour, and refactors meant to draw the same pixels, where regressions hide. PRs that cannot change what appears merge after code review alone: libtsm code kmscon does not call yet (the ADR-103 image store and sixel decoder before they are wired in), the conformance harness and other tooling, and documentation. The first PR that puts such work on screen takes the review.
+Asked how far the review reaches, the operator answered: "I think having a comprehensive review is valuable. we should have some way to pass a page (an I don't know but more like "I'm not paying attention to this at this time")". The demo's `s` key is that pass: the page is recorded as `skipped`, apart from unsure.
+
+How the steering session applies that answer, its own reading rather than the operator's words:
+- A skipped page does not block the merge.
+- The PR body records which pages were skipped, and the next visual review's PR body names them among the sections to look at. The PR body carries them from one review to the next: `feedback.sh` and the end of `make vt-demo` list the skipped pages of one run only.
+- "Comprehensive" means every PR that can change what appears on a VT takes the review. That includes kmscon's render, font and video code, libtsm changes to screen behaviour, and refactors meant to draw the same pixels, where regressions hide. PRs that cannot change what appears merge after code review alone: libtsm code kmscon does not call yet (the ADR-103 image store and sixel decoder before they are wired in), the conformance harness and other tooling, and documentation. The first PR that puts such work on screen takes the review.
 
 ### Changes the operator decides
 

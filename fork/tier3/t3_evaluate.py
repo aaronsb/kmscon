@@ -13,7 +13,7 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 # vt-restore is compared with the last screen's golden, and its golden is the
 # cjk one (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
-           "boxdraw", "blocks", "wide-margin", "combining", "emoji", "cjk"]
+           "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "cjk"]
 # Every case of a variant: each screen, then the VT switch (a check without a
 # golden) and the restore after it (compared with the last screen's golden).
 CASES = SCREENS + ["vt-switch", "vt-restore"]

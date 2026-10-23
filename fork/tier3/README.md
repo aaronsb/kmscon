@@ -57,16 +57,15 @@ Upstream reads every key of `guest/kmscon.conf` and logs its character cell, so 
 
 ## Variants
 
-| Variant | Device | kmscon path | Capture |
-|---|---|---|---|
 | Variant | Machine | Device | kmscon path | Capture |
 |---|---|---|---|---|
 | `2d-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga`, EDID 1280x800 | drm2d + bbulk | QMP `screendump` (PPM) |
 | `2d-7680x2160` | 4 vCPUs, 4096 MB | `virtio-vga`, EDID 7680x2160, `max_hostmem=1G` | drm2d + bbulk | QMP `screendump` (PPM) |
 | `2d-1366x768-potato` | 1 vCPU, 512 MB | `virtio-vga`, EDID 1366x768 | drm2d + bbulk | QMP `screendump` (PPM) |
+| `2d-7680x2160-font32` | 4 vCPUs, 4096 MB | as `2d-7680x2160`, with `guest/kmscon-font32.conf`: 32 points, a 19x38 cell | drm2d + bbulk | QMP `screendump` (PPM) |
 | `gl-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga-gl` with `-display egl-headless` (virgl on the host's render node, `T3_RENDERNODE`, default `/dev/dri/renderD128`) | drm3d + gltex (`hwaccel`) | VNC over a unix socket |
 
-`2d-1366x768-potato`, the potato computer, is ADR-103's small machine (ADR-103 names it `2d-1366x768-hamster`; renamed at the operator's request, noted at the end of ADR-103): one vCPU and 512 MB at a common laptop size, so a regression on small machines shows in the default run. Its vCPU is a core of the host, so it bounds parallelism and memory; it does not reproduce slow hardware. `make tier3` runs the 2D variants in the order 1280x800, 7680x2160, potato, so with `JOBS=2` the longest starts first.
+`2d-1366x768-potato`, the potato computer, is ADR-103's small machine (ADR-103 names it `2d-1366x768-hamster`; renamed at the operator's request, noted at the end of ADR-103): one vCPU and 512 MB at a common laptop size, so a regression on small machines shows in the default run. Its vCPU is a core of the host, so it bounds parallelism and memory; it does not reproduce slow hardware. `2d-7680x2160-font32` runs every screen at a 19x38 cell, near the 20x40 of Monoid at 30 on the operator's display; every other variant runs a 10x19 cell. The sixel page sizes its pictures from the cell, so its layout is judged at two cell sizes. `make tier3` runs the 2D variants in the order 1280x800, 7680x2160, potato, 7680x2160-font32, so with `JOBS=2` the longest starts first.
 
 Three findings shaped this table:
 
@@ -76,7 +75,7 @@ Three findings shaped this table:
 
 ## Goldens, tolerances and masks
 
-Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 42 come to about 2.4 MB, the 7680x2160 ones included).
+Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 63 come to about 4.5 MB, the 7680x2160 ones included).
 
 Comparison is exact unless a tolerance sidecar `golden/<variant>/<screen>.tol` sits beside the golden. It holds `key=value` lines; `#` starts a comment:
 

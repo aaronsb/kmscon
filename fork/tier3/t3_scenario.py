@@ -46,6 +46,17 @@ VARIANTS = {
         "cpus": 4,
         "memory_mb": 4096,
     },
+    # The 7680x2160 display with DejaVu Sans Mono at 32 points, a 19x38 cell,
+    # near the 20x40 of Monoid at 30 the operator runs: pictures sized from
+    # the cell (sixel) are checked at a cell other than the 10x19 of the rest.
+    "2d-7680x2160-font32": {
+        "device": "virtio-vga,xres=7680,yres=2160,edid=on,max_hostmem=1G",
+        "display": "none",
+        "conf": "kmscon-font32.conf",
+        "renderer": "bbulk",
+        "cpus": 4,
+        "memory_mb": 4096,
+    },
     "gl-1280x800": {
         "device": "virtio-vga-gl,xres=1280,yres=800,edid=on",
         "display": "egl-headless,rendernode=%s"
@@ -60,10 +71,11 @@ VARIANTS = {
 
 # What `t3.py run` runs when no variant is named, in the order workers take
 # them: with JOBS=2 the longest, 2d-7680x2160, starts at once, and the
-# potato follows 2d-1280x800. gl-1280x800 runs only when named
-# (`make tier3-gl`) until its intermittent black screen is resolved:
-# aaronsb/kmscon#17.
-DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160", "2d-1366x768-potato"]
+# potato and then 2d-7680x2160-font32 follow 2d-1280x800 as workers free.
+# gl-1280x800 runs only when named (`make tier3-gl`) until its intermittent
+# black screen is resolved: aaronsb/kmscon#17.
+DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160", "2d-1366x768-potato",
+                    "2d-7680x2160-font32"]
 
 # Seconds a screen may take to draw; a benchmark scrolls for longer.
 SCREEN_TIMEOUT = 60

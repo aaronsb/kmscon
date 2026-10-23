@@ -7,7 +7,9 @@
 #   sudo fork/demo/run-vt.sh [--dry-run] [N] [-- kmscon-option...]
 #
 # N is the VT, 2-12, default 3. Options after -- go to kmscon, for display
-# settings of one machine (--mode=..., --no-use-original-mode, --font-size=...).
+# settings of one machine (--mode=..., --no-use-original-mode, --font-size=...);
+# options that would move kmscon to another VT, replace the demo session or its
+# config, or let it switch VTs are refused.
 # --dry-run prints every command and runs none; it needs no root.
 #
 # kmscon loads its backend modules from a path compiled in (/usr/lib/kmscon)
@@ -62,8 +64,16 @@ run() {
 	[ -n "$dry" ] || "$@"
 }
 
-[[ $vt =~ ^[0-9]+$ ]] && [ "$vt" -ge 2 ] && [ "$vt" -le 12 ] ||
+[[ $vt =~ ^[1-9][0-9]*$ ]] && [ "$vt" -ge 2 ] && [ "$vt" -le 12 ] ||
 	die "VT must be a number from 2 to 12, not '$vt'"
+# The checks below are made for VT $vt with the demo as the session; these
+# options, after the fixed ones, would override that.
+for o in "${extra[@]}"; do
+	case $o in
+	-- | --login | --login=* | --vt | --vt=* | --configdir | --configdir=* | --switchvt | --switchvt=* | -[lc]* | -[!-]*[lc]*)
+		die "kmscon option '$o' is refused: the VT, the session, the config and --no-switchvt are fixed" ;;
+	esac
+done
 [ -n "$dry" ] || [ "$(id -u)" -eq 0 ] || die "run as root, through sudo"
 [ -x "$kmscon" ] && [ -d "$modules" ] || die "nothing staged in $stage: run make demo first"
 [ -d "$moduledir" ] || die "$moduledir does not exist, so the staged modules have nowhere to be mounted"
@@ -103,8 +113,11 @@ fi
 
 child=
 # shellcheck disable=SC2329 # invoked by the EXIT trap
+# A second signal, or a closed terminal or pipe, must not cut it short before
+# the unit is started again, so it ignores them while it runs.
 restore() {
-	trap - EXIT INT TERM HUP
+	trap - EXIT
+	trap '' INT TERM HUP PIPE
 	if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
 		run kill -TERM "$child" || true
 		wait "$child" 2>/dev/null || true

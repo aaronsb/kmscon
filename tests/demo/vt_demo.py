@@ -9,16 +9,20 @@ lines and appends answers to a feedback file in a temporary directory.
 
 import argparse
 import os
+import re
+import stat
 import subprocess
 import sys
 import tempfile
 
 FAKE_LOGINCTL = """#!/bin/sh
 # list-sessions prints one line per session; show-session -p VTNr gives its VT.
+# A session in $GONE ends after the list, so show-session fails for it.
 case $1 in
-list-sessions) for s in $SESSIONS; do echo "c${s} 1000 tester seat0"; done ;;
+list-sessions) for s in $SESSIONS $GONE; do echo "c${s} 1000 tester seat0"; done ;;
 show-session)
 	for id; do :; done
+	case " $GONE " in *" ${id#c} "*) echo "Failed to get session" >&2; exit 1 ;; esac
 	case "$*" in
 	*VTNr*) echo "${id#c}" ;;
 	*) printf 'tester\\ntty\\n' ;;
@@ -57,7 +61,7 @@ class Case:
         self.feedback = os.path.join(tmp, "out", "feedback.tsv")
         self.args_out = os.path.join(tmp, "args")
 
-    def run(self, args, active="tty7", sessions=(), dry=True, **fake):
+    def run(self, args, active="tty7", sessions=(), dry=True, gone=(), **fake):
         with open(self.active, "w") as f:
             f.write(active + "\n")
         env = dict(os.environ)
@@ -69,13 +73,14 @@ class Case:
             VT_DEMO_FEEDBACK=self.feedback,
             VT_DEMO_DRY_RUN="1" if dry else "",
             SESSIONS=" ".join(str(s) for s in sessions),
+            GONE=" ".join(str(s) for s in gone),
             FEEDBACK=self.feedback,
             ARGS_OUT=self.args_out,
-            **fake,
         )
+        env.update(fake)
         return subprocess.run(
             ["bash", os.path.join(self.root, "fork/demo/vt-demo.sh"), *args],
-            env=env, capture_output=True, text=True, timeout=30,
+            env=env, capture_output=True, text=True, timeout=30, cwd=self.tmp,
         )
 
 
@@ -90,6 +95,16 @@ def check(name, ok, detail=""):
             print("      " + detail.replace("\n", "\n      "))
 
 
+def read(path):
+    with open(path) as f:
+        return f.read()
+
+
+def esc(text):
+    """APPEND's form: printf %b turns these escapes back."""
+    return text.replace("\t", "\\t").replace("\n", "\\n")
+
+
 def picked(p):
     """The VT the dry run would hand to run-vt.sh."""
     for l in p.stdout.splitlines():
@@ -101,7 +116,7 @@ def picked(p):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True)
-    root = ap.parse_args().root
+    root = os.path.abspath(ap.parse_args().root)
 
     with tempfile.TemporaryDirectory() as tmp:
         c = Case(root, tmp)
@@ -123,6 +138,25 @@ def main():
               p.returncode != 0 and "VT 4 refused: logind session c4" in p.stderr, p.stderr)
         p = c.run(["13"])
         check("VT= out of range is refused", p.returncode != 0 and "2 to 12" in p.stderr, p.stderr)
+        p = c.run(["05"])
+        check("VT= with a leading zero is refused", p.returncode != 0 and "not '05'" in p.stderr, p.stderr)
+
+        # make's path: VT and DEMO_ARGS arrive in the environment and are split
+        # like shell words, with nothing run or expanded.
+        p = c.run([], VT_DEMO_VT="4",
+                  VT_DEMO_ARGS="""--font-name="Monoid Nerd Font Mono" --x='a b' c\\ d ; touch planted $HOME""")
+        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
+        check("VT_DEMO_VT and VT_DEMO_ARGS are taken from the environment",
+              p.returncode == 0 and picked(p) == "4"
+              and cmd.endswith("4 -- --font-name=Monoid\\ Nerd\\ Font\\ Mono --x=a\\ b c\\ d \\; touch planted \\$HOME")
+              and not os.path.exists(os.path.join(tmp, "planted")), p.stdout + p.stderr)
+        p = c.run([], VT_DEMO_ARGS="--font-name=\"Monoid")
+        check("DEMO_ARGS with an open quote is refused",
+              p.returncode != 0 and "cannot be split" in p.stderr, p.stderr)
+
+        p = c.run([], active="tty7", sessions=[6], gone=[5])
+        check("a session gone between list and query is skipped",
+              p.returncode == 0 and picked(p) == "5", p.stdout + p.stderr)
 
         # Without VT=, the first free of 5, 6, 4, 3, 2.
         for active, sessions, want in (
@@ -154,7 +188,7 @@ def main():
         log = ("drm_shared: test-only atomic commit failed, -22\\n" * 2
                + "vt_timeout: failed to wake up after 20 retries\\n")
         p = c.run(["6", "--", "--font-name=Monoid Nerd Font Mono"], dry=False,
-                  APPEND=append.replace("\t", "\\t").replace("\n", "\\n"), LOG=log)
+                  APPEND=esc(append), LOG=log)
         out = p.stdout
         check("run exits 0", p.returncode == 0, out + p.stderr)
         check("summary is this run's, by its run id",
@@ -165,22 +199,61 @@ def main():
               "health: 2 'atomic commit failed', 1 'vt_timeout'" in out, out)
         logs = [l.split(": ", 1)[1] for l in out.splitlines() if l.startswith("kmscon log: ")]
         check("kmscon log kept at the printed path",
-              len(logs) == 1 and "vt_timeout" in open(logs[0]).read(), out)
+              len(logs) == 1 and "vt_timeout" in read(logs[0]), out)
         with open(c.args_out) as f:
             args = f.read().splitlines()
         check("run-vt.sh gets N -- options, spaces kept",
               args == ["6", "--", "--font-name=Monoid Nerd Font Mono"], repr(args))
 
+        check("the log is new, with a random name and mode 0600",
+              len(logs) == 1 and re.search(r"/vt-demo-\d{8}T\d{6}-tty6-\w{6}\.log$", logs[0])
+              and stat.S_IMODE(os.stat(logs[0]).st_mode) == 0o600, out)
+
         p = c.run(["6"], dry=False, STATUS="1", APPEND="")
         check("run-vt.sh failing fails the run",
-              p.returncode != 0 and "exited with status 1" in p.stderr, p.stdout + p.stderr)
-        p = c.run(["6"], dry=False, APPEND=line("20261022T110000-9", "stock x", "10-sgr", "right")
-                  .replace("\t", "\\t").replace("\n", "\\n"))
+              p.returncode == 1 and "exited with status 1" in p.stderr, p.stdout + p.stderr)
+        p = c.run(["6"], dry=False, STATUS="130", APPEND="")
+        check("run-vt.sh's 130 (Ctrl-C) is kept", p.returncode == 130, p.stdout + p.stderr)
+        p = c.run(["6"], dry=False, APPEND=esc(line("20261022T110000-9", "stock x", "10-sgr", "right")))
         check("no dev-build answers fails the run",
               p.returncode != 0 and "no answers from this run" in p.stderr, p.stdout + p.stderr)
         p = c.run(["6"], dry=False, APPEND="")
         check("a clean log reports zero",
               "health: 0 'atomic commit failed', 0 'vt_timeout'" in p.stdout, p.stdout)
+
+        # The log's directory: created 0700, never a symlink or someone else's.
+        new = os.path.join(tmp, "fresh", "feedback.tsv")
+        p = c.run(["6"], dry=False, VT_DEMO_FEEDBACK=new, FEEDBACK=new,
+                  APPEND=esc(line("20261022T120000-5", "dev build x", "10-sgr", "right")))
+        check("a missing log directory is created with mode 0700",
+              p.returncode == 0 and stat.S_IMODE(os.stat(os.path.dirname(new)).st_mode) == 0o700,
+              p.stdout + p.stderr)
+        os.symlink(os.path.join(tmp, "out"), os.path.join(tmp, "link"))
+        link = os.path.join(tmp, "link", "feedback.tsv")
+        p = c.run(["6"], dry=False, VT_DEMO_FEEDBACK=link, FEEDBACK=link, APPEND="")
+        check("a symlinked log directory is refused",
+              p.returncode != 0 and "is a symlink, or not a directory of yours" in p.stderr
+              , p.stderr)
+        if os.getuid() != 0:
+            p = c.run(["6"], dry=False, VT_DEMO_FEEDBACK="/usr/feedback.tsv", APPEND="")
+            check("a log directory owned by someone else is refused",
+                  p.returncode != 0 and "/usr is a symlink, or not a directory of yours" in p.stderr,
+                  p.stderr)
+
+        # run-vt.sh refuses kmscon options that would override what it checked.
+        run_vt = os.path.join(root, "fork/demo/run-vt.sh")
+        for opt in ("--", "-l", "-vl", "--login", "--login=/bin/sh", "--vt", "--vt=tty2",
+                    "--configdir=/tmp", "-c", "--switchvt"):
+            p = subprocess.run(["bash", run_vt, "--dry-run", "3", "--", opt],
+                               capture_output=True, text=True, timeout=30)
+            check(f"run-vt.sh refuses {opt}",
+                  p.returncode != 0 and f"kmscon option '{opt}' is refused" in p.stderr, p.stderr)
+        for opt in ("--font-size=30", "--no-switchvt", "--mode=7680x2160"):
+            p = subprocess.run(["bash", run_vt, "--dry-run", "3", "--", opt],
+                               capture_output=True, text=True, timeout=30)
+            check(f"run-vt.sh lets {opt} through", "is refused" not in p.stderr, p.stderr)
+        p = subprocess.run(["bash", run_vt, "--dry-run", "05"], capture_output=True, text=True, timeout=30)
+        check("run-vt.sh refuses VT 05", p.returncode != 0 and "not '05'" in p.stderr, p.stderr)
 
     if failures:
         print(f"{len(failures)} failed")

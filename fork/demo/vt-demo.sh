@@ -6,6 +6,9 @@
 #
 #   vt-demo.sh [N] [-- KMSCON-OPTION...]
 #
+# make passes VT and DEMO_ARGS in the environment, as VT_DEMO_VT and
+# VT_DEMO_ARGS, so neither is ever recipe text; VT_DEMO_ARGS is split into
+# words by xargs, which honours quotes and backslashes and expands nothing.
 # Without N it takes the first free VT of 5, 6, 4, 3 and 2. A VT is free when
 # it is not on screen (/sys/class/tty/tty0/active) and no logind session is on
 # it; run-vt.sh refuses the same VTs again before it stops anything.
@@ -26,12 +29,17 @@ die() {
 	exit 1
 }
 
-vt=
+vt=${VT_DEMO_VT:-}
 extra=()
+if [ -n "${VT_DEMO_ARGS:-}" ]; then
+	printf '%s' "$VT_DEMO_ARGS" | xargs -r printf '%s\0' >/dev/null ||
+		die "DEMO_ARGS cannot be split into words: $VT_DEMO_ARGS"
+	mapfile -d '' -t extra < <(printf '%s' "$VT_DEMO_ARGS" | xargs -r printf '%s\0')
+fi
 while [ $# -gt 0 ]; do
 	case $1 in
 	-h | --help) usage ;;
-	--) shift; extra=("$@"); break ;;
+	--) shift; extra+=("$@"); break ;;
 	*) [ -z "$vt" ] || usage; vt=$1 ;;
 	esac
 	shift
@@ -51,14 +59,16 @@ feedback=${VT_DEMO_FEEDBACK:-/tmp/kmscon-demo/feedback.tsv}
 active=$(cat "$active_file") || die "cannot read $active_file, so the VT on screen is unknown"
 active=${active#tty}
 
-# One "VT session (name type)" entry per logind session that sits on a VT.
+# One "VT session (name type)" entry per logind session that sits on a VT. A
+# session that ends between the list and the query is gone, so it is skipped.
 sessions=()
 list=$("$loginctl" list-sessions --no-legend) || die "$loginctl list-sessions failed"
 while read -r s _; do
 	[ -n "$s" ] || continue
-	n=$("$loginctl" show-session -p VTNr --value "$s")
+	n=$("$loginctl" show-session -p VTNr --value "$s" 2>/dev/null) || continue
 	[ -n "$n" ] && [ "$n" != 0 ] || continue
-	sessions+=("$n $s ($("$loginctl" show-session -p Name -p Type --value "$s" | paste -sd' '))")
+	what=$("$loginctl" show-session -p Name -p Type --value "$s" 2>/dev/null | paste -sd' ') || continue
+	sessions+=("$n $s ($what)")
 done <<<"$list"
 
 # Prints why VT $1 is refused, or nothing when it is free.
@@ -71,7 +81,7 @@ why_busy() {
 }
 
 if [ -n "$vt" ]; then
-	[[ $vt =~ ^[0-9]+$ ]] && [ "$vt" -ge 2 ] && [ "$vt" -le 12 ] ||
+	[[ $vt =~ ^[1-9][0-9]*$ ]] && [ "$vt" -ge 2 ] && [ "$vt" -le 12 ] ||
 		die "VT must be a number from 2 to 12, not '$vt'"
 	why=$(why_busy "$vt")
 	[ -z "$why" ] || die "VT $vt refused: $why"
@@ -93,7 +103,8 @@ fi
 
 cmd=("$run_vt" "$vt" -- "${extra[@]}")
 [ -z "$sudo" ] || cmd=("$sudo" "${cmd[@]}")
-log=${feedback%/*}/vt-demo-$(date +%Y%m%dT%H%M%S)-tty$vt.log
+dir=${feedback%/*}
+log=$dir/vt-demo-$(date +%Y%m%dT%H%M%S)-tty$vt-XXXXXX.log
 
 banner() {
 	local rule
@@ -113,19 +124,24 @@ fi
 
 # Ask for the password, if sudo wants one, before the operator leaves for the VT.
 [ -z "$sudo" ] || "$sudo" -v || die "sudo failed"
-[ -d "${feedback%/*}" ] || mkdir -m 0755 -- "${feedback%/*}" || die "cannot create ${feedback%/*}"
-: >"$log" || die "cannot write $log"
+# The log goes only in a directory of the invoking user's own, under a new
+# name mktemp creates (never a file already there).
+[ -e "$dir" ] || [ -L "$dir" ] || mkdir -m 0700 -- "$dir" || die "cannot create $dir"
+[ ! -L "$dir" ] && [ -d "$dir" ] && [ -O "$dir" ] ||
+	die "$dir is a symlink, or not a directory of yours; remove it and run again"
+log=$(mktemp --suffix=.log "${log%.log}") || die "cannot create a log in $dir"
 
 # Answers appended from here on belong to this run.
 before=0
 [ ! -f "$feedback" ] || before=$(stat -c %s "$feedback")
 
 banner
-# Ctrl-C here reaches run-vt.sh, whose trap restores the VT; this script and
-# tee stay to log that and print the summary.
+# Ctrl-C, a closed terminal or SIGTERM reaches run-vt.sh, whose trap restores
+# the VT. tee ignores them and keeps reading, so the restore never writes into
+# a closed pipe; on Ctrl-C this script stays to print the summary.
 trap 'echo "vt-demo: interrupted" >&2' INT
 set +e
-"${cmd[@]}" 2>&1 | (trap '' INT; exec tee "$log")
+"${cmd[@]}" 2>&1 | (trap '' INT HUP TERM; exec tee -p -a "$log")
 status=${PIPESTATUS[0]}
 set -e
 trap - INT
@@ -154,5 +170,8 @@ echo
 echo
 echo "results: $(readlink -m "$feedback")"
 
-[ "$status" -eq 0 ] || die "run-vt.sh exited with status $status: kmscon failed or the demo was cut short"
+if [ "$status" -ne 0 ]; then
+	echo "vt-demo: run-vt.sh exited with status $status: kmscon failed or the demo was cut short" >&2
+	exit "$status"
+fi
 [ -n "$run" ] || die "no answers from this run in $feedback: the demo did not run, or q was pressed before any page was rated"

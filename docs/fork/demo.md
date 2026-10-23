@@ -23,9 +23,9 @@ It asks for sudo's password first if sudo wants one, then prints the VT to switc
 ================================================================
 ```
 
-Switch to that VT, judge each page with one key (below), and press q to finish. The command blocks until then. When the demonstration ends, kmscon exits, the stock console starts again on that VT, and the command prints a health check of kmscon's log, the path of the full log, this run's answers as `fork/demo/feedback.sh --run` prints them, and the path of the results file. It exits non-zero when kmscon failed or nothing was recorded.
+Switch to that VT, judge each page with one key (below), and press q to finish. The command blocks until then. When the demonstration ends, kmscon exits, the stock console starts again on that VT, and the command prints a health check of kmscon's log, the path of the full log, this run's answers as `fork/demo/feedback.sh --run` prints them, and the path of the results file. It exits non-zero when kmscon failed (with `run-vt.sh`'s status, 130 after Ctrl-C) or nothing was recorded.
 
-`DEMO_ARGS` is split by the shell, so a value with spaces is quoted inside it, as the font name is above. `VT_DEMO_DRY_RUN=1 make vt-demo` builds and stages, picks the VT and prints the `run-vt.sh` command without running it.
+`VT` and `DEMO_ARGS` reach the script through the environment, never as recipe text. `DEMO_ARGS` is split into words the way `xargs` splits them: quotes and backslashes are honoured and nothing is expanded or run, so a value with spaces is quoted inside it, as the font name is above. `VT_DEMO_DRY_RUN=1 make vt-demo` builds and stages, picks the VT and prints the `run-vt.sh` command without running it.
 
 ### By hand
 
@@ -70,7 +70,7 @@ Display settings belong to one machine, so they are not in `fork/demo/kmscon.con
 1. Runs `make demo`.
 2. Picks the VT: `VT=` if given, else the first free one of 5, 6, 4, 3 and 2. A VT is free when it is not on screen (`/sys/class/tty/tty0/active`) and no logind session is on it (`loginctl`). It refuses a `VT=` that is not free, and when no VT is free it fails naming each VT and why it was refused. `run-vt.sh` checks the same again before it stops anything.
 3. Reads the desktop's VT, the one on screen at the start, for the key back.
-4. Runs `sudo -v`, prints the line naming the VT, and runs `sudo fork/demo/run-vt.sh N -- DEMO_ARGS` in the foreground, its output and kmscon's log copied to `/tmp/kmscon-demo/vt-demo-<time>-ttyN.log`. Ctrl-C in the terminal reaches `run-vt.sh`, whose trap stops kmscon and restarts the stock console; the summary still follows.
+4. Runs `sudo -v`, prints the line naming the VT, and runs `sudo fork/demo/run-vt.sh N -- DEMO_ARGS` in the foreground, its output and kmscon's log copied to a new file, `/tmp/kmscon-demo/vt-demo-<time>-ttyN-<random>.log` (mode 0600). `/tmp/kmscon-demo` is created with mode 0700 when it is missing, and refused when it is a symlink or another user's. Ctrl-C, a closed terminal or SIGTERM reaches `run-vt.sh`, whose trap stops kmscon and restarts the stock console; the copy (`tee`) ignores those signals, so the restore never writes into a closed pipe. After Ctrl-C the summary still follows.
 5. Counts `atomic commit failed` and `vt_timeout` lines in that log, the stock-kmscon freeze signature (see "Seen on hardware").
 6. Finds this run by its run id: the last run of a `dev build` label among the answers appended to `/tmp/kmscon-demo/feedback.tsv` since step 4, so a stock run on another VT writing to the same file meanwhile is not taken for it. It prints that run with `feedback.sh --run`.
 
@@ -78,9 +78,9 @@ The script is `fork/demo/vt-demo.sh [N] [-- KMSCON-OPTION...]`; `tests/demo/vt_d
 
 ## What `run-vt.sh` does
 
-1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists.
+1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists. It also refuses kmscon options that would override what it checked or fixed: `--`, `-l`/`--login`, `--vt`, `-c`/`--configdir` and `--switchvt`.
 2. Refuses the VT on screen (`fgconsole`) and any VT a logind session is on, the desktop's included: stopping the unit there would end that session.
-3. Records whether `kmsconvt@ttyN.service` is active and stops it. A trap on exit, Ctrl-C, SIGTERM and SIGHUP stops kmscon with SIGTERM if it still runs, waits for it, and starts the unit again if it was active, so the stock console comes back after a normal end, an interrupt or a kmscon failure.
+3. Records whether `kmsconvt@ttyN.service` is active and stops it. A trap on exit, Ctrl-C, SIGTERM and SIGHUP stops kmscon with SIGTERM if it still runs, waits for it, and starts the unit again if it was active, so the stock console comes back after a normal end, an interrupt or a kmscon failure. While it restores, it ignores Ctrl-C, SIGTERM, SIGHUP and SIGPIPE, so a second Ctrl-C or a closed terminal cannot cut it short before the unit is started.
 4. Prints the steps and the manual restore command.
 5. Runs the staged kmscon on VT N with `--no-switchvt --oneshot`, the demo config and the demonstration as its session, in the background so that only the script's trap stops it, and waits for it.
 

@@ -25,10 +25,12 @@ demo: pkg ## Build the package and stage it in fork/build/demo-root for fork/dem
 	@echo "staged in $(DEMO_ROOT): $$(cat $(DEMO_ROOT)/BUILD)"
 	@echo "run: make vt-demo, or sudo fork/demo/run-vt.sh 3   (see docs/fork/demo.md)"
 
-# Blocks until the demo ends. DEMO_ARGS is split by the shell, so a value with
-# spaces is quoted inside it: DEMO_ARGS='--font-name="Monoid Nerd Font Mono"'.
-VT ?=
-DEMO_ARGS ?=
+# Blocks until the demo ends. VT and DEMO_ARGS reach the script through the
+# environment, unexpanded, never as recipe text. DEMO_ARGS is split into words
+# with quotes honoured, so a value with spaces is quoted inside it:
+# DEMO_ARGS='--font-name="Monoid Nerd Font Mono"'.
 .PHONY: vt-demo
+vt-demo: export VT_DEMO_VT = $(value VT)
+vt-demo: export VT_DEMO_ARGS = $(value DEMO_ARGS)
 vt-demo: demo ## Build, stage and run the demo on a free VT, then print its answers (VT=N, DEMO_ARGS='...')
-	fork/demo/vt-demo.sh $(VT) -- $(DEMO_ARGS)
+	fork/demo/vt-demo.sh

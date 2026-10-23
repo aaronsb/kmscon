@@ -11,9 +11,8 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 # Screens drawn by `t3 NAME` in the guest (fork/tier3/guest/screens/NAME.sh),
 # in the local VT demo's order (fork/demo/sections), then sixel-bound and
 # ADR-103's benchmark scenarios, which have no demo page, except that cjk
-# stays last: vt-restore
-# is compared with the last screen's golden, and its golden is the cjk one
-# (test_t3.py holds the two together).
+# stays last: vt-restore is compared with the last screen's golden, and its
+# golden is the cjk one (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
            "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "sixel",
            "sixel-bound", "s1-scroll", "cjk"]

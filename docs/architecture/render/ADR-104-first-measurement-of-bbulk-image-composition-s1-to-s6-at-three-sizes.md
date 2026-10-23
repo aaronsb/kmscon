@@ -164,18 +164,20 @@ Against ADR-103's criterion, that kmscon is not the bottleneck (its CPU time per
 
 The same pattern at 320x180 in every pane of a 2x2 and a 3x3 grid, on a tmux server whose config names kmscon's sixel support: tmux turns sixel on for a client only through `terminal-features` (`set -as terminal-features ",*:sixel"`) and draws a "SIXEL IMAGE" placeholder otherwise, so with TERM=kmscon and no such line no picture reaches kmscon. With it, every grid played to the end, and the screen tmux leaves holds no pixel of the video at any variant.
 
-| Variant | Grid | mpv shown / dropped, all panes | Presented per second | Render CPU per frame, median | kmscon's CPU, share of a core |
-|---|---|---|---|---|---|
-| 2d-1280x800 | 2x2 | 600 / 0 | 62.4 | 0.85 ms | 13.2% |
-| 2d-1280x800 | 3x3 | 1350 / 0 | 62.2 | 0.90 ms | 15.1% |
-| 2d-1366x768-potato | 2x2 | 367 / 233 | 60.6 | 0.85 ms | 9.2% |
-| 2d-1366x768-potato | 3x3 | 722 / 622 | 48.4 | 0.89 ms | 7.5% |
-| 2d-7680x2160 | 2x2 | 128 / 466 | 28.9 | 11.5 ms | 49.6% |
-| 2d-7680x2160 | 3x3 | 278 / 1065 | 39.4 | 11.6 ms | 56.4% |
-| 2d-7680x2160-font32 | 2x2 | 119 / 475 | 32.1 | 9.3 ms | 40.6% |
-| 2d-7680x2160-font32 | 3x3 | 281 / 1057 | 50.3 | 9.5 ms | 57.9% |
+From the run at `33e5cd9`, where the tmux client runs under `script`, which copies its output to a pipe that counts the sixel pictures tmux sends to kmscon (the grids fail when there are none: with tmux drawing placeholders kmscon still presented 75 frames a second at 99.75% damage, so the render timer cannot tell):
 
-tmux decodes every pane's pictures and draws the grid again on kmscon, so mpv's drops count against tmux as much as kmscon, and the grids carry no rate verdict. At 1280x800 nothing is dropped. On the potato kmscon uses under a tenth of the one vCPU while the panes drop frames, so the drops are the programs sharing that vCPU. At 7680x2160 kmscon uses about half a core and presents 29 to 50 frames a second at 9 to 12 ms each, under the 16.7 ms frame interval; most frames are dropped before they reach it.
+| Variant | Grid | mpv shown / dropped, all panes | Sixel pictures tmux sent | Presented per second | Render CPU per frame, median | kmscon's CPU, share of a core |
+|---|---|---|---|---|---|---|
+| 2d-1280x800 | 2x2 | 600 / 0 | 601 | 61.3 | 0.93 ms | 14.9% |
+| 2d-1280x800 | 3x3 | 1349 / 1 | 1419 | 61.5 | 0.89 ms | 14.6% |
+| 2d-1366x768-potato | 2x2 | 313 / 287 | 328 | 55.2 | 0.93 ms | 9.7% |
+| 2d-1366x768-potato | 3x3 | 555 / 793 | 583 | 42.0 | 0.98 ms | 8.0% |
+| 2d-7680x2160 | 2x2 | 136 / 462 | 39 | 11.2 | 11.6 ms | 62.9% |
+| 2d-7680x2160 | 3x3 | 318 / 1025 | 102 | 23.6 | 12.0 ms | 58.5% |
+| 2d-7680x2160-font32 | 2x2 | 143 / 457 | 58 | 18.4 | 9.8 ms | 44.9% |
+| 2d-7680x2160-font32 | 3x3 | 368 / 979 | 136 | 31.3 | 10.4 ms | 48.0% |
+
+tmux decodes every pane's pictures and draws the grid again on kmscon, so mpv's drops count against tmux as much as kmscon, and the grids carry no rate verdict. At 1280x800 nothing is dropped. On the potato kmscon uses under a tenth of the one vCPU while the panes drop frames, so the drops are the programs sharing that vCPU. At 7680x2160 kmscon uses about half a core and renders each frame in 10 to 12 ms, under the 16.7 ms frame interval, while tmux sends it only 39 to 136 pictures in all; most frames are dropped before they reach it.
 
 ### What this does not measure
 

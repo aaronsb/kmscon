@@ -15,7 +15,8 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 # golden is the cjk one (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
            "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "sixel",
-           "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict", "s1-scroll", "cjk"]
+           "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict", "s1-scroll", "flood",
+           "cjk"]
 # Cases captured after a screen is drawn, by pressing kmscon's grabs: each is
 # (screen, case, the chords pressed before its capture). After the last, the
 # chords in KEYS_AFTER put the terminal back as the screen left it. The
@@ -29,7 +30,7 @@ KEYED = [
 KEYS_AFTER = {"sixel-evict": [("ctrl", "minus")]}
 # The screens that are also ADR-103 benchmark scenarios: each reports its
 # window on the event port, and the report carries its figures (t3_bench.py).
-BENCHMARKS = ["s1-scroll"]
+BENCHMARKS = ["s1-scroll", "flood"]
 # Every case of a variant: each screen, then the VT switch (a check without a
 # golden) and the restore after it (compared with the last screen's golden).
 CASES = SCREENS + [case for _, case, _ in KEYED] + ["vt-switch", "vt-restore"]

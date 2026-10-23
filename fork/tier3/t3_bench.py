@@ -72,10 +72,14 @@ def summarize(lines, count, start, end):
     flips = sum(x["flips"] for x in window)
     frames = sum(x["frames"] for x in window)
     busy = [x for x in window if x["frames"]]
+    # the seconds wholly inside the window, while the screen's output flowed
+    inside = [x for x in window if x["t"] - x["interval_ms"] / 1000 >= start and x["t"] <= end]
+    skipped = sum(x["skipped"] for x in window)
     out.update({
         "flips": int(flips), "frames": int(frames),
         "presented_per_s": round(flips / seconds, 1),
-        "skipped": int(sum(x["skipped"] for x in window)),
+        "skipped": int(skipped), "skipped_per_s": round(skipped / seconds, 1),
+        "intervals_inside": len(inside), "flips_inside": int(sum(x["flips"] for x in inside)),
     })
     if frames:
         out.update({
@@ -89,16 +93,42 @@ def summarize(lines, count, start, end):
     return out
 
 
+# The flood screen's bounds (#147). A stream of sixel pictures changes the
+# screen only at each picture's end, so a draw tried after every pty read
+# finds nothing to draw and counts as skipped (#139); kmscon draws once per
+# loop turn, and only a screen that changed.
+FLOOD_MAX_SKIPPED_PER_S = 20
+
+
+def flood_verdict(figures):
+    """Why the flood screen's figures fail, or an empty list: a frame
+    presented in a second wholly inside the window, while the stream flowed,
+    and at most FLOOD_MAX_SKIPPED_PER_S passes a second that drew nothing."""
+    why = []
+    if not figures.get("intervals_inside"):
+        why.append("no render-timer second lies wholly inside the window")
+    elif not figures.get("flips_inside"):
+        why.append("no frame was presented while the stream flowed")
+    if figures.get("skipped_per_s", 0) > FLOOD_MAX_SKIPPED_PER_S:
+        why.append("%.1f passes a second drew nothing, over %d"
+                   % (figures["skipped_per_s"], FLOOD_MAX_SKIPPED_PER_S))
+    return why
+
+
 def measure(serial_text, event_line, config):
     """The report entry of one benchmark screen: its figures, or why there
-    are none. "error" is set only when a build with the render timer
-    configured logged no line for the window, which fails the case."""
+    are none. "error", which fails the case, is set when a build with the
+    render timer configured logged no line for the window, and when the
+    flood screen's figures are out of bounds (flood_verdict)."""
     window = bench_window(event_line or "")
     if window is None:
         return {"error": "the screen reported no benchmark window: %r" % event_line}
-    _, count, start, end = window
+    name, count, start, end = window
     out = summarize(timer_lines(serial_text), count, start, end)
     if out["intervals"]:
+        why = flood_verdict(out) if name == "flood" else []
+        if why:
+            out["error"] = "; ".join(why)
         return out
     if _UNKNOWN in serial_text:
         out["note"] = "this build has no render timer"

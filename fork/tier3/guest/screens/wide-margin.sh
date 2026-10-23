@@ -2,8 +2,7 @@
 # look-for: A wide character at the right edge fits the last two cells
 # look-for: (cases 1 and 4) or moves whole to the next line (2, 3 and 5).
 # wrong-looks-like: Half a character at the edge or one lost (stock kmscon
-# wrong-looks-like: cuts 2, 3 and 5). The emoji itself is clipped until
-# wrong-looks-like: colour emoji land.
+# wrong-looks-like: cuts 2, 3 and 5), or an emoji in grey or cut at its cells.
 # Double-width characters at the right margin. The screen's width is read from
 # the terminal, so the cases sit at its real edge.
 cols=$(stty size </dev/tty 2>/dev/null) && cols=${cols#* } || cols=${COLUMNS:-80}

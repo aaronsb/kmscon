@@ -1389,6 +1389,59 @@ static void test_picture_scale(void)
 	free(whole);
 }
 
+/*
+ * A 3 x 2 glyph, cells 1 to 6 row by row, turned each way, as A8 and as
+ * ARGB32: the cells land where the screen's turn puts them, and the glyph
+ * keeps its format, width flag and key.
+ */
+static void test_rotate_glyph(void)
+{
+	static const struct {
+		enum Orientation o;
+		unsigned int w, h;
+		uint8_t cells[6];
+	} turns[] = {
+		{OR_RIGHT, 2, 3, {4, 1, 5, 2, 6, 3}},
+		{OR_UPSIDE_DOWN, 3, 2, {6, 5, 4, 3, 2, 1}},
+		{OR_LEFT, 2, 3, {3, 6, 2, 5, 1, 4}},
+	};
+
+	for (size_t t = 0; t < sizeof(turns) / sizeof(turns[0]); t++) {
+		for (int argb = 0; argb < 2; argb++) {
+			unsigned int bpp = argb ? 4 : 1;
+			struct kmscon_glyph *g = calloc(1, sizeof(*g) + 6 * bpp), *r;
+
+			assert(g);
+			g->buf.width = 3;
+			g->buf.height = 2;
+			g->buf.format = argb ? VIDEO_FORMAT_ARGB32 : VIDEO_FORMAT_A8;
+			g->double_width = true;
+			g->key.key = 42;
+			for (unsigned int i = 0; i < 6; i++) {
+				if (argb)
+					((uint32_t *)g->buf.data)[i] =
+						0xff000000 | (i + 1) * 0x010203;
+				else
+					g->buf.data[i] = i + 1;
+			}
+
+			r = bbulk_rotate_glyph(g, turns[t].o);
+			assert(r);
+			assert(r->buf.width == turns[t].w && r->buf.height == turns[t].h);
+			assert(r->buf.format == (argb ? VIDEO_FORMAT_ARGB32 : VIDEO_FORMAT_A8));
+			assert(r->double_width && r->key.key == 42);
+			for (unsigned int i = 0; i < 6; i++) {
+				if (argb)
+					assert(((uint32_t *)r->buf.data)[i] ==
+					       (0xff000000 | turns[t].cells[i] * 0x010203u));
+				else
+					assert(r->buf.data[i] == turns[t].cells[i]);
+			}
+			free(r);
+		}
+	}
+}
+
 int main(void)
 {
 	struct kmscon_text txt;
@@ -1437,6 +1490,7 @@ int main(void)
 	test_opaque_runs(&txt);
 	test_below_bg(&txt);
 	test_picture_scale();
+	test_rotate_glyph();
 	test_budget(7680, 2160, 3);
 	test_budget(7680, 4320, 1);
 	test_budget_shared();

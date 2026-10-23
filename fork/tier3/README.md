@@ -76,7 +76,7 @@ Three findings shaped this table:
 
 ## Goldens, tolerances and masks
 
-Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 39 come to about 2.3 MB, the 7680x2160 ones included).
+Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 42 come to about 2.4 MB, the 7680x2160 ones included).
 
 Comparison is exact unless a tolerance sidecar `golden/<variant>/<screen>.tol` sits beside the golden. It holds `key=value` lines; `#` starts a comment:
 

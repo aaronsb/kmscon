@@ -96,6 +96,8 @@ Someone other than the author verifies the PR before it merges: see [Verificatio
 
 Every PR gets a code review, and every finding is fixed or filed: see [Reviews](#reviews).
 
+A PR that changes what kmscon draws also waits for the operator's visual review on a real VT before it merges: see [The human check: the VT demo](#the-human-check-the-vt-demo).
+
 ### 7. Merge
 
 The PR merges with a regular merge commit, which keeps the branch's commits (the decision, the code, the goldens, the review fixes) in `main`'s history:
@@ -235,6 +237,12 @@ The conformance tiers compare against goldens; the [local VT demo](demo.md) is w
 
 A change that adds something visible adds its demo section in the same PR. [demo.md's "Adding a section"](demo.md#adding-a-section) gives the rules for a section file.
 
+### The visual review before merge
+
+A PR that changes what kmscon draws merges only after the operator has looked at it live on a VT, in the regular demo feedback review (`~/demo-dev` or `make vt-demo` with the PR's build staged), and the run's answers have been read back. In the operator's words: "I'd still like to be involved in a visual review before merge (viewing live in the vtty - not the bad apple demo but our regular feedback review)". The PR body names the demo sections to look at and what right and wrong look like; a page rated wrong or unsure is resolved before the merge. The review is of the regular demo, not the showcase (#75).
+
+Changes that draw nothing new merge after code review alone: libtsm internals that kmscon does not yet draw (the ADR-103 image store and the sixel decoder before they are wired in), harness and tooling changes, and documentation. The first PR that puts such work on screen takes the visual review.
+
 ## The conformance record
 
 A committed ledger run (`make sheet NOTE=...` and its entry in [LEDGER.md](../conformance/LEDGER.md)) happens once per working session, at its bring-home point: when the session's workstreams and the upstream sync have merged and `main` is green, measured from the head of `main` at that point. Never per PR, and never during the work.
@@ -293,6 +301,8 @@ In progress: the ledger's format is being changed to one markdown page per run, 
 ## Working with coding agents
 
 The fork's code is written by AI coding agents under the operator's direction. A steering session briefs each agent with the files to read, the gates to run and the shape of the report it returns; the agent works in its own worktree and opens the PR. The steering session verifies each PR itself, as above, has it reviewed, and merges. Agents never merge.
+
+Agents push their own feature branches to aaronsb/kmscon and aaronsb/libtsm and open PRs without asking each time; the operator approved this on 2026-10-23. Pushes to `main`, force pushes, history rewrites, release tags and any write to a repository the operator does not own are still asked for each time.
 
 The rules on this page apply to agents unchanged.
 

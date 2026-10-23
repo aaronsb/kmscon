@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Self-test for the parts of tier 3 that run on the host without a guest:
 the caption and screen text a case's report carries (t3_evaluate.py), the
-packages a run installs and the guest's account of them, and the machine
-each variant boots (t3_scenario.py), the console lines the driver waits for
-and the QEMU command line (t3_qemu.py), a benchmark screen's figures
-(t3_bench.py), and the logger a worker process receives (t3_common.py).
+colours and cells of the sixel goldens, the packages a run installs and the
+guest's account of them, and the machine each variant boots
+(t3_scenario.py), the console lines the driver waits for and the QEMU
+command line (t3_qemu.py), a benchmark screen's figures (t3_bench.py), and
+the logger a worker process receives (t3_common.py).
 
     python3 -I fork/tier3/test_t3.py
 """
@@ -164,6 +165,45 @@ class DescribeTest(unittest.TestCase):
 
 
 LIBTSM = "ef2365d0f9f1a370d721a82470d69c3646fe97f0"
+
+
+class SixelGoldenTest(unittest.TestCase):
+    # The sixel page's registers at full strength (sixel.sh), as kmscon draws
+    # them: the bars, the six discs, and the ring around its blue disc.
+    BARS = [(255, 0, 0), (255, 255, 0), (0, 255, 0), (0, 255, 255), (0, 0, 255),
+            (255, 0, 255), (255, 255, 255), (128, 128, 128)]
+    DISCS = {"red": (255, 0, 0), "green": (0, 255, 0), "blue": (0, 0, 255),
+             "cyan": (0, 255, 255), "magenta": (255, 0, 255), "yellow": (255, 255, 0)}
+    ORANGE = (255, 128, 0)
+
+    def test_colours_in_cells(self):
+        # Every default variant's golden holds each picture in the cells the
+        # page puts it in, in its colours. The cell is read from the golden:
+        # the red bar is the first red pixel and one cell, at column 2, row 2
+        # of a grid kmscon may centre on the display.
+        for variant in t3_scenario.DEFAULT_VARIANTS:
+            with self.subTest(variant):
+                img = t3img.read(t3_evaluate.golden_for(variant, "sixel")[0])
+
+                def px(x, y):
+                    i = (y * img.width + x) * 3
+                    return tuple(img.data[i:i + 3])
+
+                x0, y0 = next((x, y) for y in range(200) for x in range(200)
+                              if px(x, y) == self.BARS[0])
+                cw = next(n for n in range(1, 200) if px(x0 + n, y0) != self.BARS[0])
+                ch = next(n for n in range(1, 200) if px(x0, y0 + n) != self.BARS[0])
+                left, top = x0 - 2 * cw, y0 - 2 * ch
+
+                def at(col, row):
+                    return px(left + int(col * cw), top + int(row * ch))
+
+                self.assertEqual([at(2.5 + i, 2.5) for i in range(8)], self.BARS)
+                for k, (name, rgb) in enumerate(self.DISCS.items()):
+                    self.assertEqual(at(3.5 + 10 * k, 10), rgb, name)
+                d = min(4 * cw, 2 * ch)
+                self.assertEqual(at(42 - 3 * d / 8 / cw, 4), self.ORANGE)
+                self.assertEqual(at(42, 4), self.DISCS["blue"])
 
 
 class PackagesTest(unittest.TestCase):

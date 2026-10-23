@@ -54,6 +54,7 @@ kmscon_srcs = [
     'main.c',
     'render_timer.c',
     'terminal.c',
+    'terminal_vte.c',
 ]
 kmscon_dep = [
     xkbcommon_deps,

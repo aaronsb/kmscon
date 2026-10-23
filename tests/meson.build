@@ -48,12 +48,16 @@ test_bbulk = executable(
 )
 test('test_bbulk', test_bbulk)
 
-# ADR-103's image budget against real libtsm screens, made through its test calls
+# ADR-103's image budget against real libtsm screens, made through its test
+# calls, and terminal_new's vte made into it
 test_image_budget = executable(
     'test_image_budget',
     'test_image_budget.c',
-    include_directories: src_inc,
-    dependencies: [subproject('libtsm').get_variable('libtsm_test_dep')],
+    include_directories: [src_inc, misc_inc],
+    dependencies: [
+        subproject('libtsm').get_variable('libtsm_test_dep'),
+        shl_deps,
+    ],
 )
 test('test_image_budget', test_image_budget)
 

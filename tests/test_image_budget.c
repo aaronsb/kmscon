@@ -4,7 +4,8 @@
  * screens in ADR-103's order with the renderers' undrawn pictures first, a
  * placed image never evicted, a shrinking limit evicting down, a removed
  * screen giving its bytes back, and a sixel drawn through the vte reserving
- * from the budget. Images are made through libtsm's test calls.
+ * from the budget, and a terminal's vte made into the budget and unwound from
+ * it. Images are made through libtsm's test calls.
  */
 
 #include <assert.h>
@@ -13,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../src/render/image_budget.c"
+#include "../src/terminal_vte.c"
 
 #define W 64
 #define H 64
@@ -398,6 +400,43 @@ static void test_terminal_teardown(void)
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 }
 
+/*
+ * terminal_new's vte and its place in the budget, terminal_vte_new. A step
+ * that fails after the terminal joined the budget leaves nothing: the
+ * terminal leaves the budget before its vte goes, since leaving turns sixel
+ * off on the vte (ASan reports the other order as a use-after-free). The
+ * unwind of a step after terminal_vte_new is image_budget_free_terminal.
+ */
+static void test_terminal_vte(void)
+{
+	struct kmscon_conf_t conf = {
+		.sixel = true,
+		.max_graphic_size = {1000, 1000},
+		.num_color_registers = 256,
+		.grapheme_width = TSM_WIDTH_UNICODE,
+	};
+	struct image_budget_terminal t = {0};
+	struct tsm_screen *con;
+	struct tsm_vte *vte = NULL;
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, 40, 10) == 0);
+
+	/* the width method, the last step, refused */
+	conf.grapheme_width = (enum tsm_width_method)99;
+	assert(terminal_vte_new(&vte, &t, con, &conf, vte_write, NULL) == -EINVAL);
+	assert(!vte && !t.con && image_budget_screens() == 0);
+
+	/* made with sixel on; a later step's unwind leaves nothing in the budget */
+	conf.grapheme_width = TSM_WIDTH_UNICODE;
+	assert(terminal_vte_new(&vte, &t, con, &conf, vte_write, NULL) == 0);
+	assert(t.con == con && t.vte == vte && image_budget_screens() == 1);
+	tsm_vte_input(vte, six, sizeof(six) - 1);
+	assert(image_budget_used() > 0);
+	image_budget_free_terminal(&t);
+	assert(image_budget_screens() == 0 && image_budget_used() == 0);
+}
+
 int main(void)
 {
 	fake.cache.trim = fake_trim;
@@ -410,6 +449,7 @@ int main(void)
 	test_sixel();
 	test_terminal();
 	test_terminal_teardown();
+	test_terminal_vte();
 
 	image_budget_remove_cache(&fake.cache);
 	assert(!budget.caches && image_budget_used() == 0);

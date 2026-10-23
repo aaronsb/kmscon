@@ -53,6 +53,7 @@
 #include "shl/log.h"
 #include "shl/misc.h"
 #include "terminal.h"
+#include "terminal_vte.h"
 #include "video/video.h"
 
 #define LOG_SUBSYSTEM "terminal"
@@ -1582,44 +1583,21 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 		goto err_free;
 	tsm_screen_set_max_sb(term->console, term->conf->sb_size);
 
-	ret = tsm_vte_new(&term->vte, term->console, write_event, term, log_llog, NULL);
+	ret = terminal_vte_new(&term->vte, &term->images, term->console, term->conf, write_event,
+			       term);
 	if (ret)
 		goto err_con;
-
-	/* images (ADR-103): the process's budget, and sixel by image_budget.h's rule */
-	if (tsm_vte_set_graphic_max_size(term->vte, term->conf->max_graphic_size.width,
-					 term->conf->max_graphic_size.height) ||
-	    tsm_vte_set_sixel_registers(term->vte, term->conf->num_color_registers,
-					term->conf->private_color_registers))
-		log_warning("cannot apply the sixel settings; libtsm's defaults stand");
-	ret = image_budget_add_terminal(&term->images, term->console, term->vte, term->conf->sixel);
-	if (ret)
-		goto err_vte;
-
-	tsm_vte_set_backspace_sends_delete(term->vte, term->conf->backspace_delete);
 
 	tsm_vte_set_osc_cb(term->vte, osc_event, (void *)term);
 	tsm_vte_set_mouse_cb(term->vte, mouse_event, (void *)term);
 	tsm_vte_set_bell_cb(term->vte, bell_event, (void *)term);
 	tsm_vte_set_led_cb(term->vte, led_event, (void *)term);
 
-	ret = tsm_vte_set_palette(term->vte, term->conf->palette);
-	if (ret)
-		goto err_vte;
-
-	ret = tsm_vte_set_custom_palette(term->vte, term->conf->custom_palette);
-	if (ret)
-		goto err_vte;
-
-	ret = tsm_vte_set_width_method(term->vte, term->conf->grapheme_width);
-	if (ret)
-		goto err_vte;
-
 	term->font_size = term->conf->font_size;
 	if (term->font_size) {
 		ret = font_set(term, term->font_size);
 		if (ret)
-			goto err_vte;
+			goto err_images;
 	} else {
 		term->auto_font_size = true;
 	}
@@ -1690,9 +1668,10 @@ err_pty:
 	kmscon_pty_unref(term->pty);
 err_font:
 	kmscon_font_unref(term->font);
-err_vte:
-	tsm_vte_unref(term->vte);
-	image_budget_remove_terminal(&term->images);
+err_images:
+	/* the vte and the screen go with the terminal's place in the budget */
+	image_budget_free_terminal(&term->images);
+	goto err_free;
 err_con:
 	tsm_screen_unref(term->console);
 err_free:

@@ -293,6 +293,29 @@ if enable_font_freetype and enable_video_drm2d
     )
     test('test_blink', test_blink, args: [meson.current_source_dir() / 'fonts'])
 
+    test_present = executable(
+        'test_present',
+        'test_present.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            libtsm_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            harfbuzz_raster_deps,
+            libdrm_deps,
+            threads_deps,
+            math_deps,
+            shl_deps,
+            htable_deps,
+        ],
+    )
+    test(
+        'test_present',
+        test_present,
+        args: [meson.current_source_dir() / 'fonts'],
+    )
+
     # ADR-103's S1 to S6 drawn into memory; run by make bench-compose, not a test
     executable(
         'bench_compose',

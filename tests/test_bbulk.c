@@ -664,7 +664,7 @@ static unsigned int pictures_of(struct bbulk *bb, uint64_t image)
  * many a run of frames draws; within a frame, a picture the frame draws is
  * never freed to make room, so three half-transparent full-screen pictures
  * past the limit still compose from all three; past the process's image
- * budget a picture is left out and its cells retried on later frames.
+ * budget a picture is left out, and idle frames leave it out.
  */
 static void test_picture_cache(struct kmscon_text *txt)
 {
@@ -703,8 +703,8 @@ static void test_picture_cache(struct kmscon_text *txt)
 
 	/*
 	 * fourteen at once, 17.2 MB, pass the 16 MiB budget: the last is left
-	 * out, and its cells are drawn again on every later frame until it
-	 * fits, not only on the two frames that follow the change
+	 * out, and idle frames do not compose it again while the budget is
+	 * unchanged
 	 */
 	for (i = 0; i < 14; i++)
 		set_scaled(i, 50 + i, i + 1);
@@ -712,7 +712,7 @@ static void test_picture_cache(struct kmscon_text *txt)
 	assert(draw_placements(txt, 14) == 0);
 	assert(pictures_peak <= image_budget() && pictures_peak > 12 * 640 * 480 * 4);
 	assert(draw_placements(txt, 14) == 0);
-	assert(draw_placements(txt, 14) == 0 && n_blended > 0);
+	assert(draw_placements(txt, 14) == KMSCON_TEXT_UNCHANGED);
 	set_scaled(0, 50, 1);
 	draw_placements(txt, 1);
 	assert(draw_placements(txt, 1) == 0);
@@ -723,54 +723,149 @@ static void test_picture_cache(struct kmscon_text *txt)
 		test_images[i].pixels = NULL;
 }
 
-/*
- * At @w x @h, where four frames pass the 192 MiB cap, the budget is the cap:
- * of four full-screen scaled pictures at once, the @fit that fit draw and the
- * frame's peak stays within the cap; the rest are retried on every later
- * frame (7680x2160: three fit; 7680x4320, 127 MiB a screen: one).
- */
-static void test_budget(unsigned int w, unsigned int h, size_t fit)
+/* a renderer of its own on display @disp, @w x @h */
+static struct bbulk *open_txt(struct kmscon_text *txt, uintptr_t disp, unsigned int w,
+			      unsigned int h)
 {
-	struct kmscon_text txt;
-	struct bbulk *bb;
+	disp_w = w;
+	disp_h = h;
+	init_fake_txt(txt);
+	txt->disp = (struct display *)disp;
+	assert(kmscon_text_bbulk_ops.init(txt) == 0);
+	assert(bbulk_set(txt) == 0);
+	return txt->data;
+}
+
+static void close_txt(struct kmscon_text *txt)
+{
+	bbulk_unset(txt);
+	kmscon_text_bbulk_ops.destroy(txt);
+}
+
+/* images 1 to @n: opaque, half the display in each direction */
+static uint32_t *half_images(unsigned int w, unsigned int h, unsigned int n)
+{
 	uint32_t *src = calloc((size_t)w / 2 * (h / 2), 4);
-	size_t pic = (size_t)w * h * 4, base;
 	unsigned int i;
 
 	assert(src);
 	for (i = 0; i < w / 2 * (h / 2); i++)
 		src[i] = 0xff204060;
-	disp_w = w;
-	disp_h = h;
-	init_fake_txt(&txt);
-	assert(kmscon_text_bbulk_ops.init(&txt) == 0);
-	assert(bbulk_set(&txt) == 0);
-	bb = txt.data;
-	assert(image_budget() == IMAGE_BUDGET_MAX);
-	for (i = 1; i <= 4; i++) {
+	for (i = 1; i <= n; i++)
 		test_images[i] = (struct tsm_frame_image){
 			.width = w / 2, .height = h / 2, .stride = w / 2 * 4, .pixels = src};
-		set_scaled(i - 1, 60 + i, i);
-		placements[i - 1].flags = TSM_FRAME_OPAQUE;
-	}
+	return src;
+}
 
-	/* other displays' pictures count against the same budget */
-	base = pictures_total;
-	assert(base == 0 && (IMAGE_BUDGET_MAX - base) / pic == fit);
-	pictures_peak = pictures_total;
-	draw_placements(&txt, 4);
-	assert(pictures_peak <= IMAGE_BUDGET_MAX);
-	assert(pictures_peak == base + fit * pic);
-	assert(bb->picture_bytes <= picture_limit(bb));
-	/* the ones left out keep their cells drawn, frame after frame */
-	draw_placements(&txt, 4);
-	assert(draw_placements(&txt, 4) == 0 && n_blended > 0);
-
-	bbulk_unset(&txt);
-	kmscon_text_bbulk_ops.destroy(&txt);
-	for (i = 1; i <= 4; i++)
+static void drop_images(uint32_t *src, unsigned int n)
+{
+	for (unsigned int i = 1; i <= n; i++)
 		test_images[i].pixels = NULL;
 	free(src);
+}
+
+/* placements @first .. @first + @n - 1 of images @image .. as full screens */
+static void scaled_screens(unsigned int first, unsigned int n, uint64_t image)
+{
+	for (unsigned int i = 0; i < n; i++) {
+		set_scaled(first + i, 60 + image + i, image + i);
+		placements[first + i].flags = TSM_FRAME_OPAQUE;
+	}
+}
+
+/*
+ * At @w x @h, where four frames pass the 192 MiB cap, the budget is the cap:
+ * of four full-screen scaled pictures at once, the @fit that fit draw and the
+ * frame's peak stays within the cap; the rest are left out, and idle frames
+ * do not compose them again (7680x2160: three fit; 7680x4320, 127 MiB a
+ * screen: one).
+ */
+static void test_budget(unsigned int w, unsigned int h, size_t fit)
+{
+	struct kmscon_text txt;
+	struct bbulk *bb = open_txt(&txt, 0x10, w, h);
+	uint32_t *src = half_images(w, h, 4);
+	size_t pic = (size_t)w * h * 4;
+
+	assert(image_budget() == IMAGE_BUDGET_MAX);
+	assert(pictures_total == 0 && IMAGE_BUDGET_MAX / pic == fit);
+	scaled_screens(0, 4, 1);
+	pictures_peak = pictures_total;
+	draw_placements(&txt, 4);
+	assert(pictures_peak <= IMAGE_BUDGET_MAX && pictures_peak == fit * pic);
+	assert(bb->picture_bytes <= picture_limit(bb));
+	assert(draw_placements(&txt, 4) == 0);
+	assert(draw_placements(&txt, 4) == KMSCON_TEXT_UNCHANGED);
+	assert(draw_placements(&txt, 4) == KMSCON_TEXT_UNCHANGED);
+
+	close_txt(&txt);
+	drop_images(src, 4);
+	disp_w = 640;
+	disp_h = 480;
+}
+
+/*
+ * Several displays share the budget. Two terminals on one display, as two
+ * sessions have, count it once. Two displays at 7680x2160 split it: between
+ * frames each keeps at most half of it, and one's pictures leave the other
+ * less room within a frame. A terminal that releases its pictures, as one
+ * does when its session leaves the foreground, gives room to a picture the
+ * other left out, which then draws.
+ */
+static void test_budget_shared(void)
+{
+	struct kmscon_text a, b, c;
+	struct bbulk *ba, *bb, *bc;
+	size_t pic = (size_t)7680 * 2160 * 4, big = (size_t)7680 * 4320 * 4;
+	uint64_t px = displays_px;
+	uint32_t *src;
+
+	/* two sessions' terminals on one display */
+	ba = open_txt(&a, 0x20, 7680, 2160);
+	bb = open_txt(&b, 0x20, 7680, 2160);
+	assert(displays_px == px + 7680 * 2160);
+	close_txt(&b);
+	close_txt(&a);
+	assert(displays_px == px);
+
+	/* two displays: the share between frames, the other's room in one */
+	src = half_images(7680, 2160, 5);
+	ba = open_txt(&a, 0x21, 7680, 2160);
+	bb = open_txt(&b, 0x22, 7680, 2160);
+	scaled_screens(0, 2, 1);
+	draw_placements(&a, 2);
+	assert(ba->picture_bytes <= IMAGE_BUDGET_MAX / 2 && ba->picture_bytes == pic);
+	scaled_screens(0, 3, 3);
+	pictures_peak = pictures_total;
+	draw_placements(&b, 3);
+	assert(pictures_peak <= IMAGE_BUDGET_MAX);
+	assert(pictures_peak == 3 * pic && bb->picture_bytes <= 2 * pic);
+	close_txt(&b);
+	close_txt(&a);
+	drop_images(src, 5);
+
+	/*
+	 * full 8K, two sessions on one display: the background one's picture
+	 * leaves the foreground one no room; released, it does
+	 */
+	src = half_images(7680, 4320, 2);
+	ba = open_txt(&a, 0x23, 7680, 4320);
+	bc = open_txt(&c, 0x23, 7680, 4320);
+	scaled_screens(0, 1, 1);
+	draw_placements(&a, 1);
+	assert(ba->picture_bytes == big);
+	scaled_screens(0, 1, 2);
+	draw_placements(&c, 1);
+	assert(bc->picture_bytes == 0);
+	assert(draw_placements(&c, 1) == 0);
+	assert(draw_placements(&c, 1) == KMSCON_TEXT_UNCHANGED);
+	kmscon_text_bbulk_ops.release(&a);
+	assert(ba->picture_bytes == 0);
+	assert(draw_placements(&c, 1) == 0 && bc->picture_bytes == big);
+	assert(pictures_of(bc, 2) == 1);
+	close_txt(&c);
+	close_txt(&a);
+	drop_images(src, 2);
 	disp_w = 640;
 	disp_h = 480;
 }
@@ -866,6 +961,7 @@ int main(void)
 	test_picture_scale();
 	test_budget(7680, 2160, 3);
 	test_budget(7680, 4320, 1);
+	test_budget_shared();
 	test_picture_cache(&txt);
 
 	bbulk_unset(&txt);

@@ -1443,7 +1443,12 @@ void terminal_activate(struct kmscon_terminal *term)
 
 void terminal_deactivate(struct kmscon_terminal *term)
 {
+	struct screen *scr;
+
 	term->awake = false;
+	/* in the background, its scaled pictures give their room back */
+	dlist_for_each_entry(scr, &term->screens, list)
+		kmscon_text_release(scr->txt);
 	hw_cursor_hide(term);
 	if (term->conf->blink) {
 		ev_timer_disable(term->blink_timer);

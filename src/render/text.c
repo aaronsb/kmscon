@@ -741,3 +741,18 @@ void kmscon_text_abort(struct kmscon_text *txt)
 		txt->ops->abort(txt);
 	txt->rendering = false;
 }
+
+/**
+ * kmscon_text_release:
+ * @txt: valid text renderer
+ *
+ * Frees what the renderer keeps between frames and can make again, such as
+ * bbulk's scaled pictures, so a terminal in the background gives back its
+ * share of the process's image budget (ADR-103). The next frame makes what it
+ * needs again.
+ */
+void kmscon_text_release(struct kmscon_text *txt)
+{
+	if (txt && txt->ops->release)
+		txt->ops->release(txt);
+}

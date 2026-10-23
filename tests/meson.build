@@ -198,12 +198,14 @@ endif
 test('capabilities', python, args: caps_args)
 
 if enable_font_freetype and enable_video_drm2d
+    # ADR-103's test calls for images build only into what links this
+    libtsm_test_deps = subproject('libtsm').get_variable('libtsm_test_dep')
     test_pixels = executable(
         'test_pixels',
         'test_pixels.c',
         include_directories: [src_inc, misc_inc],
         dependencies: [
-            libtsm_deps,
+            libtsm_test_deps,
             freetype_deps,
             fontconfig_deps,
             harfbuzz_deps,

@@ -36,6 +36,7 @@
 #undef LOG_SUBSYSTEM
 #include "../src/render/text.c"
 #undef LOG_SUBSYSTEM
+#include "../src/render/picture.c"
 #include "../src/render/bbulk.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/deco.c"
@@ -168,6 +169,16 @@ struct screen {
 	bool no_emoji_color;
 	/* optional: the screen's size in cells, COLS x ROWS if 0 */
 	unsigned int cols, rows;
+	/*
+	 * optional: pictures and placements (ADR-103), made through libtsm's
+	 * test calls before frame @frame is drawn: frame 0 only, or 0 to 3 for
+	 * a screen with @next. @cw x @ch is the font's cell, which the screen
+	 * measures placements in.
+	 */
+	void (*images)(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+		       unsigned int cw, unsigned int ch);
+	/* optional: the display's orientation, OR_NORMAL if 0 */
+	enum Orientation orientation;
 };
 
 /* the ADR-102 decoration settings the deco-* screens configure */
@@ -384,6 +395,248 @@ static const struct check emoji_mono_checks[] = {
 	"underline, strike, reverse and a red curl; a codepoint no font covers; an emoji written " \
 	"at the last column, which wraps to the next line."
 
+/* ---- images (ADR-103) ---- */
+
+/* the z of each composition band */
+#define Z_BELOW_BG (-1073741825)
+#define Z_BELOW_TEXT (-1)
+#define Z_ABOVE_TEXT 0
+
+enum pattern {
+	PIC_GRADIENT, /* opaque: red across, green down, blue from the seed */
+	PIC_HALF,     /* the gradient, its right half at half alpha */
+	PIC_DISC,     /* the gradient inside the inscribed ellipse, clear outside */
+	PIC_STRIPES,  /* opaque one-pixel stripes of two colours, a box filter's test */
+};
+
+static uint32_t premul(uint32_t a, uint32_t r, uint32_t g, uint32_t b)
+{
+	return a << 24 | (r * a + 127) / 255 << 16 | (g * a + 127) / 255 << 8 | (b * a + 127) / 255;
+}
+
+/* a @w x @h picture of @pattern in premultiplied ARGB32; free() it */
+static uint32_t *picture(enum pattern pattern, unsigned int w, unsigned int h, unsigned int seed)
+{
+	uint32_t *px = malloc((size_t)w * h * 4);
+	unsigned int x, y;
+
+	assert(px);
+	for (y = 0; y < h; y++) {
+		for (x = 0; x < w; x++) {
+			uint32_t r = w > 1 ? x * 255 / (w - 1) : 0, g = h > 1 ? y * 255 / (h - 1) : 0;
+			uint32_t b = (seed * 97 + 64) & 0xff, a = 255;
+			long dx = 2 * (long)x + 1 - (long)w, dy = 2 * (long)y + 1 - (long)h;
+
+			if (pattern == PIC_HALF && x >= w / 2)
+				a = 128;
+			if (pattern == PIC_DISC && dx * dx * (long)h * h + dy * dy * (long)w * w >
+							   (long)w * w * h * h)
+				a = 0;
+			if (pattern == PIC_STRIPES) {
+				r = (x + y) % 2 ? 255 : 0;
+				g = 255 - r;
+				b = 64;
+			}
+			px[(size_t)y * w + x] = premul(a, r, g, b);
+		}
+	}
+	return px;
+}
+
+/* stores a picture and returns its key: a kitty image with @id, or a sixel */
+static uint64_t add_image(struct tsm_screen *con, enum pattern pattern, unsigned int w,
+			  unsigned int h, unsigned int seed, uint8_t kind, uint32_t id)
+{
+	struct tsm_test_image img = {.width = w, .height = h, .kind = kind, .id = id};
+	uint32_t *px = picture(pattern, w, h, seed);
+	uint64_t key;
+
+	img.pixels = px;
+	assert(tsm_screen_test_image(con, &img, &key) == 0);
+	free(px);
+	return key;
+}
+
+/* places @image at @col, @row, in @cols x @rows cells (0: its own size) */
+static void place(struct tsm_screen *con, uint64_t image, uint32_t id, unsigned int col,
+		  unsigned int row, unsigned int cols, unsigned int rows, int32_t z)
+{
+	struct tsm_test_placement pl = {
+		.image = image, .id = id, .col = col, .row = row, .cols = cols, .rows = rows, .z = z};
+	uint64_t key;
+
+	assert(tsm_screen_test_place(con, &pl, &key) == 0);
+}
+
+static void input(struct tsm_vte *vte, const char *s)
+{
+	tsm_vte_input(vte, s, strlen(s));
+}
+
+/* the same half-transparent picture in each band, under and over text */
+static void images_bands(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			 unsigned int cw, unsigned int ch)
+{
+	static const int32_t z[3] = {Z_BELOW_BG, Z_BELOW_TEXT, Z_ABOVE_TEXT};
+
+	for (unsigned int b = 0; b < 3; b++)
+		place(con, add_image(con, PIC_HALF, 24 * cw, 3 * ch, b, TSM_IMAGE_KITTY, b + 1), 0, 14,
+		      3 * b, 0, 0, z[b]);
+}
+
+#define BAND_TEXT(row) ESC "[" #row ";16HText " ESC "[44m    " ESC "[0m over " ESC "[42m  " ESC "[0m pic"
+#define BANDS_BYTES                                                                                \
+	"lowest band" BAND_TEXT(2) ESC "[4;1Hmiddle band" BAND_TEXT(5) ESC "[7;1Htop band"        \
+		BAND_TEXT(8)
+
+/* the band below backgrounds leaves the blue cells solid */
+static const struct check bands_checks[] = {
+	{'f', 20, 1, 4, 1},
+	{0},
+};
+
+/*
+ * Sixels over text: an opaque one whose size is not whole cells, a disc clear
+ * outside it, and an opaque one that text written over its middle row splits.
+ */
+static void images_sixel(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			 unsigned int cw, unsigned int ch)
+{
+	place(con, add_image(con, PIC_GRADIENT, 10 * cw - 3, 3 * ch - 5, 1, TSM_IMAGE_SIXEL, 0), 0,
+	      2, 1, 0, 0, 0);
+	place(con, add_image(con, PIC_DISC, 10 * cw, 3 * ch, 2, TSM_IMAGE_SIXEL, 0), 0, 16, 1, 0, 0,
+	      0);
+	place(con, add_image(con, PIC_GRADIENT, 10 * cw, 3 * ch, 3, TSM_IMAGE_SIXEL, 0), 0, 30, 1,
+	      0, 0, 0);
+	input(vte, ESC "[3;33HTEXT");
+}
+
+#define TEXT_ROW "sixels over text, text over sixels, sixels over\r\n"
+#define SIXEL_BYTES TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW
+
+/*
+ * Scaled pictures, all in the top band: one at its own size; the same fitted
+ * into 10 x 5 cells; a 480 x 160 picture of one-pixel stripes shrunk into
+ * 12 x 2 cells; and one made in 5 x 8 pixel cells, drawn in the font's.
+ */
+static void images_scale(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			 unsigned int cw, unsigned int ch)
+{
+	uint64_t small = add_image(con, PIC_GRADIENT, 40, 20, 1, TSM_IMAGE_KITTY, 1);
+
+	place(con, small, 0, 1, 1, 0, 0, 0);
+	place(con, small, 0, 7, 1, 10, 5, 0);
+	place(con, add_image(con, PIC_STRIPES, 480, 160, 0, TSM_IMAGE_KITTY, 2), 0, 19, 1, 12, 2, 0);
+	assert(tsm_screen_set_cell_size(con, 5, 8) == 0);
+	place(con, add_image(con, PIC_GRADIENT, 20, 16, 2, TSM_IMAGE_KITTY, 3), 0, 33, 1, 0, 0, 0);
+	assert(tsm_screen_set_cell_size(con, cw, ch) == 0);
+}
+
+#define SCALE_BYTES                                                                                \
+	ESC "[8;2H1:1" ESC "[8;8Hfit 10x5" ESC "[8;20Hshrunk 12x2" ESC "[8;34H5x8 cells"
+
+/*
+ * A region scroll: a sixel inside the region loses the rows pushed out of its
+ * top, a kitty picture wholly inside moves and is clipped at the margin, and
+ * one that straddles the margin stays.
+ */
+static void images_region(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			  unsigned int cw, unsigned int ch)
+{
+	place(con, add_image(con, PIC_GRADIENT, 8 * cw, 4 * ch, 1, TSM_IMAGE_SIXEL, 0), 0, 2, 2, 0,
+	      0, 0);
+	place(con, add_image(con, PIC_GRADIENT, 6 * cw, 2 * ch, 2, TSM_IMAGE_KITTY, 1), 0, 16, 3, 0,
+	      0, 0);
+	place(con, add_image(con, PIC_GRADIENT, 6 * cw, 4 * ch, 3, TSM_IMAGE_KITTY, 2), 0, 28, 1, 0,
+	      0, 0);
+	input(vte, ESC "[3;8r" ESC "[8;1H\n\n" ESC "[r");
+}
+
+#define REGION_BYTES                                                                               \
+	"row 0\r\nrow 1\r\nrow 2\r\nrow 3\r\nrow 4\r\nrow 5\r\nrow 6\r\nrow 7\r\nrow 8\r\nrow 9"
+
+/* a picture at its own size and fitted to 6 x 3 cells, on a display turned right */
+static void images_rotated(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			   unsigned int cw, unsigned int ch)
+{
+	uint64_t pic = add_image(con, PIC_HALF, 4 * cw, 2 * ch, 1, TSM_IMAGE_KITTY, 1);
+
+	place(con, pic, 0, 2, 1, 0, 0, 0);
+	place(con, pic, 0, 10, 1, 6, 3, Z_BELOW_TEXT);
+}
+
+/*
+ * Frame 0: a kitty picture, a sixel and text. Frame 2: the kitty placement
+ * moved by replacing it, the sixel erased with its rows' text, and a new
+ * picture.
+ */
+static void images_moves(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			 unsigned int cw, unsigned int ch)
+{
+	static uint64_t kitty;
+
+	if (frame == 0) {
+		kitty = add_image(con, PIC_GRADIENT, 8 * cw, 3 * ch, 1, TSM_IMAGE_KITTY, 1);
+		place(con, kitty, 1, 2, 1, 0, 0, 0);
+		place(con, add_image(con, PIC_DISC, 8 * cw, 2 * ch, 2, TSM_IMAGE_SIXEL, 0), 0, 20, 1, 0,
+		      0, 0);
+	} else if (frame == 2) {
+		place(con, kitty, 1, 6, 5, 0, 0, 0);
+		input(vte, ESC "[2;21H" ESC "[K" ESC "[3;21H" ESC "[K");
+		place(con, add_image(con, PIC_GRADIENT, 6 * cw, 2 * ch, 3, TSM_IMAGE_KITTY, 2), 0, 30,
+		      6, 0, 0, Z_BELOW_TEXT);
+	}
+}
+
+#define MOVES_BYTES TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW
+
+/*
+ * ADR-103's A6: a picture over the whole screen, replaced on each of frames 0
+ * to 2, and a banner of coloured text over its bottom rows that scrolls in its
+ * region with it; below backgrounds or below text. Frame 3 repeats frame 2, so
+ * both buffers end with the same screen.
+ */
+static void banner(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+		   unsigned int cw, unsigned int ch, int32_t z)
+{
+	char line[128];
+
+	if (frame == 3)
+		return;
+
+	place(con, add_image(con, PIC_GRADIENT, COLS * cw, ROWS * ch, frame, TSM_IMAGE_KITTY, 1), 0,
+	      0, 0, 0, 0, z);
+	snprintf(line, sizeof(line),
+		 "\r\n" ESC "[44;97m banner %u " ESC "[0m text " ESC "[42m over " ESC "[0m video", frame);
+	input(vte, line);
+}
+
+static void images_banner_bg(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			     unsigned int cw, unsigned int ch)
+{
+	banner(con, vte, frame, cw, ch, Z_BELOW_BG);
+}
+
+static void images_banner_text(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			       unsigned int cw, unsigned int ch)
+{
+	banner(con, vte, frame, cw, ch, Z_BELOW_TEXT);
+}
+
+#define BANNER_BYTES ESC "[9;10r" ESC "[10;1H"
+
+/* ADR-103's A3: pictures shown for two frames, then ED 2 */
+static void images_ed2(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+		       unsigned int cw, unsigned int ch)
+{
+	if (frame)
+		return;
+	place(con, add_image(con, PIC_GRADIENT, 12 * cw, 4 * ch, 1, TSM_IMAGE_SIXEL, 0), 0, 4, 1, 0,
+	      0, 0);
+	place(con, add_image(con, PIC_DISC, 8 * cw, 4 * ch, 2, TSM_IMAGE_KITTY, 1), 0, 24, 2, 0, 0,
+	      Z_BELOW_TEXT);
+}
+
 static const struct screen screens[] = {
 	{"ascii",
 	 "Printable ASCII in the regular face: a pangram in both cases, digits and punctuation, "
@@ -580,6 +833,82 @@ static const struct screen screens[] = {
 	 "line three stays\r\n",
 	 ESC "[2;1Hline 2 CHANGED " ESC "[4:3mcurly" ESC "[0m" ESC "[4;1H" ESC "[9mnew struck" ESC
 	 "[0m"},
+
+	/* ADR-103 step 3b: placements made through libtsm's test calls */
+	{.name = "img-bands",
+	 .desc = "The same picture in each composition band, its left half opaque and its right half "
+		 "at half alpha, behind a row of text with blue and green backgrounds. Correct: in "
+		 "the lowest band the picture shows only through cells on the default background, so "
+		 "the blue and green cells stay solid, and the text draws over it; in the middle band "
+		 "the picture covers the backgrounds and the text draws over it; in the top band the "
+		 "left half hides the text and the right half shows it dimmed through.",
+	 .bytes = BANDS_BYTES,
+	 .checks = bands_checks,
+	 .images = images_bands},
+	{.name = "img-sixel",
+	 .desc = "Three sixels over rows of text. Correct: the left picture hides the text under it, "
+		 "its right and bottom edges ending inside their cells with the text there showing "
+		 "past them; the middle one is a disc with the text visible around it; the right one "
+		 "has a hole in its middle row where TEXT was written over it, drawn as plain text.",
+	 .bytes = SIXEL_BYTES,
+	 .images = images_sixel},
+	{.name = "img-scale",
+	 .desc = "Scaled pictures in the top band: a 40x20 gradient at its own size; the same fitted "
+		 "and centred in 10x5 cells, letterboxed; 480x160 one-pixel stripes shrunk into 12x2 "
+		 "cells, which a box filter turns into an even mix of the two colours; and a 20x16 "
+		 "picture made in 5x8-pixel cells, drawn over the 4x2 font cells it was given. "
+		 "Correct: smooth gradients with no blocky steps, the stripes an even olive with no "
+		 "moire, each picture inside its labelled place.",
+	 .bytes = SCALE_BYTES,
+	 .images = images_scale},
+	{.name = "img-region",
+	 .desc = "A scroll of two lines in a region from row 2 to row 7 with three pictures on "
+		 "screen. Correct: the sixel, inside the region from its top, has lost its top two "
+		 "rows and its lower half now starts at row 2; the small kitty picture, wholly "
+		 "inside, moved up and lost the row pushed past the margin; the tall kitty picture "
+		 "at the right, straddling the margin, stays where it was while the rows under it "
+		 "move.",
+	 .bytes = REGION_BYTES,
+	 .images = images_region},
+	{.name = "img-rotated",
+	 .desc = "A display turned right: text, a picture at its own size and the same picture "
+		 "fitted to 6x3 cells under the text. Correct: the pictures turn with the text, "
+		 "their opaque halves toward the top of the image, each in its own cells.",
+	 .bytes = "rotated: pictures turn with the text",
+	 .images = images_rotated,
+	 .cols = 24,
+	 .rows = 6,
+	 .orientation = OR_RIGHT},
+	{.name = "img-moves",
+	 .desc = "Four frames into the double-buffered display: a kitty picture and a sixel, then "
+		 "the kitty placement moved by replacing it, the sixel erased with the text of its "
+		 "rows, and a new picture added under the text. Both buffers must then hold what a "
+		 "fresh draw of the last screen draws. Correct: no trace of the picture's old place "
+		 "or of the sixel.",
+	 .bytes = MOVES_BYTES,
+	 .next = "",
+	 .images = images_moves},
+	{.name = "img-banner-bg",
+	 .desc = "ADR-103's A6 below backgrounds: a full-screen picture replaced on three frames "
+		 "running, under a banner of text that scrolls in the bottom two rows with it. "
+		 "Correct: the last frame's picture, the banner's blue and green backgrounds solid "
+		 "over it, and both buffers equal to a fresh draw.",
+	 .bytes = BANNER_BYTES,
+	 .next = "",
+	 .images = images_banner_bg},
+	{.name = "img-banner-text",
+	 .desc = "ADR-103's A6 below text: the same, with the picture over the cell backgrounds. "
+		 "Correct: the picture under every cell, only the banner's glyphs over it, and both "
+		 "buffers equal to a fresh draw.",
+	 .bytes = BANNER_BYTES,
+	 .next = "",
+	 .images = images_banner_text},
+	{.name = "img-ed2",
+	 .desc = "ADR-103's A3: a sixel and a kitty picture shown for two frames, then ED 2 and a "
+		 "word. Correct: only the word, with no pixel of either picture left in either buffer.",
+	 .bytes = TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW,
+	 .next = ESC "[2J" ESC "[Hcleared",
+	 .images = images_ed2},
 };
 
 static void vte_write(struct tsm_vte *vte, const char *u8, size_t len, void *data) {}
@@ -782,6 +1111,34 @@ static void draw_frame(struct kmscon_text *txt, struct tsm_screen *con, struct t
 	fake_d2d.rb[1].map = fb;
 }
 
+/*
+ * After incremental frames: the buffer last drawn equals what a new renderer,
+ * drawing every cell of the screen as it is now, draws. 0 if it does.
+ */
+static int check_fresh(struct kmscon_font *font, struct tsm_screen *con, struct tsm_vte *vte,
+		       const struct screen *s)
+{
+	size_t size = (size_t)fb_w * fb_h * sizeof(*fb);
+	uint32_t *last = malloc(size);
+	struct kmscon_text *txt;
+	int ret = 0;
+
+	assert(last);
+	memcpy(last, fb_back, size);
+	assert(kmscon_text_new(&txt, "bbulk", s->orientation, &fake_disp) == 0);
+	assert(kmscon_text_set(txt, font) == 0);
+	memset(fb, 0, size);
+	draw_frame(txt, con, vte, s->conf);
+	if (memcmp(fb_back, last, size)) {
+		fprintf(stderr, "test_pixels: %s: the incremental frames differ from a fresh draw\n",
+			s->name);
+		ret = -EINVAL;
+	}
+	kmscon_text_unref(txt);
+	free(last);
+	return ret;
+}
+
 static int render_screen(struct kmscon_font *font, const struct screen *s, const char *out_dir)
 {
 	struct tsm_screen *con;
@@ -797,22 +1154,33 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	tsm_vte_set_palette(vte, "default");
 	ret = tsm_screen_resize(con, s->cols ? s->cols : COLS, s->rows ? s->rows : ROWS);
 	assert(ret == 0);
+	/* placements are measured in the font's cells, as kmscon tells libtsm */
+	assert(tsm_screen_set_cell_size(con, font->width, font->height) == 0);
+	tsm_screen_set_image_limit(con, 64 << 20);
 
 	/* hidden cursor: its blink state is not part of what is compared */
 	tsm_vte_input(vte, ESC "[?25l", 6);
 	tsm_vte_input(vte, s->bytes, strlen(s->bytes));
 
-	ret = kmscon_text_new(&txt, "bbulk", OR_NORMAL, &fake_disp);
+	ret = kmscon_text_new(&txt, "bbulk", s->orientation, &fake_disp);
 	assert(ret == 0);
 	ret = kmscon_text_set(txt, font);
 	assert(ret == 0);
 	assert(txt->cols == (s->cols ? s->cols : COLS) && txt->rows == (s->rows ? s->rows : ROWS));
 
+	if (s->images)
+		s->images(con, vte, 0, font->width, font->height);
 	draw_frame(txt, con, vte, s->conf);
 	if (s->next) {
+		if (s->images)
+			s->images(con, vte, 1, font->width, font->height);
 		draw_frame(txt, con, vte, s->conf);
 		tsm_vte_input(vte, s->next, strlen(s->next));
+		if (s->images)
+			s->images(con, vte, 2, font->width, font->height);
 		draw_frame(txt, con, vte, s->conf);
+		if (s->images)
+			s->images(con, vte, 3, font->width, font->height);
 		draw_frame(txt, con, vte, s->conf);
 		/* both buffers now hold the last frame */
 		if (memcmp(fb, fb_back, (size_t)fb_w * fb_h * sizeof(*fb))) {
@@ -820,6 +1188,9 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 				s->name);
 			ret = -EINVAL;
 		}
+		/* and what a fresh draw of the last screen draws: nothing stale */
+		if (!ret)
+			ret = check_fresh(font, con, vte, s);
 	}
 
 	/* the buffer last drawn */
@@ -922,6 +1293,12 @@ static int run_screen(const struct screen *s, const char *font_dir, const char *
 
 	fb_w = (s->cols ? s->cols : COLS) * font->width;
 	fb_h = (s->rows ? s->rows : ROWS) * font->height;
+	if (s->orientation == OR_RIGHT || s->orientation == OR_LEFT) {
+		unsigned int w = fb_w;
+
+		fb_w = fb_h;
+		fb_h = w;
+	}
 	fb = calloc((size_t)fb_w * fb_h, sizeof(*fb));
 	fb_back = calloc((size_t)fb_w * fb_h, sizeof(*fb));
 	assert(fb && fb_back);

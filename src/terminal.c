@@ -517,7 +517,8 @@ static void render_timer_event(struct ev_timer *timer, uint64_t count, void *dat
 		snprintf(name, sizeof(name), "%s[%s]", video_name(display_video(scr->disp)),
 			 display_name(scr->disp));
 		render_timer_format(&st, name, line, sizeof(line));
-		log_info("%s", line);
+		/* asked for in the config, so at the level kmscon logs by default */
+		log_notice("%s", line);
 	}
 }
 

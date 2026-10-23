@@ -623,7 +623,8 @@ font-name=Ubuntu Mono
                 pixels in each frame's damage rectangles with their share of
                 the screen. The values are foot's: <literal>none</literal>
                 measures nothing; <literal>log</literal> writes one line per
-                display per second to kmscon's log, at level info;
+                display per second to kmscon's log, at level notice, which kmscon logs
+                by default;
                 <literal>osd</literal> is meant to draw the figures in a corner
                 of the screen, which is not yet available, so it only logs a
                 notice; <literal>both</literal> does both.</para>

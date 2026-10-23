@@ -204,3 +204,22 @@ int render_timer_format(const struct render_timer_stats *st, const char *name, c
 		 median, p95, max, st->damage_px_mean, pct / 100, pct % 100, st->skipped, skipped);
 	return 0;
 }
+
+int render_timer_format_osd(const struct render_timer_stats *st, char *buf, size_t size)
+{
+	char median[32];
+	uint64_t rate, pct;
+
+	if (!st || !buf || !size)
+		return -EINVAL;
+
+	/* flips per second and damage share, both in tenths */
+	rate = st->interval_ns ? ((uint64_t)st->flips * 10000000000ULL + st->interval_ns / 2) /
+					 st->interval_ns
+			       : 0;
+	pct = st->screen_px ? (st->damage_px_mean * 1000 + st->screen_px / 2) / st->screen_px : 0;
+	ms(median, sizeof(median), st->cpu_ns_median);
+	snprintf(buf, size, "%" PRIu64 ".%" PRIu64 " fps %s ms %" PRIu64 ".%" PRIu64 "%%",
+		 rate / 10, rate % 10, median, pct / 10, pct % 10);
+	return 0;
+}

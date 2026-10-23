@@ -16,6 +16,11 @@
 /* --- Stubs for external functions used by kmscon_text_set --- */
 void kmscon_font_ref(struct kmscon_font *font) {}
 void kmscon_font_unref(struct kmscon_font *font) {}
+struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
+					const uint32_t *cps, size_t len, unsigned int cwidth)
+{
+	return NULL;
+}
 void display_ref(struct display *disp) {}
 void display_unref(struct display *disp) {}
 int display_swap(struct display *disp)

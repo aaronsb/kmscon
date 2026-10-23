@@ -66,6 +66,20 @@ struct kmscon_text_deco {
 	bool force;			/* force-decoration-colors: win over SGR 58 */
 };
 
+/*
+ * A picture kmscon itself draws over the screen, after libtsm's placements and
+ * in the top band: the render timer's on-screen display (ADR-103). It belongs
+ * to no libtsm store, so no program can erase, delete or replace it. It sits
+ * at the right end of the top row; its placement's col is set as it is drawn.
+ * Every new picture takes a new image_key, so a renderer damages it as it
+ * damages any placement whose image changed.
+ */
+struct kmscon_text_overlay {
+	struct tsm_frame_placement placement;
+	struct tsm_frame_image image;
+	uint32_t pixels[];
+};
+
 struct kmscon_text {
 	unsigned long ref;
 	struct shl_register_record *record;
@@ -103,6 +117,9 @@ struct kmscon_text {
 	bool measure;
 	bool frame_queued;
 	uint64_t frame_damage_px;
+
+	struct kmscon_text_overlay *overlay; /* NULL: none */
+	uint64_t overlay_count;		     /* the overlays made, for their keys */
 };
 
 
@@ -124,6 +141,8 @@ struct kmscon_text_ops {
 	int (*draw_pointer)(struct kmscon_text *txt, unsigned int x, unsigned int y);
 	int (*render)(struct kmscon_text *txt);
 	void (*abort)(struct kmscon_text *txt);
+	/* optional: free what the renderer keeps and can make again */
+	void (*release)(struct kmscon_text *txt);
 };
 
 #define FONT_WIDTH(txt) ((txt)->font->width)
@@ -156,6 +175,7 @@ int kmscon_text_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned i
 int kmscon_text_render(struct kmscon_text *txt);
 int kmscon_text_present(struct kmscon_text *txt);
 void kmscon_text_abort(struct kmscon_text *txt);
+void kmscon_text_release(struct kmscon_text *txt);
 
 /* kmscon_text_render(): the frame drew nothing, so the display needs no swap */
 #define KMSCON_TEXT_UNCHANGED 1
@@ -177,6 +197,9 @@ struct tsm_screen_color kmscon_text_ul_color(struct kmscon_text *txt,
 					     const struct tsm_frame_cell *cell);
 struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
 						 const struct tsm_frame_cell *cell);
+int kmscon_text_set_osd(struct kmscon_text *txt, const char *text);
+int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
+			  struct tsm_frame_image *out);
 
 /* modularized backends */
 

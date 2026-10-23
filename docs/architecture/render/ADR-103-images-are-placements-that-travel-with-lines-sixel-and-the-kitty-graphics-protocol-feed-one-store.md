@@ -76,6 +76,19 @@ considered:
   - operator: aaronsb
     said: "keep it"
     via: "operator's reply in the steering session, 2026-10-23, to the questions raised by the libtsm #16 and #17 reviews (ED 3 clears scrollback)"
+  - operator: aaronsb
+    said: "fix it in 3b"
+    via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to kmscon #127's question 1 (the picture cache allowed four screens within a frame, past the 192 MiB cap)"
+  - operator: aaronsb
+    said: "adopt and tighten others"
+    via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to kmscon #127's question 2 (adopt ADR-104's number for 7680x2160; keep or tighten the common-size targets)"
+  - operator: aaronsb
+    said: "Xterm seems incorrect, pushing an unwanted newline"
+    via: operator's reply in the steering session, 2026-10-23, relayed by the team lead, to the step 3c review's question on sixel cursor placement (xterm 411 as a black box against foot)
+  - operator: aaronsb
+    said: "Keep the per-call work bound on the sixel decoder, with no total cap per byte; a register count outside 2 to the maximum answers status 3; XTWINOPS 14 and 16 answer with sixel off"
+    via: operator's replies in the steering session, 2026-10-23, relayed by the team lead as answers to the step 3c review's other two questions
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -498,3 +511,18 @@ Recorded as considered entries above; what they change:
 - **Sixel aspect ratio** follows what most terminals do. The survey in libtsm #16: xterm 411 (`-ti vt340`, measured as a black box), WezTerm and mlterm do not apply P1's pixel aspect or the raster attributes' Pan;Pad; foot applies both per axis. So one sixel dot is one pixel: P1 and Pan;Pad are read and not applied, and Ph;Pv still size the picture. This replaces the Sixel section's "P1 chooses the pixel aspect". No setting is added, since the terminals do not split.
 - **ED 3 clears the scrollback**, as in xterm; the linux and xterm-256color terminfo entries carry `E3`, so `clear` wipes it.
 - **The test-only image API** leaves libtsm's exported symbols and moves to a test-only file linked by the tests and tsm-replay; no test is removed. Once sixel is wired into the parser (3c), the tier 1 image cases move from the private escape to real sixel sequences where they can.
+
+## Notes (2026-10-23, operator answers from kmscon #127 and the step 3c review)
+
+Recorded as considered entries above; what they change:
+
+- **The scaled pictures stay within the image budget now** ("fix it in 3b"). Until the setting and the budget shared with libtsm's stores land in step 3d (#125), bbulk computes `image-storage-limit=auto` from the displays it draws (four frames in ARGB, 16 MiB to 192 MiB) and keeps every display's scaled pictures within it at every moment, a frame's peak included. Between frames a display keeps at most twice its screen, or its share of the budget by size if that is less. A picture that would pass the budget is left out until the budget changes (pictures freed, a display added or removed), and frames in between do not compose it again. Each display counts once, however many sessions draw it, and a session that leaves the foreground frees its pictures. The scaler's working memory (at most 16 MiB) and the buffer a picture is rotated in (at most one screen) exist only while one picture is made and sit outside the budget. This replaces the bbulk section's bound of "twice the screen's size" as the only limit: at 7680x2160 a frame could otherwise hold four screens, 265 MB, past the cap.
+- **Targets** ("adopt and tighten others"). ADR-104 measured them. The figures below replace the Targets section's common-size numbers. The ADR-104 figures come from one core of the host the harness runs on, which is also what the small tier 3 machine's single vCPU is, and that core is fast. These targets leave about five times headroom over the measured 95th percentile, for the slower cores of the low-end laptops and single-board computers the small machine stands for. They still fail a regression that slows composition several times over.
+  - S4: at most 4 ms per frame at 1366x768 (measured 0.68 ms median, 0.83 ms 95th percentile) and 8 ms at 1920x1080 (1.42 ms and 1.70 ms). At 30 frames per second that is 12% and 24% of one core.
+  - S5: at most 1.25 times S4 at the same size (measured 1.16 and 1.10 times). A banner over a full-screen picture should cost little more than the picture.
+  - S3: at least 60 lines per second, one line per 60 Hz frame (the renderer alone allows over 500).
+  - S1: within 5% of main, unchanged (measured +0.8% to +2.4%).
+  - 7680x2160, adopted from ADR-104: S4 and S5 at most 16.7 ms per frame, one 60 Hz frame interval (measured 11.9 ms and 12.5 ms median, at most 14.4 ms at the 95th percentile). This replaces "no number until the first measurement". 7680x2160 is the largest display at hand. 7680x4320 (full 8K) is measured in ADR-104 for information (S4 24.3 ms, S5 24.7 ms median) and is not a target, as the operator has no such display; ADR-104 also computes each size's memory under the budget, where the 192 MiB ceiling holds one and a half full-8K screens.
+- **Sixel cursor placement follows foot, not xterm** ("Xterm seems incorrect, pushing an unwanted newline"). xterm 411, run as a black box, matched 6 of 8 cursor cases. It scrolls one extra row at the bottom margin, and with mode 8452 it wraps to the next line at the right edge. The Sixel section's foot rules stand. Where xterm and foot differ, foot's rule is the reference, not xterm's black-box answer.
+- **The sixel decoder keeps its per-call work bound** and adds no total cap per byte.
+- **XTSMGRAPHICS:** a register count outside 2 to the maximum answers status 3. **XTWINOPS 14 and 16** answer even with sixel off.

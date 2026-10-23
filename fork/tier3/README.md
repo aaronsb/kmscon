@@ -143,6 +143,8 @@ ADR-103's synthetic scenarios run as screens: S1, text scrolling with no image, 
 
 The report's `bench` entry for a screen holds `lines`, `seconds` and `lines_per_s`; `flips`, `frames` and `presented_per_s` (flips over the window's length); `cpu_ms_mean` and `damage_px_mean` per frame over the window, with `damage_pct` the damaged share of the screen; and `cpu_ms_median`, `cpu_ms_p95` and `cpu_ms_max`. The lines carry no single frames, so the median is the median of the seconds' medians and the 95th percentile the largest second's. The run page shows them under each variant.
 
+S1 is the only benchmark screen: S2 to S6 put pictures on screen, which no program in the guest can do until the sixel parser (ADR-103 step 3c) or the kitty protocol (step 4) lands. Until then they are measured in memory by `make bench-compose` (`tests/bench_compose.c`: bbulk and the drm2d blend into an in-memory display, pinned to one host CPU), and ADR-104 records the first run.
+
 A build with the render timer configured that logs no line in the window fails the case. Upstream's build does not know the key: it logs `unknown config option 'render-timer'`, keeps going, and its entry gets a note instead of figures, with `lines_per_s` still measured.
 
 The figures are measured on a guest: a vCPU preempted by the host still counts as the thread's CPU time, so whatever else loads the host (the other variant's scroll under `JOBS=2`, or other work) inflates them. At 7680x2160 the CPU time per frame read 9.6 to 14.0 ms across five `JOBS=2` runs; at 1280x800 two `JOBS=1` runs of one build on a busy host read 0.91 and 1.15 ms, and 179 000 and 103 000 lines per second. Compare builds with `JOBS=1`, several runs each, on a host doing nothing else.

@@ -61,7 +61,7 @@ struct screen {
 	struct kmscon_terminal *term;
 	struct display *disp;
 	struct kmscon_text *txt;
-	struct render_timer *timer; /* NULL unless render-timer logs */
+	struct render_timer *timer; /* NULL while render-timer is none */
 
 	bool config_enabled;
 	bool pending;
@@ -116,7 +116,7 @@ struct kmscon_terminal {
 	bool blinking;
 	bool cursor_blinking;
 
-	/* closes each screen's render timer interval and logs it */
+	/* closes each screen's render timer interval, logs it and shows it */
 	struct ev_timer *render_timer;
 
 	struct kmscon_asciinema *asciinema;
@@ -514,11 +514,20 @@ static void render_timer_event(struct ev_timer *timer, uint64_t count, void *dat
 						 display_get_height(scr->disp),
 					 &st))
 			continue;
-		snprintf(name, sizeof(name), "%s[%s]", video_name(display_video(scr->disp)),
-			 display_name(scr->disp));
-		render_timer_format(&st, name, line, sizeof(line));
-		/* asked for in the config, so at the level kmscon logs by default */
-		log_notice("%s", line);
+		if (term->conf->render_timer & KMSCON_RENDER_TIMER_LOG) {
+			snprintf(name, sizeof(name), "%s[%s]",
+				 video_name(display_video(scr->disp)), display_name(scr->disp));
+			render_timer_format(&st, name, line, sizeof(line));
+			/* asked for in the config, so at the level kmscon logs by default */
+			log_notice("%s", line);
+		}
+		/* the overlay's own redraw, once a second, is part of what it shows */
+		if (term->conf->render_timer & KMSCON_RENDER_TIMER_OSD) {
+			render_timer_format_osd(&st, line, sizeof(line));
+			if (kmscon_text_set_osd(scr->txt, line))
+				log_warning("render-timer: cannot draw the on-screen display");
+			redraw_screen(scr);
+		}
 	}
 }
 
@@ -914,7 +923,7 @@ int terminal_add_display(struct kmscon_terminal *term, struct display *disp)
 
 	config_get_screen(term->conf, gpu, connector, &orientation, &scr->config_enabled);
 
-	if (term->conf->render_timer & KMSCON_RENDER_TIMER_LOG) {
+	if (term->conf->render_timer != KMSCON_RENDER_TIMER_NONE) {
 		ret = render_timer_new(&scr->timer, &render_timer_clock);
 		if (ret)
 			log_warning("no render timer for display %s: %d", connector, ret);
@@ -1434,7 +1443,12 @@ void terminal_activate(struct kmscon_terminal *term)
 
 void terminal_deactivate(struct kmscon_terminal *term)
 {
+	struct screen *scr;
+
 	term->awake = false;
+	/* in the background, its scaled pictures give their room back */
+	dlist_for_each_entry(scr, &term->screens, list)
+		kmscon_text_release(scr->txt);
 	hw_cursor_hide(term);
 	if (term->conf->blink) {
 		ev_timer_disable(term->blink_timer);
@@ -1603,11 +1617,7 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 		if (ret)
 			goto err_blink;
 	}
-	/* ADR-103: the overlay is the first placement bbulk draws, in step 3b. */
-	if (term->conf->render_timer & KMSCON_RENDER_TIMER_OSD)
-		log_notice("render-timer: the on-screen display is not yet available until "
-			   "placements land (ADR-103 step 3b)");
-	if (term->conf->render_timer & KMSCON_RENDER_TIMER_LOG) {
+	if (term->conf->render_timer != KMSCON_RENDER_TIMER_NONE) {
 		ret = ev_eloop_new_timer(term->eloop, &term->render_timer,
 					 &render_timer_interval, render_timer_event, term);
 		if (ret)

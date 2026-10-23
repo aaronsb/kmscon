@@ -209,6 +209,7 @@ void kmscon_text_unref(struct kmscon_text *text)
 
 	log_debug("freeing text renderer");
 	kmscon_text_unset(text);
+	free(text->overlay);
 	display_unref(text->disp);
 
 	if (text->ops->destroy)
@@ -456,6 +457,119 @@ const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, u
 }
 
 /**
+ * kmscon_text_get_image:
+ * @txt: valid text renderer, drawing
+ * @overlay: the key is @txt's overlay's, not the screen's
+ * @key: a frame placement's image key
+ * @out: the image's size and premultiplied ARGB32 pixels
+ *
+ * The image a placement of the frame being drawn shows (ADR-103). The pixels
+ * stay valid until the screen next changes, or the overlay is replaced.
+ *
+ * Returns: 0, or -ENOENT when there is no such image.
+ */
+int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
+			  struct tsm_frame_image *out)
+{
+	if (overlay) {
+		if (!txt->overlay || txt->overlay->placement.image_key != key)
+			return -ENOENT;
+		*out = txt->overlay->image;
+		return 0;
+	}
+	if (!txt->screen)
+		return -ENOENT;
+	return tsm_screen_frame_image(txt->screen, key, out);
+}
+
+/* the on-screen display's colours: light grey on a dark grey, opaque */
+#define OSD_FG 0xe0
+#define OSD_BG 0x20
+
+/**
+ * kmscon_text_set_osd:
+ * @txt: valid text renderer with a font
+ * @text: printable ASCII, or NULL or "" to remove it
+ *
+ * Draws @text with @txt's font into the overlay picture at the right end of
+ * the top row (ADR-103's render timer display), replacing the one before. It
+ * shows from the next frame.
+ *
+ * Returns: 0, -EINVAL or -ENOMEM; on failure the overlay is removed.
+ */
+int kmscon_text_set_osd(struct kmscon_text *txt, const char *text)
+{
+	struct kmscon_text_overlay *ov;
+	struct kmscon_font_attr attr = {0};
+	struct kmscon_glyph *glyph;
+	unsigned int fw, fh, len, i, x, y, w;
+	uint32_t cp;
+
+	if (!txt)
+		return -EINVAL;
+	free(txt->overlay);
+	txt->overlay = NULL;
+	if (!text || !*text)
+		return 0;
+	if (!txt->font)
+		return -EINVAL;
+
+	fw = txt->font->width;
+	fh = txt->font->height;
+	len = strlen(text);
+	w = len * fw;
+	ov = calloc(1, sizeof(*ov) + (size_t)w * fh * 4);
+	if (!ov)
+		return -ENOMEM;
+	for (i = 0; i < w * fh; i++)
+		ov->pixels[i] = 0xff000000 | OSD_BG << 16 | OSD_BG << 8 | OSD_BG;
+
+	for (i = 0; i < len; i++) {
+		cp = (unsigned char)text[i];
+		if (cp <= ' ' || cp > '~')
+			continue;
+		glyph = kmscon_font_render(txt->font, &attr, &cp, 1, 1);
+		if (!glyph) {
+			free(ov);
+			return -ENOMEM;
+		}
+		/* a mask's alpha mixes the two greys; a colour glyph is not ASCII */
+		for (y = 0; y < fh && y < glyph->buf.height; y++) {
+			for (x = 0; x < fw && x < glyph->buf.width; x++) {
+				uint32_t a = glyph->buf.format == VIDEO_FORMAT_A8
+						     ? glyph->buf.data[y * glyph->buf.width + x]
+						     : 0;
+				uint32_t c = (OSD_FG * a + OSD_BG * (255 - a) + 127) / 255;
+
+				ov->pixels[y * w + i * fw + x] = 0xff000000 | c << 16 | c << 8 | c;
+			}
+		}
+		free(glyph);
+	}
+
+	ov->image.width = w;
+	ov->image.height = fh;
+	ov->image.stride = (size_t)w * 4;
+	ov->image.pixels = ov->pixels;
+	ov->image.opaque = true;
+	ov->placement.key = 1;
+	ov->placement.image_key = ++txt->overlay_count;
+	ov->placement.cols = len;
+	ov->placement.rows = 1;
+	ov->placement.width = w;
+	ov->placement.height = fh;
+	ov->placement.src_width = w;
+	ov->placement.src_height = fh;
+	ov->placement.cell_width = fw;
+	ov->placement.cell_height = fh;
+	ov->placement.z = INT32_MAX;
+	ov->placement.band = TSM_FRAME_BAND_ABOVE_TEXT;
+	ov->placement.flags = TSM_FRAME_OPAQUE;
+	txt->overlay = ov;
+	return 0;
+}
+
+/**
  * kmscon_text_prepare:
  * @txt: valid text renderer
  * @attr: glyph attributes
@@ -626,4 +740,19 @@ void kmscon_text_abort(struct kmscon_text *txt)
 	if (txt->ops->abort)
 		txt->ops->abort(txt);
 	txt->rendering = false;
+}
+
+/**
+ * kmscon_text_release:
+ * @txt: valid text renderer
+ *
+ * Frees what the renderer keeps between frames and can make again, such as
+ * bbulk's scaled pictures, so a terminal in the background gives back its
+ * share of the process's image budget (ADR-103). The next frame makes what it
+ * needs again.
+ */
+void kmscon_text_release(struct kmscon_text *txt)
+{
+	if (txt && txt->ops->release)
+		txt->ops->release(txt);
 }

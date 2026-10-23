@@ -49,6 +49,7 @@
 #undef LOG_SUBSYSTEM
 #include "../src/render/text.c"
 #undef LOG_SUBSYSTEM
+#include "../src/render/picture.c"
 #include "../src/render/bbulk.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/deco.c"

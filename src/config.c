@@ -272,7 +272,7 @@ static void print_help()
 		"\t    --render-timer <mode>           [none]\n"
 		"\t                                      Frames presented, CPU time and\n"
 		"\t                                      damage per frame: none, osd, log\n"
-		"\t                                      or both (osd: not yet drawn)\n",
+		"\t                                      or both (osd: bbulk only)\n",
 		"kmscon");
 	/*
 	 * 80 char line:

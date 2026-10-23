@@ -28,8 +28,9 @@
  * Counts, for one display, the page flips that complete, the thread CPU time
  * kmscon spends on each frame from preparing it to queuing its flip, and the
  * pixels in each frame's damage rectangles. render_timer_report() closes an
- * interval and returns its figures; the terminal calls it once a second and
- * logs the line render_timer_format() writes.
+ * interval and returns its figures; the terminal calls it once a second, logs
+ * the line render_timer_format() writes, and draws the one
+ * render_timer_format_osd() writes in a corner of the display.
  *
  * Both clocks are passed in, so the counters can be tested with fake ones.
  */
@@ -97,5 +98,11 @@ bool render_timer_report(struct render_timer *rt, uint64_t screen_px,
 /* One log line of @st for the display @name, NUL-terminated in @buf. */
 int render_timer_format(const struct render_timer_stats *st, const char *name, char *buf,
 			size_t size);
+/*
+ * The on-screen display's line of @st, NUL-terminated in @buf: frames
+ * presented per second, the median CPU time per frame and the mean share of
+ * the screen damaged per frame.
+ */
+int render_timer_format_osd(const struct render_timer_stats *st, char *buf, size_t size);
 
 #endif /* KMSCON_RENDER_TIMER_H */

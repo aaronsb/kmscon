@@ -198,12 +198,14 @@ endif
 test('capabilities', python, args: caps_args)
 
 if enable_font_freetype and enable_video_drm2d
+    # ADR-103's test calls for images build only into what links this
+    libtsm_test_deps = subproject('libtsm').get_variable('libtsm_test_dep')
     test_pixels = executable(
         'test_pixels',
         'test_pixels.c',
         include_directories: [src_inc, misc_inc],
         dependencies: [
-            libtsm_deps,
+            libtsm_test_deps,
             freetype_deps,
             fontconfig_deps,
             harfbuzz_deps,
@@ -247,6 +249,25 @@ if enable_font_freetype and enable_video_drm2d
         ],
     )
     test('test_blink', test_blink, args: [meson.current_source_dir() / 'fonts'])
+
+    # ADR-103's S1 to S6 drawn into memory; run by make bench-compose, not a test
+    executable(
+        'bench_compose',
+        'bench_compose.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            libtsm_test_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            harfbuzz_raster_deps,
+            libdrm_deps,
+            threads_deps,
+            math_deps,
+            shl_deps,
+            htable_deps,
+        ],
+    )
 else
     # Visible as SKIP, not a silent absence, when the renderer pieces are off.
     test(

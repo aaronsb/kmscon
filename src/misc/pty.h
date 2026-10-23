@@ -47,7 +47,13 @@
 
 struct kmscon_pty;
 
-typedef void (*kmscon_pty_input_cb)(struct kmscon_pty *pty, const char *u8, size_t len, void *data);
+/*
+ * The child's output: returns how many bytes of it were taken. The rest is
+ * held, and no more is read, until it is all taken: the pty hands it over
+ * again on later turns of its loop, from an idle source.
+ */
+typedef size_t (*kmscon_pty_input_cb)(struct kmscon_pty *pty, const char *u8, size_t len,
+				      void *data);
 typedef void (*kmscon_pty_exit_cb)(struct kmscon_pty *pty, bool restart, void *data);
 
 int kmscon_pty_new(struct kmscon_pty **out, kmscon_pty_input_cb input_cb,
@@ -61,12 +67,19 @@ int kmscon_pty_set_conf(struct kmscon_pty *pty, const char *term, const char *co
 int kmscon_pty_get_fd(struct kmscon_pty *pty);
 void kmscon_pty_dispatch(struct kmscon_pty *pty);
 
-int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short height, bool drm);
+/*
+ * The size in cells, and the cell size in pixels (0: unknown): TIOCSWINSZ
+ * carries the text area in pixels, at most 65535 each way.
+ */
+int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short height,
+		    unsigned int cell_w, unsigned int cell_h, bool drm);
 void kmscon_pty_close(struct kmscon_pty *pty);
 
 int kmscon_pty_write(struct kmscon_pty *pty, const char *u8, size_t len);
 void kmscon_pty_signal(struct kmscon_pty *pty, int signum);
-void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned short height);
+/* as kmscon_pty_open; a size the same as the last one sets nothing */
+void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned short height,
+		       unsigned int cell_w, unsigned int cell_h);
 
 int kmscon_pty_get_slave_name(struct kmscon_pty *pty, char *buf, size_t len);
 

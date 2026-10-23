@@ -681,6 +681,18 @@ static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 	return 0;
 }
 
+/*
+ * The frame's image placements (ADR-103 step 3f): here gltex will compose the
+ * three bands, a texture per image key, once ADR-102 step 6 gives it an RGBA
+ * path (#68). Until then it draws none, and kmscon_text_gltex_ops leaves
+ * draws_images false, so no terminal gltex draws for offers sixel.
+ */
+static void gltex_draw_placements(struct kmscon_text *txt, const struct tsm_frame *frame)
+{
+	(void)txt;
+	(void)frame;
+}
+
 static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bool cursor_on)
 {
 	unsigned int posx, posy, cols, rows, width;
@@ -718,6 +730,7 @@ static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 			gltex_draw_cell(txt, cell, key, posx, posy, width);
 		}
 	}
+	gltex_draw_placements(txt, frame);
 	return 0;
 }
 
@@ -871,4 +884,5 @@ struct kmscon_text_ops kmscon_text_gltex_ops = {
 	.draw_pointer = gltex_draw_pointer,
 	.render = gltex_render,
 	.abort = NULL,
+	.draws_images = false, /* until ADR-103 step 3f: gltex_draw_placements */
 };

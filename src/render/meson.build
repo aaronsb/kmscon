@@ -3,6 +3,7 @@
 render_srcs = [
     'text.c',
     'bbulk.c',
+    'image_budget.c',
     'deco.c',
     'picture.c',
 ]

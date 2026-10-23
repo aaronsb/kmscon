@@ -181,6 +181,13 @@ if [ "$commits" -eq 0 ] && [ "$timeouts" -eq 0 ]; then
 else
 	echo "health: $commits 'atomic commit failed', $timeouts 'vt_timeout' lines in kmscon's log: the stock-kmscon freeze signature"
 fi
+# kmscon's exit warning when a terminal's screen never left the image budget
+budget=$(grep -c 'still in the image budget' "$log" || true)
+if [ "$budget" -eq 0 ]; then
+	echo "health: 0 'still in the image budget' lines in kmscon's log"
+else
+	echo "health: $budget 'still in the image budget' lines in kmscon's log: a terminal was freed without leaving the image budget"
+fi
 echo "kmscon log: $log"
 echo
 

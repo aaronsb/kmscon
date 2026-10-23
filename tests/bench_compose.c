@@ -37,6 +37,7 @@
 #include "../src/render/picture.c"
 #endif
 #include "../src/render/bbulk.c"
+#include "../src/render/image_budget.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/deco.c"
 #undef LOG_SUBSYSTEM

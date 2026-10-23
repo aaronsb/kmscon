@@ -34,7 +34,7 @@ The pins live at the top of `fork/tier3.mk`. The snapshot date has to be no olde
 
 1. `make tier3-image` provisions the base once: a qcow2 overlay on the pristine image, booted with a cloud-init seed disc (`guest/user-data.in`). Cloud-init creates the user `tester` (password `tester`, prompt `$ `, no MOTD), installs kmscon's runtime dependencies and the fonts, points `autovt@.service` at `kmsconvt@.service`, enables the boot hook `tier3-install.service`, disables itself and powers off.
 2. Each variant boots a throwaway overlay of the base with a second disc labelled `T3PKG`: the built packages, the variant's `kmscon.conf`, the screen scripts and `guest/setup`. The boot hook runs `setup`, which installs the packages with `pacman -U`, routes kmscon's log to the serial console, and makes the second serial port (ttyS1) writable as the event port: the login shell and each screen script write a line there. Changing anything on the disc never needs a new base image. `setup` then reports on the console every kmscon or libtsm package installed and the libtsm commit the package was built with (the recipe installs it as `/usr/share/doc/<package>/libtsm-commit`, with `+dirty` when that tree had changes or untracked files). The driver fails the variant when the guest holds any such package that is not on the disc, when the commit is unknown or not the libtsm the run names, or when the two disagree on `+dirty`. A run must name its libtsm, so a fresh worktree needs `subprojects/libtsm` checked out first (`make build` fetches it).
-3. The driver (`t3.py`, with QEMU in `t3_qemu.py`) talks QMP on a unix socket. It waits for `TIER3-INSTALL-OK`, systemd's `Started User Login Management` and `Reached target Login Prompts` on the serial log, then presses Ctrl+Alt+F2: logind spawns kmscon on tty2, and a boot without the keypress has no kmscon there. It waits for kmscon's `vt: using tty /dev/tty2` and a drawn login prompt, logs in, and waits for the login shell's line on the event port. Then it types `t3 NAME` for each screen in `SCREENS` (`t3_evaluate.py`): `sgr`, `colour-forms`, `underline-styles`, `underline-colour`, `strike`, `boxdraw`, `blocks`, `mosaic`, `wide-margin`, `combining`, `emoji`, `s1-scroll`, `cjk`. After each, it waits for the screen script's line on the event port, then captures until two captures a second apart are identical and differ from the screen before.
+3. The driver (`t3.py`, with QEMU in `t3_qemu.py`) talks QMP on a unix socket. It waits for `TIER3-INSTALL-OK`, systemd's `Started User Login Management` and `Reached target Login Prompts` on the serial log, then presses Ctrl+Alt+F2: logind spawns kmscon on tty2, and a boot without the keypress has no kmscon there. It waits for kmscon's `vt: using tty /dev/tty2` and a drawn login prompt, logs in, and waits for the login shell's line on the event port. Then it types `t3 NAME` for each screen in `SCREENS` (`t3_evaluate.py`): `sgr`, `colour-forms`, `underline-styles`, `underline-colour`, `strike`, `boxdraw`, `blocks`, `mosaic`, `wide-margin`, `combining`, `emoji`, `sixel`, `sixel-ramps`, `sixel-article`, `sixel-bound`, `s1-scroll`, `cjk`. After each, it waits for the screen script's line on the event port, then captures until two captures a second apart are identical and differ from the screen before.
 4. VT switch: Ctrl+Alt+F3, then Ctrl+Alt+F2. The `vt-switch` case passes when logind's second kmscon on tty3 draws a screen that is neither blank nor the one just left, so a switch that never happens cannot let `vt-restore` pass on its own. `vt-restore` then requires the tty2 screen to equal the `cjk` golden exactly.
 5. The driver reads kmscon's `Display ... with backend [..] text renderer [..]` line from the serial log and fails the variant if kmscon drew with a renderer other than the one the variant exists to test.
 6. It reads the figures of each benchmark screen (`BENCHMARKS` in `t3_evaluate.py`; see [Benchmarks](#benchmarks)) from kmscon's render-timer lines on the serial log.
@@ -57,16 +57,15 @@ Upstream reads every key of `guest/kmscon.conf` and logs its character cell, so 
 
 ## Variants
 
-| Variant | Device | kmscon path | Capture |
-|---|---|---|---|
 | Variant | Machine | Device | kmscon path | Capture |
 |---|---|---|---|---|
 | `2d-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga`, EDID 1280x800 | drm2d + bbulk | QMP `screendump` (PPM) |
 | `2d-7680x2160` | 4 vCPUs, 4096 MB | `virtio-vga`, EDID 7680x2160, `max_hostmem=1G` | drm2d + bbulk | QMP `screendump` (PPM) |
 | `2d-1366x768-potato` | 1 vCPU, 512 MB | `virtio-vga`, EDID 1366x768 | drm2d + bbulk | QMP `screendump` (PPM) |
+| `2d-7680x2160-font32` | 4 vCPUs, 4096 MB | as `2d-7680x2160`, with `guest/kmscon-font32.conf`: 32 points, a 19x38 cell | drm2d + bbulk | QMP `screendump` (PPM) |
 | `gl-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga-gl` with `-display egl-headless` (virgl on the host's render node, `T3_RENDERNODE`, default `/dev/dri/renderD128`) | drm3d + gltex (`hwaccel`) | VNC over a unix socket |
 
-`2d-1366x768-potato`, the potato computer, is ADR-103's small machine (ADR-103 names it `2d-1366x768-hamster`; renamed at the operator's request, noted at the end of ADR-103): one vCPU and 512 MB at a common laptop size, so a regression on small machines shows in the default run. Its vCPU is a core of the host, so it bounds parallelism and memory; it does not reproduce slow hardware. `make tier3` runs the 2D variants in the order 1280x800, 7680x2160, potato, so with `JOBS=2` the longest starts first.
+`2d-1366x768-potato`, the potato computer, is ADR-103's small machine (ADR-103 names it `2d-1366x768-hamster`; renamed at the operator's request, noted at the end of ADR-103): one vCPU and 512 MB at a common laptop size, so a regression on small machines shows in the default run. Its vCPU is a core of the host, so it bounds parallelism and memory; it does not reproduce slow hardware. `2d-7680x2160-font32` runs every screen at a 19x38 cell, near the 20x40 of Monoid at 30 on the operator's display; every other variant runs a 10x19 cell. The sixel page sizes its pictures from the cell, so its layout is judged at two cell sizes. `make tier3` runs the 2D variants in the order 1280x800, 7680x2160, potato, 7680x2160-font32, so with `JOBS=2` the longest starts first.
 
 Three findings shaped this table:
 
@@ -76,7 +75,7 @@ Three findings shaped this table:
 
 ## Goldens, tolerances and masks
 
-Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 42 come to about 2.4 MB, the 7680x2160 ones included).
+Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 71 come to about 5 MB, the 7680x2160 ones included).
 
 Comparison is exact unless a tolerance sidecar `golden/<variant>/<screen>.tol` sits beside the golden. It holds `key=value` lines; `#` starts a comment:
 
@@ -143,7 +142,7 @@ ADR-103's synthetic scenarios run as screens: S1, text scrolling with no image, 
 
 The report's `bench` entry for a screen holds `lines`, `seconds` and `lines_per_s`; `flips`, `frames` and `presented_per_s` (flips over the window's length); `cpu_ms_mean` and `damage_px_mean` per frame over the window, with `damage_pct` the damaged share of the screen; and `cpu_ms_median`, `cpu_ms_p95` and `cpu_ms_max`. The lines carry no single frames, so the median is the median of the seconds' medians and the 95th percentile the largest second's. The run page shows them under each variant.
 
-S1 is the only benchmark screen: S2 to S6 put pictures on screen, which no program in the guest can do until the sixel parser (ADR-103 step 3c) or the kitty protocol (step 4) lands. Until then they are measured in memory by `make bench-compose` (`tests/bench_compose.c`: bbulk and the drm2d blend into an in-memory display, pinned to one host CPU), and ADR-104 records the first run.
+S1 is the only benchmark screen: S2 to S6 put pictures on screen, which a program in the guest can do through sixel since ADR-103 step 3d, and they join as benchmark screens in step 3e. Until then they are measured in memory by `make bench-compose` (`tests/bench_compose.c`: bbulk and the drm2d blend into an in-memory display, pinned to one host CPU), and ADR-104 records the first run.
 
 A build with the render timer configured that logs no line in the window fails the case. Upstream's build does not know the key: it logs `unknown config option 'render-timer'`, keeps going, and its entry gets a note instead of figures, with `lines_per_s` still measured.
 

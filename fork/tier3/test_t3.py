@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Self-test for the parts of tier 3 that run on the host without a guest:
 the caption and screen text a case's report carries (t3_evaluate.py), the
-packages a run installs and the guest's account of them, and the machine
-each variant boots (t3_scenario.py), the console lines the driver waits for
-and the QEMU command line (t3_qemu.py), a benchmark screen's figures
-(t3_bench.py), and the logger a worker process receives (t3_common.py).
+colours and cells of the sixel goldens, the packages a run installs and the
+guest's account of them, and the machine each variant boots
+(t3_scenario.py), the console lines the driver waits for and the QEMU
+command line (t3_qemu.py), a benchmark screen's figures (t3_bench.py), and
+the logger a worker process receives (t3_common.py).
 
     python3 -I fork/tier3/test_t3.py
 """
@@ -49,14 +50,17 @@ class ScreenTextTest(unittest.TestCase):
         self.assertEqual(t3_evaluate.screen_text("vt-restore", LOG),
                          t3_evaluate.screen_text(t3_evaluate.SCREENS[-1], LOG))
         self.assertIsNone(t3_evaluate.screen_text("vt-switch", LOG))
-        # wide-margin moves the cursor to reach the screen's real edge, and
+        # wide-margin moves the cursor to reach the screen's real edge,
         # s1-scroll prints 500 000 lines of which the screen shows the last,
-        # so they have no text on purpose; every other screen has its rows.
+        # and the sixel screens draw pictures, so they have no text on
+        # purpose; every other screen has its rows.
+        textless = ("wide-margin", "s1-scroll", "sixel", "sixel-ramps", "sixel-article",
+                    "sixel-bound")
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertIsNone(t3_evaluate.screen_text("wide-margin", LOG))
-            self.assertIsNone(t3_evaluate.screen_text("s1-scroll", LOG))
+            for name in textless:
+                self.assertIsNone(t3_evaluate.screen_text(name, LOG))
         for name in t3_evaluate.SCREENS:
-            if name not in ("wide-margin", "s1-scroll"):
+            if name not in textless:
                 with self.subTest(name):
                     self.assertTrue(t3_evaluate.screen_text(name, LOG))
         # e and U+0301 between bars: one cell built from two code points.
@@ -162,6 +166,88 @@ class DescribeTest(unittest.TestCase):
 
 
 LIBTSM = "ef2365d0f9f1a370d721a82470d69c3646fe97f0"
+
+
+class SixelGoldenTest(unittest.TestCase):
+    # The sixel page's colours (sixel.sh), as kmscon draws them: the bars,
+    # the seven discs and swatches, each beside its text twin, the ring
+    # around its blue disc, and the grey band under the swatches.
+    BARS = [(255, 0, 0), (255, 255, 0), (0, 255, 0), (0, 255, 255), (0, 0, 255),
+            (255, 0, 255), (255, 255, 255), (128, 128, 128)]
+    DISCS = {"red": (255, 0, 0), "green": (0, 255, 0), "blue": (0, 0, 255),
+             "cyan": (0, 255, 255), "magenta": (255, 0, 255), "yellow": (255, 255, 0),
+             "orange": (255, 128, 0)}
+    GREY = (128, 128, 128)
+
+    @classmethod
+    def grid(cls, variant):
+        """The cell size and the screen's top-left cell in a variant's sixel
+        golden: the red bar is the first red pixel and one cell, at column
+        2, row 2 of a grid kmscon may centre on the display."""
+        img = t3img.read(t3_evaluate.golden_for(variant, "sixel")[0])
+        x0, y0 = next((x, y) for y in range(200) for x in range(200)
+                      if cls.pixel(img, x, y) == cls.BARS[0])
+        cw = next(n for n in range(1, 200) if cls.pixel(img, x0 + n, y0) != cls.BARS[0])
+        ch = next(n for n in range(1, 200) if cls.pixel(img, x0, y0 + n) != cls.BARS[0])
+        return cw, ch, x0 - 2 * cw, y0 - 2 * ch
+
+    @staticmethod
+    def pixel(img, x, y):
+        i = (y * img.width + x) * 3
+        return tuple(img.data[i:i + 3])
+
+    def screen(self, variant, case):
+        """The golden of a sixel screen, read at (column, row) in cells."""
+        cw, ch, left, top = self.grid(variant)
+        img = t3img.read(t3_evaluate.golden_for(variant, case)[0])
+        return (lambda col, row: self.pixel(img, left + int(col * cw), top + int(row * ch)),
+                img.width // cw, cw, ch)
+
+    def test_colours_in_cells(self):
+        # Every default variant's golden holds each picture in the cells the
+        # page puts it in, in its colours.
+        for variant in t3_scenario.DEFAULT_VARIANTS:
+            with self.subTest(variant):
+                at, _, cw, ch = self.screen(variant, "sixel")
+                self.assertEqual([at(2.5 + i, 2.5) for i in range(8)], self.BARS)
+                # each slot is 10 columns from column 2: the disc and its
+                # text square on rows 9 and 10, the swatch and its text
+                # square on rows 15 to 17 of the grey band
+                for k, (name, rgb) in enumerate(self.DISCS.items()):
+                    c = 2 + 10 * k
+                    self.assertEqual(at(c + 1.5, 10), rgb, name + " disc")
+                    self.assertEqual(at(c + 5.5, 10), rgb, name + " text square")
+                    self.assertEqual(at(c + 2, 16.5), rgb, name + " swatch")
+                    self.assertEqual(at(c + 6, 16.5), rgb, name + " text swatch")
+                    self.assertEqual(at(c + 9, 16.5), self.GREY, name + " band")
+                d = min(4 * cw, 2 * ch)
+                self.assertEqual(at(42 - 3 * d / 8 / cw, 4), self.DISCS["orange"])
+                self.assertEqual(at(42, 4), self.DISCS["blue"])
+
+    def test_ramps_match_their_text(self):
+        # sixel-ramps.sh: each ramp on rows 4, 7, 10, 13 and 16 from column
+        # 2, one cell a step, over its text strip on the next row; the
+        # swatches on rows 19 and 20, 7 columns apart, over their text twins
+        # on rows 21 and 22. Every step and swatch equals its text twin.
+        ends = {4: ((0, 0, 0), (255, 0, 0)), 7: ((0, 0, 0), (0, 255, 0)),
+                10: ((0, 0, 0), (0, 0, 255)), 13: ((0, 0, 0), (255, 255, 255)),
+                16: ((255, 0, 0), None)}
+        for variant in t3_scenario.DEFAULT_VARIANTS:
+            with self.subTest(variant):
+                at, cols, _, _ = self.screen(variant, "sixel-ramps")
+                # the steps the page chose: the most that divide 100% evenly
+                # and fit the columns (registers are 1024 here)
+                n = next(n for n in (101, 51, 26, 21, 11, 6, 5, 3, 2) if n <= cols - 4)
+                for row, (first, last) in ends.items():
+                    steps = [at(2.5 + i, row + 0.5) for i in range(n)]
+                    self.assertEqual(steps, [at(2.5 + i, row + 1.5) for i in range(n)],
+                                     "ramp on row %d" % row)
+                    self.assertEqual(steps[0], first, "ramp on row %d" % row)
+                    if last:
+                        self.assertEqual(steps[-1], last, "ramp on row %d" % row)
+                    self.assertEqual(len(set(steps)), n, "ramp on row %d" % row)
+                for k in range(10):
+                    self.assertEqual(at(5 + 7 * k, 20), at(5 + 7 * k, 22), "swatch %d" % k)
 
 
 class PackagesTest(unittest.TestCase):

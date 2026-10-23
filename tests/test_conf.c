@@ -299,6 +299,75 @@ static void test_parse_render_timer(void)
 	assert(conf->render_timer == KMSCON_RENDER_TIMER_BOTH);
 }
 
+/*
+ * The image options (ADR-103): image-storage-limit takes auto, bytes, or a
+ * size in K, M or G; sixel and kitty-graphics are on unless turned off;
+ * max-graphic-size and num-color-registers take xterm's forms within libtsm's
+ * bounds. A bad value keeps nothing of it.
+ */
+static void test_parse_images(void)
+{
+	struct conf_ctx *ctx;
+	struct kmscon_conf_t *conf;
+
+	conf = parse_conf(&ctx, "\n");
+	assert(conf && conf->image_storage_limit == IMAGE_BUDGET_AUTO);
+	assert(conf->sixel && conf->kitty_graphics && conf->private_color_registers);
+	assert(conf->max_graphic_size.width == 10000 && conf->max_graphic_size.height == 10000);
+	assert(conf->num_color_registers == 1024);
+
+	conf = parse_conf(&ctx, "image-storage-limit=0\n");
+	assert(conf && conf->image_storage_limit == 0);
+	conf = parse_conf(&ctx, "image-storage-limit=123456\n");
+	assert(conf && conf->image_storage_limit == 123456);
+	conf = parse_conf(&ctx, "image-storage-limit=64K\n");
+	assert(conf && conf->image_storage_limit == (size_t)64 << 10);
+	conf = parse_conf(&ctx, "image-storage-limit=192M\n");
+	assert(conf && conf->image_storage_limit == (size_t)192 << 20);
+	conf = parse_conf(&ctx, "image-storage-limit=2G\n");
+	assert(conf && conf->image_storage_limit == (size_t)2 << 30);
+	conf = parse_conf(&ctx, "image-storage-limit=auto\n");
+	assert(conf && conf->image_storage_limit == IMAGE_BUDGET_AUTO);
+	assert(!parse_conf(&ctx, "image-storage-limit=\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=-1\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=12k\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=12MB\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=M\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=AUTO\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=99999999999999999999\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=17179869184G\n"));
+	/* at most 1 TiB: a display's share is the limit times its pixels */
+	conf = parse_conf(&ctx, "image-storage-limit=1024G\n");
+	assert(conf && conf->image_storage_limit == (size_t)1 << 40);
+	conf = parse_conf(&ctx, "image-storage-limit=1099511627776\n");
+	assert(conf && conf->image_storage_limit == (size_t)1 << 40);
+	assert(!parse_conf(&ctx, "image-storage-limit=1025G\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=2048G\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=1099511627777\n"));
+
+	conf = parse_conf(&ctx, "no-sixel\nno-kitty-graphics\nno-private-color-registers\n");
+	assert(conf && !conf->sixel && !conf->kitty_graphics && !conf->private_color_registers);
+
+	conf = parse_conf(&ctx, "max-graphic-size=1000x600\n");
+	assert(conf && conf->max_graphic_size.width == 1000 &&
+	       conf->max_graphic_size.height == 600);
+	conf = parse_conf(&ctx, "max-graphic-size=65535x1\n");
+	assert(conf && conf->max_graphic_size.width == 65535 && conf->max_graphic_size.height == 1);
+	assert(!parse_conf(&ctx, "max-graphic-size=1000\n"));
+	assert(!parse_conf(&ctx, "max-graphic-size=0x600\n"));
+	assert(!parse_conf(&ctx, "max-graphic-size=65536x600\n"));
+	assert(!parse_conf(&ctx, "max-graphic-size=1000x600x2\n"));
+	assert(!parse_conf(&ctx, "max-graphic-size=-1x600\n"));
+
+	conf = parse_conf(&ctx, "num-color-registers=2\n");
+	assert(conf && conf->num_color_registers == 2);
+	conf = parse_conf(&ctx, "num-color-registers=65535\n");
+	assert(conf && conf->num_color_registers == 65535);
+	assert(!parse_conf(&ctx, "num-color-registers=1\n"));
+	assert(!parse_conf(&ctx, "num-color-registers=65536\n"));
+	assert(!parse_conf(&ctx, "num-color-registers=16 colours\n"));
+}
+
 int main()
 {
 	test_parse_mode(config_file, parsed_modes, 6);
@@ -307,6 +376,7 @@ int main()
 	test_parse_comment();
 	test_parse_blink();
 	test_parse_render_timer();
+	test_parse_images();
 
 	return 0;
 }

@@ -190,7 +190,8 @@ def main():
                   + line("20261022T100000-42", "dev build new", "30-strike", "skipped")
                   + line("20261022T100500-77", "stock kmscon 10.0.4-1", "10-sgr", "wrong"))
         log = ("drm_shared: test-only atomic commit failed, -22\\n" * 2
-               + "vt_timeout: failed to wake up after 20 retries\\n")
+               + "vt_timeout: failed to wake up after 20 retries\\n"
+               + "main: 1 screens still in the image budget at exit\\n")
         p = c.run(["6", "--", "--font-name=Monoid Nerd Font Mono"], dry=False,
                   APPEND=esc(append), LOG=log)
         out = p.stdout
@@ -204,6 +205,8 @@ def main():
               and "\nskipped, still to review\n  30-strike\n" in out and "  20-underline-styles\n" not in out, out)
         check("health counts the freeze signature",
               "health: 2 'atomic commit failed', 1 'vt_timeout'" in out, out)
+        check("health counts screens left in the image budget",
+              "health: 1 'still in the image budget' lines in kmscon's log: " in out, out)
         logs = [l.split(": ", 1)[1] for l in out.splitlines() if l.startswith("kmscon log: ")]
         check("kmscon log kept at the printed path",
               len(logs) == 1 and "vt_timeout" in read(logs[0]), out)
@@ -226,7 +229,8 @@ def main():
               p.returncode != 0 and "no answers from this run" in p.stderr, p.stdout + p.stderr)
         p = c.run(["6"], dry=False, APPEND="")
         check("a clean log reports zero",
-              "health: 0 'atomic commit failed', 0 'vt_timeout'" in p.stdout, p.stdout)
+              "health: 0 'atomic commit failed', 0 'vt_timeout'" in p.stdout
+              and "health: 0 'still in the image budget' lines in kmscon's log\n" in p.stdout, p.stdout)
 
         # The log's directory: created 0700, never a symlink or someone else's.
         new = os.path.join(tmp, "fresh", "feedback.tsv")

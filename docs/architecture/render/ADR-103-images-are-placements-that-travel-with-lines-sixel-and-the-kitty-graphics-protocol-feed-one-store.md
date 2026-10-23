@@ -89,6 +89,13 @@ considered:
     said: "Keep the per-call work bound on the sixel decoder, with no total cap per byte; a register count outside 2 to the maximum answers status 3; XTWINOPS 14 and 16 answer with sixel off"
     via: operator's replies in the steering session, 2026-10-23, relayed by the team lead as answers to the step 3c review's other two questions
     paraphrase: true
+  - operator: aaronsb
+    said: "why not sketch the outline and include the flag to deactivate it so that sixel support is truthfully unavailable"
+    via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to kmscon #133's question 2 (gltex draws no placements, yet its terminal offered sixel)"
+  - operator: aaronsb
+    said: "Keep the K, M and G suffixes on image-storage-limit; accept the shrinking auto limit evicting at the next reservation, with a note"
+    via: "operator's replies in the steering session, 2026-10-23, relayed by the team lead as answers to kmscon #133's questions 3 and 4"
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -526,3 +533,11 @@ Recorded as considered entries above; what they change:
 - **Sixel cursor placement follows foot, not xterm** ("Xterm seems incorrect, pushing an unwanted newline"). xterm 411, run as a black box, matched 6 of 8 cursor cases. It scrolls one extra row at the bottom margin, and with mode 8452 it wraps to the next line at the right edge. The Sixel section's foot rules stand. Where xterm and foot differ, foot's rule is the reference, not xterm's black-box answer.
 - **The sixel decoder keeps its per-call work bound** and adds no total cap per byte.
 - **XTSMGRAPHICS:** a register count outside 2 to the maximum answers status 3. **XTWINOPS 14 and 16** answer even with sixel off.
+
+## Notes (2026-10-23, operator answers from the step 3d review)
+
+Recorded as considered entries above; what they change:
+
+- **Sixel only where it can be drawn** ("why not sketch the outline and include the flag to deactivate it so that sixel support is truthfully unavailable"). Each renderer declares whether it draws image placements: bbulk does, gltex does not until step 3f, and any other renderer without placement drawing does not. A terminal offers sixel (DA1 attribute 4, XTSMGRAPHICS) and stores pictures only while every display it draws on has a renderer that does; otherwise it behaves as if `sixel` were off, offering nothing and storing no new picture. Pictures it stored before such a display arrived stay, counted in the budget and not drawn, until they are cleared or evicted, and show again when the display goes. Displays drawn by a renderer without placements do not count toward `image-storage-limit=auto`. gltex keeps the hook where step 3f will compose placements (`gltex_draw_placements`).
+- **A shrinking auto limit evicts at the next reservation**, accepted by the operator. This refines the Memory section's "A smaller budget evicts down to fit": a renderer is unset and set again on every font change and zoom, which uncounts its display and counts it back at once, and evicting on that dip threw away pictures the budget could hold. The auto limit therefore follows the displays without evicting, and the next reservation evicts down to the limit it finds. A set limit that shrinks still evicts at once.
+- **`image-storage-limit` takes K, M and G** (KiB, MiB, GiB) beside plain bytes, kept by the operator, and at most 1 TiB: a display's share of the budget is the limit times its pixels over all the displays', computed in 64 bits.

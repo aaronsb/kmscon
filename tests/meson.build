@@ -48,6 +48,19 @@ test_bbulk = executable(
 )
 test('test_bbulk', test_bbulk)
 
+# ADR-103's image budget against real libtsm screens, made through its test
+# calls, and terminal_new's vte made into it
+test_image_budget = executable(
+    'test_image_budget',
+    'test_image_budget.c',
+    include_directories: [src_inc, misc_inc],
+    dependencies: [
+        subproject('libtsm').get_variable('libtsm_test_dep'),
+        shl_deps,
+    ],
+)
+test('test_image_budget', test_image_budget)
+
 if enable_renderer_gltex
     # GL is stubbed in the test; only its headers are used.
     test_gltex = executable(
@@ -92,6 +105,15 @@ test_asciinema = executable(
     dependencies: [libtsm_deps, shl_deps, eloop_deps],
 )
 test('test_asciinema', test_asciinema)
+
+# the pty holds the output its input callback leaves (ADR-103 step 3d)
+test_pty = executable(
+    'test_pty',
+    'test_pty.c',
+    include_directories: misc_inc,
+    dependencies: [libtsm_deps, shl_deps, eloop_deps],
+)
+test('test_pty', test_pty)
 
 test_issue = executable(
     'test_issue',

@@ -37,6 +37,7 @@
 #include "../src/render/text.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/bbulk.c"
+#include "../src/render/image_budget.c"
 #include "../src/render/picture.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/deco.c"
@@ -534,6 +535,23 @@ static void images_sixel(struct tsm_screen *con, struct tsm_vte *vte, unsigned i
 	input(vte, ESC "[3;33HTEXT");
 }
 
+/*
+ * Sixel strings through the vte, as a program sends them (ADR-103 step 3d):
+ * four 10-pixel bars, opaque, then TEXT written across them; and orange
+ * stripes 5 pixels wide with transparent gaps (P2=1) over a row of text.
+ */
+#define SIX_BAND "#1!10~#2!10~#3!10~#4!10~"
+#define SIX_STRIPES "!5~!5?!5~!5?!5~!5?"
+#define SIXEL_VTE_BYTES                                                                            \
+	"sixel strings through the vte\r\n"                                                        \
+	"\r\n"                                                                                     \
+	"                    text text text text\r\n"                                              \
+	"                    text text text text\r\n" ESC "[3;2H" ESC "Pq\"1;1;40;24"              \
+	"#1;2;100;0;0#2;2;0;100;0#3;2;0;0;100#4;2;100;100;100" SIX_BAND "-" SIX_BAND "-" SIX_BAND  \
+	"-" SIX_BAND ESC "\\" ESC "[4;4HTEXT" ESC "[3;21H" ESC                                     \
+	"P0;1q\"1;1;30;24#5;2;100;50;0#5" SIX_STRIPES "-#5" SIX_STRIPES "-#5" SIX_STRIPES          \
+	"-#5" SIX_STRIPES ESC "\\"
+
 #define TEXT_ROW "sixels over text, text over sixels, sixels over\r\n"
 #define SIXEL_BYTES TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW
 
@@ -890,6 +908,12 @@ static const struct screen screens[] = {
 		 "text.",
 	 .bytes = SIXEL_BYTES,
 	 .images = images_sixel},
+	{.name = "sixel-vte",
+	 .desc = "Two sixel strings parsed by the vte, as a program sends them. Correct: at the "
+		 "left, bars of red, green, blue and white side by side, the word TEXT across "
+		 "their second row drawn as plain text with no picture behind it; at the right, "
+		 "orange vertical stripes with gaps through which the text under them shows.",
+	 .bytes = SIXEL_VTE_BYTES},
 	{.name = "img-scale",
 	 .desc = "Scaled pictures in the top band: a 40x20 gradient at its own size; the same "
 		 "fitted "
@@ -1217,6 +1241,7 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	/* placements are measured in the font's cells, as kmscon tells libtsm */
 	assert(tsm_screen_set_cell_size(con, font->width, font->height) == 0);
 	tsm_screen_set_image_limit(con, 64 << 20);
+	tsm_vte_set_sixel(vte, true);
 
 	/* hidden cursor: its blink state is not part of what is compared */
 	tsm_vte_input(vte, ESC "[?25l", 6);

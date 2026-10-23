@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "conf.h"
+#include "render/image_budget.h"
 #include "render/text.h"
 
 enum kmscon_conf_gpu_selection {
@@ -61,6 +62,12 @@ struct kmscon_conf_screen {
 	char connector[MAX_DISPLAY_NAME_LEN];
 	bool enabled;
 	enum Orientation orientation;
+};
+
+/* max-graphic-size, in pixels */
+struct kmscon_conf_graphic_size {
+	unsigned int width;
+	unsigned int height;
 };
 
 /* render-timer: what the render timer does with its figures (ADR-103) */
@@ -245,6 +252,20 @@ struct kmscon_conf_t {
 	bool force_decoration_colors;
 	/* emoji in colour; off draws them as text, in the foreground */
 	bool emoji_color;
+
+	/* Image Options (ADR-103) */
+	/* bytes for every image and scaled picture in the process, or
+	 * IMAGE_BUDGET_AUTO; 0: none */
+	size_t image_storage_limit;
+	/* sixel graphics, decoded and advertised */
+	bool sixel;
+	/* the kitty graphics protocol, which nothing reads until ADR-103 step 4 */
+	bool kitty_graphics;
+	/* the largest image in pixels */
+	struct kmscon_conf_graphic_size max_graphic_size;
+	/* sixel colour registers, and the state mode 1070 starts in */
+	unsigned int num_color_registers;
+	bool private_color_registers;
 
 	/* Debug Options */
 	/* frames presented, CPU time and damage per frame: on screen, logged or both */

@@ -472,3 +472,7 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 - **A fixed small default, the same on every machine.** Simple and predictable, but a number that suits 1366x768 starves a 4K or 8K console's full-screen video, and one that suits 8K is too large for a small machine. Scaling with the displays gives each the video case's peak.
 - **A separate setting for the scaled-picture cache.** Rejected: two limits give two ceilings to reason about, and the operator asked for one predictable one.
 - **xterm's default `max-graphic-size` of 1000x1000.** Rejected: it is about an eighth of this console's width, and full-screen images are the case the showcase exists for.
+
+## Notes (2026-10-23)
+
+- The small tier 3 variant this record calls `2d-1366x768-hamster` is named `2d-1366x768-potato`, the potato computer, at the operator's request: "We should call it potato computer not hamster." It is the same machine (1 vCPU, 512 MB, 1366x768, drm2d and bbulk), and what this record decides about it stands.

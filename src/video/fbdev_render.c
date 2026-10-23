@@ -47,52 +47,100 @@ static int clamp_value(int val, int low, int up)
 		return val;
 }
 
-static uint_fast32_t xrgb32_to_device(struct display *disp, uint32_t pixel)
+/* the device's channel layout, read once per request */
+struct px_fmt {
+	unsigned int off_r, off_g, off_b;
+	unsigned int len_r, len_g, len_b;
+	bool dither;
+};
+
+/* the dither error carried from pixel to pixel, held in locals during a loop */
+struct px_dither {
+	int_fast32_t r, g, b;
+};
+
+static inline struct px_fmt px_fmt_of(const struct display *disp)
+{
+	const struct fbdev_display *fbdev = disp->data;
+	struct px_fmt f = {
+		.off_r = fbdev->off_r,
+		.off_g = fbdev->off_g,
+		.off_b = fbdev->off_b,
+		.len_r = fbdev->len_r,
+		.len_g = fbdev->len_g,
+		.len_b = fbdev->len_b,
+	};
+
+	/*
+	 * With 8-bit channels the dither error is r - r = 0 after every pixel,
+	 * so dithering writes what the plain conversion writes. The error is
+	 * zeroed whenever the mode is set, and stays zero here.
+	 */
+	f.dither = (disp->flags & DISPLAY_DITHERING) &&
+		   !(f.len_r == 8 && f.len_g == 8 && f.len_b == 8);
+	return f;
+}
+
+static inline struct px_dither dither_load(const struct fbdev_display *fbdev)
+{
+	struct px_dither d = {fbdev->dither_r, fbdev->dither_g, fbdev->dither_b};
+
+	return d;
+}
+
+static inline void dither_save(struct fbdev_display *fbdev, const struct px_dither *d)
+{
+	fbdev->dither_r = d->r;
+	fbdev->dither_g = d->g;
+	fbdev->dither_b = d->b;
+}
+
+/* XRGB32 @pixel in the device's channel layout */
+static inline uint_fast32_t to_device(const struct px_fmt *f, struct px_dither *d, uint32_t pixel)
 {
 	uint8_t r, g, b, nr, ng, nb;
 	int i;
 	uint_fast32_t res;
-	struct fbdev_display *fbdev = disp->data;
 
 	r = (pixel >> 16) & 0xff;
 	g = (pixel >> 8) & 0xff;
 	b = (pixel >> 0) & 0xff;
 
-	if (disp->flags & DISPLAY_DITHERING) {
+	if (f->dither) {
 		/* This is some very basic dithering which simply does small
 		 * rotations in the lower pixel bits. TODO: Let's take a look
 		 * at Floyd-Steinberg dithering which should give much better
 		 * results. It is slightly slower, though.
 		 * Or even better would be some Sierra filter like the Sierra
 		 * LITE. */
-		fbdev->dither_r = r - fbdev->dither_r;
-		fbdev->dither_g = g - fbdev->dither_g;
-		fbdev->dither_b = b - fbdev->dither_b;
-		r = clamp_value(fbdev->dither_r, 0, 255) >> (8 - fbdev->len_r);
-		g = clamp_value(fbdev->dither_g, 0, 255) >> (8 - fbdev->len_g);
-		b = clamp_value(fbdev->dither_b, 0, 255) >> (8 - fbdev->len_b);
-		nr = r << (8 - fbdev->len_r);
-		ng = g << (8 - fbdev->len_g);
-		nb = b << (8 - fbdev->len_b);
+		d->r = r - d->r;
+		d->g = g - d->g;
+		d->b = b - d->b;
+		r = clamp_value(d->r, 0, 255) >> (8 - f->len_r);
+		g = clamp_value(d->g, 0, 255) >> (8 - f->len_g);
+		b = clamp_value(d->b, 0, 255) >> (8 - f->len_b);
+		nr = r << (8 - f->len_r);
+		ng = g << (8 - f->len_g);
+		nb = b << (8 - f->len_b);
 
-		for (i = fbdev->len_r; i < 8; i <<= 1)
+		for (i = f->len_r; i < 8; i <<= 1)
 			nr |= nr >> i;
-		for (i = fbdev->len_g; i < 8; i <<= 1)
+		for (i = f->len_g; i < 8; i <<= 1)
 			ng |= ng >> i;
-		for (i = fbdev->len_b; i < 8; i <<= 1)
+		for (i = f->len_b; i < 8; i <<= 1)
 			nb |= nb >> i;
 
-		fbdev->dither_r = nr - fbdev->dither_r;
-		fbdev->dither_g = ng - fbdev->dither_g;
-		fbdev->dither_b = nb - fbdev->dither_b;
+		d->r = nr - d->r;
+		d->g = ng - d->g;
+		d->b = nb - d->b;
 
-		res = r << fbdev->off_r;
-		res |= g << fbdev->off_g;
-		res |= b << fbdev->off_b;
+		res = r << f->off_r;
+		res |= g << f->off_g;
+		res |= b << f->off_b;
 	} else {
-		res = (r >> (8 - fbdev->len_r)) << fbdev->off_r;
-		res |= (g >> (8 - fbdev->len_g)) << fbdev->off_g;
-		res |= (b >> (8 - fbdev->len_b)) << fbdev->off_b;
+		res = (r >> (8 - f->len_r)) << f->off_r;
+		res |= (g >> (8 - f->len_g)) << f->off_g;
+		res |= (b >> (8 - f->len_b)) << f->off_b;
 	}
 
 	return res;
@@ -157,38 +205,30 @@ static inline uint32_t blend_argb(const struct video_blend_req *req, uint32_t sr
 }
 
 /* pixel @i of a source row, blended */
-static inline uint32_t blend_px(const struct video_blend_req *req, const uint8_t *src,
+static inline uint32_t blend_px(const struct video_blend_req *req, bool argb, const uint8_t *src,
 				unsigned int i)
 {
-	if (req->buf->format == VIDEO_FORMAT_ARGB32)
+	if (argb)
 		return blend_argb(req, ((const uint32_t *)src)[i]);
 	return blend_mask(req, src[i]);
 }
 
-/* write XRGB32 @val as pixel @i of a device row */
-static inline void write_px(struct display *disp, uint8_t *dst, unsigned int i, uint32_t val)
-{
-	struct fbdev_display *fbdev = disp->data;
-
-	if (fbdev->xrgb32)
-		((uint32_t *)dst)[i] = val;
-	else if (fbdev->Bpp == 2)
-		((uint16_t *)dst)[i] = xrgb32_to_device(disp, val);
-	else if (fbdev->Bpp == 3)
-		write_24bit(&dst[i * 3], xrgb32_to_device(disp, val));
-	else
-		((uint32_t *)dst)[i] = xrgb32_to_device(disp, val);
-}
-
-int fbdev_display_blend(struct display *disp, const struct video_blend_req *req)
+/*
+ * This loop runs for every pixel of every glyph drawn, so it follows the
+ * hot-loop rule in docs/fork/development.md: what it reads is copied into
+ * const locals first (the build's -fno-strict-aliasing makes every store to
+ * the device reload anything read through a pointer), and the depth is
+ * chosen once, with one loop per depth that differs only in its store.
+ */
+int fbdev_display_blend(struct display *disp, const struct video_blend_req *reqp)
 {
 	unsigned int tmp;
 	uint8_t *dst;
 	const uint8_t *src;
-	unsigned int width, height, i, src_stride;
+	unsigned int width, height, i;
 	struct fbdev_display *fbdev = disp->data;
 
-	if (!req || !req->buf)
+	if (!reqp || !reqp->buf)
 		return -EINVAL;
 
 	if (!fbdev->xrgb32 && (fbdev->Bpp < 2 || fbdev->Bpp > 4)) {
@@ -196,35 +236,62 @@ int fbdev_display_blend(struct display *disp, const struct video_blend_req *req)
 		return 0;
 	}
 
-	width = min(req->w, req->buf->width);
-	tmp = req->x + width;
-	if (tmp < req->x || req->x >= fbdev->xres)
+	width = min(reqp->w, reqp->buf->width);
+	tmp = reqp->x + width;
+	if (tmp < reqp->x || reqp->x >= fbdev->xres)
 		return -EINVAL;
 	if (tmp > fbdev->xres)
-		width = fbdev->xres - req->x;
+		width = fbdev->xres - reqp->x;
 
-	height = min(req->h, req->buf->height);
-	tmp = req->y + height;
-	if (tmp < req->y || req->y >= fbdev->yres)
+	height = min(reqp->h, reqp->buf->height);
+	tmp = reqp->y + height;
+	if (tmp < reqp->y || reqp->y >= fbdev->yres)
 		return -EINVAL;
 	if (tmp > fbdev->yres)
-		height = fbdev->yres - req->y;
+		height = fbdev->yres - reqp->y;
 
 	if (!(disp->flags & DISPLAY_DBUF) || fbdev->bufid)
 		dst = fbdev->map;
 	else
 		dst = &fbdev->map[fbdev->yres * fbdev->stride];
-	dst = &dst[req->y * fbdev->stride + req->x * fbdev->Bpp];
-	src = req->buf->data;
-	src_stride = req->buf->width * (req->buf->format == VIDEO_FORMAT_ARGB32 ? 4 : 1);
+	dst = &dst[reqp->y * fbdev->stride + reqp->x * fbdev->Bpp];
+	src = reqp->buf->data;
 
-	while (height--) {
-		for (i = 0; i < width; ++i)
-			write_px(disp, dst, i, blend_px(req, src, i));
-		dst += fbdev->stride;
-		src += src_stride;
+	const struct video_blend_req req = *reqp;
+	const bool argb = req.buf->format == VIDEO_FORMAT_ARGB32;
+	const unsigned int src_stride = req.buf->width * (argb ? 4 : 1);
+	const unsigned int dst_stride = fbdev->stride;
+	const unsigned int depth = fbdev->xrgb32 ? 0 : fbdev->Bpp;
+	const struct px_fmt f = px_fmt_of(disp);
+	struct px_dither d = dither_load(fbdev);
+
+	switch (depth) {
+	case 0: /* XRGB32: the blend's own format */
+		for (; height--; dst += dst_stride, src += src_stride)
+			for (i = 0; i < width; ++i)
+				((uint32_t *)dst)[i] = blend_px(&req, argb, src, i);
+		break;
+	case 2:
+		for (; height--; dst += dst_stride, src += src_stride)
+			for (i = 0; i < width; ++i)
+				((uint16_t *)dst)[i] =
+					to_device(&f, &d, blend_px(&req, argb, src, i));
+		break;
+	case 3:
+		for (; height--; dst += dst_stride, src += src_stride)
+			for (i = 0; i < width; ++i)
+				write_24bit(&dst[i * 3],
+					    to_device(&f, &d, blend_px(&req, argb, src, i)));
+		break;
+	case 4:
+		for (; height--; dst += dst_stride, src += src_stride)
+			for (i = 0; i < width; ++i)
+				((uint32_t *)dst)[i] =
+					to_device(&f, &d, blend_px(&req, argb, src, i));
+		break;
 	}
 
+	dither_save(fbdev, &d);
 	return 0;
 }
 
@@ -232,8 +299,9 @@ int fbdev_display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b)
 {
 	unsigned int i;
 	uint8_t *dst;
-	uint32_t full_val, rgb32;
+	uint32_t full_val;
 	struct fbdev_display *fbdev = disp->data;
+	const struct px_fmt f = px_fmt_of(disp);
 	unsigned int width = fbdev->xres;
 	unsigned int height = fbdev->yres;
 
@@ -247,15 +315,15 @@ int fbdev_display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b)
 	full_val |= ((b & 0xff) >> (8 - fbdev->len_b)) << fbdev->off_b;
 
 	if (fbdev->Bpp == 2) {
-		if (disp->flags & DISPLAY_DITHERING) {
-			rgb32 = (r & 0xff) << 16;
-			rgb32 |= (g & 0xff) << 8;
-			rgb32 |= (b & 0xff) << 0;
-			while (height--) {
+		if (f.dither) {
+			struct px_dither d = dither_load(fbdev);
+			const uint32_t rgb32 = (r & 0xff) << 16 | (g & 0xff) << 8 | (b & 0xff);
+			const unsigned int dst_stride = fbdev->stride;
+
+			for (; height--; dst += dst_stride)
 				for (i = 0; i < width; ++i)
-					((uint16_t *)dst)[i] = xrgb32_to_device(disp, rgb32);
-				dst += fbdev->stride;
-			}
+					((uint16_t *)dst)[i] = to_device(&f, &d, rgb32);
+			dither_save(fbdev, &d);
 		} else {
 			full_val &= 0xffff;
 			while (height--) {

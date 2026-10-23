@@ -71,11 +71,23 @@ def _ppm_tokens(buf, count):
 
 
 def read_ppm(buf):
+    """A binary PPM. QEMU's screendump (11.1) pads each row to a multiple of
+    4 bytes while the header gives the width, so a width whose rows are not
+    a multiple of 4 bytes (1366 pixels: 4098 bytes) carries 2 bytes more per
+    row; those are dropped. A body of any other size is refused, so a
+    capture still being written is never read as a whole one."""
     (magic, w, h, maxval), off = _ppm_tokens(buf, 4)
     if magic != b"P6" or maxval != b"255":
         raise ValueError("only 8-bit binary PPM (P6) is supported")
     w, h = int(w), int(h)
-    return Image(w, h, bytes(buf[off:off + w * h * 3]))
+    row, body = w * 3, len(buf) - off
+    padded = (row + 3) & ~3
+    if body == h * row:
+        return Image(w, h, bytes(buf[off:off + h * row]))
+    if body == h * padded:
+        return Image(w, h, b"".join(buf[off + y * padded:off + y * padded + row] for y in range(h)))
+    raise ValueError("a %dx%d PPM holds %d bytes of pixels, not %d or %d"
+                     % (w, h, body, h * row, h * padded))
 
 
 def _paeth(a, b, c):

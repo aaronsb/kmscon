@@ -114,6 +114,7 @@ What each page should and should not look like is in its section file's `# look-
 | underline-styles | SGR `4:1` to `4:5`, ended by `4:0` and `24`, over colour, bold, reverse and CJK |
 | underline-colour | SGR 58 in both forms, with styles, and 59 |
 | strike | SGR 9 and 29, with colour, underline, reverse and CJK |
+| blink | SGR 5 beside steady text: plain, coloured, on a background, reversed, bold, underlined, curly, struck, CJK and combining, and a line that SGR 25 makes steady halfway |
 | boxdraw | box drawing, shades and blocks |
 | blocks | block elements and box lines stacked across rows and columns (tier 2's `blocks` screen as well), which show the line spacing gap of #46 if the font draws them |
 | cjk | CJK beside Latin |
@@ -121,7 +122,9 @@ What each page should and should not look like is in its section file's `# look-
 | combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 |
 | emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji |
 
-Every section but emoji is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin and combining are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. emoji is not a tier 3 screen until colour emoji land (ADR-102 step 4c). The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+Every section but blink and emoji is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin and combining are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. emoji is not a tier 3 screen until colour emoji land (ADR-102 step 4c). The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+
+blink is not a tier 3 screen: tier 3's guest runs kmscon with `no-blink`, and a capture would catch whichever phase the timer was in. The demo leaves blinking on, kmscon's default, since a person watches it: the blink page blinks and so does the cursor. `-- --no-blink` turns it off for one run. `tests/test_blink.c`, part of `make test`, checks both phases through both of bbulk's buffers.
 
 The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws. The fork draws every one of them that way except emoji, which stay clipped or monochrome until colour emoji land (ADR-102 step 4c).
 
@@ -146,6 +149,7 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 | underline-styles | Only the plain `4` line is underlined. Every line set with `4:n`, including the red, bold, reverse and blue-background ones, is drawn with none of its attributes. |
 | underline-colour | No line has a coloured underline. The colon rows have no underline. Upstream does not know 58, so the numbers after it are read as SGR codes of their own: `4;58;5;196` is underlined in the text's colour and blinks (5), and in `4;58;2;0;160;255` the 0 resets the line, which loses its underline. |
 | strike | No strike anywhere: upstream has no SGR 9. `9;4` is underlined only, and the line with `4:3` is plain. |
+| blink | Upstream blinks too, drawing a blinking cell as a space in the hidden phase. The `5;9` line blinks without a strike, the `5;4:3;58:5:196` line is plain and steady (the colon voids the whole sequence), and the combining line is blank. Stock's own config decides whether anything blinks (`blink` is on by default). |
 | wide-margin | A wide character placed or typed at the last column is cut at the edge instead of moving to the next line, so case 2, case 3 and the emoji in case 5 show half a character or none. |
 | combining | The decomposed column is blank: kmscon draws a cell of more than one code point as nothing. The precomposed column is right except its last row, which is a precomposed letter plus a mark. |
 | emoji | Every cluster (family, flag, keycap, skin tone, VS16 heart) is drawn blank or as separate pieces, so its bars do not line up. The single emoji is monochrome at best: kmscon has no colour glyphs. |
@@ -171,4 +175,4 @@ A capability that adds something visible adds its section in the same PR. A sect
 
 Check it outside a VT with `DEMO_NOPAGE=1 fork/demo/demo.sh name`, which runs without waiting for keys and leaves the page and its guidance on the screen, then on a VT with `run-vt.sh`.
 
-Each section is a tier 3 screen as well (#36): tier 3 runs it in its guest and compares the capture with a golden, so every demonstration is also a check. A new section adds its name to `SCREENS` in `fork/tier3/t3_evaluate.py`, before `cjk`, which stays last because `vt-restore` is compared with its golden (`test_t3.py` fails otherwise), and its goldens with `make tier3-bless`, in a commit of their own. Its `# look-for:` and `# wrong-looks-like:` lines are also its case's caption on the run page. Tier 3 does not judge emoji yet (ADR-102 step 4c).
+Each section is a tier 3 screen as well (#36): tier 3 runs it in its guest and compares the capture with a golden, so every demonstration is also a check. A new section adds its name to `SCREENS` in `fork/tier3/t3_evaluate.py`, before `cjk`, which stays last because `vt-restore` is compared with its golden (`test_t3.py` fails otherwise), and its goldens with `make tier3-bless`, in a commit of their own. Its `# look-for:` and `# wrong-looks-like:` lines are also its case's caption on the run page. Tier 3 does not judge emoji yet (ADR-102 step 4c), nor blink, which it runs without.

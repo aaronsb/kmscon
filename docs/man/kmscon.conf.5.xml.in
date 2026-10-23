@@ -615,6 +615,81 @@ font-name=Ubuntu Mono
       </varlistentry>
 
       <varlistentry>
+        <term><option>image-storage-limit</option></term>
+        <listitem>
+          <para>The memory for pictures programs draw, in bytes: every image
+                in every terminal kmscon runs, on the main and alternate
+                screens, and the scaled copies the renderer keeps, all within
+                one limit for the kmscon process. <literal>auto</literal> is
+                four frames of kmscon's displays in ARGB (width times height
+                times 4, added over the displays), at least 16 MiB and at most
+                192 MiB: 16 MiB at 1366x768, 31.6 MiB at 1920x1080, 192 MiB
+                at 7680x2160. It is recomputed when a display is added,
+                removed or changes mode. A number sets the limit in bytes,
+                with an optional <literal>K</literal>, <literal>M</literal> or
+                <literal>G</literal> for KiB, MiB or GiB, such as
+                <literal>image-storage-limit=512M</literal>.
+                <literal>0</literal> turns sixel and the kitty graphics
+                protocol off. When a new picture would pass the limit, kmscon
+                frees scaled copies not on screen, then pictures no longer
+                placed, then pictures that are only in the scrollback, least
+                recently used first; a picture on the screen is never freed,
+                and a new one that still does not fit is dropped. Named after
+                Ghostty's option, which applies to each screen instead.
+                (default: auto)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>sixel</option></term>
+        <listitem>
+          <para>Sixel graphics: a picture a program sends as a DCS sixel
+                string draws at the cursor, scrolls with the text and goes
+                where text is written or erased over it. When off, sixel
+                strings are skipped and the device attributes reply (DA1)
+                does not offer sixel. (default: on)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>kitty-graphics</option></term>
+        <listitem>
+          <para>The kitty graphics protocol. It is not implemented yet, so
+                this option changes nothing. (default: on)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>max-graphic-size</option></term>
+        <listitem>
+          <para>The largest picture in pixels, as
+                <replaceable>width</replaceable>x<replaceable>height</replaceable>,
+                each from 1 to 65535; a sixel's pixels past it are dropped.
+                Named after xterm's <literal>maxGraphicSize</literal>.
+                (default: 10000x10000)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>num-color-registers</option></term>
+        <listitem>
+          <para>The number of sixel color registers, from 2 to 65535. Named
+                after xterm's <literal>numColorRegisters</literal>.
+                (default: 1024)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><option>private-color-registers</option></term>
+        <listitem>
+          <para>The state DEC private mode 1070 starts in: on, each sixel
+                picture starts from the default colors; off, pictures share
+                their color registers until a reset. Named after xterm's
+                <literal>privateColorRegisters</literal>. (default: on)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><option>render-timer</option></term>
         <listitem>
           <para>Measure what kmscon presents, for each display: frames

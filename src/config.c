@@ -268,6 +268,25 @@ static void print_help()
 		"\t                                      Draw emoji in color; off draws\n"
 		"\t                                      them as text in the foreground\n"
 		"\n"
+		"Image Options:\n"
+		"\t    --image-storage-limit <size>    [auto]\n"
+		"\t                                      Bytes for all images: auto (four\n"
+		"\t                                      frames of the displays, 16M to\n"
+		"\t                                      192M), a number with an optional\n"
+		"\t                                      K, M or G, or 0 for no images\n"
+		"\t    --sixel                         [on]\n"
+		"\t                                      Sixel graphics\n"
+		"\t    --kitty-graphics                [on]\n"
+		"\t                                      The kitty graphics protocol (not\n"
+		"\t                                      implemented yet)\n"
+		"\t    --max-graphic-size <WxH>        [10000x10000]\n"
+		"\t                                      The largest image in pixels\n"
+		"\t    --num-color-registers <n>       [1024]\n"
+		"\t                                      Sixel color registers, 2-65535\n"
+		"\t    --private-color-registers       [on]\n"
+		"\t                                      Each sixel image starts from the\n"
+		"\t                                      default colors (mode 1070)\n"
+		"\n"
 		"Debug Options:\n"
 		"\t    --render-timer <mode>           [none]\n"
 		"\t                                      Frames presented, CPU time and\n"
@@ -992,6 +1011,135 @@ static const struct conf_type conf_render_timer = {
 };
 
 /*
+ * Image storage limit type
+ * `auto`, or a number of bytes with an optional K, M or G (KiB, MiB, GiB).
+ */
+
+static void conf_default_image_storage(struct conf_option *opt)
+{
+	*(size_t *)opt->mem = IMAGE_BUDGET_AUTO;
+}
+
+static int conf_parse_image_storage(struct conf_option *opt, bool on, const char *arg)
+{
+	unsigned long long n;
+	unsigned int shift = 0;
+	char *end;
+
+	if (!strcmp(arg, "auto")) {
+		*(size_t *)opt->mem = IMAGE_BUDGET_AUTO;
+		return 0;
+	}
+	errno = 0;
+	n = strtoull(arg, &end, 10);
+	if (*end == 'K' || *end == 'M' || *end == 'G')
+		shift = *end == 'K' ? 10 : *end == 'M' ? 20 : 30;
+	if (!isdigit((unsigned char)arg[0]) || errno || end[shift ? 1 : 0] ||
+	    n > (SIZE_MAX - 1) >> shift) {
+		log_error("invalid 'image-storage-limit' value '%s': expected auto, or bytes "
+			  "with an optional K, M or G",
+			  arg);
+		return -EFAULT;
+	}
+	*(size_t *)opt->mem = (size_t)n << shift;
+	return 0;
+}
+
+static int conf_copy_image_storage(struct conf_option *opt, const struct conf_option *src)
+{
+	*(size_t *)opt->mem = *(size_t *)src->mem;
+	return 0;
+}
+
+static const struct conf_type conf_image_storage = {
+	.flags = CONF_HAS_ARG,
+	.set_default = conf_default_image_storage,
+	.parse = conf_parse_image_storage,
+	.copy = conf_copy_image_storage,
+};
+
+/*
+ * Graphic size type
+ * xterm's maxGraphicSize, `WxH` in pixels, each from 1 to 65535.
+ */
+
+static void conf_default_graphic_size(struct conf_option *opt)
+{
+	struct kmscon_conf_graphic_size *size = opt->mem;
+
+	size->width = 10000;
+	size->height = 10000;
+}
+
+static int conf_parse_graphic_size(struct conf_option *opt, bool on, const char *arg)
+{
+	struct kmscon_conf_graphic_size *size = opt->mem;
+	unsigned int w, h;
+	char end;
+
+	if (sscanf(arg, "%5ux%5u%c", &w, &h, &end) != 2 || !isdigit((unsigned char)arg[0]) || !w ||
+	    !h || w > TSM_SCREEN_IMAGE_MAX || h > TSM_SCREEN_IMAGE_MAX) {
+		log_error("invalid 'max-graphic-size' value '%s': expected WxH, each 1 to 65535",
+			  arg);
+		return -EFAULT;
+	}
+	size->width = w;
+	size->height = h;
+	return 0;
+}
+
+static int conf_copy_graphic_size(struct conf_option *opt, const struct conf_option *src)
+{
+	memcpy(opt->mem, src->mem, sizeof(struct kmscon_conf_graphic_size));
+	return 0;
+}
+
+static const struct conf_type conf_graphic_size = {
+	.flags = CONF_HAS_ARG,
+	.set_default = conf_default_graphic_size,
+	.parse = conf_parse_graphic_size,
+	.copy = conf_copy_graphic_size,
+};
+
+/*
+ * Color registers type
+ * xterm's numColorRegisters, from 2 to 65535.
+ */
+
+static void conf_default_registers(struct conf_option *opt)
+{
+	*(unsigned int *)opt->mem = 1024;
+}
+
+static int conf_parse_registers(struct conf_option *opt, bool on, const char *arg)
+{
+	unsigned long n;
+	char *end;
+
+	errno = 0;
+	n = strtoul(arg, &end, 10);
+	if (!isdigit((unsigned char)arg[0]) || errno || *end || n < 2 || n > 65535) {
+		log_error("invalid 'num-color-registers' value '%s': expected 2 to 65535", arg);
+		return -EFAULT;
+	}
+	*(unsigned int *)opt->mem = n;
+	return 0;
+}
+
+static int conf_copy_registers(struct conf_option *opt, const struct conf_option *src)
+{
+	*(unsigned int *)opt->mem = *(unsigned int *)src->mem;
+	return 0;
+}
+
+static const struct conf_type conf_registers = {
+	.flags = CONF_HAS_ARG,
+	.set_default = conf_default_registers,
+	.parse = conf_parse_registers,
+	.copy = conf_copy_registers,
+};
+
+/*
  * Custom Afterchecks
  * Several other options have side-effects on other options. We use afterchecks
  * to enforce these. They're pretty simple. See below.
@@ -1270,6 +1418,18 @@ int kmscon_conf_new(struct conf_ctx **out)
 		CONF_OPTION_BOOL(0, "force-decoration-colors", &conf->force_decoration_colors,
 				 false),
 		CONF_OPTION_BOOL(0, "emoji-color", &conf->emoji_color, true),
+
+		/* Image Options */
+		CONF_OPTION(0, 0, "image-storage-limit", &conf_image_storage, NULL, NULL, NULL,
+			    &conf->image_storage_limit, NULL),
+		CONF_OPTION_BOOL(0, "sixel", &conf->sixel, true),
+		CONF_OPTION_BOOL(0, "kitty-graphics", &conf->kitty_graphics, true),
+		CONF_OPTION(0, 0, "max-graphic-size", &conf_graphic_size, NULL, NULL, NULL,
+			    &conf->max_graphic_size, NULL),
+		CONF_OPTION(0, 0, "num-color-registers", &conf_registers, NULL, NULL, NULL,
+			    &conf->num_color_registers, NULL),
+		CONF_OPTION_BOOL(0, "private-color-registers", &conf->private_color_registers,
+				 true),
 
 		/* Debug Options */
 		CONF_OPTION(0, 0, "render-timer", &conf_render_timer, NULL, NULL, NULL,

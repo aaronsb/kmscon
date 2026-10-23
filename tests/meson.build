@@ -191,8 +191,8 @@ infocmp = find_program('infocmp', required: false)
 if tic.found() and infocmp.found()
     caps_args += [
         '--terminfo', meson.project_source_root() / 'scripts/terminfo/kmscon.ti',
-        '--tic', tic,
-        '--infocmp', infocmp,
+        '--tic', tic.full_path(),
+        '--infocmp', infocmp.full_path(),
     ]
 endif
 test('capabilities', python, args: caps_args)

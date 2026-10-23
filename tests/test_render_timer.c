@@ -334,6 +334,28 @@ static void test_format(void)
 	render_timer_free(d.rt);
 }
 
+/* the on-screen display's line: rate and damage in tenths, rounded */
+static void test_format_osd(void)
+{
+	struct render_timer_stats st = {
+		.interval_ns = 1002 * MS,
+		.flips = 59,
+		.cpu_ns_median = 1234567,
+		.damage_px_mean = 25954,
+		.screen_px = 1050000,
+	};
+	char line[64];
+
+	assert(render_timer_format_osd(&st, line, sizeof(line)) == 0);
+	assert(!strcmp(line, "58.9 fps 1.235 ms 2.5%"));
+	memset(&st, 0, sizeof(st));
+	assert(render_timer_format_osd(&st, line, sizeof(line)) == 0);
+	assert(!strcmp(line, "0.0 fps 0.000 ms 0.0%"));
+	assert(render_timer_format_osd(&st, line, 4) == 0);
+	assert(!strcmp(line, "0.0"));
+	assert(render_timer_format_osd(&st, line, 0) < 0);
+}
+
 int main(void)
 {
 	test_new_rejects();
@@ -347,6 +369,7 @@ int main(void)
 	test_more_frames_than_samples();
 	test_end_without_begin();
 	test_format();
+	test_format_osd();
 	printf("test_render_timer: all passed\n");
 	return 0;
 }

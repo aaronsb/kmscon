@@ -179,6 +179,9 @@ struct screen {
 		       unsigned int cw, unsigned int ch);
 	/* optional: the display's orientation, OR_NORMAL if 0 */
 	enum Orientation orientation;
+	/* optional: the render timer's on-screen display from frame 0, and
+	 * from frame 2 of a screen with @next */
+	const char *osd, *osd_next;
 };
 
 /* the ADR-102 decoration settings the deco-* screens configure */
@@ -914,6 +917,17 @@ static const struct screen screens[] = {
 	 .bytes = TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW,
 	 .next = ESC "[2J" ESC "[Hcleared",
 	 .images = images_ed2},
+
+	/* ADR-103's render timer display: the first placement bbulk draws */
+	{.name = "osd",
+	 .desc = "The render timer's on-screen display over text, then replaced by a shorter "
+		 "line two frames later. Correct: the figures in light grey on a dark grey box at "
+		 "the right end of the top row, over the text there; the longer first line leaves "
+		 "nothing behind, the text it covered drawn again; both buffers equal a fresh draw.",
+	 .bytes = TEXT_ROW TEXT_ROW TEXT_ROW,
+	 .next = "",
+	 .osd = "59.9 fps 12.345 ms 100.0%",
+	 .osd_next = "7.5 fps 1.234 ms 2.5%"},
 };
 
 static void vte_write(struct tsm_vte *vte, const char *u8, size_t len, void *data) {}
@@ -1121,7 +1135,7 @@ static void draw_frame(struct kmscon_text *txt, struct tsm_screen *con, struct t
  * drawing every cell of the screen as it is now, draws. 0 if it does.
  */
 static int check_fresh(struct kmscon_font *font, struct tsm_screen *con, struct tsm_vte *vte,
-		       const struct screen *s)
+		       const struct screen *s, const char *osd)
 {
 	size_t size = (size_t)fb_w * fb_h * sizeof(*fb);
 	uint32_t *last = malloc(size);
@@ -1132,6 +1146,7 @@ static int check_fresh(struct kmscon_font *font, struct tsm_screen *con, struct 
 	memcpy(last, fb_back, size);
 	assert(kmscon_text_new(&txt, "bbulk", s->orientation, &fake_disp) == 0);
 	assert(kmscon_text_set(txt, font) == 0);
+	assert(kmscon_text_set_osd(txt, osd) == 0);
 	memset(fb, 0, size);
 	draw_frame(txt, con, vte, s->conf);
 	if (memcmp(fb_back, last, size)) {
@@ -1173,6 +1188,7 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	assert(ret == 0);
 	assert(txt->cols == (s->cols ? s->cols : COLS) && txt->rows == (s->rows ? s->rows : ROWS));
 
+	assert(kmscon_text_set_osd(txt, s->osd) == 0);
 	if (s->images)
 		s->images(con, vte, 0, font->width, font->height);
 	draw_frame(txt, con, vte, s->conf);
@@ -1181,6 +1197,8 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 			s->images(con, vte, 1, font->width, font->height);
 		draw_frame(txt, con, vte, s->conf);
 		tsm_vte_input(vte, s->next, strlen(s->next));
+		if (s->osd_next)
+			assert(kmscon_text_set_osd(txt, s->osd_next) == 0);
 		if (s->images)
 			s->images(con, vte, 2, font->width, font->height);
 		draw_frame(txt, con, vte, s->conf);
@@ -1195,7 +1213,7 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 		}
 		/* and what a fresh draw of the last screen draws: nothing stale */
 		if (!ret)
-			ret = check_fresh(font, con, vte, s);
+			ret = check_fresh(font, con, vte, s, s->osd_next ? s->osd_next : s->osd);
 	}
 
 	/* the buffer last drawn */

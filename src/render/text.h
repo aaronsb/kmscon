@@ -66,6 +66,20 @@ struct kmscon_text_deco {
 	bool force;			/* force-decoration-colors: win over SGR 58 */
 };
 
+/*
+ * A picture kmscon itself draws over the screen, after libtsm's placements and
+ * in the top band: the render timer's on-screen display (ADR-103). It belongs
+ * to no libtsm store, so no program can erase, delete or replace it. It sits
+ * at the right end of the top row; its placement's col is set as it is drawn.
+ * Every new picture takes a new image_key, so a renderer damages it as it
+ * damages any placement whose image changed.
+ */
+struct kmscon_text_overlay {
+	struct tsm_frame_placement placement;
+	struct tsm_frame_image image;
+	uint32_t pixels[];
+};
+
 struct kmscon_text {
 	unsigned long ref;
 	struct shl_register_record *record;
@@ -103,6 +117,9 @@ struct kmscon_text {
 	bool measure;
 	bool frame_queued;
 	uint64_t frame_damage_px;
+
+	struct kmscon_text_overlay *overlay; /* NULL: none */
+	uint64_t overlay_count;		     /* the overlays made, for their keys */
 };
 
 
@@ -177,7 +194,9 @@ struct tsm_screen_color kmscon_text_ul_color(struct kmscon_text *txt,
 					     const struct tsm_frame_cell *cell);
 struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
 						 const struct tsm_frame_cell *cell);
-int kmscon_text_get_image(struct kmscon_text *txt, uint64_t key, struct tsm_frame_image *out);
+int kmscon_text_set_osd(struct kmscon_text *txt, const char *text);
+int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
+			  struct tsm_frame_image *out);
 
 /* modularized backends */
 

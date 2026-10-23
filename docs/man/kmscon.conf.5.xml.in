@@ -625,9 +625,12 @@ font-name=Ubuntu Mono
                 measures nothing; <literal>log</literal> writes one line per
                 display per second to kmscon's log, at level notice, which kmscon logs
                 by default;
-                <literal>osd</literal> is meant to draw the figures in a corner
-                of the screen, which is not yet available, so it only logs a
-                notice; <literal>both</literal> does both.</para>
+                <literal>osd</literal> draws frames presented per second, the
+                median CPU time per frame and the mean share of the screen
+                damaged per frame at the right end of the top row, once a
+                second, over everything else on the screen (its own redraw is
+                part of what it shows; the bbulk renderer draws it, the OpenGL
+                one does not yet); <literal>both</literal> does both.</para>
           <para>A line covers the second since the previous one:
                 <literal>presented_per_s</literal> and
                 <literal>flips</literal> count the flips completed,

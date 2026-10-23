@@ -94,10 +94,11 @@ struct kmscon_glyph *kmscon_deco_render(enum kmscon_deco kind, unsigned int w, u
 /* the images placements show, by key; test placements name them */
 static struct tsm_frame_image test_images[4];
 
-int kmscon_text_get_image(struct kmscon_text *txt, uint64_t key, struct tsm_frame_image *out)
+int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
+			  struct tsm_frame_image *out)
 {
 	(void)txt;
-	if (key >= 4 || !test_images[key].pixels)
+	if (overlay || key >= 4 || !test_images[key].pixels)
 		return -ENOENT;
 	*out = test_images[key];
 	return 0;

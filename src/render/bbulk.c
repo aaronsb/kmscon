@@ -112,6 +112,7 @@ typedef union {
 /* a placement as this display draws it (ADR-103) */
 struct place {
 	struct tsm_frame_placement fp; /* the frame's, without TSM_FRAME_CHANGED */
+	bool overlay;		       /* kmscon's own, after the frame's */
 	/* its box's cells on the screen: [c0, c1) x [r0, r1) */
 	unsigned int c0, c1, r0, r1;
 	/*
@@ -130,6 +131,7 @@ struct place {
 /* a picture scaled or rotated for drawing, kept between frames */
 struct picture {
 	struct picture *next;
+	bool overlay;
 	uint64_t image_key;
 	unsigned int src_x, src_y, src_w, src_h; /* of the image */
 	unsigned int dw, dh;			 /* the size it is drawn at */
@@ -678,19 +680,19 @@ static bool same_place(const struct tsm_frame_placement *a, const struct tsm_fra
 	       a->flags == b->flags;
 }
 
+/* by key; the overlay's keys are its own, after libtsm's */
 static int cmp_place_key(const void *a, const void *b)
 {
-	uint64_t x = ((const struct place *)a)->fp.key, y = ((const struct place *)b)->fp.key;
+	const struct place *p = a, *q = b;
 
-	return (x > y) - (x < y);
+	if (p->overlay != q->overlay)
+		return p->overlay - q->overlay;
+	return (p->fp.key > q->fp.key) - (p->fp.key < q->fp.key);
 }
 
-static struct place *find_prev(struct bbulk *bb, uint64_t key)
+static struct place *find_prev(struct bbulk *bb, const struct place *p)
 {
-	struct place probe;
-
-	probe.fp.key = key;
-	return bsearch(&probe, bb->prev, bb->n_prev, sizeof(*bb->prev), cmp_place_key);
+	return bsearch(p, bb->prev, bb->n_prev, sizeof(*bb->prev), cmp_place_key);
 }
 
 static void force_cells(struct kmscon_text *txt, const struct place *p)
@@ -704,19 +706,20 @@ static void force_cells(struct kmscon_text *txt, const struct place *p)
 }
 
 /*
- * Take this frame's placements, @cols x @rows cells of it drawn; force the
- * cells of every placement added, changed or removed since the last frame;
- * and list each row's placements.
+ * Take this frame's placements, @cols x @rows cells of it drawn, and the
+ * overlay after them; force the cells of every placement added, changed or
+ * removed since the last frame; and list each row's placements.
  */
 static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 			 unsigned int cols, unsigned int rows)
 {
 	struct bbulk *bb = txt->data;
-	unsigned int n = frame->placements ? frame->placement_count : 0, i, total, y;
+	unsigned int nf = frame->placements ? frame->placement_count : 0, n, i, total, y;
 	unsigned int *cover;
 	size_t size = min(sizeof(struct tsm_frame_placement), frame->placement_size);
 	struct place *p, *old, *tmp;
 
+	n = nf + !!txt->overlay;
 	if (n > bb->places_cap) {
 		tmp = realloc(bb->prev, n * sizeof(*tmp));
 		if (!tmp)
@@ -741,7 +744,14 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 
 		p = &bb->places[i];
 		memset(p, 0, sizeof(*p));
-		memcpy(&p->fp, tsm_frame_placement_at(frame, i), size);
+		if (i < nf) {
+			memcpy(&p->fp, tsm_frame_placement_at(frame, i), size);
+		} else {
+			/* the overlay, at the right end of the top row */
+			p->overlay = true;
+			p->fp = txt->overlay->placement;
+			p->fp.col = cols > p->fp.cols ? cols - p->fp.cols : 0;
+		}
 		p->fp.flags &= ~TSM_FRAME_CHANGED;
 		r0 = p->fp.row;
 		r1 = r0 + p->fp.rows;
@@ -760,7 +770,7 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 		bb->prev[i].state = 0;
 	for (i = 0; i < n; i++) {
 		p = &bb->places[i];
-		old = find_prev(bb, p->fp.key);
+		old = find_prev(bb, p);
 		if (old)
 			old->state = 1;
 		if (old && same_place(&old->fp, &p->fp))
@@ -875,7 +885,7 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 	if (x0 >= x1 || y0 >= y1)
 		return -1;
 
-	if (kmscon_text_get_image(txt, fp->image_key, &img))
+	if (kmscon_text_get_image(txt, p->overlay, fp->image_key, &img))
 		return -1;
 	stride = img.stride / 4;
 	if (img.stride % 4 || stride < img.width || fp->src_x >= img.width ||
@@ -906,7 +916,8 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 	}
 
 	for (pic = bb->pictures; pic; pic = pic->next) {
-		if (pic->image_key == fp->image_key && pic->src_x == fp->src_x &&
+		if (pic->overlay == p->overlay && pic->image_key == fp->image_key &&
+		    pic->src_x == fp->src_x &&
 		    pic->src_y == fp->src_y && pic->src_w == fp->src_width &&
 		    pic->src_h == fp->src_height && pic->dw == dw && pic->dh == dh &&
 		    pic->u0 == u0 && pic->v0 == v0 && pic->u1 == u1 && pic->v1 == v1)
@@ -933,6 +944,7 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 			free(pic);
 			return ret == -ENOMEM ? -ENOMEM : -1;
 		}
+		pic->overlay = p->overlay;
 		pic->image_key = fp->image_key;
 		pic->src_x = fp->src_x;
 		pic->src_y = fp->src_y;

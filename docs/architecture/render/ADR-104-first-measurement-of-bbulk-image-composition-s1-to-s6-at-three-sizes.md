@@ -133,3 +133,50 @@ A1 to A7, which need the parsers; 7680x4320 in tier 3, a size with no display at
 ## Acceptance (2026-10-23)
 
 Accepted by the operator (aaronsb) in the steering session, relayed by the team lead on kmscon #127. ADR-103's note of the same date adopts the 7680x2160 number and tightens the common-size targets from these figures.
+
+## A1, A2 and A4 in tier 3 (2026-10-23)
+
+ADR-103 step 3e ran the sixel acceptance scenarios that tier 3 can run, at kmscon `1af01bd` (branch `feat/sixel-acceptance`) with libtsm `75a3ae1`, in one `make tier3 JOBS=2` run on the host above (104 of 104 cases pass). The guest, archive 2026/10/20, gained libsixel 1.10.5, mpv 0.41.0 (with ffmpeg 9.0.2), tmux 3.8 and xplanet 1.3.1. Each figure comes from the case's window: the render timer's lines for kmscon's presented frames and its CPU time per frame from prepare to flip; mpv's own counts of the frames it showed and dropped (`mpv-stats.lua`); and kmscon's whole CPU time over the window from `/proc`, which includes parsing and the redraws that presented nothing. The screens are described in fork/tier3/README.md.
+
+### A1: photographs through libsixel
+
+`photos` and `photo-scroll` draw NASA Visible Earth photographs of the Earth by day and by night (xplanet's `earth.jpg` and `night.jpg`, 2048x1024, which its images/README says are not copyrighted), six rows tall in whole cells. Placed, scrolled into scrollback with a screenful of lines, shown again with Shift+PageUp and returned with Shift+PageDown, they match their goldens at every variant, and the screen after them, drawn after `clear`, holds no pixel of them.
+
+img2sixel itself writes nothing on current Arch, on the host as in the guest, for any input: libsixel 1.10.5 tries gdk-pixbuf first and asks for the picture right after `gdk_pixbuf_loader_write`, without closing the loader; gdk-pixbuf 2.44 decodes through glycin and has no picture until the close, so libsixel returns success with no frame and skips its built-in loaders (src/loader.c, `load_with_gdkpixbuf`, MIT). The pictures therefore go through libsixel's encoder by way of mpv, which decodes with ffmpeg; `photos` prints how many bytes img2sixel wrote, 0 here.
+
+### A2: mpv --vo=sixel full screen
+
+ffmpeg's testsrc2 pattern, 640x360 at 30 frames per second for 5 seconds, scaled by mpv to the screen.
+
+| Variant | Window | mpv shown / dropped | mpv per second | Presented per second | Render CPU per frame, median / 95th | kmscon's CPU, share of a core | kmscon's CPU per mpv frame | Skipped redraws' share of a core |
+|---|---|---|---|---|---|---|---|---|
+| 2d-1280x800 (4 vCPUs) | 5.12 s | 150 / 0 | 29.3 | 59.2 | 0.70 / 1.34 ms | 19.9% | 6.8 ms | 9.4% |
+| 2d-1366x768-potato (1 vCPU, 512 MB) | 5.15 s | 129 / 21 | 25.0 | 50.9 | 0.69 / 0.88 ms | 22.7% | 9.1 ms | 14.3% |
+| 2d-7680x2160 (cell 10x19) | 33.21 s | 69 / 81 | 2.1 | 4.3 | 6.68 / 14.27 ms | 77.1% | 370.9 ms | 71.4% |
+| 2d-7680x2160-font32 (cell 19x38) | 12.77 s | 46 / 104 | 3.6 | 7.5 | 5.84 / 10.82 ms | 48.6% | 134.8 ms | 39.5% |
+
+Against ADR-103's criterion, that kmscon is not the bottleneck (its CPU time per frame under the frame interval, here the clip's 33.3 ms, and the frames mpv sends presented):
+
+- **1280x800 and the potato: met.** kmscon presents more frames a second than mpv sends, and its whole CPU time per mpv frame, parsing included, is 6.8 ms and 9.1 ms, a fifth of the interval. The render timer's figure, 0.7 ms, is within ADR-103's 4 ms S4 target for the common sizes. The potato's 21 dropped frames are mpv's own: mpv encodes sixel on the same single vCPU, and kmscon used 22.7% of it.
+- **7680x2160: not met.** kmscon is the bottleneck: the 5-second clip takes 33 s with the 10x19 cell and 13 s with the 19x38 one. The render timer's own frames stay within the 16.7 ms adopted for this size (6.7 ms median, 14.3 ms at the 95th percentile), and libtsm parses ten such frames in 0.11 s on the host (`tsm-replay`). The cost is redraws that present nothing: `pty_input` redraws after every bounded input call, each walks the whole frame (86 784 cells at 10x19, a quarter of that at 19x38, which is why the larger cell is three times cheaper), and a full-screen sixel arrives as hundreds of such calls; a guest `perf record` put 58% of kmscon's samples under that redraw (`screen_frame`, `cell_attr_resolve`). Filed as aaronsb/kmscon#139. Tier 3 carries both 7680x2160 variants as known bottlenecks naming it, so the case fails once it is fixed and the entry is still there.
+
+### A4: tmux grids of mpv --vo=sixel
+
+The same pattern at 320x180 in every pane of a 2x2 and a 3x3 grid, on a tmux server whose config names kmscon's sixel support: tmux turns sixel on for a client only through `terminal-features` (`set -as terminal-features ",*:sixel"`) and draws a "SIXEL IMAGE" placeholder otherwise, so with TERM=kmscon and no such line no picture reaches kmscon. With it, every grid played to the end, and the screen tmux leaves holds no pixel of the video at any variant.
+
+| Variant | Grid | mpv shown / dropped, all panes | Presented per second | Render CPU per frame, median | kmscon's CPU, share of a core |
+|---|---|---|---|---|---|
+| 2d-1280x800 | 2x2 | 600 / 0 | 62.4 | 0.85 ms | 13.2% |
+| 2d-1280x800 | 3x3 | 1350 / 0 | 62.2 | 0.90 ms | 15.1% |
+| 2d-1366x768-potato | 2x2 | 367 / 233 | 60.6 | 0.85 ms | 9.2% |
+| 2d-1366x768-potato | 3x3 | 722 / 622 | 48.4 | 0.89 ms | 7.5% |
+| 2d-7680x2160 | 2x2 | 128 / 466 | 28.9 | 11.5 ms | 49.6% |
+| 2d-7680x2160 | 3x3 | 278 / 1065 | 39.4 | 11.6 ms | 56.4% |
+| 2d-7680x2160-font32 | 2x2 | 119 / 475 | 32.1 | 9.3 ms | 40.6% |
+| 2d-7680x2160-font32 | 3x3 | 281 / 1057 | 50.3 | 9.5 ms | 57.9% |
+
+tmux decodes every pane's pictures and draws the grid again on kmscon, so mpv's drops count against tmux as much as kmscon, and the grids carry no rate verdict. At 1280x800 nothing is dropped. On the potato kmscon uses under a tenth of the one vCPU while the panes drop frames, so the drops are the programs sharing that vCPU. At 7680x2160 kmscon uses about half a core and presents 29 to 50 frames a second at 9 to 12 ms each, under the 16.7 ms frame interval; most frames are dropped before they reach it.
+
+### What this does not measure
+
+A3 (showcase act 5, another workstream); the operator's hardware, where the KIT=sixel review runs the same pages with `--render-timer=both`; 1920x1080, which tier 3 has no variant for (#126); and img2sixel's own output, until libsixel reads images again on Arch.

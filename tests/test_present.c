@@ -24,7 +24,9 @@
  * random, with the cursor hidden and shown, and with damage reported (as with
  * FB_DAMAGE_CLIPS) and not. Every presented frame must equal what a new
  * display draws for the same screen, and with damage reported, every pixel
- * that changed must lie in the frame's damage.
+ * that changed must lie in the frame's damage. Every configuration must
+ * present frames, and every one that presents between reads must present
+ * one mid-write.
  */
 
 #undef NDEBUG
@@ -362,6 +364,7 @@ static void run(enum when when, bool cursor, bool damage)
 	struct output o;
 	uint32_t *fresh_px = malloc(fb_bytes), *before = malloc(fb_bytes);
 	char what[160], where[32];
+	unsigned int run_compared = 0, run_mid_write = 0;
 	int ret;
 
 	assert(fresh_px && before);
@@ -403,8 +406,8 @@ static void run(enum when when, bool cursor, bool damage)
 			memcpy(fresh_px, on_screen(&f), fb_bytes);
 			output_destroy(&f);
 
-			compared++;
-			mid_write += !last;
+			run_compared++;
+			run_mid_write += !last;
 			if (first_diff(on_screen(&o), fresh_px, where, sizeof(where))) {
 				fprintf(stderr,
 					"test_present: %s: frame %u, byte %zu of %zu: the "
@@ -423,6 +426,21 @@ static void run(enum when when, bool cursor, bool damage)
 			}
 		}
 	}
+
+	/*
+	 * Each configuration judges something or fails: a renderer that stops
+	 * presenting, in one configuration only, leaves it nothing to compare,
+	 * and a schedule that presents between reads must have done so.
+	 */
+	if (!failures && !run_compared) {
+		fprintf(stderr, "test_present: %s: no frame was presented\n", what);
+		failures++;
+	} else if (!failures && when != WRITE_END && !run_mid_write) {
+		fprintf(stderr, "test_present: %s: no frame was presented mid-write\n", what);
+		failures++;
+	}
+	compared += run_compared;
+	mid_write += run_mid_write;
 
 	output_destroy(&o);
 	tsm_vte_unref(vte);
@@ -486,8 +504,5 @@ int main(int argc, char **argv)
 	fprintf(stderr,
 		"test_present: %u presented frames compared, %u of them mid-write, %d failures\n",
 		compared, mid_write, failures);
-	/* a run that never presented a frame mid-write has not tested anything */
-	if (!compared || !mid_write)
-		failures++;
 	return failures ? 1 : 0;
 }

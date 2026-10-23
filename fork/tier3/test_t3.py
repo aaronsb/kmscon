@@ -52,9 +52,10 @@ class ScreenTextTest(unittest.TestCase):
         self.assertIsNone(t3_evaluate.screen_text("vt-switch", LOG))
         # wide-margin moves the cursor to reach the screen's real edge,
         # s1-scroll prints 500 000 lines of which the screen shows the last,
-        # and sixel and sixel-bound draw pictures, so they have no text on
+        # and the sixel screens draw pictures, so they have no text on
         # purpose; every other screen has its rows.
-        textless = ("wide-margin", "s1-scroll", "sixel", "sixel-bound")
+        textless = ("wide-margin", "s1-scroll", "sixel", "sixel-ramps", "sixel-article",
+                    "sixel-bound")
         with contextlib.redirect_stderr(io.StringIO()):
             for name in textless:
                 self.assertIsNone(t3_evaluate.screen_text(name, LOG))

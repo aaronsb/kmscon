@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3_runner  # noqa: E402
 import t3_scenario  # noqa: E402
 from t3_common import BASE, GUEST, PKGOUT, REPORT, ROOT, VM, Logger, rel  # noqa: E402
-from t3_evaluate import SCREENS, golden_for  # noqa: E402
+from t3_evaluate import SAME_AS, golden_for  # noqa: E402
 from t3_qemu import Qemu, make_iso  # noqa: E402
 
 
@@ -130,11 +130,13 @@ def _bless(args, log):
         report = json.load(f)
     for c in report["cases"]:
         variant, case = c["name"].split("/", 1)
-        if case not in SCREENS or not c["actual"]:
+        # Only a case with a golden of its own: not vt-switch, a check, nor
+        # a case compared with another's golden.
+        golden, _ = golden_for(variant, case)
+        if golden is None or case in SAME_AS or not c["actual"]:
             continue
         if args.variants and variant not in args.variants:
             continue
-        golden, _ = golden_for(variant, case)
         os.makedirs(os.path.dirname(golden), exist_ok=True)
         shutil.copy(os.path.join(ROOT, c["actual"]), golden)
         log("blessed %s" % rel(golden))

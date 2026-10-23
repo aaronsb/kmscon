@@ -1,12 +1,16 @@
-"""Tier 3's benchmark scenarios (ADR-103's S1 to S6): kmscon's render-timer
-lines on the guest's console, and the figures of one scenario's window.
+"""Tier 3's benchmark scenarios (ADR-103's S1 to S6 and the acceptance
+scenarios that play video): kmscon's render-timer lines on the guest's
+console, and the figures of one scenario's window.
 
 A benchmark screen script reports its window on the event port as
-"T3-BENCH NAME lines=N start=S end=E", S and E on the guest's monotonic clock
-(/proc/uptime), the clock that also stamps kmscon's console lines. kmscon,
-run with render-timer=log, writes one line per display per second, each
-covering the second before its stamp; the scenario's figures come from the
-lines whose seconds overlap the window.
+"T3-BENCH NAME start=S end=E KEY=N...", S and E on the guest's monotonic
+clock (/proc/uptime), the clock that also stamps kmscon's console lines.
+The other keys are the screen's own counts: "lines" for text it printed, or
+for a screen that plays video through mpv "mpv_frames" and "mpv_dropped"
+(mpv-stats.lua) and "kmscon_cpu_ms", kmscon's CPU time over the window from
+/proc. kmscon, run with render-timer=log, writes one line per display per
+second, each covering the second before its stamp; the scenario's figures
+come from the lines whose seconds overlap the window.
 """
 
 import re
@@ -15,7 +19,7 @@ import statistics
 # "[   12.345678] kmscon[505]: terminal: render-timer: display=... key=value ..."
 # A console line can follow other output on the same line, such as a prompt.
 _TIMER = re.compile(r"\[\s*(\d+\.\d+)\] kmscon\[(\d+)\]: terminal: render-timer: (.*)$")
-_BENCH = re.compile(r"T3-BENCH (\S+) lines=(\d+) start=(\d+\.\d+) end=(\d+\.\d+)")
+_BENCH = re.compile(r"T3-BENCH (\S+)((?: \w+=\S+)+)\s*$")
 
 # kmscon logs this for a key it does not know, as a build without the
 # render timer (upstream's) does for render-timer.
@@ -39,16 +43,24 @@ def timer_lines(text):
 
 
 def bench_window(line):
-    """(name, lines, start, end) from a T3-BENCH event line, or None."""
-    m = _BENCH.search(line)
+    """(name, start, end, {key: count}) from a T3-BENCH event line, or None
+    when it has no start and end or a count is not a whole number."""
+    m = _BENCH.search(line.strip())
     if not m:
         return None
-    return m.group(1), int(m.group(2)), float(m.group(3)), float(m.group(4))
+    fields = dict(f.split("=", 1) for f in m.group(2).split())
+    try:
+        start, end = float(fields.pop("start")), float(fields.pop("end"))
+        counts = {k: int(v) for k, v in fields.items()}
+    except (KeyError, ValueError):
+        return None
+    return m.group(1), start, end, counts
 
 
 def summarize(lines, count, start, end):
     """The figures of the window [start, end] in which `count` lines of text
-    were printed, from the render-timer lines that overlap it.
+    were printed (None for a screen that prints none to measure), from the
+    render-timer lines that overlap it.
 
     Flips and frames are counted over the overlapping seconds and divided by
     the window's length; the screen script pauses before and after the
@@ -59,9 +71,11 @@ def summarize(lines, count, start, end):
     """
     seconds = end - start
     window = [x for x in lines if x["t"] > start and x["t"] - x["interval_ms"] / 1000 < end]
-    out = {"lines": count, "seconds": round(seconds, 2),
-           "lines_per_s": round(count / seconds) if seconds > 0 else None,
-           "intervals": len(window), "displays": sorted({x["display"] for x in window})}
+    out = {"seconds": round(seconds, 2), "intervals": len(window),
+           "displays": sorted({x["display"] for x in window})}
+    if count is not None:
+        out["lines"] = count
+        out["lines_per_s"] = round(count / seconds) if seconds > 0 else None
     if not window or seconds <= 0:
         return out
     flips = sum(x["flips"] for x in window)
@@ -71,6 +85,9 @@ def summarize(lines, count, start, end):
         "flips": int(flips), "frames": int(frames),
         "presented_per_s": round(flips / seconds, 1),
         "skipped": int(sum(x["skipped"] for x in window)),
+        # Redraws that found nothing to present, and what they cost.
+        "skipped_cpu_ms": round(sum(x["skipped_cpu_ms"] for x in window), 1),
+        "skipped_cpu_pct": round(sum(x["skipped_cpu_ms"] for x in window) / (seconds * 10), 1),
     })
     if frames:
         out.update({
@@ -84,6 +101,47 @@ def summarize(lines, count, start, end):
     return out
 
 
+def program(counts, seconds):
+    """The figures of a screen that plays video through mpv: mpv's frames
+    and their rate over the window, and kmscon's CPU time over the window,
+    in all and per frame mpv sent (its parsing included, which the render
+    timer does not count), and as a share of one CPU."""
+    if "mpv_frames" not in counts or seconds <= 0:
+        return {}
+    frames, ms = counts["mpv_frames"], counts.get("kmscon_cpu_ms")
+    out = {"mpv_frames": frames, "mpv_dropped": counts.get("mpv_dropped", 0),
+           "mpv_per_s": round(frames / seconds, 1)}
+    if ms is not None:
+        out["kmscon_cpu_ms"] = ms
+        out["kmscon_cpu_pct"] = round(ms / (seconds * 10), 1)
+        if frames:
+            out["kmscon_cpu_ms_per_mpv_frame"] = round(ms / frames, 3)
+    return out
+
+
+# The clip mpv plays (acceptance.inc) runs at 30 frames per second.
+CLIP_FRAME_MS = 1000 / 30
+
+
+def bottleneck(figures):
+    """Why kmscon held a program's video back, as ADR-103 judges A2: its
+    CPU time per frame the program sent (parsing included) above the clip's
+    frame interval, or fewer frames presented than the program sent. An
+    empty list when it kept up or there is no program to judge."""
+    if not figures.get("mpv_frames"):
+        return []
+    out = []
+    per = figures.get("kmscon_cpu_ms_per_mpv_frame")
+    if per is not None and per > CLIP_FRAME_MS:
+        out.append("kmscon's CPU time per frame mpv sent, %.1f ms, is over the clip's "
+                   "%.1f ms frame interval" % (per, CLIP_FRAME_MS))
+    shown = figures.get("presented_per_s")
+    if shown is not None and shown < 0.9 * figures["mpv_per_s"]:
+        out.append("kmscon presented %.1f frames a second, fewer frames than mpv's %.1f"
+                   % (shown, figures["mpv_per_s"]))
+    return out
+
+
 def measure(serial_text, event_line, config):
     """The report entry of one benchmark screen: its figures, or why there
     are none. "error" is set only when a build with the render timer
@@ -91,8 +149,9 @@ def measure(serial_text, event_line, config):
     window = bench_window(event_line or "")
     if window is None:
         return {"error": "the screen reported no benchmark window: %r" % event_line}
-    _, count, start, end = window
-    out = summarize(timer_lines(serial_text), count, start, end)
+    _, start, end, counts = window
+    out = summarize(timer_lines(serial_text), counts.get("lines"), start, end)
+    out.update(program(counts, end - start))
     if out["intervals"]:
         return out
     if _UNKNOWN in serial_text:

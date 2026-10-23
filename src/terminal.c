@@ -44,6 +44,7 @@
 #include "input/input.h"
 #include "issue.h"
 #include "pty.h"
+#include "render/image_budget.h"
 #include "render/text.h"
 #include "render_timer.h"
 #include "seat.h"
@@ -100,6 +101,11 @@ struct kmscon_terminal {
 	struct tsm_vte *vte;
 	struct kmscon_pty *pty;
 	struct ev_fd *ptyfd;
+	/* the pty's held output is fed from an idle source, a bounded part at a time */
+	bool feeding;
+	/* the cell size libtsm and TIOCSWINSZ were last given */
+	unsigned int cell_w;
+	unsigned int cell_h;
 
 	struct kmscon_font *font;
 	/* Automatically adjust font size to fit terminal size
@@ -845,13 +851,38 @@ static bool terminal_update_size(struct kmscon_terminal *term)
 	return true;
 }
 
+/* a TIOCSWINSZ pixel size, which holds 16 bits */
+static unsigned short winsize_px(unsigned int cells, unsigned int cell)
+{
+	return (uint64_t)cells * cell > USHRT_MAX ? USHRT_MAX : cells * cell;
+}
+
+/*
+ * A new size in cells, or a new font, reaches libtsm and the pty: the cell
+ * size in pixels goes to libtsm for sixel placement and XTWINOPS replies, and
+ * the text area in pixels to TIOCSWINSZ, the same cell size (ADR-103).
+ */
 static void terminal_update_size_notify(struct kmscon_terminal *term)
 {
-	if (terminal_update_size(term)) {
-		tsm_screen_resize(term->console, term->cols, term->rows);
-		kmscon_pty_resize(term->pty, term->cols, term->rows);
-		redraw_all(term);
+	bool resized = terminal_update_size(term), cell = false;
+
+	if (term->font &&
+	    (term->font->width != term->cell_w || term->font->height != term->cell_h)) {
+		cell = true;
+		term->cell_w = term->font->width;
+		term->cell_h = term->font->height;
+		if (tsm_screen_set_cell_size(term->console, term->cell_w, term->cell_h))
+			log_warning("cannot give libtsm the cell size %ux%u", term->cell_w,
+				    term->cell_h);
 	}
+	if (resized)
+		tsm_screen_resize(term->console, term->cols, term->rows);
+	if (resized || cell)
+		kmscon_pty_resize(term->pty, term->cols, term->rows,
+				  winsize_px(term->cols, term->cell_w),
+				  winsize_px(term->rows, term->cell_h));
+	if (resized)
+		redraw_all(term);
 	update_pointer_max_all(term);
 }
 
@@ -1391,7 +1422,8 @@ static int terminal_open(struct kmscon_terminal *term)
 	tsm_vte_hard_reset(term->vte);
 	width = tsm_screen_get_width(term->console);
 	height = tsm_screen_get_height(term->console);
-	ret = kmscon_pty_open(term->pty, width, height, has_kms_display(term));
+	ret = kmscon_pty_open(term->pty, width, height, winsize_px(width, term->cell_w),
+			      winsize_px(height, term->cell_h), has_kms_display(term));
 	if (ret)
 		return ret;
 
@@ -1405,10 +1437,21 @@ static int terminal_open(struct kmscon_terminal *term)
 	return 0;
 }
 
+static void feed_idle(struct ev_eloop *eloop, void *unused, void *data);
+
+static void feeding_stop(struct kmscon_terminal *term)
+{
+	if (!term->feeding)
+		return;
+	ev_eloop_unregister_idle_cb(term->eloop, feed_idle, term, EV_NORMAL);
+	term->feeding = false;
+}
+
 static void terminal_close(struct kmscon_terminal *term)
 {
 	kmscon_asciinema_pause(term->asciinema);
 	kmscon_pty_close(term->pty);
+	feeding_stop(term);
 	term->opened = false;
 }
 
@@ -1472,6 +1515,7 @@ void terminal_destroy(struct kmscon_terminal *term)
 	kmscon_pty_unref(term->pty);
 	kmscon_font_unref(term->font);
 	tsm_vte_unref(term->vte);
+	image_budget_remove_screen(term->console);
 	tsm_screen_unref(term->console);
 	input_unref(term->input);
 	ev_eloop_unref(term->eloop);
@@ -1479,14 +1523,40 @@ void terminal_destroy(struct kmscon_terminal *term)
 	free(term);
 }
 
-static void pty_input(struct kmscon_pty *pty, const char *u8, size_t len, void *data)
+/*
+ * The child's output, parsed a bounded amount of image work at a time: a few
+ * bytes of sixel can fill a large picture. What one call leaves is held by the
+ * pty, which reads no more meanwhile, and fed from an idle source, so input,
+ * drawing and VT switches are handled between the parts.
+ */
+static size_t pty_input(struct kmscon_pty *pty, const char *u8, size_t len, void *data)
+{
+	struct kmscon_terminal *term = data;
+	size_t n;
+
+	if (!len)
+		return 0;
+	n = tsm_vte_input_bounded(term->vte, u8, len);
+	redraw_all(term);
+	if (n < len && !term->feeding) {
+		if (ev_eloop_register_idle_cb(term->eloop, feed_idle, term, EV_NORMAL)) {
+			/* no idle source: the rest is parsed now, as before bounds */
+			log_warning("cannot feed pty output in parts");
+			tsm_vte_input(term->vte, u8 + n, len - n);
+			return len;
+		}
+		term->feeding = true;
+	}
+	return n;
+}
+
+static void feed_idle(struct ev_eloop *eloop, void *unused, void *data)
 {
 	struct kmscon_terminal *term = data;
 
-	if (len) {
-		tsm_vte_input(term->vte, u8, len);
-		redraw_all(term);
-	}
+	kmscon_pty_feed_held(term->pty);
+	if (!kmscon_pty_held(term->pty))
+		feeding_stop(term);
 }
 
 static void pty_exit(struct kmscon_pty *pty, bool restart, void *data)
@@ -1553,6 +1623,17 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 	ret = tsm_vte_new(&term->vte, term->console, write_event, term, log_llog, NULL);
 	if (ret)
 		goto err_con;
+
+	/* images (ADR-103): the process's budget, and sixel unless it or images are off */
+	ret = image_budget_add_screen(term->console);
+	if (ret)
+		goto err_vte;
+	if (tsm_vte_set_graphic_max_size(term->vte, term->conf->max_graphic_size.width,
+					 term->conf->max_graphic_size.height) ||
+	    tsm_vte_set_sixel_registers(term->vte, term->conf->num_color_registers,
+					term->conf->private_color_registers))
+		log_warning("cannot apply the sixel settings; libtsm's defaults stand");
+	tsm_vte_set_sixel(term->vte, term->conf->sixel && term->conf->image_storage_limit);
 
 	tsm_vte_set_backspace_sends_delete(term->vte, term->conf->backspace_delete);
 
@@ -1650,6 +1731,7 @@ err_font:
 	kmscon_font_unref(term->font);
 err_vte:
 	tsm_vte_unref(term->vte);
+	image_budget_remove_screen(term->console);
 err_con:
 	tsm_screen_unref(term->console);
 err_free:

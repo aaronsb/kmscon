@@ -731,6 +731,9 @@ int kmscon_seat_new(struct kmscon_seat **out, struct conf_ctx *main_conf,
 		goto err_conf;
 	}
 
+	/* one image budget for the process, which runs one seat */
+	image_budget_set_limit(seat->conf->image_storage_limit);
+
 	input_set_conf(seat->input, seat->conf->xkb_repeat_delay, seat->conf->xkb_repeat_rate,
 		       seat->conf->mouse);
 

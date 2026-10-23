@@ -102,6 +102,15 @@ test_asciinema = executable(
 )
 test('test_asciinema', test_asciinema)
 
+# the pty holds the output its input callback leaves (ADR-103 step 3d)
+test_pty = executable(
+    'test_pty',
+    'test_pty.c',
+    include_directories: misc_inc,
+    dependencies: [libtsm_deps, shl_deps, eloop_deps],
+)
+test('test_pty', test_pty)
+
 test_issue = executable(
     'test_issue',
     'test_issue.c',

@@ -59,6 +59,9 @@ struct kmscon_pty {
 	struct ev_fd *efd;
 	struct shl_ring *msgbuf;
 	char io_buf[KMSCON_NREAD];
+	/* io_buf[held_off, held_len) is what the input callback has not taken */
+	size_t held_off;
+	size_t held_len;
 
 	kmscon_pty_input_cb input_cb;
 	kmscon_pty_exit_cb exit_cb;
@@ -353,14 +356,10 @@ err_out:
  * a little bit more control of the process, and as a bonus avoid linking to
  * the libutil library in glibc.
  */
-static int pty_spawn(struct kmscon_pty *pty, int master, unsigned short width,
-		     unsigned short height, bool drm)
+static int pty_spawn(struct kmscon_pty *pty, int master, const struct winsize *size, bool drm)
 {
 	pid_t pid;
-	struct winsize ws = {0};
-
-	ws.ws_col = width;
-	ws.ws_row = height;
+	struct winsize ws = *size;
 
 	pid = fork();
 	switch (pid) {
@@ -408,10 +407,40 @@ static int send_buf(struct kmscon_pty *pty)
 	return 0;
 }
 
+/* edge-triggered: asks for EV_READABLE again, which reports data already there */
+static void rearm(struct kmscon_pty *pty)
+{
+	int mask = EV_READABLE | EV_ET;
+
+	if (!shl_ring_is_empty(pty->msgbuf))
+		mask |= EV_WRITEABLE;
+	ev_fd_update(pty->efd, mask);
+}
+
+/*
+ * Hands io_buf[@off, @len) to the input callback. What it does not take is
+ * held, and nothing more is read until kmscon_pty_feed_held hands it all over.
+ * Returns true when all of it was taken.
+ */
+static bool feed(struct kmscon_pty *pty, size_t off, size_t len)
+{
+	size_t n = pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
+
+	if (n >= len - off) {
+		pty->held_len = 0;
+		return true;
+	}
+	pty->held_off = off + n;
+	pty->held_len = len;
+	return false;
+}
+
 static int read_buf(struct kmscon_pty *pty)
 {
 	ssize_t len, num;
-	int mask;
+
+	if (pty->held_len)
+		return 0;
 
 	/* Use a maximum of 50 steps to avoid staying here forever.
 	 * TODO: recheck where else a user might flush our queues and try to
@@ -420,8 +449,8 @@ static int read_buf(struct kmscon_pty *pty)
 	do {
 		len = read(pty->fd, pty->io_buf, sizeof(pty->io_buf));
 		if (len > 0) {
-			if (pty->input_cb)
-				pty->input_cb(pty, pty->io_buf, len, pty->data);
+			if (!feed(pty, 0, len))
+				return 0;
 		} else if (len == 0) {
 			log_debug("HUP during read on pty of child %d", pty->child);
 			break;
@@ -436,13 +465,23 @@ static int read_buf(struct kmscon_pty *pty)
 
 		/* We are edge-triggered so update the mask to get the
 		 * EV_READABLE event again next round. */
-		mask = EV_READABLE | EV_ET;
-		if (!shl_ring_is_empty(pty->msgbuf))
-			mask |= EV_WRITEABLE;
-		ev_fd_update(pty->efd, mask);
+		rearm(pty);
 	}
 
 	return 0;
+}
+
+bool kmscon_pty_held(struct kmscon_pty *pty)
+{
+	return pty && pty->held_len;
+}
+
+void kmscon_pty_feed_held(struct kmscon_pty *pty)
+{
+	if (!pty || !pty->held_len)
+		return;
+	if (feed(pty, pty->held_off, pty->held_len))
+		rearm(pty);
 }
 
 static void pty_input(struct ev_fd *fd, int mask, void *data)
@@ -508,8 +547,11 @@ static void sig_child(struct ev_eloop *eloop, struct ev_child_data *chld, void *
 	pty->exit_cb(pty, true, pty->data);
 }
 
-int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short height, bool drm)
+int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short height,
+		    unsigned short xpixel, unsigned short ypixel, bool drm)
 {
+	struct winsize ws = {
+		.ws_col = width, .ws_row = height, .ws_xpixel = xpixel, .ws_ypixel = ypixel};
 	int ret;
 	int master;
 
@@ -533,7 +575,7 @@ int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short
 	if (ret)
 		goto err_fd;
 
-	ret = pty_spawn(pty, master, width, height, drm);
+	ret = pty_spawn(pty, master, &ws, drm);
 	if (ret)
 		goto err_sig;
 
@@ -559,6 +601,7 @@ void kmscon_pty_close(struct kmscon_pty *pty)
 	ev_eloop_unregister_child_cb(pty->eloop, sig_child, pty);
 	close(pty->fd);
 	pty->fd = -1;
+	pty->held_len = 0;
 }
 
 int kmscon_pty_write(struct kmscon_pty *pty, const char *u8, size_t len)
@@ -618,16 +661,15 @@ int kmscon_pty_get_slave_name(struct kmscon_pty *pty, char *buf, size_t len)
 	return ptsname_r(pty->fd, buf, len);
 }
 
-void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned short height)
+void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned short height,
+		       unsigned short xpixel, unsigned short ypixel)
 {
 	int ret;
-	struct winsize ws = {0};
+	struct winsize ws = {
+		.ws_col = width, .ws_row = height, .ws_xpixel = xpixel, .ws_ypixel = ypixel};
 
 	if (!pty || !pty_is_open(pty))
 		return;
-
-	ws.ws_col = width;
-	ws.ws_row = height;
 
 	/*
 	 * This will send SIGWINCH to the pty slave foreground process group.

@@ -98,7 +98,8 @@ static bool probe_synthetic_bold(void)
 
 	kmscon_font_unref(font);
 	if (same)
-		printf("a bold U+3042 from a family with no bold face draws the same as a regular one\n");
+		printf("a bold U+3042 from a family with no bold face draws the same as a regular "
+		       "one\n");
 	return !same;
 }
 

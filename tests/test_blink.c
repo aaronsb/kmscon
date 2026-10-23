@@ -49,8 +49,8 @@
 #undef LOG_SUBSYSTEM
 #include "../src/render/text.c"
 #undef LOG_SUBSYSTEM
-#include "../src/render/picture.c"
 #include "../src/render/bbulk.c"
+#include "../src/render/picture.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/deco.c"
 #undef LOG_SUBSYSTEM
@@ -619,7 +619,8 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 				compared++;
 				if (outs[d].n_rects || outs[d].swaps != swaps) {
 					fprintf(stderr,
-						"test_blink: %s: %zu damage rects and %u swaps after "
+						"test_blink: %s: %zu damage rects and %u swaps "
+						"after "
 						"two frames without change\n",
 						label, outs[d].n_rects, outs[d].swaps - swaps);
 					failures++;
@@ -825,7 +826,8 @@ static void test_damage_extent(void)
 				any = any || want[y][x];
 				if (f >= 3 && want[y][x] && !got[y][x] && !reported) {
 					fprintf(stderr,
-						"test_blink: %s: cell %u,%u changed but left out of "
+						"test_blink: %s: cell %u,%u changed but left out "
+						"of "
 						"the damage\n",
 						label, x, y);
 					reported = true;
@@ -892,11 +894,11 @@ static void test_hw_cursor(void)
 		int32_t x, y;
 		unsigned int swaps;
 	} steps[] = {
-		{"no change", 0, 0, 0, 0},  {"shown", 1, 40, 30, 1},
-		{"no change", 0, 0, 0, 0},  {"moved", 1, 90, 50, 1},
+		{"no change", 0, 0, 0, 0},	  {"shown", 1, 40, 30, 1},
+		{"no change", 0, 0, 0, 0},	  {"moved", 1, 90, 50, 1},
 		{"shown in place", 1, 90, 50, 0}, {"hidden after the timeout", -1, 0, 0, 1},
-		{"hidden again", -1, 0, 0, 0}, {"no change", 0, 0, 0, 0},
-		{"shown again", 1, 10, 10, 1}, {"no change", 0, 0, 0, 0},
+		{"hidden again", -1, 0, 0, 0},	  {"no change", 0, 0, 0, 0},
+		{"shown again", 1, 10, 10, 1},	  {"no change", 0, 0, 0, 0},
 	};
 	char label[128];
 

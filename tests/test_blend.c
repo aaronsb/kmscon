@@ -27,10 +27,15 @@ static struct {
 	uint32_t px[6];
 } argb = {
 	.b = {.width = 3, .height = 2, .format = VIDEO_FORMAT_ARGB32},
-	.px = {
-		0x00000000, 0x80408000, 0xff0a141e, /* a=0; a=128 (64,128,0); a=255 (10,20,30) */
-		0xff0a141e, 0x00000000, 0x80408000,
-	},
+	.px =
+		{
+			0x00000000,
+			0x80408000,
+			0xff0a141e, /* a=0; a=128 (64,128,0); a=255 (10,20,30) */
+			0xff0a141e,
+			0x00000000,
+			0x80408000,
+		},
 };
 
 /* 1 x 1 alpha mask at 128 */
@@ -46,9 +51,17 @@ static struct video_blend_req argb_req(void)
 {
 	/* fg is ignored by the ARGB blend: make it loud */
 	struct video_blend_req req = {
-		.buf = &argb.b, .x = 1, .y = 1, .w = 3, .h = 2,
-		.fr = 255, .fg = 0, .fb = 255,
-		.br = 200, .bg = 100, .bb = 50,
+		.buf = &argb.b,
+		.x = 1,
+		.y = 1,
+		.w = 3,
+		.h = 2,
+		.fr = 255,
+		.fg = 0,
+		.fb = 255,
+		.br = 200,
+		.bg = 100,
+		.bb = 50,
 	};
 	return req;
 }
@@ -56,9 +69,17 @@ static struct video_blend_req argb_req(void)
 static struct video_blend_req mask_req(void)
 {
 	struct video_blend_req req = {
-		.buf = &mask.b, .x = 0, .y = 0, .w = 1, .h = 1,
-		.fr = 255, .fg = 255, .fb = 255,
-		.br = 0, .bg = 0, .bb = 0,
+		.buf = &mask.b,
+		.x = 0,
+		.y = 0,
+		.w = 1,
+		.h = 1,
+		.fr = 255,
+		.fg = 255,
+		.fb = 255,
+		.br = 0,
+		.bg = 0,
+		.bb = 0,
 	};
 	return req;
 }

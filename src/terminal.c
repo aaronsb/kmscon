@@ -515,8 +515,8 @@ static void render_timer_event(struct ev_timer *timer, uint64_t count, void *dat
 					 &st))
 			continue;
 		if (term->conf->render_timer & KMSCON_RENDER_TIMER_LOG) {
-			snprintf(name, sizeof(name), "%s[%s]",
-				 video_name(display_video(scr->disp)), display_name(scr->disp));
+			snprintf(name, sizeof(name), "%s[%s]", video_name(display_video(scr->disp)),
+				 display_name(scr->disp));
 			render_timer_format(&st, name, line, sizeof(line));
 			/* asked for in the config, so at the level kmscon logs by default */
 			log_notice("%s", line);
@@ -1447,8 +1447,7 @@ void terminal_deactivate(struct kmscon_terminal *term)
 
 	term->awake = false;
 	/* in the background, its scaled pictures give their room back */
-	dlist_for_each_entry(scr, &term->screens, list)
-		kmscon_text_release(scr->txt);
+	dlist_for_each_entry(scr, &term->screens, list) kmscon_text_release(scr->txt);
 	hw_cursor_hide(term);
 	if (term->conf->blink) {
 		ev_timer_disable(term->blink_timer);
@@ -1618,8 +1617,8 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 			goto err_blink;
 	}
 	if (term->conf->render_timer != KMSCON_RENDER_TIMER_NONE) {
-		ret = ev_eloop_new_timer(term->eloop, &term->render_timer,
-					 &render_timer_interval, render_timer_event, term);
+		ret = ev_eloop_new_timer(term->eloop, &term->render_timer, &render_timer_interval,
+					 render_timer_event, term);
 		if (ret)
 			goto err_cursor;
 	}

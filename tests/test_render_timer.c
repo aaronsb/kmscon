@@ -313,10 +313,11 @@ static void test_format(void)
 	d.clock.now += 1002 * MS;
 	assert(display_report(&d, &st));
 	assert(render_timer_format(&st, "pci-0000:00:01.0[Virtual-1]", line, sizeof(line)) == 0);
-	assert(!strcmp(line, "render-timer: display=pci-0000:00:01.0[Virtual-1] interval_ms=1002.000 "
-			     "presented_per_s=58.88 flips=59 frames=59 cpu_ms_mean=1.235 "
-			     "cpu_ms_median=1.235 cpu_ms_p95=1.235 cpu_ms_max=1.235 "
-			     "damage_px_mean=25954 damage_pct=2.47 skipped=1 skipped_cpu_ms=0.250"));
+	assert(!strcmp(line,
+		       "render-timer: display=pci-0000:00:01.0[Virtual-1] interval_ms=1002.000 "
+		       "presented_per_s=58.88 flips=59 frames=59 cpu_ms_mean=1.235 "
+		       "cpu_ms_median=1.235 cpu_ms_p95=1.235 cpu_ms_max=1.235 "
+		       "damage_px_mean=25954 damage_pct=2.47 skipped=1 skipped_cpu_ms=0.250"));
 
 	/* a quiet line, and a display of no size */
 	d.clock.now += S;

@@ -314,7 +314,8 @@ out_paint:
 }
 #endif
 
-static int colour_load(FT_Face face, hb_font_t *paint_font, hb_codepoint_t gid, struct colour_piece *p)
+static int colour_load(FT_Face face, hb_font_t *paint_font, hb_codepoint_t gid,
+		       struct colour_piece *p)
 {
 #ifdef KMSCON_COLRV1
 	if (paint_font && !colour_from_paint(paint_font, gid, p))
@@ -352,7 +353,7 @@ static uint32_t colour_over(uint32_t src, uint32_t dst)
  * source pixels under each output pixel.
  */
 static int colour_box_filter(const uint32_t *src, unsigned int sw, unsigned int sh, uint32_t *dst,
-		      unsigned int dw, unsigned int dh)
+			     unsigned int dw, unsigned int dh)
 {
 	uint64_t *rows, *acc, sum[4], div = (uint64_t)sw * sh;
 	unsigned int x, y, i, c;
@@ -412,7 +413,8 @@ static int colour_box_filter(const uint32_t *src, unsigned int sw, unsigned int 
  * its aspect kept that leaves one pixel clear on every side, centred.
  */
 static struct kmscon_glyph *colour_fit(const uint32_t *canvas, unsigned int cw, unsigned int ch,
-				unsigned int bw, unsigned int bh, unsigned int cwidth, bool argb)
+				       unsigned int bw, unsigned int bh, unsigned int cwidth,
+				       bool argb)
 {
 	struct kmscon_glyph *glyph;
 	unsigned int iw = bw > 2 ? bw - 2 : 1, ih = bh > 2 ? bh - 2 : 1;

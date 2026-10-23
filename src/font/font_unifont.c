@@ -171,7 +171,8 @@ static bool kmscon_font_unifont_has_glyph(struct kmscon_font *font, struct kmsco
 
 static struct kmscon_glyph *kmscon_font_unifont_render(struct kmscon_font *font,
 						       struct kmscon_font_attr *attr,
-						       const uint32_t *cps, size_t n, unsigned int cwidth)
+						       const uint32_t *cps, size_t n,
+						       unsigned int cwidth)
 {
 	uint32_t ch = cps[0];
 	struct unifont_data *uf = font->data;

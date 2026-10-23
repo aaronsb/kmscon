@@ -610,8 +610,8 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
  * Draw @cell at @posx, @posy with glyph key @key (0: none), @cwidth cells wide
  * (a wide glyph in the last column is cut at the margin by the atlas).
  */
-static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell,
-			   uint64_t key, unsigned int posx, unsigned int posy, unsigned int cwidth)
+static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
+			   unsigned int posx, unsigned int posy, unsigned int cwidth)
 {
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;

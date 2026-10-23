@@ -178,13 +178,13 @@ struct bbulk {
 	uint8_t redraw;
 
 	/* the image layer (ADR-103) */
-	struct place *places;	     /* this frame's, in draw order */
+	struct place *places; /* this frame's, in draw order */
 	unsigned int n_places;
-	struct place *prev;	     /* the last frame's, by key */
+	struct place *prev; /* the last frame's, by key */
 	unsigned int n_prev;
-	unsigned int places_cap;     /* of both */
-	unsigned int *row_first;     /* per row, its first entry in row_places */
-	unsigned int *row_places;    /* placements by row, in draw order */
+	unsigned int places_cap;  /* of both */
+	unsigned int *row_first;  /* per row, its first entry in row_places */
+	unsigned int *row_places; /* placements by row, in draw order */
 	unsigned int row_places_cap;
 	unsigned int *cover;	     /* the placements over one cell */
 	unsigned int grid_w, grid_h; /* the frame's drawn cells, in pixels */
@@ -279,7 +279,8 @@ static struct kmscon_glyph *bbulk_rotate_glyph(struct kmscon_glyph *glyph,
 	case OR_RIGHT:
 		for (i = 0; i < buf->height; i++) {
 			for (j = 0; j < buf->width; j++)
-				memcpy(&dst[(j * width + (width - i - 1)) * bpp], &src[j * bpp], bpp);
+				memcpy(&dst[(j * width + (width - i - 1)) * bpp], &src[j * bpp],
+				       bpp);
 			src += buf->width * bpp;
 		}
 		break;
@@ -295,7 +296,8 @@ static struct kmscon_glyph *bbulk_rotate_glyph(struct kmscon_glyph *glyph,
 	case OR_LEFT:
 		for (i = 0; i < buf->height; i++) {
 			for (j = 0; j < buf->width; j++)
-				memcpy(&dst[((height - j - 1) * width + i) * bpp], &src[j * bpp], bpp);
+				memcpy(&dst[((height - j - 1) * width + i) * bpp], &src[j * bpp],
+				       bpp);
 			src += buf->width * bpp;
 		}
 	}
@@ -337,11 +339,11 @@ static void free_sprites(struct bbulk *bb)
 #define IMAGE_BUDGET_MIN ((size_t)16 << 20)
 #define IMAGE_BUDGET_MAX ((size_t)192 << 20)
 
-static uint64_t displays_px;   /* the pixels of every display bbulk draws */
-static size_t pictures_total;  /* the scaled pictures of all of them */
-static size_t pictures_peak;   /* the most pictures_total has held */
-static uint64_t budget_gen;    /* moves when the budget or the room in it grows */
-static unsigned int starving;  /* the renderers with a placement left out */
+static uint64_t displays_px;  /* the pixels of every display bbulk draws */
+static size_t pictures_total; /* the scaled pictures of all of them */
+static size_t pictures_peak;  /* the most pictures_total has held */
+static uint64_t budget_gen;   /* moves when the budget or the room in it grows */
+static unsigned int starving; /* the renderers with a placement left out */
 
 /*
  * Each display counts once, however many terminals draw it: every session
@@ -399,7 +401,9 @@ static size_t image_budget(void)
 {
 	uint64_t b = displays_px * 4 * 4;
 
-	return b < IMAGE_BUDGET_MIN ? IMAGE_BUDGET_MIN : b > IMAGE_BUDGET_MAX ? IMAGE_BUDGET_MAX : b;
+	return b < IMAGE_BUDGET_MIN   ? IMAGE_BUDGET_MIN
+	       : b > IMAGE_BUDGET_MAX ? IMAGE_BUDGET_MAX
+				      : b;
 }
 
 static void picture_free(struct bbulk *bb, struct picture *p)
@@ -875,8 +879,8 @@ static void pictures_free_unused(struct bbulk *bb)
  * on this frame when that, or anything else, changed the budget, or when a
  * placement here was added, changed or removed.
  */
-static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
-			 unsigned int cols, unsigned int rows)
+static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame, unsigned int cols,
+			 unsigned int rows)
 {
 	struct bbulk *bb = txt->data;
 	unsigned int nf = frame->placements ? frame->placement_count : 0, n, i, total, y;
@@ -1024,8 +1028,8 @@ static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep
 	while (bb->picture_bytes + want > limit) {
 		lru = NULL;
 		for (pp = &bb->pictures; *pp; pp = &(*pp)->next) {
-			if (keep_drawn && ((*pp)->last_use == bb->frame_count ||
-					   picture_placed(bb, *pp)))
+			if (keep_drawn &&
+			    ((*pp)->last_use == bb->frame_count || picture_placed(bb, *pp)))
 				continue;
 			if (!lru || (*pp)->last_use < (*lru)->last_use)
 				lru = pp;
@@ -1074,8 +1078,8 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 	uint32_t *tmp;
 	int ret;
 
-	if (!fp->cell_width || !fp->cell_height || !fp->width || !fp->height ||
-	    !fp->src_width || !fp->src_height)
+	if (!fp->cell_width || !fp->cell_height || !fp->width || !fp->height || !fp->src_width ||
+	    !fp->src_height)
 		return -1;
 
 	/* the picture in grid pixels, scaled from the cells it was made in */
@@ -1130,10 +1134,10 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 
 	for (pic = bb->pictures; pic; pic = pic->next) {
 		if (pic->overlay == p->overlay && pic->image_key == fp->image_key &&
-		    pic->src_x == fp->src_x &&
-		    pic->src_y == fp->src_y && pic->src_w == fp->src_width &&
-		    pic->src_h == fp->src_height && pic->dw == dw && pic->dh == dh &&
-		    pic->u0 == u0 && pic->v0 == v0 && pic->u1 == u1 && pic->v1 == v1)
+		    pic->src_x == fp->src_x && pic->src_y == fp->src_y &&
+		    pic->src_w == fp->src_width && pic->src_h == fp->src_height && pic->dw == dw &&
+		    pic->dh == dh && pic->u0 == u0 && pic->v0 == v0 && pic->u1 == u1 &&
+		    pic->v1 == v1)
 			break;
 	}
 	if (!pic) {
@@ -1153,8 +1157,8 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 			free(pic);
 			return -ENOMEM;
 		}
-		ret = picture_scale(src, stride, fp->src_width, fp->src_height, dw, dh, u0, v0,
-				    u1, v1, tmp ? tmp : pic->pixels);
+		ret = picture_scale(src, stride, fp->src_width, fp->src_height, dw, dh, u0, v0, u1,
+				    v1, tmp ? tmp : pic->pixels);
 		if (!ret && tmp)
 			picture_rotate(tmp, w, h, pic->pixels, txt->orientation);
 		free(tmp);
@@ -1315,7 +1319,8 @@ static void run_flush(struct kmscon_text *txt)
 	h = r.y2 - r.y1;
 	for (y = 0; y < h; y++)
 		memcpy(&((uint32_t *)bb->strip->data)[y * w],
-		       &p->pix[(size_t)(r.y1 - p->screen.y1 + y) * p->stride + (r.x1 - p->screen.x1)],
+		       &p->pix[(size_t)(r.y1 - p->screen.y1 + y) * p->stride +
+			       (r.x1 - p->screen.x1)],
 		       w * 4);
 	bb->strip->width = w;
 	bb->strip->height = h;
@@ -1365,7 +1370,8 @@ static void compose_text(struct kmscon_text *txt, const struct tsm_frame_cell *c
 	if (key)
 		compose(bb->scratch, &glyph->buf, 0, 0, cell->fg);
 	if (cell->flags & TSM_FRAME_STRIKE)
-		compose_sprite(txt, KMSCON_DECO_STRIKE, ncells, kmscon_text_strike_color(txt, cell));
+		compose_sprite(txt, KMSCON_DECO_STRIKE, ncells,
+			       kmscon_text_strike_color(txt, cell));
 }
 
 /*
@@ -1816,8 +1822,8 @@ static int bbulk_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	 * if default colors or decoration colors have changed, or we switch
 	 * from a dirty screen, redraw completely the next 2 frames.
 	 */
-	if (memcmp(&bb->attr, attr, sizeof(*attr)) || memcmp(&bb->deco, &txt->deco, sizeof(bb->deco)) ||
-	    display_need_redraw(txt->disp))
+	if (memcmp(&bb->attr, attr, sizeof(*attr)) ||
+	    memcmp(&bb->deco, &txt->deco, sizeof(bb->deco)) || display_need_redraw(txt->disp))
 		bb->redraw = 2;
 
 	bb->attr = *attr;

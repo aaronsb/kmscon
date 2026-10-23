@@ -228,8 +228,7 @@ static void test_parse_comment(void)
 
 /*
  * blink is on by default and no-blink turns it off; an option on the command
- * line wins over the file, so `--blink` runs the demo's no-blink config with
- * blinking text
+ * line wins over the file
  */
 static void test_parse_blink(void)
 {

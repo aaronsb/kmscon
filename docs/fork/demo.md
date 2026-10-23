@@ -13,8 +13,6 @@ sudo fork/demo/run-vt.sh 4         # another VT, 2 to 12
 fork/demo/run-vt.sh --dry-run      # print every command, run none (no root)
 sudo fork/demo/run-vt.sh 3 -- --mode=7680x2160 --no-use-original-mode
                                    # options after -- go to kmscon
-sudo fork/demo/run-vt.sh 3 -- --blink
-                                   # blinking text, for the blink page
 ```
 
 Then switch to the VT with Ctrl-Alt-F3 (or the VT's number), judge each page with one key (below), and press q to finish. When the demonstration ends, kmscon exits and the stock console starts again on that VT. Switch back to the desktop with its own Ctrl-Alt-F key.
@@ -126,7 +124,7 @@ What each page should and should not look like is in its section file's `# look-
 
 Every section but blink and emoji is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin and combining are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. emoji is not a tier 3 screen until colour emoji land (ADR-102 step 4c). The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
-blink is not a tier 3 screen: tier 3's guest runs kmscon with `no-blink`, and a capture would catch whichever phase the timer was in. `fork/demo/kmscon.conf` has `no-blink` as well, so the blink page blinks only when run-vt.sh passes `--blink` to kmscon after `--`; an option on the command line wins over the config file. Without it every line of the page is drawn steady. `tests/test_blink.c`, part of `make test`, checks both phases through both of bbulk's buffers.
+blink is not a tier 3 screen: tier 3's guest runs kmscon with `no-blink`, and a capture would catch whichever phase the timer was in. The demo leaves blinking on, kmscon's default, since a person watches it: the blink page blinks and so does the cursor. `-- --no-blink` turns it off for one run. `tests/test_blink.c`, part of `make test`, checks both phases through both of bbulk's buffers.
 
 The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws. The fork draws every one of them that way except emoji, which stay clipped or monochrome until colour emoji land (ADR-102 step 4c).
 

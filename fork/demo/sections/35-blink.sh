@@ -1,16 +1,15 @@
 #!/bin/bash
-# look-for: Under --blink each "blink:" run vanishes and returns each second,
-# look-for: keeping its background, underline and strike; the rest is still.
-# wrong-looks-like: Nothing blinks under --blink, a run stays gone or comes
-# wrong-looks-like: back in part, or steady text (after 25 too) flickers.
+# look-for: Each "blink:" run vanishes and returns once a second, keeping
+# look-for: its background, underline and strike; the rest stays still.
+# wrong-looks-like: Nothing blinks, a run stays gone or comes back in part,
+# wrong-looks-like: or steady text (after 25 too) flickers.
 # Blinking text, SGR 5, beside steady text: plain, coloured, on a background,
 # reversed, bold, underlined, struck, CJK and combining clusters, and a line
 # that SGR 25 makes steady halfway. In the hidden phase a blinking cell keeps
-# its background, reverse block, underline and strike and loses its glyph.
-# fork/demo/kmscon.conf has no-blink, as tier 3's guest config does, so this
-# page blinks only when kmscon gets --blink after run-vt.sh's --; the command
-# line wins over the config file. It is not a tier 3 screen: tier 3 runs with
-# no-blink, and a capture would catch one phase at a time it does not choose.
+# its background, reverse block, underline and strike and loses its glyph,
+# as foot keeps them. The demo runs kmscon with blinking on, its default. It
+# is not a tier 3 screen: tier 3 runs with no-blink, and a capture would catch
+# one phase at a time it does not choose.
 # tests/test_blink.c checks both phases through both of bbulk's buffers.
 acute=$'\xcc\x81' # U+0301 COMBINING ACUTE ACCENT
 tilde=$'\xcc\x83' # U+0303 COMBINING TILDE

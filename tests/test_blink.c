@@ -15,6 +15,9 @@
  * phase the blinking screen equals the same text without SGR 5, and in the
  * hidden phase it equals the same attributes over spaces, so a blinking cell
  * keeps its background and its underline and strike and loses its glyph.
+ * That follows foot, whose render_cell draws a cell's underline and strike
+ * whatever its blink phase (it dims the glyph where kmscon hides it), and
+ * upstream kmscon, which draws a hidden cell as a space in its attributes.
  */
 
 #undef NDEBUG

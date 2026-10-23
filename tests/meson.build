@@ -136,6 +136,49 @@ test('test_conf', test_conf)
 
 
 python = find_program('python3')
+
+# Capability probes (tests/capabilities/README.md): one small check per
+# terminal feature, judged against the works/missing list beside the runner.
+test_capabilities = executable(
+    'test_capabilities',
+    'test_capabilities.c',
+    dependencies: [libtsm_deps],
+)
+caps_args = [
+    files('capabilities/run.py'),
+    '--list', files('capabilities/capabilities.list'),
+    '--probe', test_capabilities,
+]
+if enable_font_freetype
+    test_capabilities_font = executable(
+        'test_capabilities_font',
+        'test_capabilities_font.c',
+        include_directories: src_inc,
+        dependencies: [
+            libtsm_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            harfbuzz_raster_deps,
+            threads_deps,
+            shl_deps,
+        ],
+    )
+    caps_args += [
+        '--font-probe', test_capabilities_font,
+        '--fonts', meson.current_source_dir() / 'fonts',
+    ]
+endif
+infocmp = find_program('infocmp', required: false)
+if tic.found() and infocmp.found()
+    caps_args += [
+        '--terminfo', meson.project_source_root() / 'scripts/terminfo/kmscon.ti',
+        '--tic', tic,
+        '--infocmp', infocmp,
+    ]
+endif
+test('capabilities', python, args: caps_args)
+
 if enable_font_freetype and enable_video_drm2d
     test_pixels = executable(
         'test_pixels',

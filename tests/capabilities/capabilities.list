@@ -1,0 +1,72 @@
+# Capability probes: NAME STATUS ISSUE NOTE (README.md beside this file).
+# works: the probe must pass. missing: it must fail, and ISSUE tracks the gap.
+# A missing probe that starts passing fails make test until it is set to works.
+
+# terminfo entry (scripts/terminfo/kmscon.ti) against what kmscon implements
+terminfo-cursor-shape         works   -     Ss/Se for DECSCUSR
+terminfo-italic               missing #94   sitm/ritm: SGR 3/23 are parsed (and drawn by pango)
+terminfo-dim                  missing #94   dim: SGR 2 is implemented
+terminfo-strike               missing #94   smxx/rmxx: SGR 9/29 are implemented (ADR-102)
+terminfo-styled-underline     missing #94   Smulx: SGR 4:0-5 are implemented (ADR-102)
+terminfo-underline-colour     missing #94   Setulc: SGR 58/59 are implemented (ADR-102)
+terminfo-truecolor            missing #94   RGB or Tc: SGR 38;2 and 48;2 are implemented
+terminfo-bracketed-paste      missing #94   BD/BE/PS/PE: mode 2004 is implemented
+terminfo-sgr-mouse            missing #94   XM: mode 1006 is implemented; kmous alone selects X10 mouse
+terminfo-sync                 missing #95   Sync, once mode 2026 exists
+terminfo-focus                missing #108  fe/fd, once mode 1004 exists
+terminfo-clipboard            missing #106  Ms, once OSC 52 exists
+
+# SGR
+sgr-italic                    works   -     SGR 3/23 set and clear italic on the cell
+sgr-truecolor                 works   -     SGR 38;2 and 48;2 direct colour
+sgr-overline                  missing #102  SGR 53/55 (ECMA-48) are dropped
+sgr-super-subscript           missing #101  SGR 73/74/75 (mintty) are dropped
+
+# fonts (freetype backend, the default)
+font-freetype-italic          missing #100  italic draws upright; pango slants it
+font-freetype-synthetic-bold  missing #100  a family with no bold face draws bold as regular
+
+# modes and reports
+mode-2026-sync                missing #95   synchronized output: DECRQM ?2026 gets no reply
+decrqm                        missing #110  DECRQM answers only ?2027
+da1                           works   -     CSI c replies CSI ? ... c
+da1-level                     missing #110  DA1 reports level 60, not one of xterm's 61-65
+da2                           works   -     CSI > c replies CSI > 1;1;0 c
+da3                           missing #110  CSI = c is answered as DA1 (the = marker is not parsed)
+xtversion                     missing #97   CSI > q gets no reply (and is taken as DECLL, clearing the LEDs)
+xtgettcap                     missing #97   DCS + q is dropped
+
+# OSC colours
+osc-4-query                   works   -     OSC 4 ; n ; ? replies the palette colour
+osc-4-set                     missing #96   OSC 4 ; n ; spec is parsed and discarded
+osc-10-11-query               works   -     OSC 10/11 ; ? reply the default fg and bg
+osc-10-11-set                 missing #96   OSC 10/11 ; spec are dropped
+osc-12-query                  missing #96   OSC 12 (cursor colour) is dropped
+osc-104-110-111-reset         missing #96   no reset, since nothing can be set
+
+# keyboard
+kitty-keyboard                missing #98   CSI ? u gets no reply; CSI > u and < u are dropped
+modify-other-keys             missing #99   CSI > 4 ; n m is parsed (not taken as SGR 4) and ignored
+
+# mouse and paste
+mouse-1000                    works   -     normal tracking, X10 encoding
+mouse-1006                    works   -     SGR encoding after 1000
+mouse-1006-first              missing #109  1006 set before 1000 is overwritten: one variable holds both
+mouse-1003-sgr                works   -     any-event motion in SGR
+mouse-1003-x10                missing #109  any-event motion is reported only in SGR or pixel encoding
+mouse-1016                    works   -     SGR pixel coordinates
+bracketed-paste               works   -     mode 2004 wraps a paste in CSI 200~ / 201~
+focus-1004                    missing #108  placeholder probe: mode 1004 is not recognised
+
+# screen
+reflow                        missing #104  widening the screen does not rejoin a wrapped line
+
+# OSC features kmscon would handle (libtsm passes these through)
+osc-8-hyperlink               missing #105  placeholder probe: OSC 8 is dropped
+osc-52-clipboard              missing #106  placeholder probe: OSC 52 is dropped
+osc-133-marks                 missing #107  placeholder probe: OSC 133 is dropped
+
+# text
+bidi                          missing #103  placeholder probe: no bidirectional text
+
+# Audited without a probe: input methods (#111), braille displays (#112).

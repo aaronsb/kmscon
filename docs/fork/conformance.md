@@ -114,6 +114,10 @@ make sheet-compare A=fork/build/saved/upstream-1 A2=fork/build/saved/upstream-2 
 
 `sheet-save`, `sheet-compare` and the run page empty part of their output directory before writing, so each writes only into a directory that is new, empty, or one it wrote before (marked by a `.saved-run`, `.compare-page` or `.run-page` file), and never into one holding the current directory or one of its inputs. `SAVE=.` or `OUT=fork` is refused and deletes nothing.
 
+## Capability probes
+
+Beside the tiers, `make test` runs the capability probes in [tests/capabilities/](../../tests/capabilities/README.md): one small check per terminal feature (escape-sequence replies, modes, SGR attributes, the freetype backend's italic and bold, the terminfo entry), each recorded in `capabilities.list` as `works` or as `missing` with the issue that tracks it. The test fails when a working probe fails and when a missing probe starts passing, so the list always states what kmscon has. The tiers judge what exists against upstream; the probes record what does not exist yet.
+
 ## Commands
 
 In the kmscon fork:
@@ -162,4 +166,5 @@ make golden REF=v4.8.0         # rewrite tier 1 goldens from upstream at REF
 | 1 | Running: 26 cases (22 synthetic, 4 recorded programs with 27 checkpoints between them), all matching upstream |
 | 2 | Running: nineteen screens, pixel-exact: ASCII, bold, palette, inverse, CJK, box drawing; block elements and box lines stacked across rows at two cell sizes, one taller than the font's line height, with checks that fail on a gap between cells (#46); the ADR-102 decorations (each underline style in the foreground and in an SGR 58 colour, strike-through, configured decoration colours with and without force-decoration-colors, decorated wide cells); combining marks shaped by HarfBuzz; a heart with VS16; colour emoji from a pinned Noto Color Emoji subset at two cell sizes and with no-emoji-color, with checks that fail on an emoji cut at its cells or drawn without colour (ADR-102 step 4c); and a redraw case drawn over four frames into two swapped buffers, which judges the two-frame damage rule. `test_blend` checks the drm2d and fbdev (16, 24 and 32 bpp) blend maths. Coverage gaps tracked in #8 |
 | 3 | Running: two 2D variants (virtio-vga at 1280x800 and 7680x2160, drm2d + bbulk), thirteen cases each (eleven screens: SGR, the colour forms, underline styles and colours, strike, box drawing, stacked blocks and box lines, wide characters at the margin, combining marks, colour emoji and CJK; then the switch to another VT and the screen restored on switching back), all pixel-exact. The GL variant (drm3d + gltex under virgl) has goldens but is outside the default run: it intermittently draws a black screen, #17. Runs locally only. |
+| Probes | Running: 47 capability probes, 12 working and 35 missing, each missing one tied to an issue (#94 to #110); input methods (#111) and braille displays (#112) are audited without a probe. |
 | CI | Not wired yet. ADR-301 has tiers 1 and 2 running in CI on every change; until then they run locally through `make test`, and the repository's GitHub workflow is upstream's plain build. |

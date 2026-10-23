@@ -13,7 +13,7 @@ related: []
 
 ## Scope and method
 
-ADR-103's first measurement (Order of work, step 3b): the CPU time bbulk spends per frame on the synthetic scenarios S1 to S6, at 1366x768, 1920x1080 and 7680x2160, measured on 2026-10-23 at kmscon `84da010` (branch `feat/image-compose`) with libtsm `78fb688`. It is held against ADR-103's Targets section, which this record confirms or replaces.
+ADR-103's first measurement (Order of work, step 3b): the CPU time bbulk spends per frame on the synthetic scenarios S1 to S6, at 1366x768, 1920x1080 and 7680x2160, and for information at 7680x4320, measured on 2026-10-23 at kmscon `84da010` (branch `feat/image-compose`) with libtsm `78fb688`. It is held against ADR-103's Targets section, which this record confirms or replaces.
 
 No parser makes placements yet (sixel is step 3c, kitty 4a), so a program in tier 3's VM cannot put a picture on screen, and only S1 runs there. S1 to S6 were therefore measured through `tests/bench_compose.c`: the real bbulk renderer, freetype backend and drm2d blend drawing into an in-memory XRGB8888 display with damage clips, the path tier 2 draws, with pictures made through libtsm's test-only calls. The figure is the thread CPU time from `kmscon_text_prepare` to the end of `kmscon_text_render`, the span the render timer reports; parsing and picture creation happen between frames and are not counted, as kmscon parses before it renders.
 
@@ -68,6 +68,35 @@ S1, branch against main, the median of each run's median over five interleaved r
 | 1920x1080 | 1.845 | 1.860 | +0.8% |
 | 7680x2160 | 14.807 | 15.041 | +1.6% |
 
+## Results at 7680x4320, for information
+
+Full 8K, which no display the operator has runs; measured for speed only, with the same method, after the three sizes above (`make bench-compose BENCH_SIZES=7680x4320 BENCH_FRAMES=120 BENCH_CPU=30`, three runs, 853x270 cells). ADR-103 sets no target for it.
+
+| Scenario | Median | 95th percentile (largest run) | Damage | Requests per frame |
+|---|---|---|---|---|
+| S1 | 28.929 | 29.478 | 100.0% | 230310 |
+| S2 | 26.356 | 27.366 | 100.0% | 115290 |
+| S3 | 26.502 | 27.520 | 100.0% | 119124 |
+| S4 | 24.322 | 25.526 | 100.0% | 270 |
+| S5 | 24.707 | 25.772 | 100.0% | 1973 |
+| S6 | 3.515 | 3.572 | 0.4% | 150 |
+
+S4 and S5 take about twice their 7680x2160 time, as the pixels double: above a 60 Hz frame interval (16.7 ms), below a 30 Hz one (33.3 ms), on one core.
+
+## Memory, computed
+
+Computed from the sizes, not measured. One frame is width x height x 4 bytes; ADR-103's `image-storage-limit=auto` budget is four frames of the process's displays, clamped to 16 MiB to 192 MiB (`IMAGE_BUDGET_MIN` and `IMAGE_BUDGET_MAX` in `src/render/bbulk.c`, one display here). Until step 3d (#125) the budget is the scaled pictures' alone; libtsm's image stores keep their own limit until then. The scaled-picture cache's peak within a frame never passes the budget; with full-screen pictures it holds as many whole screens as fit. Between frames a display keeps at most twice its screen, or the budget if that is less.
+
+| Display | One frame | Four frames | Budget | Screens the budget holds | Cache peak in a frame, full-screen pictures | Cache between frames, at most |
+|---|---|---|---|---|---|---|
+| 1366x768 | 4.0 MiB | 16.0 MiB | 16.0 MiB | 4.0 | 4 screens, 16.0 MiB | 8.0 MiB |
+| 1920x1080 | 7.9 MiB | 31.6 MiB | 31.6 MiB | 4.0 | 4 screens, 31.6 MiB | 15.8 MiB |
+| 3840x2160 | 31.6 MiB | 126.6 MiB | 126.6 MiB | 4.0 | 4 screens, 126.6 MiB | 63.3 MiB |
+| 7680x2160 | 63.3 MiB | 253.1 MiB | 192 MiB (cap) | 3.0 | 3 screens, 189.8 MiB | 126.6 MiB |
+| 7680x4320 | 126.6 MiB | 506.3 MiB | 192 MiB (cap) | 1.5 | 1 screen, 126.6 MiB | 1 screen, 126.6 MiB |
+
+At 7680x4320 a full-screen scaled picture draws, but a second one over it at the same time never fits: it is left out, and its cells are drawn again on every frame kmscon draws while both are placed (test_bbulk `test_budget` checks both sizes). The budget's ceiling is the one constant `IMAGE_BUDGET_MAX`.
+
 ## Results in tier 3
 
 S1 only, from one `make tier3 JOBS=2` run at `84da010` (45 of 45 cases pass), through the installed package, drm2d and virtio-gpu, read from the render timer's log lines by the harness (`s1-scroll`, 500000 lines):
@@ -99,7 +128,7 @@ The common-size targets hold with a wide margin on this host's core; whether to 
 
 ## What this does not measure
 
-A1 to A7, which need the parsers; S2 to S6 on the small tier 3 machine and on the operator's hardware; a 1920x1080 tier 3 variant; the write bandwidth of real scanout buffers; scaled pictures (every scenario draws at the picture's own size, so the scaler and its cache are not in these figures); and gltex, which draws no placements until step 3f.
+A1 to A7, which need the parsers; 7680x4320 in tier 3, a size with no display at hand, whose memory the table above computes; S2 to S6 on the small tier 3 machine and on the operator's hardware; a 1920x1080 tier 3 variant; the write bandwidth of real scanout buffers; scaled pictures (every scenario draws at the picture's own size, so the scaler and its cache are not in these figures); and gltex, which draws no placements until step 3f.
 
 ## Acceptance (2026-10-23)
 

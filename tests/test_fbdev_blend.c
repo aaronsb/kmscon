@@ -3,7 +3,8 @@
  * replaced (tests/fbdev_ref.h): the same framebuffer bytes, the same return
  * value and the same dither error after every request, for each depth and
  * channel layout, both source formats, dithering on and off, the front and
- * the back buffer. The requests are a sweep of every mask and alpha value
+ * the back buffer, rows packed and rows padded as many devices pad them. The
+ * requests are a sweep of every mask and alpha value
  * under fixed colours, then a seeded random run of glyphs, colours,
  * positions (clipped and rejected ones included) and clears.
  */
@@ -37,8 +38,14 @@ static const struct layout layouts[] = {
 	{"24 BGR888", 3, false, {0, 8, 16}, {8, 8, 8}},
 	{"24 RGB666", 3, false, {12, 6, 0}, {6, 6, 6}},
 	{"16 RGB565", 2, false, {11, 5, 0}, {5, 6, 5}},
+	{"16 BGR565", 2, false, {0, 5, 11}, {5, 6, 5}},
 	{"16 RGB555", 2, false, {10, 5, 0}, {5, 5, 5}},
+	/* 8-bit red and green alone do not make dithering a no-op */
+	{"24 RGB886", 3, false, {14, 6, 0}, {8, 8, 6}},
 };
+
+/* bytes added to each row past the visible width: none, and padding as devices add it */
+static const unsigned int pads[] = {0, 12};
 
 static uint32_t rng = 0x2545f491;
 
@@ -130,29 +137,26 @@ struct side {
 	struct display disp;
 	struct fbdev_display fb;
 	uint8_t *map;
+	size_t len;
 };
 
-static size_t map_len(const struct layout *l)
-{
-	return (size_t)XRES * l->Bpp * YRES * 2;
-}
-
 static void side_init(struct side *s, const struct layout *l, unsigned int flags,
-		      unsigned int bufid)
+		      unsigned int bufid, unsigned int pad)
 {
-	size_t i, len = map_len(l);
+	size_t i;
 
 	memset(s, 0, sizeof(*s));
-	s->map = malloc(len);
+	s->len = (size_t)(XRES * l->Bpp + pad) * YRES * 2;
+	s->map = malloc(s->len);
 	assert(s->map);
-	/* a pattern, so a byte written outside the request shows */
-	for (i = 0; i < len; i++)
+	/* a pattern, so a byte written outside the request, padding included, shows */
+	for (i = 0; i < s->len; i++)
 		s->map[i] = i * 7 + 0xa5;
 	s->disp.data = &s->fb;
 	s->disp.flags = flags;
 	s->fb.xres = XRES;
 	s->fb.yres = YRES;
-	s->fb.stride = XRES * l->Bpp;
+	s->fb.stride = XRES * l->Bpp + pad;
 	s->fb.Bpp = l->Bpp;
 	s->fb.xrgb32 = l->xrgb32;
 	s->fb.map = s->map;
@@ -171,18 +175,19 @@ static void same(const struct side *now, const struct side *ref, const struct la
 		 const char *what, unsigned long step, int ret_now, int ret_ref)
 {
 	ops++;
-	if (ret_now == ret_ref && !memcmp(now->map, ref->map, map_len(l)) &&
+	if (ret_now == ret_ref && !memcmp(now->map, ref->map, now->len) &&
 	    now->fb.dither_r == ref->fb.dither_r && now->fb.dither_g == ref->fb.dither_g &&
 	    now->fb.dither_b == ref->fb.dither_b)
 		return;
 
 	if (failures++ < 10)
 		fprintf(stderr,
-			"test_fbdev_blend: %s, flags %#x, bufid %u: %s %lu differs from the "
-			"reference (ret %d/%d, dither %ld,%ld,%ld/%ld,%ld,%ld)\n",
-			l->name, now->disp.flags, now->fb.bufid, what, step, ret_now, ret_ref,
-			(long)now->fb.dither_r, (long)now->fb.dither_g, (long)now->fb.dither_b,
-			(long)ref->fb.dither_r, (long)ref->fb.dither_g, (long)ref->fb.dither_b);
+			"test_fbdev_blend: %s, stride %u, flags %#x, bufid %u: %s %lu differs "
+			"from the reference (ret %d/%d, dither %ld,%ld,%ld/%ld,%ld,%ld)\n",
+			l->name, now->fb.stride, now->disp.flags, now->fb.bufid, what, step,
+			ret_now, ret_ref, (long)now->fb.dither_r, (long)now->fb.dither_g,
+			(long)now->fb.dither_b, (long)ref->fb.dither_r, (long)ref->fb.dither_g,
+			(long)ref->fb.dither_b);
 }
 
 static void blend_both(struct side *now, struct side *ref, const struct layout *l,
@@ -212,15 +217,15 @@ static const uint8_t sweep_colours[][6] = {
 	{17, 200, 99, 250, 3, 128},
 };
 
-static void run(const struct layout *l, unsigned int flags, unsigned int bufid)
+static void run(const struct layout *l, unsigned int flags, unsigned int bufid, unsigned int pad)
 {
 	struct side now, ref;
 	struct video_blend_req req;
 	unsigned long step;
 	unsigned int i;
 
-	side_init(&now, l, flags, bufid);
-	side_init(&ref, l, flags, bufid);
+	side_init(&now, l, flags, bufid, pad);
+	side_init(&ref, l, flags, bufid, pad);
 
 	for (i = 0; i < sizeof(sweep_colours) / sizeof(sweep_colours[0]); i++) {
 		const uint8_t *c = sweep_colours[i];
@@ -265,24 +270,25 @@ static void run(const struct layout *l, unsigned int flags, unsigned int bufid)
 
 int main(void)
 {
-	unsigned int i, flags, bufid;
+	unsigned int i, p, flags, bufid;
 
 	make_bufs();
 	for (i = 0; i < sizeof(layouts) / sizeof(layouts[0]); i++)
-		for (flags = 0; flags < 4; flags++)
-			for (bufid = 0; bufid < 2; bufid++)
-				run(&layouts[i],
-				    (flags & 1 ? DISPLAY_DITHERING : 0) |
-					    (flags & 2 ? DISPLAY_DBUF : 0),
-				    bufid);
+		for (p = 0; p < sizeof(pads) / sizeof(pads[0]); p++)
+			for (flags = 0; flags < 4; flags++)
+				for (bufid = 0; bufid < 2; bufid++)
+					run(&layouts[i],
+					    (flags & 1 ? DISPLAY_DITHERING : 0) |
+						    (flags & 2 ? DISPLAY_DBUF : 0),
+					    bufid, pads[p]);
 
 	if (failures) {
 		fprintf(stderr, "test_fbdev_blend: %lu of %lu requests differ from the reference\n",
 			failures, ops);
 		return 1;
 	}
-	printf("test_fbdev_blend: %lu blends and clears over %zu layouts byte-identical to the "
-	       "reference\n",
-	       ops, sizeof(layouts) / sizeof(layouts[0]));
+	printf("test_fbdev_blend: %lu blends and clears over %zu layouts and %zu strides "
+	       "byte-identical to the reference\n",
+	       ops, sizeof(layouts) / sizeof(layouts[0]), sizeof(pads) / sizeof(pads[0]));
 	return 0;
 }

@@ -44,6 +44,10 @@ TERMINFO = {
     "terminfo-clipboard": [{"Ms"}],
 }
 
+# test_capabilities_font's probes, named here so that a build without the
+# freetype backend skips exactly these and still fails on a misspelt line
+FONT_PROBES = ("font-freetype-italic", "font-freetype-synthetic-bold")
+
 STATUSES = ("works", "missing")
 # #N is an aaronsb/kmscon issue, libtsm#N an aaronsb/libtsm one
 ISSUE = re.compile(r"(libtsm)?#[0-9]+")
@@ -52,6 +56,7 @@ ISSUE = re.compile(r"(libtsm)?#[0-9]+")
 def read_list(path):
     """[(name, status, issue, note, line number)] from capabilities.list."""
     entries = []
+    seen = {}
     with open(path) as f:
         for n, line in enumerate(f, 1):
             if not line.strip() or line.lstrip().startswith("#"):
@@ -67,6 +72,9 @@ def read_list(path):
                 sys.exit(f"{path}:{n}: a missing probe names its issue (#N or libtsm#N)")
             if status == "works" and issue != "-":
                 sys.exit(f"{path}:{n}: a working probe has no issue (-)")
+            if name in seen:
+                sys.exit(f"{path}:{n}: {name} is already listed on line {seen[name]}")
+            seen[name] = n
             entries.append((name, status, issue, note, n))
     return entries
 
@@ -129,8 +137,15 @@ def main():
 
     if args.font_probe:
         font = [args.font_probe, args.fonts]
-        for name in program_probes(font):
+        names = program_probes(font)
+        if sorted(names) != sorted(FONT_PROBES):
+            sys.exit(f"test_capabilities_font lists {names}; FONT_PROBES in run.py says "
+                     f"{list(FONT_PROBES)}")
+        for name in names:
             runners[name] = lambda name=name: run_program(font, name)
+    else:
+        for name in FONT_PROBES:
+            skipped[name] = "the freetype font backend is not built"
 
     if args.terminfo and args.tic and args.infocmp:
         caps = terminfo_caps(args.terminfo, args.tic, args.infocmp)
@@ -153,9 +168,6 @@ def main():
             print(f"skip {name}: {skipped[name]}")
             continue
         if name not in runners:
-            if name.startswith("font-") and not args.font_probe:
-                print(f"skip {name}: the freetype font backend is not built")
-                continue
             print(f"FAIL {name}: {args.list}:{n} names a probe nothing defines")
             failures += 1
             continue

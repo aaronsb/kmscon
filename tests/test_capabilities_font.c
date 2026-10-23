@@ -10,6 +10,13 @@
  * have no italic face and the CJK font has no bold one, so a pass needs the
  * backend to slant or embolden the outline itself, as other terminals do when
  * the family has no such face.
+ *
+ * The fontconfig configuration is empty apart from the pinned file: no
+ * system rules, so fontconfig never sets FC_EMBOLDEN or FC_MATRIX on a match.
+ * A fix that only honours those (rather than emboldening or slanting when
+ * the matched face lacks the weight or slant) passes in production, where
+ * the system's 90-synthetic.conf sets them, and still fails here; such a fix
+ * loads that rule into the probe's configuration with it (#100).
  */
 
 #include <fontconfig/fontconfig.h>

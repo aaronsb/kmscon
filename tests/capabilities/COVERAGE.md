@@ -34,6 +34,7 @@ Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex);
 | Decoration sprites: underline styles, strike, SGR 58 colour | #33 | tier 2 `underline`, `strike`, `wide-deco`, `combining`, `redraw`; tier 3 `underline-styles`, `underline-colour`, `strike`, `sgr`; `test_bbulk.c` underline cursor colour | FT/BB/D2, PG/BB/D2 | gltex stubbed: #116 |
 | Decoration config keys (`underline-color`, `strike-color`, `force-decoration-colors`) | #33 | `test_conf.c`; tier 2 `deco-config`, `deco-force` | FT/BB/D2 | gltex: #116; pango: #117 |
 | Cell-exact block elements and box drawing | #59 | tier 2 `blocks`, `blocks-spaced`, `box` (gap checks); tier 3 `blocks`, `boxdraw` | FT/BB/D2, PG/BB/D2 | drawn in `font.c` before any engine, so every engine shares the sprites; gltex: #116 |
+| Braille, sextants and octants as cell-exact sprites | #91 | `test_font_box` (meson); tier 2 `mosaic`, `mosaic-spaced` (mosaic check); tier 3 `mosaic` | FT/BB/D2, PG/BB/D2 | drawn in `font.c` before any engine, like the box sprites; gltex: #116 |
 | Colour emoji, fit rule, presentation, `emoji-color` | #72 | `test_font_freetype.c` `test_wants_colour`, `test_colour_fit`, `test_colour_up_flow`; tier 2 `emoji`, `emoji-spaced`, `emoji-mono`, `vs16`; tier 3 `emoji` | FT/BB/D2, PG/BB/D2 | pango with colour off and missing glyph: #71, #117; gltex: #68, #116 |
 | COLR glyphs | #72 | `test_font_freetype.c` `test_colour_table_text_face` | FT (shared `font_colour.c`) | no pixel screen; pango: #117 |
 | Combining marks shaped by HarfBuzz | #33 | `test_font_freetype.c` cluster tests; tier 2 `combining`; tier 3 `combining` | FT/BB, PG/BB | gltex: #116 |
@@ -47,11 +48,11 @@ Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex);
 | `grapheme-width` option | #29, #33 | `test_conf.c` | parse only | drawing under wcwidth: #122 |
 | FreeType W-calibrated cell size (upstream sync) | #62 | every tier 2 golden (9x16 cell) | FT/BB | tier 3 runs pango: #121 |
 | libseat `--vt`, font retry, pointer guard (upstream sync) | #62 | tier 3 `vt-switch`, `vt-restore` | PG/BB/D2 | font retry and pointer guard: #120; libseat: #121 |
-| Local demo and per-page feedback | #42, #48 | meson `demo_feedback` | script on a pty | guarded |
+| Local demo and per-page feedback, `s` to skip a page | #42, #48, #115 | meson `demo_feedback` (run 3 checks the skip key and the summary's `skipped` line) | script on a pty | guarded |
 | `make vt-demo`, `run-vt.sh` refusals | #65 | meson `demo_vt_select` | script, stand-in loginctl | guarded |
 | Showcase | #83 | meson `showcase` | script | playback not covered (manual) |
 | Run and comparison page generators | #4, #6, #50, #52, #58 | `test_runpage.py`, `test_compare.py` | Python | now meson tests `sheet_runpage`, `sheet_compare` (were only in the Makefile's `make test`) |
 | Tier 3 harness modules | #14, #21, #55, #56, #74 | `test_t3img.py`, `test_t3.py` | Python | now meson tests `tier3_t3img`, `tier3_t3` (were only `make tier3-selftest`) |
 | Capability probes | #113 | meson `capabilities` | libtsm, FT, terminfo | this map |
 
-Braille, sextants and octants (#91) were not on `main` when this map was drawn; the render timer of ADR-103 is not built.
+The render timer of ADR-103 is not built.

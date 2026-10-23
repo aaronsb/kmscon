@@ -28,10 +28,13 @@ T3_DEADLINE ?= 1800
 # one. The recipes hold no $(MAKE), so `make -n` runs nothing.
 # The commits and pins a report records, so a saved run says what it measured:
 # $(call T3_ENV,kmscon tree,libtsm tree,kmscon repository,libtsm repository).
-# fork/upstream.mk runs the same scenario on upstream's trees.
-T3_DIRTY = $(if $(shell git -C $(1) status --porcelain --untracked-files=no 2>/dev/null),+dirty)
-T3_REV = $(shell git -C $(1) rev-parse --short HEAD 2>/dev/null)$(call T3_DIRTY,$(1))
-T3_ENV = T3_KMSCON_REV=$(call T3_REV,$(1)) T3_LIBTSM_REV=$(call T3_REV,$(2)) \
+# fork/upstream.mk runs the same scenario on upstream's trees. libtsm's tree
+# counts as dirty with untracked files too, as fork/pkg/PKGBUILD records it in
+# the package, apart from the hash file meson writes into a wrap's checkout.
+T3_DIRTY = $(if $(shell git -C $(1) status --porcelain --untracked-files=$(or $(2),no) -- . \
+	':(exclude).meson-subproject-wrap-hash.txt' 2>/dev/null),+dirty)
+T3_REV = $(shell git -C $(1) rev-parse --short HEAD 2>/dev/null)$(call T3_DIRTY,$(1),$(2))
+T3_ENV = T3_KMSCON_REV=$(call T3_REV,$(1)) T3_LIBTSM_REV=$(call T3_REV,$(2),all) \
 	T3_KMSCON_REPO=$(3) T3_LIBTSM_REPO=$(4) \
 	DEV_IMAGE_BASE=$(DEV_BASE) DEV_ARCHIVE_DATE=$(DEV_ARCHIVE) \
 	T3_IMAGE=$(T3_IMAGE) T3_IMAGE_SHA256=$(T3_IMAGE_SHA256) T3_ARCHIVE=$(T3_ARCHIVE)

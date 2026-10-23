@@ -75,8 +75,9 @@ def check_install(line, pkgs):
     """The packages and libtsm commit the guest reported installing
     (guest/setup's TIER3-INSTALL-OK line), as metadata. Raises when the
     guest holds a kmscon or libtsm package that is not on the disc, or the
-    package was built from another libtsm than the run names: either would
-    let one build's results stand for another's."""
+    package was built from another libtsm than the run names, an unknown one,
+    or one with changes the run does not declare: each would let one build's
+    results stand for another's."""
     m = re.search(r"TIER3-INSTALL-OK packages: (.*?); libtsm: (\S+)", line)
     if not m:
         raise RuntimeError("cannot read the installed packages from %r" % line)
@@ -85,8 +86,14 @@ def check_install(line, pkgs):
     if sorted(names) != sorted(package_name(p) for p in pkgs):
         raise RuntimeError("the guest has %s installed, not only the run's packages %s"
                            % (" ".join(names), " ".join(map(os.path.basename, pkgs))))
-    libtsm, want = m.group(2), (os.environ.get("T3_LIBTSM_REV") or "").split("+")[0]
-    if want and not libtsm.startswith(want):
+    libtsm, want = m.group(2), os.environ.get("T3_LIBTSM_REV") or ""
+    if not want:
+        raise RuntimeError("the run names no libtsm commit (T3_LIBTSM_REV), so the package's "
+                           "cannot be checked; `make build` fetches subprojects/libtsm")
+    got_rev, _, got_dirty = libtsm.partition("+")
+    want_rev, _, want_dirty = want.partition("+")
+    if not re.fullmatch(r"[0-9a-f]{40}", got_rev) or not got_rev.startswith(want_rev) \
+            or got_dirty != want_dirty:
         raise RuntimeError("the package was built with libtsm %s, the run names %s" % (libtsm, want))
     return {"packages": [" ".join(installed[i:i + 2]) for i in range(0, len(installed), 2)],
             "libtsm": libtsm}

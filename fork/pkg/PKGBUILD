@@ -92,12 +92,15 @@ build() {
 # The commit of the libtsm tree meson configured: the copy of the checkout's
 # subprojects/libtsm, which meson uses as it is, or the clone meson made from
 # the wrap. The copy may have left its .git behind, so the checkout's own is
-# read for it.
+# read for it. "+dirty" marks a tree with changes or untracked files, other
+# than the hash file meson writes into a wrap's checkout.
 _libtsm_commit() {
-  local d
+  local d dirty
   for d in kmscon/subprojects/libtsm "$_src/subprojects/libtsm"; do
     if [ -e "$d/.git" ]; then
-      git -C "$d" rev-parse HEAD
+      dirty=$(git -C "$d" status --porcelain --untracked-files=all -- . \
+        ':(exclude).meson-subproject-wrap-hash.txt')
+      echo "$(git -C "$d" rev-parse HEAD)${dirty:++dirty}"
       return
     fi
   done

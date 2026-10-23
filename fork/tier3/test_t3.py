@@ -168,13 +168,15 @@ LIBTSM = "ef2365d0f9f1a370d721a82470d69c3646fe97f0"
 
 
 class SixelGoldenTest(unittest.TestCase):
-    # The sixel page's registers at full strength (sixel.sh), as kmscon draws
-    # them: the bars, the six discs, and the ring around its blue disc.
+    # The sixel page's colours (sixel.sh), as kmscon draws them: the bars,
+    # the seven discs and swatches, each beside its text twin, the ring
+    # around its blue disc, and the grey band under the swatches.
     BARS = [(255, 0, 0), (255, 255, 0), (0, 255, 0), (0, 255, 255), (0, 0, 255),
             (255, 0, 255), (255, 255, 255), (128, 128, 128)]
     DISCS = {"red": (255, 0, 0), "green": (0, 255, 0), "blue": (0, 0, 255),
-             "cyan": (0, 255, 255), "magenta": (255, 0, 255), "yellow": (255, 255, 0)}
-    ORANGE = (255, 128, 0)
+             "cyan": (0, 255, 255), "magenta": (255, 0, 255), "yellow": (255, 255, 0),
+             "orange": (255, 128, 0)}
+    GREY = (128, 128, 128)
 
     def test_colours_in_cells(self):
         # Every default variant's golden holds each picture in the cells the
@@ -199,10 +201,18 @@ class SixelGoldenTest(unittest.TestCase):
                     return px(left + int(col * cw), top + int(row * ch))
 
                 self.assertEqual([at(2.5 + i, 2.5) for i in range(8)], self.BARS)
+                # each slot is 10 columns from column 2: the disc and its
+                # text square on rows 9 and 10, the swatch and its text
+                # square on rows 15 to 17 of the grey band
                 for k, (name, rgb) in enumerate(self.DISCS.items()):
-                    self.assertEqual(at(3.5 + 10 * k, 10), rgb, name)
+                    c = 2 + 10 * k
+                    self.assertEqual(at(c + 1.5, 10), rgb, name + " disc")
+                    self.assertEqual(at(c + 5.5, 10), rgb, name + " text square")
+                    self.assertEqual(at(c + 2, 16.5), rgb, name + " swatch")
+                    self.assertEqual(at(c + 6, 16.5), rgb, name + " text swatch")
+                    self.assertEqual(at(c + 9, 16.5), self.GREY, name + " band")
                 d = min(4 * cw, 2 * ch)
-                self.assertEqual(at(42 - 3 * d / 8 / cw, 4), self.ORANGE)
+                self.assertEqual(at(42 - 3 * d / 8 / cw, 4), self.DISCS["orange"])
                 self.assertEqual(at(42, 4), self.DISCS["blue"])
 
 

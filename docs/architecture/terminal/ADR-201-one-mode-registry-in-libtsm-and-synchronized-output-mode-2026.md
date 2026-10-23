@@ -22,7 +22,7 @@ basis:
   - standard: "ECMA-48: SM, RM and its mode list (KAM, IRM, SRM, LNM)"
   - standard: "foot-ctlseqs(7): private mode 2026, DECRQM for DEC private and ANSI modes; WezTerm escape-sequences documentation, DECSET 2026"
   - standard: "ncurses user_caps(5) and tmux(1) TERMINFO EXTENSIONS: Sync, BD, BE, PS, PE, XM, fe, fd"
-  - evidence: "aaronsb/libtsm issues #21 (mode 2026), #29 (mode 1004), #30 (mouse modes share one variable), #31 (DECRQM for every mode), #44 (mode 2004 survives RIS; XTRESTORE taken as DECSTBM); aaronsb/kmscon issues #94 (terminfo), #139 (a redraw after every bounded input call); kmscon PR #141 (frames presented between pty reads equal a fresh draw)"
+  - evidence: "aaronsb/libtsm issues #21 (mode 2026), #29 (mode 1004), #30 (mouse modes share one variable), #31 (DECRQM for every mode), #44 (mode 2004 survives RIS; XTRESTORE taken as DECSTBM); aaronsb/kmscon issues #94 (terminfo), #139 (a redraw after every bounded input call walks the whole frame, 58% of kmscon's CPU under full-screen sixel at 7680x2160, then presents nothing while a flip is pending); kmscon PR #141 (frames presented between pty reads equal a fresh draw)"
 agent:
   name: claude
   model: claude-opus-5-5
@@ -47,7 +47,7 @@ related: []
   - **Registry.** Every mode libtsm recognises is one row of `src/tsm/tsm-modes.def`, an X-macro table: number, ANSI or DEC, name, status (supported, partial, ignored, refused), default and the resets that restore it, whether the host must act, the terminfo capabilities that advertise it, the spec, and the tests. SM/RM dispatch, DECRQM replies, resets, a public mode query and a generated reference page all expand from it.
   - **Lint.** Four checks in libtsm's `make test` fail when a mode is handled outside the registry, a supported row names no test that exercises it, or the generated page is stale. kmscon's capability runner reads the registry's generated table and fails when a mode the host must act on has no probe, or a mode with terminfo capabilities is missing from `kmscon.ti`.
   - **Mode 2026.** libtsm keeps parsing during a hold and stops a bounded input call right after the reset that ends a frame. kmscon presents only states in which mode 2026 is reset, and presents at once at each frame end. A hold expires 200 ms after it began; kmscon then ends it through libtsm, so DECRQM reports it reset.
-  - **Without 2026.** Proposed for the operator's call: once #139 coalesces redraws to one per loop turn, kmscon also skips the present at a turn that ended part way through a program's write, at most one display refresh interval in a row.
+  - **Without 2026.** Proposed for the operator's call, on top of #139's fix: kmscon also declines to build a frame while it is still part way through a program's write, at most one display refresh interval in a row.
 - **Trades away:**
   - Echo of typed keys during a hold waits for the frame end or the timeout, up to 200 ms.
   - When a program finishes frames faster than the display flips, kmscon shows the latest complete frame and drops the ones between.
@@ -149,13 +149,13 @@ stateDiagram-v2
     Held --> Live: frame end (2026 reset, RIS or DECSTR), present at once, timer disarmed
     Held --> Live: timer expires with no unparsed pty output held, or 1 s after the set, then tsm_vte_end_sync and present
     Held --> Held: VT switch in, hotplug or resize, present the state as it is, hold kept
-    Live --> Live: input, blink, pointer, present as today (coalesced per issue 139)
+    Live --> Live: input, blink, pointer, present as today (after the issue 139 fix)
 ```
 
 The figure shows when kmscon presents: a hold begins when a bounded input call leaves mode 2026 set, and ends at a frame end or when the timer expires; display events draw through a hold without ending it.
 
-- **Frame end.** When the frame-end counter advances across a bounded call, kmscon redraws at once, before the pty hands back the rest of its buffer. This redraw is outside #139's coalescing.
-- **During a hold** every other redraw request (pty input, the blink timers, the pointer, the render timer's overlay) records that a redraw is owed and presents nothing.
+- **Frame end.** When the frame-end counter advances across a bounded call, kmscon redraws at once, before the pty hands back the rest of its buffer, unless a flip is in flight (next item).
+- **During a hold** every other redraw request (pty input, the blink timers, the pointer, the render timer's overlay) records that a redraw is owed and returns before building a frame, at the same early exit #139 adds for a pending flip.
 - **A flip in flight.** A draw deferred to the page flip checks the hold again when the flip arrives. If a hold has begun since, it waits for the next frame end. A frame that ends while a flip is in flight is replaced by the next complete one, and kmscon never stalls the pty for presentation.
 - **Timeout.** One timer per terminal, armed at 200 ms when a bounded call leaves the mode set and no timer is armed, disarmed at a frame end. At expiry, if the pty still holds unparsed output kmscon has read, the frame end may be in it, so the expiry waits until that output is parsed, up to 1 s after the hold began. Then kmscon calls `tsm_vte_end_sync` and presents.
 - **Why 200 ms.** Implementations use 150 ms (Alacritty, Rio), 200 ms (st's appsync patch) and 1 s (wtmux); the spec sets none and says a too-short timeout is no worse than none (ADR-200). kmscon parses and presents on one thread, on machines as small as ADR-103's one-vCPU tier 3 guest, so a large frame takes it longer to take in than a desktop terminal with its own render thread; 200 ms covers a program drawing at 5 frames a second. A stalled program's screen shows its partial state within a fifth of a second.
@@ -168,7 +168,9 @@ The figure shows when kmscon presents: a hold begins when a bounded input call l
 
 ### Coalescing without mode 2026 (the operator's call, question 2)
 
-Proposed: after #139, which presents at most once per event-loop turn, kmscon also skips the present at the end of a turn that stopped part way through a program's write: the last read filled the 16384-byte buffer, or the pty still holds output the bounded feed has not parsed. It presents at the first turn that ends otherwise, or once one display refresh interval has passed since the last present, whichever comes first.
+#139 is fixed separately: kmscon stops building a frame it will not present, by checking for a pending flip or scheduling the redraw before the frame is built. That removes the wasted walk; a frame presented part way through a write is still presented. This proposal adds one condition at the point #139's fix decides whether to build a frame, and changes nothing else in it.
+
+Proposed: kmscon also declines to build a frame while it is part way through a program's write: the last read filled the 16384-byte buffer, or the pty still holds output the bounded feed has not parsed. It builds one at the first redraw request that finds neither, or once one display refresh interval has passed since the last present, whichever comes first.
 
 - **Gains:** fewer frames presented part written for programs that do not use mode 2026, when the program writes a frame faster than kmscon reads it; a large sixel shows whole more often; output such as `cat` of a large file presents at the display's refresh rate.
 - **Costs:** up to one refresh interval of delay during bulk output (interactive echo arrives as a short read and presents at once); a frame written more slowly than kmscon reads still straddles a short read and tears, so the heuristic narrows the mixing without removing it. It is a guess at boundaries the program never declared.
@@ -191,7 +193,7 @@ Each step lands behind the harness, with goldens changed only in their own commi
 3. **libtsm mode 2026** (libtsm#21, libtsm half): the row, the frame-end stop, the counter and `tsm_vte_end_sync`.
 4. **kmscon checks.** The pin; `run.py` reading `modes.tsv`; probe renames and the generated terminfo probes.
 5. **kmscon hold.** The present rule, the timer, the render timer counts, and the tests above. Closes libtsm#21 with `terminfo-mode-2026` once `kmscon.ti` gains `Sync`.
-6. **Coalescing without 2026**, if the operator agrees, with or after #139, measured as above.
+6. **Coalescing without 2026**, if the operator agrees, after #139's fix lands, measured as above.
 
 ## Consequences
 
@@ -235,7 +237,7 @@ Each step lands behind the harness, with goldens changed only in their own commi
 - **Stall the pty at a frame end until the flip** (backpressure). Every complete frame would be shown, at the cost of tying the program's pace to the display and to every display's flip. Rejected for now; revisited if dropped frames show in tier 3.
 - **No timeout.** Rejected: a program that dies in a frame leaves the console frozen until something resets the terminal, and a console has no other window to recover from.
 - **On expiry, keep the mode set and ignore it until the next set.** Rejected: DECRQM would report 1 while the screen updates live.
-- **Present on a vblank-driven loop for all output.** A larger change to kmscon's event model that wakes the CPU every refresh; mode 2026 and #139 address the visible defect without it.
+- **Present on a vblank-driven loop for all output.** A larger change to kmscon's event model that wakes the CPU every refresh; mode 2026, #139's fix and the proposed coalescing address the visible defect and the wasted walk without it.
 
 ## Questions for the operator
 

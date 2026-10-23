@@ -10,7 +10,7 @@
 # screen-text: none, sixel pictures and cursor moves do not print as rows
 # ADR-103's acceptance scenario A1, its second half: a photograph placed,
 # scrolled into scrollback by text and brought back. It draws the day
-# photograph (as photos.sh does, through libsixel by way of mpv) six rows
+# photograph with chafa (as photos.sh does) six rows
 # tall under a caption, then prints one numbered line per row of the screen,
 # so the picture's lines move into scrollback with it. Tier 3 then presses
 # Shift+PageUp, which scrolls kmscon's view back a page and shows the picture
@@ -19,13 +19,13 @@
 # scrollback, and its golden shows that nothing is left.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/acceptance.inc"
 sixel_offered
-needs mpv mpv
+needs chafa chafa
 needs_photos
 cell_size
 term_size
 r=6 w=$(((2 * r * ch + cw / 2) / cw))
 printf 'The day photograph, %d by %d cells, then %d lines that scroll it away.\n' "$w" "$r" "$rows"
-photo earth.jpg 1 2 "$w" "$r"
+chafa_photo earth.jpg 1 2 "$w" "$r"
 printf '%s[%d;1H' "$esc" $((2 + r))
 for ((i = 1; i <= rows; i++)); do
 	printf 'line %d of %d\n' "$i" "$rows"

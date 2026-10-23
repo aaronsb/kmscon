@@ -33,6 +33,16 @@ mpv_plain() {
 	mpv --no-config --really-quiet --no-input-terminal --ao=null --no-audio "$@"
 }
 
+# Photograph $1 drawn by chafa, the operator's everyday sixel tool, at
+# column $2 and row $3, counted from 1, as large as fits in $4 by $5 cells
+# with its shape kept. chafa reads the cell size from the tty (TIOCGWINSZ);
+# it asks the terminal nothing (--probe=off) and works on one thread, so its
+# output is the same on every run.
+chafa_photo() {
+	printf '%s[%d;%dH' "$esc" "$3" "$2"
+	chafa -f sixels --probe=off --polite=on --threads=1 --size="$4x$5" "$photo_dir/$1"
+}
+
 # Photograph $1 drawn through libsixel's encoder (mpv's sixel output) at
 # column $2 and row $3, counted from 1, stretched to fill $4 by $5 cells
 # exactly (the callers keep the photographs' 2:1 shape to within a cell). The

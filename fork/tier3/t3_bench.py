@@ -24,16 +24,21 @@ _UNKNOWN = "unknown config option 'render-timer'"
 
 def timer_lines(text):
     """The render-timer lines in console text, in order, as dicts: "t" (the
-    stamp, in seconds), "pid", "display", and each number by its key."""
+    stamp, in seconds), "pid", "display", and each number by its key. A line
+    another writer broke into on the serial console, such as the getty's
+    terminal queries at boot, is left out."""
     out = []
     for line in text.splitlines():
         m = _TIMER.search(line.strip())
         if not m:
             continue
         entry = {"t": float(m.group(1)), "pid": int(m.group(2))}
-        for field in m.group(3).split():
-            key, _, value = field.partition("=")
-            entry[key] = value if key == "display" else float(value)
+        try:
+            for field in m.group(3).split():
+                key, _, value = field.partition("=")
+                entry[key] = value if key == "display" else float(value)
+        except ValueError:
+            continue
         out.append(entry)
     return out
 

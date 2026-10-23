@@ -355,13 +355,13 @@ class VariantTest(unittest.TestCase):
 
 
 def timer_line(t, flips, frames, interval_ms=1000.0, cpu=(1.0, 1.0, 2.0, 3.0), damage=(500, 1.5),
-               pid=505, before=""):
+               pid=505, before="", skipped=0):
     return ("%s[%12.6f] kmscon[%d]: terminal: render-timer: display=pci-0000:00:01.0[Virtual-1] "
             "interval_ms=%.3f presented_per_s=%.2f flips=%d frames=%d cpu_ms_mean=%.3f "
             "cpu_ms_median=%.3f cpu_ms_p95=%.3f cpu_ms_max=%.3f damage_px_mean=%d "
-            "damage_pct=%.2f skipped=0 skipped_cpu_ms=0.000"
+            "damage_pct=%.2f skipped=%d skipped_cpu_ms=0.000"
             % (before, t, pid, interval_ms, flips * 1000 / interval_ms, flips, frames, cpu[0],
-               cpu[1], cpu[2], cpu[3], damage[0], damage[1]))
+               cpu[1], cpu[2], cpu[3], damage[0], damage[1], skipped))
 
 
 class BenchTest(unittest.TestCase):
@@ -375,6 +375,8 @@ class BenchTest(unittest.TestCase):
             # a console line after a prompt on the same line
             timer_line(100.5, 60, 60, before="tier3 login: "),
             "[  100.600000] kmscon[505]: terminal: Resized terminal to 128x42",
+            # broken into by the getty's queries on the serial console at boot
+            timer_line(101.5, 6, 6)[:150] + "\x1b]3008;start=568e;user=root;comm=(agetty)",
         ])
         got = t3_bench.timer_lines(text)
         self.assertEqual([x["t"] for x in got], [99.5, 100.5])

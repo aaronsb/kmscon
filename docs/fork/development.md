@@ -229,6 +229,8 @@ Both repositories are public. Commit messages, PR bodies and issues describe an 
 
 The conformance tiers compare against goldens; the [local VT demo](demo.md) is where a person looks at the fork on real hardware, page by page, and records a judgement of each page that the agent reads back with `fork/demo/feedback.sh` (#47).
 
+`make vt-demo [VT=N] [DEMO_ARGS='...']` is the one command to hand the operator: it builds and stages the dev build, runs it on a free VT through sudo, blocks until the operator presses q, then prints that run's answers and a health check of kmscon's log.
+
 `fork/demo/run-vt.sh` starts the demo with a cleared environment, so a dev build's answers always go to the default `/tmp/kmscon-demo/feedback.tsv`. `DEMO_FEEDBACK` applies only when `demo.sh` is run directly.
 
 A change that adds something visible adds its demo section in the same PR. [demo.md's "Adding a section"](demo.md#adding-a-section) gives the rules for a section file.

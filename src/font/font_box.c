@@ -1,5 +1,5 @@
 /*
- * kmscon - Box drawing and block element sprites
+ * kmscon - Box drawing, block element, Braille, sextant and octant sprites
  *
  * Copyright (c) 2026 the kmscon fork authors
  * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
@@ -39,7 +39,13 @@
  *   Fraction.min()/max() rounding, so two halves of an odd cell overlap by a
  *   pixel rather than leave one empty;
  * - shades: block.zig fullBlockShade(), the whole cell at 25%, 50% and 75%
- *   coverage (common.zig Shade), which the renderer blends like any glyph.
+ *   coverage (common.zig Shade), which the renderer blends like any glyph;
+ * - Braille: braille.zig draw2800_28FF(), square dots on a 2x4 grid whose
+ *   dot size, spacing and margins are shared out from the cell's size;
+ * - sextants: symbols_for_legacy_computing.zig draw1FB00_1FB3B(), a 2x3 grid
+ *   of blocks with common.zig fill(), the pattern counted from the codepoint;
+ * - octants: symbols_for_legacy_computing_supplement.zig draw1CD00_1CDE5(),
+ *   a 2x4 grid of blocks, the pattern looked up as octants.txt does.
  * Curves and diagonals are drawn by supersampling instead of Ghostty's path
  * rasteriser.
  */
@@ -667,9 +673,133 @@ static void box_draw_box_drawing(struct video_buffer *buf, uint32_t cp, unsigned
 	}
 }
 
+/*
+ * braille.zig draw2800_28FF(): eight square dots on a 2x4 grid. The dot is
+ * min(w/4, h/8) wide, the gaps between dots and the margins start at about
+ * that, and the pixels left over go, in Ghostty's order, to a dot of at least
+ * one pixel, a margin of at least one, the gaps, the margins and the dot.
+ * Bits 0 to 7 of the codepoint are dots 1 to 8: 1, 2, 3 and 7 down the left,
+ * 4, 5, 6 and 8 down the right.
+ */
+static void box_draw_braille(struct video_buffer *buf, uint32_t cp)
+{
+	static const uint8_t col[8] = {0, 0, 0, 1, 1, 1, 0, 1};
+	static const uint8_t row[8] = {0, 1, 2, 0, 1, 2, 3, 3};
+	int w = buf->width, h = buf->height;
+	int dot = w / 4 < h / 8 ? w / 4 : h / 8;
+	int x_gap = w / 4, y_gap = h / 8;
+	int x_margin = x_gap / 2, y_margin = y_gap / 2;
+	int x_left = w - 2 * x_margin - x_gap - 2 * dot;
+	int y_left = h - 2 * y_margin - 3 * y_gap - 4 * dot;
+	unsigned int i, x, y;
+
+	if (x_left >= 2 && y_left >= 4 && !dot) {
+		dot = 1;
+		x_left -= 2;
+		y_left -= 4;
+	}
+	if (x_left >= 2 && !x_margin) {
+		x_margin = 1;
+		x_left -= 2;
+	}
+	if (y_left >= 2 && !y_margin) {
+		y_margin = 1;
+		y_left -= 2;
+	}
+	if (x_left >= 1) {
+		x_gap++;
+		x_left--;
+	}
+	if (y_left >= 3) {
+		y_gap++;
+		y_left -= 3;
+	}
+	if (x_left >= 2) {
+		x_margin++;
+		x_left -= 2;
+	}
+	if (y_left >= 2) {
+		y_margin++;
+		y_left -= 2;
+	}
+	if (x_left >= 2 && y_left >= 4)
+		dot++;
+
+	for (i = 0; i < 8; i++) {
+		if (!(cp >> i & 1))
+			continue;
+		x = x_margin + col[i] * (dot + x_gap);
+		y = y_margin + row[i] * (dot + y_gap);
+		box_fill(buf, x, y, x + dot, y + dot, 0xff);
+	}
+}
+
+/*
+ * common.zig fill() on a grid two blocks wide and @rows high: bit 2r + c of
+ * @mask fills the block in column c of row r, its near edges rounded as
+ * Fraction.min() and its far edges as Fraction.max(), so the blocks of a cell
+ * and of its neighbours meet with nothing between them.
+ */
+static void box_draw_mosaic(struct video_buffer *buf, unsigned int mask, unsigned int rows)
+{
+	unsigned int w = buf->width, h = buf->height;
+	unsigned int i, c, r;
+
+	for (i = 0; i < 2 * rows; i++) {
+		if (!(mask >> i & 1))
+			continue;
+		c = i % 2;
+		r = i / 2;
+		box_fill(buf, box_frac_min(w, c, 2), box_frac_min(h, r, rows),
+			 box_frac_max(w, c + 1, 2), box_frac_max(h, r + 1, rows), 0xff);
+	}
+}
+
+/*
+ * The octants U+1CD00-U+1CDE5 (Unicode 16), as their names BLOCK OCTANT-n
+ * list them: bit n-1 is octant n, numbered 1 2 / 3 4 / 5 6 / 7 8 from the
+ * top. The 26 patterns that equal an earlier character (empty, full, the
+ * halves, the quadrants, the quarter blocks and the like) are not in the
+ * range, so the order follows no rule and is spelled out.
+ */
+// clang-format off
+static const uint8_t box_octants[0xe6] = {
+	0x04, 0x06, 0x07, 0x08, 0x09, 0x0b, 0x0c, 0x0d,
+	0x0e, 0x10, 0x11, 0x12, 0x13, 0x15, 0x16, 0x17,
+	0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+	0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+	0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
+	0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+	0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x41, 0x42,
+	0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a,
+	0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x51, 0x52, 0x53,
+	0x54, 0x56, 0x57, 0x58, 0x59, 0x5b, 0x5c, 0x5d,
+	0x5e, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
+	0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e,
+	0x6f, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76,
+	0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e,
+	0x7f, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+	0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+	0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+	0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
+	0xa1, 0xa2, 0xa3, 0xa4, 0xa6, 0xa7, 0xa8, 0xa9,
+	0xab, 0xac, 0xad, 0xae, 0xb0, 0xb1, 0xb2, 0xb3,
+	0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb,
+	0xbc, 0xbd, 0xbe, 0xbf, 0xc1, 0xc2, 0xc3, 0xc4,
+	0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc,
+	0xcd, 0xce, 0xcf, 0xd0, 0xd1, 0xd2, 0xd3, 0xd4,
+	0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc,
+	0xdd, 0xde, 0xdf, 0xe0, 0xe1, 0xe2, 0xe3, 0xe4,
+	0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xeb, 0xec,
+	0xed, 0xee, 0xef, 0xf1, 0xf2, 0xf3, 0xf4, 0xf6,
+	0xf7, 0xf8, 0xf9, 0xfb, 0xfd, 0xfe,
+};
+// clang-format on
+
 bool kmscon_font_box_has(uint32_t cp)
 {
-	return cp >= 0x2500 && cp <= 0x259f;
+	return (cp >= 0x2500 && cp <= 0x259f) || (cp >= 0x2800 && cp <= 0x28ff) ||
+	       (cp >= 0x1fb00 && cp <= 0x1fb3b) || (cp >= 0x1cd00 && cp <= 0x1cde5);
 }
 
 struct kmscon_glyph *kmscon_font_box_render(uint32_t cp, unsigned int w, unsigned int h,
@@ -689,9 +819,19 @@ struct kmscon_glyph *kmscon_font_box_render(uint32_t cp, unsigned int w, unsigne
 
 	if (!thick)
 		thick = 1;
-	if (cp >= 0x2580)
+	if (cp >= 0x1fb00) {
+		/* the sextants are the 64 patterns of a 2x3 grid counted in
+		 * binary, less empty, full and the two halves (21 and 42) */
+		cp -= 0x1fb00;
+		box_draw_mosaic(&g->buf, cp + cp / 20 + 1, 3);
+	} else if (cp >= 0x1cd00) {
+		box_draw_mosaic(&g->buf, box_octants[cp - 0x1cd00], 4);
+	} else if (cp >= 0x2800) {
+		box_draw_braille(&g->buf, cp);
+	} else if (cp >= 0x2580) {
 		box_draw_block_element(&g->buf, cp);
-	else
+	} else {
 		box_draw_box_drawing(&g->buf, cp, thick);
+	}
 	return g;
 }

@@ -1,5 +1,5 @@
 /*
- * kmscon - Box drawing and block element sprites
+ * kmscon - Box drawing, block element, Braille, sextant and octant sprites
  *
  * Copyright (c) 2026 the kmscon fork authors
  *
@@ -24,11 +24,13 @@
  */
 
 /*
- * Box Drawing (U+2500-U+257F) and Block Elements (U+2580-U+259F) drawn as
- * A8 sprites exactly the size of the cell, in place of the font's glyphs
- * (#46). A font draws these between its own ascent and descent, so where the
- * cell is taller than that (line spacing), stacked blocks and vertical lines
- * leave a gap between rows.
+ * Box Drawing (U+2500-U+257F), Block Elements (U+2580-U+259F), Braille
+ * Patterns (U+2800-U+28FF), the sextants (U+1FB00-U+1FB3B) and the octants
+ * (U+1CD00-U+1CDE5) drawn as A8 sprites exactly the size of the cell, in
+ * place of the font's glyphs (#46, #76). A font draws these between its own
+ * ascent and descent, so where the cell is taller than that (line spacing),
+ * stacked blocks and vertical lines leave a gap between rows, and Braille dots
+ * and mosaic blocks miss the cell's grid.
  */
 
 #ifndef KMSCON_FONT_BOX_H

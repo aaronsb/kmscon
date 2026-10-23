@@ -14,7 +14,8 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 # is compared with the last screen's golden, and its golden is the cjk one
 # (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
-           "boxdraw", "blocks", "wide-margin", "combining", "emoji", "s1-scroll", "cjk"]
+           "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "s1-scroll",
+           "cjk"]
 # The screens that are also ADR-103 benchmark scenarios: each reports its
 # window on the event port, and the report carries its figures (t3_bench.py).
 BENCHMARKS = ["s1-scroll"]

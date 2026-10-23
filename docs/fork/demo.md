@@ -97,21 +97,22 @@ right:    Each line underlined in the shape it names, all distinct: single,
           double, curly, dotted, dashed; 4:0 and 24 end it mid-line.
 wrong:    Every style drawn as one single line, or a line with none of its
           attributes: on stock kmscon only the plain 4 line is underlined.
- 1 right  2 wrong  3 unsure  c comment  b back  q quit
+ 1 right  2 wrong  3 unsure  s skip for now  c comment  b back  q quit
 ```
 
 | Key | What it does |
 |---|---|
 | `1` | the page looks right; records it and goes to the next page |
 | `2` | the page looks wrong |
-| `3` | unsure |
-| `c` | opens a comment below the page, as many lines as needed, each with line editing; on a full page each line scrolls the page up by one. Ctrl-D on an empty line, or a line holding only `.`, ends it. Then one key rates the page (`1`, `2`, `3`, or Enter for no rating, recorded as `none`) and the next page follows. An empty comment goes back to the page. Ctrl-D never ends the demonstration. |
+| `3` | unsure: the page was looked at and the reviewer cannot tell |
+| `s` | skipped: the page is not being reviewed this time. It is recorded as `skipped`, apart from unsure, and listed again as still to review on the summary page, by `feedback.sh` and at the end of `make vt-demo` |
+| `c` | opens a comment below the page, as many lines as needed, each with line editing; on a full page each line scrolls the page up by one. Ctrl-D on an empty line, or a line holding only `.`, ends it. Then one key rates the page (`1`, `2`, `3`, `s`, or Enter for no rating, recorded as `none`) and the next page follows. An empty comment goes back to the page. Ctrl-D never ends the demonstration. |
 | `b` | back one page; a new answer there replaces the old one on the summary page and in `feedback.sh`, and the file keeps both lines |
 | `q` | quits to the summary page |
 
 Any other key asks again. Keys typed before the footer appears are discarded, so a double press does not rate the next page unseen. The footer sits below the page when it fits there: demo.sh asks the terminal for the cursor's row (DSR) and compares it with the screen's height. When it does not fit, or the terminal does not answer within a second, a key shows the footer on a screen of its own. At 80x25 every section fits with its footer; the tallest, colour-forms, ends its prompt on row 25.
 
-The summary page lists this pass's rating and comment for each section and the file they went to, then asks `r review again from page 1  q exit`. `r` goes through the pages again as a new run, with its own run id, so `feedback.sh` shows that pass as the latest run and its summary page shows only that pass.
+The summary page lists this pass's rating and comment for each section, how many pages were skipped, and the file they went to, then asks `r review again from page 1  q exit`. `r` goes through the pages again as a new run, with its own run id, so `feedback.sh` shows that pass as the latest run and its summary page shows only that pass.
 
 ### Where the answers go
 
@@ -125,10 +126,10 @@ Each answer appends one line to `$DEMO_FEEDBACK`, by default `/tmp/kmscon-demo/f
 | `term` | `TERM` |
 | `size` | rows x columns, such as `25x80` |
 | `section` | the section's file name without `.sh`, such as `20-underline-styles` |
-| `rating` | `right`, `wrong`, `unsure`, or `none` for a comment without a rating |
+| `rating` | `right`, `wrong`, `unsure`, `skipped`, or `none` for a comment without a rating |
 | `note` | the comment, with each line break written as `\n`, each backslash as `\\` and tabs as spaces; empty without one |
 
-`fork/demo/feedback.sh` prints the file as tables, one line per section with the last answer given for it and that answer's comment below it, one indented line per line typed:
+`fork/demo/feedback.sh` prints the file as tables, one line per section with the last answer given for it and that answer's comment below it, one indented line per line typed. The sections whose last answer is `skipped` follow under `skipped, still to review`:
 
 ```sh
 fork/demo/feedback.sh                  # the latest run
@@ -155,12 +156,13 @@ What each page should and should not look like is in its section file's `# look-
 | blink | SGR 5 beside steady text: plain, coloured, on a background, reversed, bold, underlined, curly, struck, CJK and combining, and a line that SGR 25 makes steady halfway |
 | boxdraw | box drawing, shades and blocks |
 | blocks | block elements and box lines stacked across rows and columns (tier 2's `blocks` screen as well), which show the line spacing gap of #46 if the font draws them |
+| mosaic | every Braille pattern, sextant and octant, then checkerboards, a dot grid, a wave and bands of them stacked across cells (tier 2's `mosaic` screen as well) |
 | cjk | CJK beside Latin |
 | wide-margin | double-width characters placed and typed at the right margin |
 | combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 |
 | emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji, each between bars; the text heart alone and with VS15; emoji in a line, underlined and reversed |
 
-Every section but blink is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin, combining and emoji are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+Every section but blink is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, mosaic, wide-margin, combining and emoji are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
 blink is not a tier 3 screen: tier 3's guest runs kmscon with `no-blink`, and a capture would catch whichever phase the timer was in. The demo leaves blinking on, kmscon's default, since a person watches it: the blink page blinks and so does the cursor. `-- --no-blink` turns it off for one run. `tests/test_blink.c`, part of `make test`, checks both phases through both of bbulk's buffers.
 
@@ -183,6 +185,7 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 |---|---|
 | sgr, boxdraw, cjk | Nothing beyond the font: their tier 3 goldens match upstream's behaviour. |
 | blocks | Every block and box line comes from the font, so wherever the font's line height has spacing beyond its glyphs, a dark line runs between rows of blocks and along vertical lines. With a font that has none, no gap shows, but line weights, junctions and shades are the font's own. |
+| mosaic | Every Braille pattern, sextant and octant comes from the font: where the font has them, Braille dots and blocks sit inside the font's glyph box rather than on the cell's grid, and with line spacing the checkerboards and bands show a dark line between rows; where it has none, they are missing-glyph boxes or come from a fallback font with other metrics. |
 | colour-forms | The colon rows have no colour: upstream libtsm discards a whole SGR sequence that holds a colon, so their text is the default colour and their backgrounds are empty. The colon half of the mixed line is plain. The semicolon rows are right. |
 | underline-styles | Only the plain `4` line is underlined. Every line set with `4:n`, including the red, bold, reverse and blue-background ones, is drawn with none of its attributes. |
 | underline-colour | No line has a coloured underline. The colon rows have no underline. Upstream does not know 58, so the numbers after it are read as SGR codes of their own: `4;58;5;196` is underlined in the text's colour and blinks (5), and in `4;58;2;0;160;255` the 0 resets the line, which loses its underline. |

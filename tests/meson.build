@@ -134,6 +134,16 @@ test_render_timer = executable(
 )
 test('test_render_timer', test_render_timer)
 
+# Braille, sextant and octant sprites against tests/box_model.h, at every cell
+# size to 32x64 (#76)
+test_font_box = executable(
+    'test_font_box',
+    'test_font_box.c',
+    include_directories: src_inc,
+    dependencies: [libtsm_deps, shl_deps, math_deps],
+)
+test('test_font_box', test_font_box, timeout: 300)
+
 test_conf = executable(
     'test_conf',
     'test_conf.c',

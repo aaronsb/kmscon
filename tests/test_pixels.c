@@ -70,6 +70,10 @@ bool display_supports_damage(struct display *disp)
 	return false;
 }
 void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages) {}
+int display_swap(struct display *disp)
+{
+	return 0;
+}
 void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y) {}
 
 /*

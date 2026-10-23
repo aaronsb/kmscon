@@ -105,9 +105,11 @@ struct output {
 	struct drm2d_display d2d;
 	struct kmscon_text *txt;
 	unsigned int frames;
+	unsigned int swaps;
 	bool damage;			      /* reports damage, as with FB_DAMAGE_CLIPS */
 	struct video_rect rects[COLS * ROWS]; /* the damage of the last frame */
 	size_t n_rects;
+	const unsigned int *pointer; /* the next frame draws the pointer here, if set */
 };
 
 static struct output *output_of(struct display *disp)
@@ -118,6 +120,15 @@ static struct output *output_of(struct display *disp)
 bool display_supports_damage(struct display *disp)
 {
 	return output_of(disp)->damage;
+}
+
+int display_swap(struct display *disp)
+{
+	struct output *o = output_of(disp);
+
+	o->d2d.current_rb ^= 1;
+	o->swaps++;
+	return 0;
 }
 
 void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages)
@@ -205,8 +216,9 @@ static void damage_cells(const struct output *o, bool cells[ROWS][COLS])
 }
 
 /*
- * Draw one frame of @con in phase @hidden; returns the buffer it went to.
- * With damage on, checks the damage against the frame on screen before it.
+ * Draw and present one frame of @con in phase @hidden, as terminal.c does;
+ * returns the buffer on screen after it. With damage on, checks the damage
+ * against the frame on screen before it.
  */
 static const uint32_t *output_frame(struct output *o, struct tsm_screen *con, struct tsm_vte *vte,
 				    bool hidden, const char *what)
@@ -222,13 +234,16 @@ static const uint32_t *output_frame(struct output *o, struct tsm_screen *con, st
 	assert(ret == 0);
 	ret = kmscon_text_draw(o->txt, con, false);
 	assert(ret == 0);
-	ret = kmscon_text_render(o->txt);
+	if (o->pointer) {
+		ret = kmscon_text_draw_pointer(o->txt, o->pointer[0], o->pointer[1]);
+		assert(ret == 0);
+	}
+	ret = kmscon_text_present(o->txt);
 	assert(ret == 0);
 	if (o->damage && o->frames)
 		check_damage(o, drawn, shown, what);
-	o->d2d.current_rb ^= 1;
 	o->frames++;
-	return drawn;
+	return o->d2d.rb[o->d2d.current_rb].map;
 }
 
 /* ---- the screen ---- */
@@ -374,10 +389,11 @@ static void console_new(struct tsm_screen **con, struct tsm_vte **vte)
 }
 
 /*
- * @bytes drawn by a new display in phase @hidden, into @out: its first frame,
- * every cell drawn over a cleared buffer.
+ * @bytes drawn by a new display in phase @hidden, with the pointer at
+ * @pointer if set, into @out: its first frame, every cell drawn over a cleared
+ * buffer.
  */
-static void fresh(uint32_t *out, const char *bytes, bool hidden)
+static void fresh(uint32_t *out, const char *bytes, bool hidden, const unsigned int *pointer)
 {
 	struct tsm_screen *con;
 	struct tsm_vte *vte;
@@ -387,6 +403,7 @@ static void fresh(uint32_t *out, const char *bytes, bool hidden)
 	console_new(&con, &vte);
 	tsm_vte_input(vte, bytes, strlen(bytes));
 	output_init(&o, "fresh", font, false);
+	o.pointer = pointer;
 	drawn = output_frame(&o, con, vte, hidden, "fresh");
 	memcpy(out, drawn, fb_bytes);
 	output_destroy(&o);
@@ -438,12 +455,12 @@ static void test_phases(void)
 	screen_bytes(visible, sizeof(visible), VISIBLE);
 	screen_bytes(hidden, sizeof(hidden), HIDDEN);
 
-	fresh(on, blinking, false);
-	fresh(ref, visible, false);
+	fresh(on, blinking, false, NULL);
+	fresh(ref, visible, false, NULL);
 	same(on, ref, "visible phase against the text without SGR 5");
 
-	fresh(off, blinking, true);
-	fresh(ref, hidden, false);
+	fresh(off, blinking, true, NULL);
+	fresh(ref, hidden, false, NULL);
 	same(off, ref, "hidden phase against the attributes over spaces");
 
 	/* the phase moves the blinking cells and nothing else */
@@ -469,13 +486,13 @@ static void test_phases(void)
 	}
 
 	/* hidden-phase rendering of a screen with no SGR 5 is the visible one */
-	fresh(off, visible, true);
-	fresh(ref, visible, false);
+	fresh(off, visible, true, NULL);
+	fresh(ref, visible, false, NULL);
 	same(off, ref, "a screen without SGR 5 in the hidden phase");
 
 	/* "ab" rewritten with SGR 25 shows in the hidden phase; "blink" still hides */
 	strncat(blinking, SGR25_BYTES, sizeof(blinking) - strlen(blinking) - 1);
-	fresh(off, blinking, true);
+	fresh(off, blinking, true, NULL);
 	compared++;
 	if (!same_cells(off, on, 0, ROWS_USED - 1, 2) || same_cells(off, on, 6, 0, 5)) {
 		fprintf(stderr, "test_blink: SGR 25 does not end the blink of \"ab\" alone\n");
@@ -486,8 +503,8 @@ static void test_phases(void)
 	 * blinking cell beside it hides */
 	screen_bytes(blinking, sizeof(blinking), BLINKING);
 	strncat(blinking, CURSOR_BYTES, sizeof(blinking) - strlen(blinking) - 1);
-	fresh(on, blinking, false);
-	fresh(off, blinking, true);
+	fresh(on, blinking, false, NULL);
+	fresh(off, blinking, true, NULL);
 	compared++;
 	if (!same_cells(off, on, 6, 0, 1) || same_cells(off, on, 7, 0, 1)) {
 		fprintf(stderr, "test_blink: the cursor's blinking cell hides, or its "
@@ -546,10 +563,11 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 			strncat(bytes, steps[i].bytes, sizeof(bytes) - strlen(bytes) - 1);
 			pending[0] = pending[1] = true;
 		}
-		fresh(ref, bytes, steps[i].hidden);
+		fresh(ref, bytes, steps[i].hidden, NULL);
 
 		for (int d = 0; d < 2; d++) {
 			const uint32_t *drawn;
+			unsigned int swaps = outs[d].swaps;
 			bool changed;
 
 			if (!(draws & (1u << d)))
@@ -565,11 +583,11 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 			same(drawn, ref, label);
 			if (damage && !changed && !last_changed[d]) {
 				compared++;
-				if (outs[d].n_rects) {
+				if (outs[d].n_rects || outs[d].swaps != swaps) {
 					fprintf(stderr,
-						"test_blink: %s: %zu damage rects after two frames "
-						"without change\n",
-						label, outs[d].n_rects);
+						"test_blink: %s: %zu damage rects and %u swaps after "
+						"two frames without change\n",
+						label, outs[d].n_rects, outs[d].swaps - swaps);
 					failures++;
 				}
 			}
@@ -671,16 +689,23 @@ static bool rect_fits(const struct output *o, const struct video_rect *r, bool w
 
 /*
  * One display with damage draws the blinking screen for EXTENT_FRAMES frames,
- * as a shell prompt would see it: one frame in three writes one cell of the
- * free rows, and the blink phase flips every eight frames, which changes the
- * blinking cells. Each frame's damage must cover exactly the cells changed on
- * that frame or the one before, give or take bbulk's merging: a rect starts
- * and ends on such a cell, and a run of other cells inside it is shorter than
- * DAMAGE_MERGE_LEN. The first three frames are left out: the first two redraw
- * every cell, so the third draws every cell again into the buffer the second
- * left behind.
+ * as a shell prompt would see it. One frame in three writes one cell of the
+ * free rows, every fourth of them a wide character over two cells; the blink
+ * phase flips every eight frames, which changes the blinking cells; a steady
+ * bar cursor shows on a wide cell for a few frames, which changes both of its
+ * cells; and the pointer shows for one frame, which changes the four cells
+ * around its centre on that frame and the next. Each frame's damage must cover
+ * exactly the cells changed on that frame or the one before, give or take
+ * bbulk's merging: a rect starts and ends on such a cell, and a run of other
+ * cells inside it is shorter than DAMAGE_MERGE_LEN. A frame is presented
+ * (swapped) when its damage is not empty, and only then. The first three
+ * frames are left out: the first two redraw every cell, so the third draws
+ * every cell again into the buffer the second left behind.
  */
 #define EXTENT_FRAMES 100
+#define CURSOR_ON 50  /* the bar cursor shows on the first wide character */
+#define CURSOR_OFF 54 /* and hides */
+#define POINTER 70    /* the frame that draws the pointer */
 
 static void test_damage_extent(void)
 {
@@ -691,8 +716,12 @@ static void test_damage_extent(void)
 	struct output o;
 	uint32_t *ref = malloc(fb_bytes);
 	unsigned int typed = 0, total = 0, judged = 0, most = 0, none = 0;
+	unsigned int row = ROWS_USED, col = 0, wide_row = ROWS, wide_col = 0;
+	unsigned int fw = font->width, fh = font->height;
+	/* the pointer's centre: its cells are columns 20-21, rows 4-5, all blank */
+	const unsigned int pointer[2] = {21 * fw, 5 * fh};
 	bool hidden = false;
-	char label[128], cell[32];
+	char label[128], cell[64];
 
 	screen_bytes(bytes, sizeof(bytes), BLINKING);
 	console_new(&con, &vte);
@@ -700,41 +729,71 @@ static void test_damage_extent(void)
 	output_init(&o, "extent", font, true);
 
 	for (unsigned int f = 0; f < EXTENT_FRAMES; f++) {
-		unsigned int n = 0;
-		bool reported = false;
+		unsigned int n = 0, swaps = o.swaps;
+		bool reported = false, any = false;
 
 		memset(now, 0, sizeof(now));
+		cell[0] = 0;
 		if (f && f % 8 == 0) {
 			hidden = !hidden;
 			memcpy(now, blink_cell, sizeof(now));
 		}
-		if (f >= 4 && f % 3 == 1) {
-			unsigned int row = ROWS_USED + typed / (COLS - 1) % (ROWS - ROWS_USED);
-			unsigned int col = typed % (COLS - 1);
+		if (f >= 4 && f % 3 == 1 && (f < CURSOR_ON || f > CURSOR_OFF)) {
+			bool wide = typed % 4 == 3;
+			unsigned int w = wide ? 2 : 1;
 
-			snprintf(cell, sizeof(cell), ESC "[%u;%uH%c", row + 1, col + 1,
-				 'a' + typed % 26);
-			tsm_vte_input(vte, cell, strlen(cell));
-			strncat(bytes, cell, sizeof(bytes) - strlen(bytes) - 1);
-			now[row][col] = true;
+			if (col + w > COLS - 1) {
+				row++;
+				col = 0;
+			}
+			assert(row < ROWS);
+			snprintf(cell, sizeof(cell), ESC "[%u;%uH%s", row + 1, col + 1,
+				 wide ? "日" : (char[]){'a' + typed % 26, 0});
+			if (wide && wide_row == ROWS) {
+				wide_row = row;
+				wide_col = col;
+			}
+			for (unsigned int c = 0; c < w; c++)
+				now[row][col + c] = true;
+			col += w;
 			typed++;
 		}
+		if (f == CURSOR_ON || f == CURSOR_OFF) {
+			assert(wide_row < ROWS);
+			/* moved first: libtsm marks the cursor's cell changed on a
+			 * style change, hidden or not */
+			if (f == CURSOR_ON)
+				snprintf(cell, sizeof(cell), ESC "[%u;%uH" ESC "[6 q" ESC "[?25h",
+					 wide_row + 1, wide_col + 1);
+			else
+				snprintf(cell, sizeof(cell), ESC "[?25l");
+			now[wide_row][wide_col] = now[wide_row][wide_col + 1] = true;
+		}
+		if (f == POINTER || f == POINTER + 1)
+			for (unsigned int c = 20; c < 22; c++)
+				now[4][c] = now[5][c] = true;
+		o.pointer = f == POINTER ? pointer : NULL;
+		if (cell[0]) {
+			tsm_vte_input(vte, cell, strlen(cell));
+			strncat(bytes, cell, sizeof(bytes) - strlen(bytes) - 1);
+		}
 
-		fresh(ref, bytes, hidden);
+		fresh(ref, bytes, hidden, o.pointer);
 		snprintf(label, sizeof(label), "damage extent: frame %u (%s phase)", f + 1,
 			 hidden ? "hidden" : "visible");
 		same(output_frame(&o, con, vte, hidden, label), ref, label);
 
 		damage_cells(&o, got);
-		for (unsigned int row = 0; row < ROWS; row++) {
-			for (unsigned int col = 0; col < COLS; col++) {
-				n += got[row][col];
-				want[row][col] = now[row][col] || before[row][col];
-				if (f >= 3 && want[row][col] && !got[row][col] && !reported) {
+		for (unsigned int y = 0; y < ROWS; y++) {
+			for (unsigned int x = 0; x < COLS; x++) {
+				n += got[y][x];
+				want[y][x] = now[y][x] || before[y][x];
+				any = any || want[y][x];
+				if (f >= 3 && want[y][x] && !got[y][x] && !reported) {
 					fprintf(stderr,
 						"test_blink: %s: cell %u,%u changed but left out of "
 						"the damage\n",
-						label, col, row);
+						label, x, y);
 					reported = true;
 					failures++;
 				}
@@ -754,6 +813,12 @@ static void test_damage_extent(void)
 				}
 			}
 		}
+		if (o.swaps - swaps != (f < 3 || any)) {
+			fprintf(stderr, "test_blink: %s: %s\n", label,
+				f < 3 || any ? "a frame with damage was not presented"
+					     : "a frame without change was presented");
+			failures++;
+		}
 		total += n;
 		if (f >= 3) {
 			judged += n;
@@ -764,8 +829,8 @@ static void test_damage_extent(void)
 	}
 	fprintf(stderr,
 		"test_blink: damage extent: %u frames, %u cells damaged, %u in frames 4-%u "
-		"(at most %u in one frame, %u frames with none)\n",
-		EXTENT_FRAMES, total, judged, EXTENT_FRAMES, most, none);
+		"(at most %u in one frame, %u frames with none), %u swaps\n",
+		EXTENT_FRAMES, total, judged, EXTENT_FRAMES, most, none, o.swaps);
 
 	output_destroy(&o);
 	tsm_vte_unref(vte);

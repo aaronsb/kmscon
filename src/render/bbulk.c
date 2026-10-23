@@ -42,9 +42,12 @@
  *
  * On a display with damage clips, a frame's damage is every cell drawn into
  * the buffer on that frame (cell_flags.drawn): the cells changed on this frame
- * or the one before, the two frames the buffer is behind. That is the buffer's
- * own damage, a superset of the change since the frame on screen, which is
- * what a driver that uploads each buffer separately needs.
+ * or the one before, the two frames the buffer is behind. FB_DAMAGE_CLIPS asks
+ * for less, the change since the last plane update (drm_plane.c), so this is a
+ * superset of it at one extra frame per change; a driver that uploads each
+ * buffer on its own ignores the clips when the buffer changes. A frame that
+ * drew nothing is reported unchanged and not presented, as a commit without
+ * clips would update the whole plane.
  *
  * A cell draws its background, then its underline, then its glyph, then its
  * strike-through. An undecorated cell is one alpha-mask request; a decorated
@@ -806,7 +809,7 @@ static void merge_damage(struct bbulk *bb, struct video_rect *r)
 /*
  * Simple merge algorithm, on each line, if two damaged cells are less than
  * DAMAGE_MERGE_LEN away, include the two cells in one damage rectangle. Each
- * frame's drawn cells are reported once.
+ * frame's drawn cells are reported once, and forgotten.
  */
 static void bbulk_compute_damage(struct kmscon_text *txt)
 {
@@ -851,14 +854,13 @@ static void bbulk_compute_damage(struct kmscon_text *txt)
 static int bbulk_render(struct kmscon_text *txt)
 {
 	struct bbulk *bb = txt->data;
-	int ret = 0;
 
 	// log_debug("bbulk, redraw %d cells", bb->requests);
-	if (display_supports_damage(txt->disp)) {
-		bbulk_compute_damage(txt);
-		display_set_damage(txt->disp, bb->damage_rect_len, bb->damage_rects);
-	}
-	return ret;
+	bbulk_compute_damage(txt);
+	if (!display_supports_damage(txt->disp))
+		return 0;
+	display_set_damage(txt->disp, bb->damage_rect_len, bb->damage_rects);
+	return bb->damage_rect_len ? 0 : KMSCON_TEXT_UNCHANGED;
 }
 
 static int bbulk_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
@@ -880,11 +882,6 @@ static int bbulk_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	bb->attr = *attr;
 	bb->deco = txt->deco;
 
-	/*
-	 * The cells the last frame changed need no forcing: bbulk_draw draws
-	 * and reports them once more, as unchanged. Forced, they would count
-	 * as changed on every later frame, and the whole screen with them.
-	 */
 	if (bb->redraw) {
 		kmscon_text_redraw_all(txt);
 		display_clear(txt->disp, attr->br, attr->bg, attr->bb);

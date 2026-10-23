@@ -275,7 +275,7 @@ static bool kmscon_font_psf_has_glyph(struct kmscon_font *kfont, struct kmscon_f
 	if (font->has_unicode_table)
 		ch = unicode_table_get(&font->unicode_table, ch);
 
-	return (ch == FONT_FULL_BLOCK || ch == FONT_VBAR || ch < font->glyphs);
+	return ch < font->glyphs;
 }
 
 static struct kmscon_glyph *kmscon_font_psf_render(struct kmscon_font *kfont,
@@ -284,11 +284,6 @@ static struct kmscon_glyph *kmscon_font_psf_render(struct kmscon_font *kfont,
 {
 	psf_font_t *font = kfont->data;
 	uint32_t ch = cps[0];
-
-	if (ch == FONT_FULL_BLOCK)
-		ch = 219;
-	else if (ch == FONT_VBAR)
-		ch = 179;
 
 	if (font->has_unicode_table)
 		ch = unicode_table_get(&font->unicode_table, ch);

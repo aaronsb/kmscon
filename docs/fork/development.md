@@ -312,6 +312,7 @@ In progress: the ledger's format is being changed to one markdown page per run, 
 - Docs are written one line per paragraph, with no hard wrapping.
 - Docs say what is unfinished: a gap, a stale golden or an open issue is named where the reader would otherwise assume it works.
 - Gate results in a PR body name the commit they ran on, and a gate that was not run is listed as not run.
+- In a loop that runs per pixel or per cell per frame, copy every value the loop doesn't change into a const local before the loop. Choose formats, depths and modes once, outside the loop: a switch with one short loop per case, with only the varying store repeated and the shared arithmetic in a static inline helper. Keep a loop compact when it runs once per glyph, per picture, or less, or when a benchmark (a micro-bench, or S1–S6) shows the specialised version within 5%. Every specialisation lands with its benchmark numbers in the PR and a test that its output is byte-identical.
 
 ## Working with coding agents
 

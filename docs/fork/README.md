@@ -75,6 +75,7 @@ Every build step runs in a container as the invoking user; the host needs only `
 make test                    # build and run kmscon's and libtsm's test suites, including the harness
 make test LIBTSM=../libtsm   # the same, against a local checkout of the libtsm fork
 make demo                    # stage the package for a VT demo: sudo fork/demo/run-vt.sh (see demo.md)
+make vt-demo [VT=N]          # make demo, then run it on a free VT and print its answers
 make help                    # every target
 ```
 

@@ -202,3 +202,11 @@ test(
     python,
     args: [files('demo/feedback.py'), '--root', meson.project_source_root()],
 )
+
+# make vt-demo's script (fork/demo/vt-demo.sh): the VT it picks, its refusals,
+# and the summary of the run it started, against a stand-in run-vt.sh.
+test(
+    'demo_vt_select',
+    python,
+    args: [files('demo/vt_demo.py'), '--root', meson.project_source_root()],
+)

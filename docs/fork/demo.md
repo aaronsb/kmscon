@@ -6,6 +6,31 @@ It is written for a host that runs the stock kmscon package on its VTs as `kmsco
 
 ## Running it
 
+One command builds, stages, picks a VT, runs the demo there and, when it ends, prints what was recorded:
+
+```sh
+make vt-demo                       # the first free VT of 5, 6, 4, 3, 2
+make vt-demo VT=4                  # that VT
+make vt-demo DEMO_ARGS='--font-name="Monoid Nerd Font Mono" --font-size=30 --mode=7680x2160 --no-use-original-mode'
+                                   # options for kmscon
+```
+
+It asks for sudo's password first if sudo wants one, then prints the VT to switch to and the key back:
+
+```
+================================================================
+  Switch to VT 5 now: Ctrl-Alt-F5    (Ctrl-Alt-F7 returns to this desktop)
+================================================================
+```
+
+Switch to that VT, judge each page with one key (below), and press q to finish. The command blocks until then. When the demonstration ends, kmscon exits, the stock console starts again on that VT, and the command prints a health check of kmscon's log, the path of the full log, this run's answers as `fork/demo/feedback.sh --run` prints them, and the path of the results file. It exits non-zero when kmscon failed (with `run-vt.sh`'s status, 130 after Ctrl-C) or nothing was recorded.
+
+`VT` and `DEMO_ARGS` reach the script through the environment, never as recipe text. `DEMO_ARGS` is split into words the way `xargs` splits them: quotes and backslashes are honoured and nothing is expanded or run, so a value with spaces is quoted inside it, as the font name is above. Each option is one word, `--name=value` or `--name` / `--no-name`; `run-vt.sh` refuses any other form (see below). `VT_DEMO_DRY_RUN=1 make vt-demo` builds and stages, picks the VT and prints the `run-vt.sh` command without running it.
+
+### By hand
+
+`make vt-demo` runs `fork/demo/run-vt.sh`, which can also be run directly:
+
 ```sh
 make demo                          # build the package and stage it (no root)
 sudo fork/demo/run-vt.sh           # VT 3
@@ -15,7 +40,7 @@ sudo fork/demo/run-vt.sh 3 -- --mode=7680x2160 --no-use-original-mode
                                    # options after -- go to kmscon
 ```
 
-Then switch to the VT with Ctrl-Alt-F3 (or the VT's number), judge each page with one key (below), and press q to finish. When the demonstration ends, kmscon exits and the stock console starts again on that VT. Switch back to the desktop with its own Ctrl-Alt-F key.
+Then switch to the VT with Ctrl-Alt-F3 (or the VT's number), judge each page, and press q to finish. When the demonstration ends, kmscon exits and the stock console starts again on that VT. Switch back to the desktop with its own Ctrl-Alt-F key, and read the answers with `fork/demo/feedback.sh`.
 
 If anything goes wrong and the stock console does not come back, start it by hand:
 
@@ -40,11 +65,22 @@ The extracted binary runs on the host as it is: libtsm is linked statically, and
 
 Display settings belong to one machine, so they are not in `fork/demo/kmscon.conf`. Pass them after `--` (for example the `mode=` and `use-original-mode` lines of `/etc/kmscon/kmscon.conf`, as `--mode=...` and `--no-use-original-mode`), together with `--font-size=N` for a different size.
 
+## What `make vt-demo` does
+
+1. Runs `make demo`.
+2. Picks the VT: `VT=` if given, else the first free one of 5, 6, 4, 3 and 2. A VT is free when it is not on screen (`/sys/class/tty/tty0/active`) and no logind session is on it (`loginctl`). It refuses a `VT=` that is not free, and when no VT is free it fails naming each VT and why it was refused. `run-vt.sh` checks the same again before it stops anything.
+3. Reads the desktop's VT, the one on screen at the start, for the key back.
+4. Runs `sudo -v`, prints the line naming the VT, and runs `sudo fork/demo/run-vt.sh N -- DEMO_ARGS` in the foreground, its output and kmscon's log copied to a new file, `/tmp/kmscon-demo/vt-demo-<time>-ttyN-<random>.log` (mode 0600). `/tmp/kmscon-demo` is created with mode 0700 when it is missing, and refused when it is a symlink or another user's. Ctrl-C, a closed terminal or SIGTERM reaches `run-vt.sh`, whose trap stops kmscon and restarts the stock console; the copy (`tee`) ignores those signals, so the restore never writes into a closed pipe. After Ctrl-C the summary still follows.
+5. Counts `atomic commit failed` and `vt_timeout` lines in that log, the stock-kmscon freeze signature (see "Seen on hardware").
+6. Finds this run by its run id: the last run of a `dev build` label among the answers appended to `/tmp/kmscon-demo/feedback.tsv` since step 4, so a stock run on another VT writing to the same file meanwhile is not taken for it. It prints that run with `feedback.sh --run`.
+
+The script is `fork/demo/vt-demo.sh [N] [-- KMSCON-OPTION...]`; `tests/demo/vt_demo.py`, part of `make test`, runs it against a planted VT on screen, a stand-in `loginctl` and a stand-in `run-vt.sh`.
+
 ## What `run-vt.sh` does
 
-1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists.
+1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists. It also refuses every kmscon option after `--` but display, font, palette, text and input ones, named in full (kmscon takes a unique prefix, so `--lo` would be `--login`), each as one word: `--name=value`, or `--name` / `--no-name` for a switch. A value in a word of its own would be taken as the option's value or, as a stray word, be moved by kmscon into the login command that runs as root. Left out on purpose: the VT, seat and session options, `--login`, `--configdir`, `--oneshot`, the grabs, and the options that name files (`--asciicast`, `--issue-path`, `--xkb-keymap`, `--xkb-compose-file`). The list is `valued` and `switches` in `run-vt.sh`.
 2. Refuses the VT on screen (`fgconsole`) and any VT a logind session is on, the desktop's included: stopping the unit there would end that session.
-3. Records whether `kmsconvt@ttyN.service` is active and stops it. A trap on exit, Ctrl-C, SIGTERM and SIGHUP stops kmscon with SIGTERM if it still runs, waits for it, and starts the unit again if it was active, so the stock console comes back after a normal end, an interrupt or a kmscon failure.
+3. Records whether `kmsconvt@ttyN.service` is active and stops it. A trap on exit, Ctrl-C, SIGTERM and SIGHUP stops kmscon with SIGTERM if it still runs, waits for it (SIGKILL after 5 seconds), and starts the unit again if it was active, so the stock console comes back after a normal end, an interrupt or a kmscon failure. While it restores, it ignores Ctrl-C, SIGTERM, SIGHUP and SIGPIPE, so a second Ctrl-C or a closed terminal cannot cut it short before the unit is started.
 4. Prints the steps and the manual restore command.
 5. Runs the staged kmscon on VT N with `--no-switchvt --oneshot`, the demo config and the demonstration as its session, in the background so that only the script's trap stops it, and waits for it.
 
@@ -132,7 +168,7 @@ The step 2 sections (colour-forms, underline-styles, underline-colour, strike, c
 
 Run the dev build on one VT and the same demonstration under stock kmscon on another, then flip between them page by page:
 
-1. `sudo fork/demo/run-vt.sh 3` from the desktop.
+1. `make vt-demo VT=3` (or `sudo fork/demo/run-vt.sh 3`) from the desktop.
 2. Ctrl-Alt-F4, log in on the stock kmscon there, and run `DEMO_LABEL="stock $(pacman -Q kmscon)" fork/demo/demo.sh` from the checkout.
 3. Ctrl-Alt-F3 shows the dev build; page both to the same page number and flip with Ctrl-Alt-F3 and Ctrl-Alt-F4. The title pages say which is which.
 4. Rate each page on both VTs. Both runs append to the same `/tmp/kmscon-demo/feedback.tsv` under their own labels, and `fork/demo/feedback.sh --compare` puts them side by side.
@@ -163,7 +199,7 @@ The first real run, on 2026-10-22: Arch Linux, one output (DP-8) at 7680x2160, t
 - Emoji draw as a clipped corner. The fallback emoji font's bitmaps are larger than the cell, and nothing scales them until colour emoji land (ADR-102 step 4c).
 - Stacked block elements show a one-pixel gap between rows (#46).
 - Stock kmscon 10.0.4 on that machine never repaints after a switch from the desktop. Its journal repeats `drm_shared: test-only atomic commit failed, -22`, then `vt_timeout: failed to wake up after 20 retries`. The dev build, on newer code, takes the display. The comparison with stock could not be made there, so the table above is still a prediction.
-- `run-vt.sh` refuses a VT that has a login on it, and a login on a stock kmscon VT counts as one. Pick a VT nobody is logged into.
+- `run-vt.sh` refuses a VT that has a login on it, and a login on a stock kmscon VT counts as one. Pick a VT nobody is logged into; `make vt-demo` picks one.
 
 ## Adding a section
 
@@ -173,6 +209,6 @@ A capability that adds something visible adds its section in the same PR. A sect
 - Its guidance is two comment fields, each one or more lines that demo.sh joins with spaces, in terms a person can check by eye. `# look-for:` says what a correct screen looks like; `# wrong-looks-like:` says what a defect looks like, naming what stock kmscon is known to get wrong and any defect the fork already knows about (with its issue), so that one is not reported again. Keep each to about 130 characters of ASCII, so it wraps to two rows of the footer at 80 columns. `tests/demo/feedback.py` fails a section without both fields.
 - It draws one screen and nothing else: deterministic output (no clock, no randomness, no dependence on the locale; write invisible code points as UTF-8 bytes, `$'\xcc\x81'`), self-contained so it can be copied into the tier 3 guest, and at most 17 rows and 80 columns, so the page fits 80x25 with its header and a footer of two-row guidance. A taller page still works: its footer moves to a screen of its own. A section that must sit at the screen's edge reads the size from the terminal, as `55-wide-margin.sh` does.
 
-Check it outside a VT with `DEMO_NOPAGE=1 fork/demo/demo.sh name`, which runs without waiting for keys and leaves the page and its guidance on the screen, then on a VT with `run-vt.sh`.
+Check it outside a VT with `DEMO_NOPAGE=1 fork/demo/demo.sh name`, which runs without waiting for keys and leaves the page and its guidance on the screen, then on a VT with `make vt-demo`.
 
 Each section is a tier 3 screen as well (#36): tier 3 runs it in its guest and compares the capture with a golden, so every demonstration is also a check. A new section adds its name to `SCREENS` in `fork/tier3/t3_evaluate.py`, before `cjk`, which stays last because `vt-restore` is compared with its golden (`test_t3.py` fails otherwise), and its goldens with `make tier3-bless`, in a commit of their own. Its `# look-for:` and `# wrong-looks-like:` lines are also its case's caption on the run page. Tier 3 does not judge emoji yet (ADR-102 step 4c), nor blink, which it runs without.

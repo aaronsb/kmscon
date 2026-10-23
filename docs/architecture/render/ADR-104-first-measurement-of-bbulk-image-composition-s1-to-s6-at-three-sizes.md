@@ -83,7 +83,7 @@ Tier 3 has no 1920x1080 variant (#126), and S1 was not run there on main for thi
 ## Against ADR-103's targets
 
 - **S1 within 5% of main at every size:** met in memory, +0.8% to +2.4%. Not measured against main in tier 3.
-- **S4 at most 10 ms at 1366x768 and 16 ms at 1920x1080:** met by a factor of about 12 and 11 (0.68 ms and 1.42 ms median, 0.83 ms and 1.70 ms at the 95th percentile).
+- **S4 at most 10 ms at 1366x768 and 16 ms at 1920x1080:** met with room to spare: about 15 and 11 times under them at the median (0.68 ms and 1.42 ms), about 12 and 9 times at the 95th percentile (0.83 ms and 1.70 ms).
 - **S5 at most one and a half times S4:** met, 1.16 times at 1366x768 and 1.10 times at 1920x1080.
 - **S3 at least 30 lines per second:** met. One line per frame costs 0.83 ms at 1366x768 and 1.69 ms at 1920x1080, so the renderer alone allows over 500 lines per second; on a real display the frame rate caps it, and kmscon draws many lines per frame when they arrive together, as tier 3's S1 shows.
 - **A2 and A5, the presented rate against mpv's output rate:** not measured; they need the sixel parser (3c, 3e) and the kitty protocol (step 4).

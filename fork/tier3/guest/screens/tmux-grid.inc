@@ -5,42 +5,50 @@
 # placements change at once. tmux runs on a server of its own (-L), with a
 # config that names kmscon's sixel support: tmux turns sixel on for a
 # terminal only through terminal-features, and draws a "SIXEL IMAGE"
-# placeholder without it. When every pane's clip ends its pane closes, tmux
-# exits and leaves the alternate screen, printing "[exited]", and the page
-# must come back with nothing of the videos left.
+# placeholder without it; the screen counts the pictures tmux sends to
+# kmscon, and fails when there are none. When every pane's clip ends its
+# pane closes, tmux exits and leaves the alternate screen, printing
+# "[exited]", and the page must come back with nothing of the videos left.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/acceptance.inc"
 sixel_offered
 needs mpv mpv
 needs tmux tmux
 dir=$(mktemp -d)
+sock=t3-$$
 printf 'set -g status off\nset -as terminal-features ",*:sixel"\n' >"$dir/tmux.conf"
 grid() {
 	local i play
 	for ((i = 0; i < n * n; i++)); do
-		# Every pane waits for the same signal, so the clips play together;
-		# the first records the attached client's features meanwhile.
-		play="tmux -L t3-$$ wait-for go;"
-		((i == 0)) && play+=" tmux -L t3-$$ display -p '#{client_termfeatures}' >$dir/features;"
-		play+=" mpv --no-config --really-quiet --no-input-terminal --ao=null --no-audio"
-		play+=" --vo=sixel --script=$here/mpv-stats.lua --script-opts=t3-stats=$dir/$i"
-		play+=" $(clip 320x180 5)"
+		# Every pane waits for the same signal, so the clips play together.
+		# Paths go into tmux's shell command quoted with %q.
+		local wait=(tmux -L "$sock" wait-for go)
+		local mpv=(mpv --no-config --really-quiet --no-input-terminal --ao=null --no-audio
+			--vo=sixel --script="$here/mpv-stats.lua" --script-opts=t3-stats="$dir/$i"
+			"$(clip 320x180 5)")
+		printf -v play '%q ' "${wait[@]}"
+		play+="; $(printf '%q ' "${mpv[@]}")"
 		if ((i == 0)); then
-			tmux -L "t3-$$" -f "$dir/tmux.conf" new-session -d -s grid "$play"
+			tmux -L "$sock" -f "$dir/tmux.conf" new-session -d -s grid "$play"
 		else
-			tmux -L "t3-$$" split-window -t grid "$play"
-			tmux -L "t3-$$" select-layout -t grid tiled >/dev/null
+			tmux -L "$sock" split-window -t grid "$play"
+			tmux -L "$sock" select-layout -t grid tiled >/dev/null
 		fi
 	done
-	(sleep 1; tmux -L "t3-$$" wait-for -S go) &
-	tmux -L "t3-$$" attach -t grid
+	(sleep 1; tmux -L "$sock" wait-for -S go) &
+	# The client runs under script, which passes its output on to this
+	# terminal unchanged and copies it to a pipe where the sixel pictures
+	# tmux sends (DCS introducers, ESC P ... q) are counted: a tmux that
+	# draws "SIXEL IMAGE" placeholders sends none, though kmscon still
+	# presents as many frames.
+	mkfifo "$dir/out"
+	grep -ao $'\eP[0-9;]*q' <"$dir/out" | wc -l >"$dir/sixels" &
+	script -q -E never -O "$dir/out" -c "$(printf '%q ' tmux -L "$sock" attach -t grid)"
 	wait
 }
 measure grid
 read -r frames dropped < <(mpv_counts "$dir"/[0-9]*)
-# 1 when tmux counted sixel among kmscon's features, so it sent pictures.
-sixel=0
-grep -qw sixel "$dir/features" 2>/dev/null && sixel=1
+read -r sixels <"$dir/sixels" || sixels=0
 rm -rf "$dir"
 printf 'tmux played the test pattern in %d panes, %d by %d, each through\n' $((n * n)) "$n" "$n"
 printf 'mpv --vo=sixel, and returned to this page when they closed.\n'
-report "tmux-${n}x$n" "mpv_frames=$frames mpv_dropped=$dropped kmscon_cpu_ms=$kmscon_ms panes=$((n * n)) tmux_sixel=$sixel"
+report "tmux-${n}x$n" "mpv_frames=$frames mpv_dropped=$dropped kmscon_cpu_ms=$kmscon_ms panes=$((n * n)) tmux_sixels=$sixels"

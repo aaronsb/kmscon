@@ -206,10 +206,15 @@ def evaluate(variant, case, ppm, meta, log):
 def judge_rate(entry, variant, case, figures):
     """Fails a drawn case whose figures show kmscon as the bottleneck,
     unless the variant's bottleneck is known (KNOWN_BOTTLENECKS); a known
-    one that is gone fails too."""
+    one that is gone fails too, and so does a video that showed no frame,
+    known bottleneck or not."""
     why = t3_bench.bottleneck(figures)
     known = KNOWN_BOTTLENECKS.get(case, {}).get(variant)
-    if why and known:
+    if "mpv_frames" in figures and not figures["mpv_frames"]:
+        # A known bottleneck is slowness; a video with no frame is broken.
+        entry["status"] = "fail"
+        entry["error"] = "; ".join(why)
+    elif why and known:
         entry["note"] = "known bottleneck, %s: %s" % (known, "; ".join(why))
     elif why:
         entry["status"] = "fail"

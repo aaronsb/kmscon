@@ -8,8 +8,8 @@ clock (/proc/uptime), the clock that also stamps kmscon's console lines.
 The other keys are the screen's own counts: "lines" for text it printed, or
 for a screen that plays video through mpv "mpv_frames" and "mpv_dropped"
 (mpv-stats.lua) and "kmscon_cpu_ms", kmscon's CPU time over the window from
-/proc, and for the tmux grids "tmux_sixel", 1 when tmux counted sixel among
-kmscon's features while it played. kmscon, run with render-timer=log, writes one line per display per
+/proc, and for the tmux grids "tmux_sixels", the sixel pictures tmux sent
+to kmscon while it played. kmscon, run with render-timer=log, writes one line per display per
 second, each covering the second before its stamp; the scenario's figures
 come from the lines whose seconds overlap the window.
 """
@@ -156,9 +156,11 @@ def measure(serial_text, event_line, config):
     _, start, end, counts = window
     out = summarize(timer_lines(serial_text), counts.get("lines"), start, end)
     out.update(program(counts, end - start))
-    if counts.get("tmux_sixel") == 0:
-        out["error"] = ("tmux drew placeholders: it did not count sixel among kmscon's "
-                        "features, so no picture reached kmscon")
+    if "tmux_sixels" in counts:
+        out["tmux_sixels"] = counts["tmux_sixels"]
+        if not counts["tmux_sixels"]:
+            out["error"] = ("tmux sent kmscon no sixel picture: it drew placeholders, or "
+                            "nothing played")
     if out["intervals"]:
         return out
     if _UNKNOWN in serial_text:

@@ -510,9 +510,13 @@ class BenchTest(unittest.TestCase):
         # tmux draws a "SIXEL IMAGE" placeholder for a client whose features
         # lack sixel, which looks the same to every other figure.
         serial = timer_line(101.0, 60, 60)
+        # kmscon presents as many frames either way, so the screen counts
+        # the sixel pictures tmux sent to kmscon.
         line = ("T3-BENCH tmux-2x2 start=100.00 end=102.00 mpv_frames=600 mpv_dropped=0 "
-                "kmscon_cpu_ms=700 panes=4 tmux_sixel=%d")
-        self.assertNotIn("error", t3_bench.measure(serial, line % 1, self.CONF))
+                "kmscon_cpu_ms=700 panes=4 tmux_sixels=%d")
+        got = t3_bench.measure(serial, line % 412, self.CONF)
+        self.assertNotIn("error", got)
+        self.assertEqual(got["tmux_sixels"], 412)
         got = t3_bench.measure(serial, line % 0, self.CONF)
         self.assertIn("placeholder", got["error"])
 
@@ -604,6 +608,11 @@ class BottleneckTest(unittest.TestCase):
         gone = self.evaluate(variant, self.FINE)
         self.assertEqual(gone["status"], "fail")
         self.assertIn(issue, gone["error"])
+        # Only slowness is known: a variant whose mpv showed no frame at all
+        # (a broken mpv or sixel path) fails like any other.
+        dead = self.evaluate(variant, dict(self.SLOW, mpv_frames=0))
+        self.assertEqual(dead["status"], "fail")
+        self.assertIn("no frame", dead["error"])
         self.assertEqual(sorted(t3_evaluate.KNOWN_BOTTLENECKS["mpv-sixel"]),
                          ["2d-7680x2160", "2d-7680x2160-font32"])
         self.assertEqual(t3_evaluate.RATE_CHECKED, ["mpv-sixel"])

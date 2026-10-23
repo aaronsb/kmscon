@@ -473,6 +473,16 @@ class BenchTest(unittest.TestCase):
         # A screen that reported no window.
         self.assertIn("no benchmark window", t3_bench.measure(serial, None, self.CONF)["error"])
 
+    def test_measure_tmux_sixel(self):
+        # tmux draws a "SIXEL IMAGE" placeholder for a client whose features
+        # lack sixel, which looks the same to every other figure.
+        serial = timer_line(101.0, 60, 60)
+        line = ("T3-BENCH tmux-2x2 start=100.00 end=102.00 mpv_frames=600 mpv_dropped=0 "
+                "kmscon_cpu_ms=700 panes=4 tmux_sixel=%d")
+        self.assertNotIn("error", t3_bench.measure(serial, line % 1, self.CONF))
+        got = t3_bench.measure(serial, line % 0, self.CONF)
+        self.assertIn("placeholder", got["error"])
+
     def test_measure_program(self):
         # mpv's counts beside the render timer's: its output rate over the
         # window, kmscon's CPU time over the window per frame mpv sent (its
@@ -524,8 +534,10 @@ class BottleneckTest(unittest.TestCase):
         few = dict(self.FINE, presented_per_s=20.0)
         self.assertEqual(len(t3_bench.bottleneck(few)), 1)
         self.assertIn("fewer frames", t3_bench.bottleneck(few)[0])
-        # No program, or no frames: nothing to judge.
+        # No program: nothing to judge. A program that showed no frame
+        # played nothing, which is no pass.
         self.assertEqual(t3_bench.bottleneck({"lines": 5}), [])
+        self.assertIn("no frame", t3_bench.bottleneck(dict(self.FINE, mpv_frames=0))[0])
 
     def evaluate(self, variant, figures):
         meta = {"bench": {"mpv-sixel": figures}}

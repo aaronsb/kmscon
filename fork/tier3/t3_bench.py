@@ -8,7 +8,8 @@ clock (/proc/uptime), the clock that also stamps kmscon's console lines.
 The other keys are the screen's own counts: "lines" for text it printed, or
 for a screen that plays video through mpv "mpv_frames" and "mpv_dropped"
 (mpv-stats.lua) and "kmscon_cpu_ms", kmscon's CPU time over the window from
-/proc. kmscon, run with render-timer=log, writes one line per display per
+/proc, and for the tmux grids "tmux_sixel", 1 when tmux counted sixel among
+kmscon's features while it played. kmscon, run with render-timer=log, writes one line per display per
 second, each covering the second before its stamp; the scenario's figures
 come from the lines whose seconds overlap the window.
 """
@@ -126,10 +127,13 @@ CLIP_FRAME_MS = 1000 / 30
 def bottleneck(figures):
     """Why kmscon held a program's video back, as ADR-103 judges A2: its
     CPU time per frame the program sent (parsing included) above the clip's
-    frame interval, or fewer frames presented than the program sent. An
-    empty list when it kept up or there is no program to judge."""
-    if not figures.get("mpv_frames"):
+    frame interval, or fewer frames presented than the program sent; or
+    that the program showed nothing. An empty list when it kept up or the
+    screen runs no program."""
+    if "mpv_frames" not in figures:
         return []
+    if not figures["mpv_frames"]:
+        return ["mpv showed no frame, so nothing was played to judge"]
     out = []
     per = figures.get("kmscon_cpu_ms_per_mpv_frame")
     if per is not None and per > CLIP_FRAME_MS:
@@ -152,6 +156,9 @@ def measure(serial_text, event_line, config):
     _, start, end, counts = window
     out = summarize(timer_lines(serial_text), counts.get("lines"), start, end)
     out.update(program(counts, end - start))
+    if counts.get("tmux_sixel") == 0:
+        out["error"] = ("tmux drew placeholders: it did not count sixel among kmscon's "
+                        "features, so no picture reached kmscon")
     if out["intervals"]:
         return out
     if _UNKNOWN in serial_text:

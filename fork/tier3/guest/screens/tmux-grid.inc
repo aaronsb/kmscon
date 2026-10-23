@@ -17,8 +17,10 @@ printf 'set -g status off\nset -as terminal-features ",*:sixel"\n' >"$dir/tmux.c
 grid() {
 	local i play
 	for ((i = 0; i < n * n; i++)); do
-		# Every pane waits for the same signal, so the clips play together.
+		# Every pane waits for the same signal, so the clips play together;
+		# the first records the attached client's features meanwhile.
 		play="tmux -L t3-$$ wait-for go;"
+		((i == 0)) && play+=" tmux -L t3-$$ display -p '#{client_termfeatures}' >$dir/features;"
 		play+=" mpv --no-config --really-quiet --no-input-terminal --ao=null --no-audio"
 		play+=" --vo=sixel --script=$here/mpv-stats.lua --script-opts=t3-stats=$dir/$i"
 		play+=" $(clip 320x180 5)"
@@ -35,7 +37,10 @@ grid() {
 }
 measure grid
 read -r frames dropped < <(mpv_counts "$dir"/[0-9]*)
+# 1 when tmux counted sixel among kmscon's features, so it sent pictures.
+sixel=0
+grep -qw sixel "$dir/features" 2>/dev/null && sixel=1
 rm -rf "$dir"
 printf 'tmux played the test pattern in %d panes, %d by %d, each through\n' $((n * n)) "$n" "$n"
 printf 'mpv --vo=sixel, and returned to this page when they closed.\n'
-report "tmux-${n}x$n" "mpv_frames=$frames mpv_dropped=$dropped kmscon_cpu_ms=$kmscon_ms panes=$((n * n))"
+report "tmux-${n}x$n" "mpv_frames=$frames mpv_dropped=$dropped kmscon_cpu_ms=$kmscon_ms panes=$((n * n)) tmux_sixel=$sixel"

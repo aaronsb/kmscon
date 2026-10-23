@@ -167,6 +167,25 @@ if enable_font_freetype and enable_video_drm2d
             '--root', meson.project_source_root(),
         ],
     )
+
+    test_blink = executable(
+        'test_blink',
+        'test_blink.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            libtsm_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            harfbuzz_raster_deps,
+            libdrm_deps,
+            threads_deps,
+            math_deps,
+            shl_deps,
+            htable_deps,
+        ],
+    )
+    test('test_blink', test_blink, args: [meson.current_source_dir() / 'fonts'])
 else
     # Visible as SKIP, not a silent absence, when the renderer pieces are off.
     test(
@@ -185,4 +204,12 @@ test(
     'demo_feedback',
     python,
     args: [files('demo/feedback.py'), '--root', meson.project_source_root()],
+)
+
+# make vt-demo's script (fork/demo/vt-demo.sh): the VT it picks, its refusals,
+# and the summary of the run it started, against a stand-in run-vt.sh.
+test(
+    'demo_vt_select',
+    python,
+    args: [files('demo/vt_demo.py'), '--root', meson.project_source_root()],
 )

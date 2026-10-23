@@ -7,8 +7,8 @@
 # wrong-looks-like: 58;2;0;160;255 as dim then reset, so that row is bare.
 # Underline colour, SGR 58 (set) and 59 (reset), in the colon and semicolon
 # forms. Upstream libtsm takes each number of 58;5;n and 58;2;r;g;b as an SGR
-# of its own: the 5 turns on blink (hidden where blinking is off, as in tier 3
-# and the demo), and the 2 and 0 of 58;2;0;160;255 turn on faint and then
+# of its own: the 5 turns on blink (steady where blinking is off, as in tier
+# 3), and the 2 and 0 of 58;2;0;160;255 turn on faint and then
 # reset everything. It discards the colon rows' sequences entirely.
 row() {
 	printf '  %-20s \033[%sm%s\033[0m\n' "$1" "$2" "$3"

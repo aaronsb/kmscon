@@ -175,6 +175,36 @@ class RunPageTest(unittest.TestCase):
         self.assertIn("Tier 2 is not run now, so its cases are not compared.", page)
         self.assertIn("| 3 | not run | 1 of 1 |", page)
 
+    def test_variant_machine_and_bench(self):
+        # A tier 3 variant names its machine and each benchmark's figures,
+        # or why it has none.
+        bench = {"lines": 20000, "seconds": 2.5, "lines_per_s": 8000, "intervals": 3,
+                 "flips": 150, "frames": 150, "presented_per_s": 60.0, "skipped": 0,
+                 "cpu_ms_mean": 1.25, "cpu_ms_median": 1.2, "cpu_ms_p95": 2.0,
+                 "cpu_ms_max": 3.5, "damage_px_mean": 1049088, "damage_pct": 100.0}
+        Path("tier3.json").write_text(json.dumps({"tier": 3, "cases": [
+            case("small/x", "pass", None, None), case("up/x", "pass", None, None)], "variants": {
+                "small": {"cpus": 1, "memory_mb": 512, "bench": {"s1-scroll": bench}},
+                "up": {"cpus": 4, "memory_mb": 4096, "bench": {"s1-scroll": {
+                    "lines": 20000, "seconds": 4.0, "lines_per_s": 5000, "intervals": 0,
+                    "note": "this build has no render timer"}}}}}))
+        argv = ["--out", "ledger/runs/now", "--kmscon", "ccccccc", "--libtsm", "ddddddd",
+                "--date", "2026-10-22", "--ledger", "ledger/LEDGER.md", "--history", "history",
+                "tier1.json", "tier3.json"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            runpage.main(argv)
+        page = Path("ledger/runs/now/README.md").read_text()
+        self.assertIn("Its machine had 1 vCPU and 512 MB of memory.", page)
+        self.assertIn("Its machine had 4 vCPUs and 4096 MB of memory.", page)
+        self.assertIn("Benchmark `s1-scroll`: 20,000 lines in 2.50 s, 8,000 lines per second; "
+                      "60.0 frames presented per second; kmscon's CPU time per frame 1.250 ms "
+                      "mean, 1.200 ms median, 2.000 ms at the 95th percentile, 3.500 ms at most; "
+                      "1,049,088 pixels damaged per frame, 100.00% of the screen.", page)
+        self.assertIn("Benchmark `s1-scroll`: 20,000 lines in 4.00 s, 5,000 lines per second; "
+                      "no render-timer figures: this build has no render timer.", page)
+        self.assertEqual(runpage.bench_line("b", {"error": "no line"}),
+                         "Benchmark `b`: not measured: no line.")
+
     def test_tier1_text(self):
         page = self.fx.run("ledger/runs/now")
         self.assertIn("| `t1-ok` | 4×1 | pass | fork: kept on purpose |", page)

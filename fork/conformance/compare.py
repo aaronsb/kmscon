@@ -192,6 +192,13 @@ def code(text):
 
 # ---------------------------------------------------------------- the page
 
+def machine(meta):
+    """A variant's vCPUs and memory as the report records them, or None."""
+    if not meta.get("cpus"):
+        return None
+    return "%d vCPU%s, %d MB" % (meta["cpus"], "" if meta["cpus"] == 1 else "s", meta["memory_mb"])
+
+
 class Page:
     def __init__(self, args):
         self.args = args
@@ -443,7 +450,7 @@ class Page:
     # What each run records of the machine and display it drew on: the
     # page says "the same machine" only when every one of these agrees.
     MACHINE = ("guest_image", "guest_image_sha256", "guest_archive")
-    DISPLAY = ("device", "config", "cell")
+    DISPLAY = ("device", "cpus", "memory_mb", "config", "cell")
 
     def same_machine(self):
         return all(self.a.tools.get(k) == self.b.tools.get(k) for k in self.MACHINE) and \
@@ -474,8 +481,10 @@ class Page:
                             self.tool("guest_archive", str)))
         for name in sorted(set(self.a.variants) | set(self.b.variants)):
             ma, mb = self.a.variants.get(name, {}), self.b.variants.get(name, {})
-            self.w("- **Display `%s`:** QEMU device %s. kmscon configuration: %s. Character cell %s." % (
+            self.w("- **Display `%s`:** QEMU device %s. Machine: %s. kmscon configuration: %s. "
+                   "Character cell %s." % (
                 name, self.fact(ma.get("device"), mb.get("device"), lambda v: "`%s`" % v),
+                self.fact(machine(ma), machine(mb), str),
                 self.fact(ma.get("config"), mb.get("config"), lambda v: ", ".join("`%s`" % c for c in v)),
                 self.fact(ma.get("cell"), mb.get("cell"), lambda v: "%d×%d pixels" % tuple(v))))
         common = self.tiers()[0]

@@ -9,11 +9,15 @@ import t3img
 from t3_common import GOLDEN, GUEST, RUNDIR, rel
 
 # Screens drawn by `t3 NAME` in the guest (fork/tier3/guest/screens/NAME.sh),
-# in the local VT demo's order (fork/demo/sections), except that cjk stays last:
-# vt-restore is compared with the last screen's golden, and its golden is the
-# cjk one (test_t3.py holds the two together).
+# in the local VT demo's order (fork/demo/sections), then ADR-103's benchmark
+# scenarios, which have no demo page, except that cjk stays last: vt-restore
+# is compared with the last screen's golden, and its golden is the cjk one
+# (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
-           "boxdraw", "blocks", "wide-margin", "combining", "emoji", "cjk"]
+           "boxdraw", "blocks", "wide-margin", "combining", "emoji", "s1-scroll", "cjk"]
+# The screens that are also ADR-103 benchmark scenarios: each reports its
+# window on the event port, and the report carries its figures (t3_bench.py).
+BENCHMARKS = ["s1-scroll"]
 # Every case of a variant: each screen, then the VT switch (a check without a
 # golden) and the restore after it (compared with the last screen's golden).
 CASES = SCREENS + ["vt-switch", "vt-restore"]
@@ -31,17 +35,11 @@ CHECKS = {
 SCREEN_TIMEOUT = 10
 
 
-def describe(case):
-    """(caption, what a defect looks like) of a case.
-
-    A check's caption is its entry in CHECKS. A screen's is the leading
-    comment lines of its script; the "# look-for:" lines the local VT demo
-    shows join it as "Correct: ...", and its "# wrong-looks-like:" lines are
-    the second part, or None for a script without them.
-    """
-    if case in CHECKS:
-        return CHECKS[case], None
-    fields = {"": [], "look-for": [], "wrong-looks-like": []}
+def header(case):
+    """The leading comment lines of a screen's script, by field: "" for the
+    caption, then the "# look-for:", "# wrong-looks-like:" and
+    "# screen-text:" lines."""
+    fields = {"": [], "look-for": [], "wrong-looks-like": [], "screen-text": []}
     with open(os.path.join(GUEST, "screens", case + ".sh")) as f:
         for line in f:
             if line.startswith("#!"):  # the script's interpreter
@@ -53,6 +51,20 @@ def describe(case):
                 fields[key].append(text.strip())
             else:
                 fields[""].append(line[1:].strip())
+    return fields
+
+
+def describe(case):
+    """(caption, what a defect looks like) of a case.
+
+    A check's caption is its entry in CHECKS. A screen's is the leading
+    comment lines of its script; the "# look-for:" lines the local VT demo
+    shows join it as "Correct: ...", and its "# wrong-looks-like:" lines are
+    the second part, or None for a script without them.
+    """
+    if case in CHECKS:
+        return CHECKS[case], None
+    fields = header(case)
     caption = " ".join(fields[""])
     if fields["look-for"]:
         caption += " Correct: " + " ".join(fields["look-for"])
@@ -66,9 +78,15 @@ def screen_text(case, log):
     output (a cursor move, a tab, a character-set switch) would break that
     mapping, so such output gives None, as do a check that draws no script
     and a script that fails, hangs or reads its input: the text only
-    captions a region, and losing it must never cost a case its verdict."""
+    captions a region, and losing it must never cost a case its verdict.
+    A script whose "# screen-text:" line begins "none" is not run: its
+    printed lines are not its rows, as when it scrolls."""
     base = SCREENS[-1] if case == "vt-restore" else case
     if base not in SCREENS:
+        return None
+    reason = " ".join(header(base)["screen-text"])
+    if reason.startswith("none"):
+        log("%s: no screen text: %s" % (case, reason))
         return None
     try:
         out = subprocess.run(["bash", os.path.join(GUEST, "screens", base + ".sh")],
@@ -145,4 +163,7 @@ def evaluate(variant, case, ppm, meta, log):
         entry["thumb_diff"] = write_thumb(t3img.diff_thumbnail(img, points),
                                           stem + ".diff.thumb.png")
     entry["status"] = t3img.verdict(stats, tol)
+    bench_error = meta.get("bench", {}).get(case, {}).get("error")
+    if bench_error:  # drawn, but not measured
+        entry["status"], entry["error"] = "fail", bench_error
     return entry

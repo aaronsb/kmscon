@@ -1232,7 +1232,8 @@ static int compose_matches(const char *name, const struct video_buffer *src)
 		{.r = 128, .g = 64, .b = 32},
 	};
 	unsigned int dw = src->width + 3, dh = src->height + 2;
-	unsigned int offs[][2] = {{0, 0}, {1, 1}, {3, 2}, {dw, 0}, {0, dh}};
+	unsigned int offs[][2] = {{0, 0},	    {1, 1},  {3, 2}, {dw - 2, 1},
+				  {dw - 2, dh - 2}, {dw, 0}, {0, dh}};
 	size_t size = (size_t)dw * dh * 4;
 	struct video_buffer *a = malloc(sizeof(*a) + size), *b = malloc(sizeof(*b) + size);
 	uint32_t seed = 0x9e3779b9;

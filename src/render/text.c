@@ -651,6 +651,22 @@ int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool curso
 }
 
 /**
+ * kmscon_text_changed:
+ * @txt: valid text renderer
+ * @con: valid tsm screen
+ *
+ * Whether kmscon_text_draw() would find anything of @con to draw: a cell, the
+ * cursor or a placement changed since this display's last frame, or the
+ * display has not drawn @con yet or needs every cell. It builds no frame
+ * (libtsm's tsm_screen_frame_changed_since). It knows nothing of what kmscon
+ * draws besides the screen: the blink phases, the pointer, the overlay.
+ */
+bool kmscon_text_changed(struct kmscon_text *txt, struct tsm_screen *con)
+{
+	return !txt || txt->drawn != con || tsm_screen_frame_changed_since(con, &txt->age);
+}
+
+/**
  * kmscon_text_draw_pointer:
  * @txt: valid text renderer
  * @x: X-position of the center of the pointer in pixel

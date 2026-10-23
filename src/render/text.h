@@ -174,6 +174,7 @@ int kmscon_text_rotate(struct kmscon_text *txt, enum Orientation orientation);
 
 void kmscon_text_set_decorations(struct kmscon_text *txt, const struct kmscon_text_deco *deco);
 int kmscon_text_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr, bool blinking);
+bool kmscon_text_changed(struct kmscon_text *txt, struct tsm_screen *con);
 int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool cursor_blink);
 int kmscon_text_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned int y);
 int kmscon_text_render(struct kmscon_text *txt);

@@ -72,7 +72,10 @@
  * screen's size in ARGB; the least recently used goes first. All displays'
  * pictures together never pass ADR-103's auto image budget, not even within a
  * frame: a picture that would is left out until the budget changes (pictures
- * freed, a display added or removed), and idle frames do not compose it again.
+ * freed, a display added or removed) or this display's placements change, and
+ * idle frames do not compose it again. While one is left out on any display,
+ * each display frees the pictures no placement of its shows any more as its
+ * frame starts, and that frame tries its own left-out placements again.
  * A terminal whose session leaves the foreground frees its pictures. The
  * scaler's working memory (at most 16 MiB) and the buffer a picture is
  * rotated in (at most one screen) live only while one picture is made and are
@@ -121,7 +124,7 @@ struct place {
 	struct tsm_frame_placement fp; /* the frame's, without TSM_FRAME_CHANGED */
 	bool overlay;		       /* kmscon's own, after the frame's */
 	bool starved;		       /* left out for the budget: drawn again once
-					  the budget has changed */
+					  the budget or the placements change */
 	/* its box's cells on the screen: [c0, c1) x [r0, r1) */
 	unsigned int c0, c1, r0, r1;
 	/*
@@ -189,6 +192,7 @@ struct bbulk {
 	size_t picture_bytes;
 	struct display *counted; /* the display counted in displays_px, while set */
 	uint64_t starved_gen;	 /* budget_gen when this display last gave up */
+	bool starving;		 /* a placement left out: counted in starving */
 	uint64_t frame_count;
 	struct video_buffer *strip; /* a run of cells under an opaque picture */
 	struct {
@@ -337,6 +341,7 @@ static uint64_t displays_px;   /* the pixels of every display bbulk draws */
 static size_t pictures_total;  /* the scaled pictures of all of them */
 static size_t pictures_peak;   /* the most pictures_total has held */
 static uint64_t budget_gen;    /* moves when the budget or the room in it grows */
+static unsigned int starving;  /* the renderers with a placement left out */
 
 /*
  * Each display counts once, however many terminals draw it: every session
@@ -401,6 +406,18 @@ static void picture_free(struct bbulk *bb, struct picture *p)
 	free(p);
 }
 
+/* @bb has a placement left out for the budget, or no longer */
+static void starving_set(struct bbulk *bb, bool on)
+{
+	if (bb->starving == on)
+		return;
+	bb->starving = on;
+	if (on)
+		starving++;
+	else
+		starving--;
+}
+
 static void free_images(struct bbulk *bb)
 {
 	struct picture *p, *next;
@@ -410,6 +427,7 @@ static void free_images(struct bbulk *bb)
 		picture_free(bb, p);
 	}
 	bb->pictures = NULL;
+	starving_set(bb, false);
 	free(bb->places);
 	free(bb->prev);
 	free(bb->row_first);
@@ -566,6 +584,7 @@ static void bbulk_release(struct kmscon_text *txt)
 		picture_free(bb, p);
 	}
 	bb->pictures = NULL;
+	starving_set(bb, false);
 }
 
 static void bbulk_resize(struct kmscon_text *txt, unsigned int cols, unsigned int rows)
@@ -815,10 +834,35 @@ static void force_cells(struct kmscon_text *txt, const struct place *p)
 			bb->cell_flags[x + y * txt->cols].force = 1;
 }
 
+/* free the scaled pictures no placement of this frame shows */
+static void pictures_free_unused(struct bbulk *bb)
+{
+	struct picture **pp, *pic;
+	unsigned int i;
+	bool used;
+
+	for (pp = &bb->pictures; *pp;) {
+		pic = *pp;
+		for (i = 0, used = false; i < bb->n_places && !used; i++)
+			used = bb->places[i].overlay == pic->overlay &&
+			       bb->places[i].fp.image_key == pic->image_key;
+		if (used) {
+			pp = &pic->next;
+			continue;
+		}
+		*pp = pic->next;
+		picture_free(bb, pic);
+	}
+}
+
 /*
  * Take this frame's placements, @cols x @rows cells of it drawn, and the
  * overlay after them; force the cells of every placement added, changed or
- * removed since the last frame; and list each row's placements.
+ * removed since the last frame; and list each row's placements. While a
+ * placement of any display is left out for the budget, the pictures this frame
+ * no longer shows are freed first, so a placement left out here is tried again
+ * on this frame when that, or anything else, changed the budget, or when a
+ * placement here was added, changed or removed.
  */
 static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 			 unsigned int cols, unsigned int rows)
@@ -828,6 +872,7 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 	unsigned int *cover;
 	size_t size = min(sizeof(struct tsm_frame_placement), frame->placement_size);
 	struct place *p, *old, *tmp;
+	bool retry, moved = false;
 
 	n = nf + !!txt->overlay;
 	if (n > bb->places_cap) {
@@ -875,6 +920,10 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 	}
 	bb->n_places = n;
 
+	if (starving)
+		pictures_free_unused(bb);
+	retry = bb->starved_gen != budget_gen;
+
 	/* damage: prev's state marks the placements still here */
 	for (i = 0; i < bb->n_prev; i++)
 		bb->prev[i].state = 0;
@@ -884,20 +933,28 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 		if (old)
 			old->state = 1;
 		if (old && same_place(&old->fp, &p->fp)) {
-			/* left out for the budget: again once it has changed */
-			if (old->starved && bb->starved_gen == budget_gen)
-				p->starved = true;
-			else if (old->starved)
-				force_cells(txt, p);
+			p->starved = old->starved;
 			continue;
 		}
+		moved = true;
 		if (old)
 			force_cells(txt, old);
 		force_cells(txt, p);
 	}
-	for (i = 0; i < bb->n_prev; i++)
-		if (!bb->prev[i].state)
+	for (i = 0; i < bb->n_prev; i++) {
+		if (!bb->prev[i].state) {
+			moved = true;
 			force_cells(txt, &bb->prev[i]);
+		}
+	}
+
+	/* left out for the budget: again once it, or what this display draws, changed */
+	for (i = 0; i < n && (retry || moved); i++) {
+		if (bb->places[i].starved) {
+			bb->places[i].starved = false;
+			force_cells(txt, &bb->places[i]);
+		}
+	}
 
 	if (n) {
 		memcpy(bb->prev, bb->places, n * sizeof(*bb->places));
@@ -967,36 +1024,20 @@ static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep
 }
 
 /*
- * Between frames: the scaled pictures fit this display's limit. While a
- * placement is left out for the budget, pictures no placement shows any more
- * are freed first, and their room retries it on the next frame; pictures
- * freed only to fit the limit do not, or two pictures over the same cells
- * would take turns being scaled on every frame.
+ * Between frames: the scaled pictures fit this display's limit. Pictures freed
+ * to fit it do not try a placement left out here again, or two pictures over
+ * the same cells would take turns being scaled on every frame.
  */
 static void pictures_settle(struct bbulk *bb)
 {
-	struct picture **pp, *pic;
-	uint64_t gen = budget_gen;
-	bool starved = false, used, released;
+	bool starved = false;
 	unsigned int i;
 
 	for (i = 0; i < bb->n_prev; i++)
 		starved |= bb->prev[i].starved;
-	for (pp = &bb->pictures; starved && *pp;) {
-		pic = *pp;
-		for (i = 0, used = false; i < bb->n_places && !used; i++)
-			used = bb->places[i].overlay == pic->overlay &&
-			       bb->places[i].fp.image_key == pic->image_key;
-		if (used) {
-			pp = &pic->next;
-			continue;
-		}
-		*pp = pic->next;
-		picture_free(bb, pic);
-	}
-	released = budget_gen != gen;
+	starving_set(bb, starved);
 	pictures_trim(bb, 0, picture_limit(bb), false);
-	bb->starved_gen = released ? gen : budget_gen;
+	bb->starved_gen = budget_gen;
 }
 
 /*

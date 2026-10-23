@@ -870,6 +870,130 @@ static void test_budget_shared(void)
 	disp_h = 480;
 }
 
+/* placement @i of image @image: rows [@row, @row + @rows) of the screen, made in
+ * half-size cells, so drawn at twice its size */
+static void set_band(unsigned int i, uint64_t key, uint64_t image, int row, unsigned int rows)
+{
+	set_scaled(i, key, image);
+	placements[i].row = row;
+	placements[i].rows = rows;
+	placements[i].height = rows * FAKE_CELL_H / 2;
+	placements[i].src_height = placements[i].height;
+	placements[i].flags = TSM_FRAME_OPAQUE;
+}
+
+/* the row @row of @t starts with half_images' pixels on this frame */
+static bool picture_drawn(struct kmscon_text *t, unsigned int row)
+{
+	unsigned int x, y;
+
+	set_coordinate(t, &x, &y, 0, row);
+	return blended_at(x, y) && blended_at(x, y)->first == 0xff204060;
+}
+
+/* draw @t's first @n placements until idle: at least one frame that draws */
+static void draw_idle(struct kmscon_text *t, unsigned int n)
+{
+	assert(draw_placements(t, n) == 0);
+	settle(t, n);
+}
+
+/*
+ * A placement left out for the budget draws again on the first frame after
+ * the room it needs is made, with no frame after that one:
+ * - on one display, when the placement that blocked it goes, whether its
+ *   picture is still kept or was already trimmed to fit the display's limit;
+ * - when another display drops the placement that blocked it, and that
+ *   display's next frame frees the picture;
+ * - when a display is added and the budget grows.
+ * "Draws" is checked as no placement of that display left out after the
+ * frame, and where P covers cells of its own, as its pixels on them.
+ */
+static void test_starved_retry(void)
+{
+	struct kmscon_text a, b;
+	struct bbulk *ba, *bb;
+	unsigned int top;
+	uint32_t *src;
+
+	/*
+	 * one display, 7680x4320: two pictures of the top two thirds, 88 MB
+	 * each, and P below them, 44 MB, pass 192 MiB
+	 */
+	src = half_images(7680, 4320, 3);
+	ba = open_txt(&a, 0x30, 7680, 4320);
+	top = a.rows * 2 / 3;
+	set_band(0, 70, 1, 0, top);
+	set_band(1, 71, 2, 0, top);
+	set_band(2, 72, 3, top, a.rows - top);
+	draw_idle(&a, 3);
+	assert(ba->starving && pictures_of(ba, 1) == 1 && pictures_of(ba, 2) == 1);
+	placements[1] = placements[2];
+	assert(draw_placements(&a, 2) == 0);
+	assert(!ba->starving && pictures_of(ba, 3) == 1 && picture_drawn(&a, top + 2));
+	close_txt(&a);
+
+	/*
+	 * two displays at 7680x4320, each keeping 96 MiB between frames: one
+	 * top picture was trimmed, and its placement then goes
+	 */
+	ba = open_txt(&a, 0x31, 7680, 4320);
+	bb = open_txt(&b, 0x32, 7680, 4320);
+	set_band(0, 70, 1, 0, top);
+	set_band(1, 71, 2, 0, top);
+	set_band(2, 72, 3, top, a.rows - top);
+	draw_idle(&a, 3);
+	assert(ba->starving && pictures_of(ba, 1) + pictures_of(ba, 2) == 1);
+	if (pictures_of(ba, 2))
+		placements[0] = placements[1];
+	placements[1] = placements[2];
+	assert(draw_placements(&a, 2) == 0);
+	/* drawn; the frame's end then trims it to the limit */
+	assert(!ba->starving && picture_drawn(&a, top + 2));
+	close_txt(&b);
+	close_txt(&a);
+	drop_images(src, 3);
+
+	/*
+	 * two displays at 7680x2160: the other display's full screen leaves
+	 * room for two of three here; it drops it, and one frame there and one
+	 * here draw P
+	 */
+	src = half_images(7680, 2160, 4);
+	ba = open_txt(&a, 0x33, 7680, 2160);
+	bb = open_txt(&b, 0x34, 7680, 2160);
+	scaled_screens(0, 1, 4);
+	draw_idle(&b, 1);
+	assert(pictures_of(bb, 4) == 1);
+	scaled_screens(0, 3, 1);
+	draw_idle(&a, 3);
+	assert(ba->starving);
+	assert(draw_placements(&b, 0) == 0 && pictures_of(bb, 4) == 0);
+	assert(draw_placements(&a, 3) == 0 && !ba->starving);
+	close_txt(&b);
+	close_txt(&a);
+	drop_images(src, 4);
+
+	/*
+	 * 1920x1080, a budget of four screens and the 640x480 test display:
+	 * five full screens leave the last out; a second display doubles the
+	 * budget, and the next frame draws it
+	 */
+	src = half_images(1920, 1080, 5);
+	ba = open_txt(&a, 0x35, 1920, 1080);
+	scaled_screens(0, 5, 1);
+	draw_idle(&a, 5);
+	assert(ba->starving);
+	bb = open_txt(&b, 0x36, 1920, 1080);
+	assert(draw_placements(&a, 5) == 0 && !ba->starving);
+	close_txt(&b);
+	close_txt(&a);
+	drop_images(src, 5);
+	assert(!starving);
+	disp_w = 640;
+	disp_h = 480;
+}
+
 /* the scaler: copies at 1:1, means when it shrinks, keeps opaque pictures
  * opaque, and gives the same pixels whether or not it slices the columns */
 static void test_picture_scale(void)
@@ -962,6 +1086,7 @@ int main(void)
 	test_budget(7680, 2160, 3);
 	test_budget(7680, 4320, 1);
 	test_budget_shared();
+	test_starved_retry();
 	test_picture_cache(&txt);
 
 	bbulk_unset(&txt);

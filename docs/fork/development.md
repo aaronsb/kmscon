@@ -75,7 +75,7 @@ kmscon worktrees are `../kmscon-<topic>`. Branch names follow the change: `fork/
 
 ### 3. Commit
 
-Commit messages follow the conventions below. A golden that changes goes in a commit of its own (see [Goldens are the judge](#goldens-are-the-judge)). Before opening the PR, the author runs the gates in [Verification before merge](#verification-before-merge) that apply to the change, starting with `make test` in the worktree, and records each result for the PR body.
+Commit messages follow the conventions below. A golden that changes goes in a commit of its own (see [Goldens are the judge](#goldens-are-the-judge)). Before opening the PR, the author runs the gates in [Verification before merge](#verification-before-merge) that apply to the change, starting with `make test` in the worktree, and records each result for the PR body. `make test` starts with `make lint`, the clang-format and meson format checks the GitHub workflow runs, at the workflow's versions (pinned in `fork/lint.mk`); `make format` rewrites what they flag.
 
 ### 4. Open the PR
 
@@ -324,7 +324,7 @@ The rules on this page apply to agents unchanged.
 ## What is unfinished
 
 - [#38](https://github.com/aaronsb/kmscon/issues/38): `make test` can build against a stale or mixed libtsm; the manual reset above stands in for it.
-- [#11](https://github.com/aaronsb/kmscon/issues/11): no CI runs the tiers. Every gate on this page runs locally, and the repository's GitHub workflow is upstream's plain build.
+- [#11](https://github.com/aaronsb/kmscon/issues/11): no CI runs the tiers. Every gate on this page runs locally, and the repository's GitHub workflow is upstream's plain build and format checks.
 - [#17](https://github.com/aaronsb/kmscon/issues/17): tier 3's GL variant is outside the default run.
 - The ledger's change to one page per run is in progress, so its format is not described here.
 - The rules for reviews and fresh authors are applied by the people and sessions involved; nothing in the repositories enforces them.

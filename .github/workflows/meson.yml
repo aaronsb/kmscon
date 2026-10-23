@@ -7,9 +7,11 @@ on:
     branches: [ main ]
 
 jobs:
+  # Both format checks are pinned to the versions fork/lint.mk gives
+  # `make lint`; move them together.
   check-format:
     name: Clang-format check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v3
     - name: Install clang-format
@@ -18,11 +20,11 @@ jobs:
       run: clang-format-20 -n --Werror src/*.c src/*.h src/*/*.c src/*/*.h tests/*.c tests/*.h
   meson-format:
     name: meson format check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v3
     - name: Install meson
-      run: sudo pip install --break-system-packages meson
+      run: sudo pip install --break-system-packages meson==1.12.1
     - name: Fix meson formatting
       run: meson format --recursive --inplace
     - name: Check for mistakes

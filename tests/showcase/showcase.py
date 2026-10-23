@@ -2,8 +2,9 @@
 """Checks fork/showcase/bad-apple.sh without a video, a terminal or any of
 the media tools: its act and effect tables (--list), its plan (--dry-run),
 its refusals, that every act listed has its function, and the pure helpers
-the acts draw with (screen.py, frames.py, effects.py), and, on a pty, that
-quitting turns off every mode a player may have left on (#88).
+the acts draw with (screen.py, frames.py, effects.py and act 5's sizing in
+bad-apple.sh), and, on a pty, that quitting turns off every mode a player
+may have left on (#88).
 
     showcase.py --root SOURCE_ROOT
 """
@@ -66,8 +67,8 @@ def main():
               f"{got!r}\n{p.stderr}")
         needs = {l[:4].strip(): l[29:60].split() for l in rows}
         check("each act lists what it needs", all(needs.get(n) for n, _ in ACTS), repr(needs))
-        check("acts 5 and 7 are placeholders on kmscon today, the rest play",
-              all(("placeholder" in l) == (l[:4].strip() in ("5", "7")) for l in rows), p.stdout)
+        check("act 7 is a placeholder on kmscon today, the rest play",
+              all(("placeholder" in l) == (l[:4].strip() == "7") for l in rows), p.stdout)
 
         effects = [l.split()[0] for l in blocks[1].splitlines()[1:] if l.strip()] if len(blocks) > 1 else []
         check("--list names the effects --fx runs", effects == EFFECTS, repr(effects))
@@ -135,6 +136,25 @@ def main():
         p = run("--act", "2")
         check("act 2 needs no video", p.returncode != 0 and "BAD_APPLE" not in p.stderr
               and ("needs a terminal" in p.stderr or "missing:" in p.stderr), p.stderr)
+
+        # Act 5's picture: half the rows tall, centred in whole cells, its
+        # height a multiple of 6; narrower where the columns run out.
+        def shell(code, **extra):
+            return subprocess.run(["bash", "-c", 'source "$1"; ' + code, "sh", script], env=dict(env, **extra),
+                                  capture_output=True, text=True, timeout=30)
+        for (cols, rows, cw, ch), want in (((404, 56, 19, 38), "1419 28 165 15"),
+                                           ((136, 40, 10, 19), "505 20 43 11"),
+                                           ((40, 40, 10, 20), "377 15 2 13")):
+            p = shell(f"screen_cols={cols} screen_rows={rows} cell_w={cw} cell_h={ch}; act5_box 960 718")
+            check(f"act 5's picture of a 960x718 clip at {cols}x{rows} cells of {cw}x{ch} is {want}",
+                  p.stdout.strip() == want, p.stdout + p.stderr)
+        # The cell size from XTWINOPS 16, else 14 over the cells.
+        for reply, want in (("\x1b[4;2128;7676t\x1b[6;38;19t\x1b[?62;4c", "19 38"),
+                            ("\x1b[4;2128;7676t\x1b[?62;4c", "19 38"), ("\x1b[?62;4c", "0 0")):
+            p = shell('screen_cols=404 screen_rows=56 cell_w=0 cell_h=0; winops_cell "$REPLY"; echo $cell_w $cell_h',
+                      REPLY=reply)
+            check(f"XTWINOPS answers {reply.replace(chr(27), 'ESC')} give the cell {want}",
+                  p.stdout.strip() == want, p.stdout + p.stderr)
 
         # Quitting turns off mouse tracking and the other report modes a
         # killed mpv leaves on (#88). Act 4 needs python3 alone.

@@ -8,6 +8,7 @@ move the goldens.
 |---|---|---|
 | `DejaVuSansMono.ttf`, `DejaVuSansMono-Bold.ttf` | DejaVu fonts 2.37 (Arch `ttf-dejavu`) | Bitstream Vera licence, `LICENSE-DejaVu.txt` |
 | `NotoSansMonoCJKJP-Subset.otf` | Noto Sans Mono CJK JP, Regular, subset to the characters in the wide-CJK screen | SIL OFL 1.1, `LICENSE-NotoSansCJK.txt` |
+| `ColrTest.ttf` | Built by `make-colr-test.py` for `test_font_freetype`: a monospaced text 'A' beside a COLRv1 and a COLRv0 glyph | written for this fork, MIT |
 | `NotoColorEmoji-Subset.ttf` | Noto Color Emoji 2.057 (Arch `noto-fonts-emoji 1:2.057-1`, pinned in the dev image), subset to the emoji screens' codepoints | SIL OFL 1.1, `LICENSE-NotoColorEmoji.txt` |
 
 The CJK subset keeps the original name table. It was produced with fonttools

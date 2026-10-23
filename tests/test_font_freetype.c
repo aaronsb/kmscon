@@ -487,6 +487,107 @@ static void test_colour_fit(void)
 	free(g);
 }
 
+/*
+ * An up-flow BGRA bitmap (negative pitch) starts at its bottom row in memory:
+ * the piece's top row is the one at the far end. The bitmap sits between
+ * guard pixels, so reading from the wrong end shows as a guard value.
+ */
+static void test_colour_up_flow(void)
+{
+	/* guard, bottom row (red), top row (blue), guard; bytes B, G, R, A */
+	uint8_t mem[] = {0xee, 0xee, 0xee, 0xee, 0x00, 0x00, 0xff, 0xff,
+			 0xff, 0x00, 0x00, 0xff, 0xee, 0xee, 0xee, 0xee};
+	FT_GlyphSlotRec slot = {0};
+	struct colour_piece p = {0};
+
+	slot.bitmap.rows = 2;
+	slot.bitmap.width = 1;
+	slot.bitmap.pitch = -4;
+	slot.bitmap.buffer = &mem[4];
+	slot.bitmap.pixel_mode = FT_PIXEL_MODE_BGRA;
+	slot.bitmap_top = 2;
+	assert(!colour_from_slot(&slot, &p));
+	assert(p.colour && p.w == 1 && p.h == 2 && p.y == -2);
+	assert(p.px[0] == 0xff0000ff && p.px[1] == 0xffff0000);
+	free(p.px);
+
+	/* the same memory read top-down: red is now the top row */
+	slot.bitmap.pitch = 4;
+	assert(!colour_from_slot(&slot, &p));
+	assert(p.px[0] == 0xffff0000 && p.px[1] == 0xff0000ff);
+	free(p.px);
+}
+
+/*
+ * ColrTest.ttf (tests/fonts/make-colr-test.py) is a text font that also has
+ * colour tables. Its 'A' has no colour, so it draws as text, exactly as from
+ * the face directly, on the baseline and unfitted; its COLRv1 and COLRv0
+ * glyphs draw in colour, upright. Neither path resizes the face the backend
+ * draws text with.
+ */
+static void test_colour_table_text_face(void)
+{
+	static const uint32_t a = 'A', colrv1 = 0x1f600, colrv0 = 0x1f601;
+	struct kmscon_font_attr attr = {0};
+	struct kmscon_font *font = NULL;
+	struct kmscon_glyph *g, *ref;
+	struct ft_data *ftd;
+	FT_Size_Metrics before;
+	FcConfig *cfg = FcConfigCreate();
+	unsigned int x, y, w, h;
+	uint32_t px;
+
+	assert(cfg && FcConfigAppFontAddFile(cfg, (const FcChar8 *)TEST_FONT_DIR "/ColrTest.ttf"));
+	assert(FcConfigSetCurrent(cfg));
+	assert(!kmscon_font_register(&kmscon_font_freetype_ops));
+	assert(!kmscon_font_find(&font, "ColrTest", 20, "freetype"));
+	ftd = font->data;
+	assert(FT_HAS_COLOR(ftd->regular.face));
+	before = ftd->regular.face->size->metrics;
+
+	g = kmscon_font_render(font, &attr, &a, 1, 1);
+	ref = render_glyph(font, ftd->regular.face, FT_Get_Char_Index(ftd->regular.face, 'A'), 1);
+	assert(g && ref && g->buf.format == VIDEO_FORMAT_A8);
+	assert(g->buf.width == ref->buf.width && g->buf.height == ref->buf.height);
+	assert(!memcmp(g->buf.data, ref->buf.data, (size_t)g->buf.width * g->buf.height));
+	/* on the baseline: ink in the row above it, none below */
+	y = (ftd->regular.face->size->metrics.ascender >> 6) - 1;
+	for (x = 0, px = 0; x < g->buf.width; x++)
+		px |= g->buf.data[y * g->buf.width + x];
+	assert(px);
+	for (y++; y < g->buf.height; y++)
+		for (x = 0; x < g->buf.width; x++)
+			assert(!g->buf.data[y * g->buf.width + x]);
+	free(g);
+	free(ref);
+
+	/* COLRv0: blue, through FreeType */
+	g = kmscon_font_render(font, &attr, &colrv0, 1, 2);
+	assert(g && g->buf.format == VIDEO_FORMAT_ARGB32);
+	w = g->buf.width;
+	h = g->buf.height;
+	px = ((uint32_t *)g->buf.data)[(h / 4) * w + w / 2];
+	assert(px >> 24 == 0xff && (px & 0xff) == 0xff && !(px & 0xffff00));
+	free(g);
+
+#ifdef KMSCON_COLRV1
+	/* COLRv1: red over the top half and a stub at the bottom left, so the
+	 * bottom right is empty when the picture is upright */
+	g = kmscon_font_render(font, &attr, &colrv1, 1, 2);
+	assert(g && g->buf.format == VIDEO_FORMAT_ARGB32);
+	px = ((uint32_t *)g->buf.data)[(h / 4) * w + w / 2];
+	assert(px == 0xffff0000);
+	assert(!((uint32_t *)g->buf.data)[(3 * h / 4) * w + w / 2 + 2]);
+	free(g);
+#else
+	(void)colrv1;
+#endif
+
+	assert(!memcmp(&before, &ftd->regular.face->size->metrics, sizeof(before)));
+	kmscon_font_unref(font);
+	kmscon_font_unregister(kmscon_font_freetype_ops.name);
+}
+
 int main(void)
 {
 	assert(FcInit());
@@ -500,6 +601,8 @@ int main(void)
 	test_coverage_grey_strikes();
 	test_wants_colour();
 	test_colour_fit();
+	test_colour_up_flow();
+	test_colour_table_text_face();
 
 	FcFini();
 	return 0;

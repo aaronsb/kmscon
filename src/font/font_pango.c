@@ -129,9 +129,10 @@ static FT_Face colour_face_of(struct face *face, PangoLayoutLine *line)
 /*
  * ADR-102: an emoji cluster draws from the best face with colour that covers
  * its first codepoint, fitted to its cells, unless emoji-color is off. Pango
- * draws the rest, from the faces it chooses; a cluster it takes from a face
- * with colour is drawn fitted too, as the mask of its colour glyph when it is
- * not an emoji or emoji-color is off.
+ * draws the rest, from the faces it chooses; a glyph with colour it takes from
+ * a face with colour tables is drawn fitted too, as the mask of its colour
+ * glyph when it is not an emoji or emoji-color is off. A glyph without colour
+ * from such a face is text, drawn by pango.
  */
 static struct kmscon_glyph *get_glyph(struct kmscon_font *font, struct face *face,
 				      const struct kmscon_font_attr *attr, const uint32_t *cps,

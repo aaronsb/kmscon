@@ -196,10 +196,15 @@ static void colour_size_face(FT_Face face, unsigned int h)
 		log_warning("cannot select a strike of the colour font");
 }
 
-/* @slot's bitmap as a piece: BGRA as it is, any other mode as white coverage */
+/*
+ * @slot's bitmap as a piece: BGRA as it is, any other mode as white coverage.
+ * A negative pitch is an up-flow bitmap, whose buffer starts at its bottom
+ * row, so the top row is found from the other end.
+ */
 static int colour_from_slot(FT_GlyphSlot slot, struct colour_piece *p)
 {
 	const FT_Bitmap *map = &slot->bitmap;
+	const uint8_t *row0;
 	FT_Bitmap tmp;
 	unsigned int x, y;
 
@@ -216,8 +221,11 @@ static int colour_from_slot(FT_GlyphSlot slot, struct colour_piece *p)
 		return -ENOMEM;
 
 	if (p->colour) {
+		row0 = map->buffer;
+		if (map->pitch < 0)
+			row0 -= (long)(p->h - 1) * map->pitch;
 		for (y = 0; y < p->h; y++) {
-			const uint8_t *s = map->buffer + (long)y * map->pitch;
+			const uint8_t *s = row0 + (long)y * map->pitch;
 
 			for (x = 0; x < p->w; x++, s += 4)
 				p->px[y * p->w + x] = (uint32_t)s[3] << 24 | (uint32_t)s[2] << 16 |
@@ -458,10 +466,12 @@ static struct kmscon_glyph *colour_fit(const uint32_t *canvas, unsigned int cw, 
 
 /*
  * Compose the @np pieces into one picture, the box around all their ink, and
- * fit it into a glyph @cwidth cells wide. Frees the pieces' pixels.
+ * fit it into a glyph @cwidth cells wide; NULL when @need_colour is set and
+ * no piece has colour. Frees the pieces' pixels.
  */
 static struct kmscon_glyph *colour_compose(struct kmscon_font *font, struct colour_piece *pieces,
-					   unsigned int np, unsigned int cwidth, bool mask)
+					   unsigned int np, unsigned int cwidth, bool mask,
+					   bool need_colour)
 {
 	struct kmscon_glyph *glyph = NULL;
 	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
@@ -488,7 +498,7 @@ static struct kmscon_glyph *colour_compose(struct kmscon_font *font, struct colo
 
 	cw = x1 - x0;
 	ch = y1 - y0;
-	canvas = calloc((size_t)cw * ch, 4);
+	canvas = need_colour && !colour ? NULL : calloc((size_t)cw * ch, 4);
 	if (canvas) {
 		for (i = 0; i < np; i++) {
 			struct colour_piece *p = &pieces[i];
@@ -565,7 +575,7 @@ struct kmscon_glyph *kmscon_colour_render(struct kmscon_font *font, FT_Face face
 		hb_font_destroy(paint_font);
 	hb_font_destroy(hb);
 
-	return colour_compose(font, pieces, np, cwidth, mask);
+	return colour_compose(font, pieces, np, cwidth, mask, true);
 }
 
 struct kmscon_glyph *kmscon_colour_render_missing(struct kmscon_font *font, FT_Face face,
@@ -579,5 +589,5 @@ struct kmscon_glyph *kmscon_colour_render_missing(struct kmscon_font *font, FT_F
 	memset(&piece, 0, sizeof(piece));
 	if (colour_load(face, NULL, 0, &piece))
 		return NULL;
-	return colour_compose(font, &piece, 1, cwidth, true);
+	return colour_compose(font, &piece, 1, cwidth, true, false);
 }

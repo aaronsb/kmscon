@@ -725,13 +725,17 @@ static bool kmscon_font_freetype_has_glyph(struct kmscon_font *font, struct kmsc
 	return get_fallback(ch, ftfont) >= 0;
 }
 
-/* The face that draws @ch for @ftfont, and its glyph index, or NULL. */
+/*
+ * The face that draws @ch for @ftfont, its glyph index and the fontconfig
+ * pattern it was opened from, or NULL.
+ */
 static FT_Face face_for(struct kmscon_font *font, struct ft_font *ftfont, uint32_t ch,
-			FT_UInt *index)
+			FT_UInt *index, const FcPattern **pattern)
 {
 	struct ft_data *ftd = font->data;
 	int fallback_index;
 
+	*pattern = ftfont->fc->fonts[0];
 	*index = FT_Get_Char_Index(ftfont->face, ch);
 	if (*index)
 		return ftfont->face;
@@ -755,6 +759,7 @@ static FT_Face face_for(struct kmscon_font *font, struct ft_font *ftfont, uint32
 		select_font_size(font, ftfont->fallback);
 	}
 
+	*pattern = ftfont->fc->fonts[fallback_index];
 	*index = FT_Get_Char_Index(ftfont->fallback, ch);
 	return *index ? ftfont->fallback : NULL;
 }
@@ -763,9 +768,12 @@ static FT_Face face_for(struct kmscon_font *font, struct ft_font *ftfont, uint32
  * ADR-102: an emoji cluster draws from the best face with colour that covers
  * its first codepoint, fitted to its cells, unless emoji-color is off. Any
  * other cluster, or an emoji no colour face draws, goes to the faces in the
- * font's list, those without colour first; one drawn from a colour face
- * anyway is the mask of its colour glyph, fitted the same way. An emoji no
- * face covers is the text face's missing glyph, fitted the same way.
+ * font's list, those without colour first. A glyph with colour from one of
+ * them is fitted the same way, as the mask of its colour glyph unless it is an
+ * emoji in colour; a glyph without colour is text, even from a face that has
+ * colour tables. The colour path draws from faces font_colour.c opens itself,
+ * so it never resizes the faces text is drawn with. A wide cluster no face
+ * covers is the text face's missing glyph, fitted the same way.
  */
 static struct kmscon_glyph *kmscon_font_freetype_render(struct kmscon_font *font,
 							struct kmscon_font_attr *attr,
@@ -776,6 +784,7 @@ static struct kmscon_glyph *kmscon_font_freetype_render(struct kmscon_font *font
 	struct ft_font *ftfont = attr->bold ? &ftd->bold : &ftd->regular;
 	bool emoji = kmscon_font_wants_colour(cps, len, cwidth);
 	struct kmscon_glyph *glyph;
+	const FcPattern *pattern;
 	FT_UInt glyph_index;
 	FT_Face face;
 
@@ -786,15 +795,19 @@ static struct kmscon_glyph *kmscon_font_freetype_render(struct kmscon_font *font
 			return glyph;
 	}
 
-	face = face_for(font, ftfont, cps[0], &glyph_index);
+	face = face_for(font, ftfont, cps[0], &glyph_index, &pattern);
 	if (!face && emoji) {
 		face = kmscon_colour_face_open(&ftd->colour, ftfont->fc->fonts[0]);
 		return kmscon_colour_render_missing(font, face, cwidth);
 	}
 	if (!face)
 		return NULL;
-	if (kmscon_colour_face_has_colour(face))
-		return kmscon_colour_render(font, face, cps, len, cwidth, true);
+	if (kmscon_colour_face_has_colour(face)) {
+		glyph = kmscon_colour_render(font, kmscon_colour_face_open(&ftd->colour, pattern), cps,
+					     len, cwidth, !(emoji && font->emoji_color));
+		if (glyph)
+			return glyph;
+	}
 	if (len == 1)
 		return render_glyph(font, face, glyph_index, cwidth);
 	return render_cluster(font, face, cps, len, cwidth);

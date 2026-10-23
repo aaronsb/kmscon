@@ -70,8 +70,10 @@ bool kmscon_colour_face_has_colour(FT_Face face);
  * Draw the cluster @cps from @face, shaped by HarfBuzz, fitted into a box
  * @cwidth cells wide: scaled with its aspect kept to the largest size that
  * leaves a pixel clear on every side of the box, and centred in it. The glyph
- * is premultiplied ARGB, or an A8 mask of its alpha when @mask is set or
- * nothing in it has colour. NULL when @face draws nothing for @cps.
+ * is premultiplied ARGB, or an A8 mask of its alpha when @mask is set. NULL
+ * when nothing @face draws for @cps has colour, so a glyph without colour paint
+ * (ASCII from a text font that also carries a colour table) is left to the
+ * text path. @face is sized for the box, so it must be one @cf opened.
  */
 struct kmscon_glyph *kmscon_colour_render(struct kmscon_font *font, FT_Face face,
 					  const uint32_t *cps, size_t len, unsigned int cwidth,

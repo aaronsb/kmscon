@@ -170,9 +170,9 @@ struct kmscon_font_ops {
 	struct kmscon_glyph *(*render)(struct kmscon_font *font, struct kmscon_font_attr *attr,
 				       const uint32_t *cps, size_t len, unsigned int cwidth);
 	/*
-	 * render draws the font's missing glyph for an emoji cluster no face
-	 * covers; for other backends kmscon_font_render draws the replacement
-	 * character instead
+	 * render draws the font's missing glyph for a cluster no face covers
+	 * that asks for emoji presentation (any wide one); for other backends
+	 * kmscon_font_render draws the replacement character instead
 	 */
 	bool draws_missing;
 	/* optional: the font's own decoration metrics */

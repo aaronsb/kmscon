@@ -574,8 +574,9 @@ int kmscon_text_render(struct kmscon_text *txt)
 	if (!txt || !txt->rendering)
 		return -EINVAL;
 
-	txt->frame_damage_px =
-		(uint64_t)display_get_width(txt->disp) * display_get_height(txt->disp);
+	if (txt->measure)
+		txt->frame_damage_px =
+			(uint64_t)display_get_width(txt->disp) * display_get_height(txt->disp);
 	if (txt->ops->render)
 		ret = txt->ops->render(txt);
 	txt->rendering = false;

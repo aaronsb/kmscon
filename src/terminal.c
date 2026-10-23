@@ -937,6 +937,7 @@ int terminal_add_display(struct kmscon_terminal *term, struct display *disp)
 		goto err_cb;
 	}
 
+	scr->txt->measure = scr->timer != NULL;
 	dlist_link(&term->screens, &scr->list);
 
 	terminal_update_size_notify(term);

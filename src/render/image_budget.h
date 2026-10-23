@@ -31,8 +31,9 @@
  *
  * The limit is set, or `auto`: four frames of the process's displays in ARGB,
  * at least IMAGE_BUDGET_MIN and at most IMAGE_BUDGET_MAX, recomputed when a
- * display is counted or uncounted. A limit that shrinks below what is held
- * evicts down to fit, as far as eviction can go.
+ * display is counted or uncounted. A set limit below what is held evicts down
+ * to fit at once, as far as eviction can go; an auto limit that shrank with
+ * the displays does so at the next reservation.
  *
  * A libtsm reservation that would pass the limit frees, in this order, across
  * every screen and renderer: the renderers' pictures that their last frame did

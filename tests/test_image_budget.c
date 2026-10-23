@@ -177,6 +177,42 @@ static void test_eviction_order(void)
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 }
 
+/*
+ * A renderer re-set on a font change uncounts its display and counts it back
+ * at once: the auto limit dips to the floor between the two, and that dip
+ * evicts nothing. The images still held are evicted down at the next
+ * reservation if the limit has really shrunk.
+ */
+static void test_display_recount(void)
+{
+	struct tsm_screen *a = new_screen();
+	static int disp;
+	uint64_t keys[8], k;
+	unsigned int i;
+	/* about 24 MiB of unplaced images, past the 16 MiB floor */
+	static uint32_t big[1024 * 1024];
+	struct tsm_test_image img = {
+		.width = 1024, .height = 1024, .pixels = big, .kind = TSM_IMAGE_KITTY};
+
+	assert(image_budget_count_display(&disp, 7680 * 2160) == 0);
+	for (i = 0; i < 6; i++) {
+		img.id = 100 + i;
+		assert(tsm_screen_test_image(a, &img, &keys[i]) == 0);
+	}
+	assert(image_budget_used() > IMAGE_BUDGET_MIN);
+	image_budget_uncount_display(&disp);
+	assert(image_budget_count_display(&disp, 7680 * 2160) == 0);
+	for (i = 0; i < 6; i++)
+		assert(holds(a, keys[i]));
+
+	/* the display really goes: the next image evicts down to the floor */
+	image_budget_uncount_display(&disp);
+	assert(holds(a, keys[0]));
+	assert(unplaced(a, 1, false, &k) == 0);
+	assert(image_budget_used() <= IMAGE_BUDGET_MIN && !holds(a, keys[0]));
+	free_screen(a);
+}
+
 /* limit 0 holds nothing: every image is refused */
 static void test_zero(void)
 {
@@ -249,6 +285,7 @@ int main(void)
 
 	test_auto_limit();
 	test_eviction_order();
+	test_display_recount();
 	test_zero();
 	test_sixel();
 

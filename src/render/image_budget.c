@@ -120,29 +120,27 @@ static int make_room(size_t bytes)
 	return 0;
 }
 
-/* a limit that moved: evict down to a smaller one, retry for a larger one */
-static void limit_changed(size_t old)
-{
-	size_t limit = image_budget_limit();
-
-	if (limit == old)
-		return;
-	budget.gen++;
-	if (limit < old)
-		make_room(0);
-}
-
+/*
+ * A set limit smaller than the one before evicts down to it at once. The auto
+ * limit follows the displays without evicting: a renderer re-set on a font
+ * change uncounts its display and counts it back at once, and the dip between
+ * must cost no image. A display that really went is enforced by the next
+ * reservation, which evicts down to the limit it finds.
+ */
 void image_budget_set_limit(size_t limit)
 {
 	size_t old = image_budget_limit();
 
 	budget.setting = limit;
-	limit_changed(old);
+	if (image_budget_limit() == old)
+		return;
+	budget.gen++;
+	if (image_budget_limit() < old)
+		make_room(0);
 }
 
 int image_budget_count_display(const void *disp, uint64_t px)
 {
-	size_t old = image_budget_limit();
 	unsigned int i;
 	void *tmp;
 
@@ -162,13 +160,11 @@ int image_budget_count_display(const void *disp, uint64_t px)
 	budget.displays[i].px = px;
 	budget.displays[i].users++;
 	budget.gen++;
-	limit_changed(old);
 	return 0;
 }
 
 void image_budget_uncount_display(const void *disp)
 {
-	size_t old = image_budget_limit();
 	unsigned int i;
 
 	for (i = 0; i < budget.n_displays && budget.displays[i].disp != disp; i++)
@@ -182,7 +178,6 @@ void image_budget_uncount_display(const void *disp)
 		free(budget.displays);
 		budget.displays = NULL;
 	}
-	limit_changed(old);
 }
 
 void image_budget_add_cache(struct image_budget_cache *cache)

@@ -63,10 +63,6 @@ struct kmscon_conf_screen {
 	enum Orientation orientation;
 };
 
-/*
- * A decoration colour (ADR-102): `fg` follows the cell's foreground, a palette
- * index 0-255 follows the palette in use, `#rrggbb` is fixed.
- */
 /* render-timer: what the render timer does with its figures (ADR-103) */
 enum kmscon_conf_render_timer {
 	KMSCON_RENDER_TIMER_NONE = 0,
@@ -75,6 +71,10 @@ enum kmscon_conf_render_timer {
 	KMSCON_RENDER_TIMER_BOTH = KMSCON_RENDER_TIMER_OSD | KMSCON_RENDER_TIMER_LOG,
 };
 
+/*
+ * A decoration colour (ADR-102): `fg` follows the cell's foreground, a palette
+ * index 0-255 follows the palette in use, `#rrggbb` is fixed.
+ */
 enum kmscon_conf_color_kind {
 	KMSCON_COLOR_FG,
 	KMSCON_COLOR_INDEX,

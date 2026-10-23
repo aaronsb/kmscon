@@ -49,6 +49,7 @@
 #define KMSCON_IMAGE_BUDGET_H
 
 #include <libtsm.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -56,8 +57,11 @@
 #define IMAGE_BUDGET_MAX ((size_t)192 << 20)
 /* image-storage-limit=auto */
 #define IMAGE_BUDGET_AUTO SIZE_MAX
+/* the largest set limit, 1 TiB (less where size_t is smaller) */
+#define IMAGE_BUDGET_LIMIT_MAX                                                                     \
+	(SIZE_MAX - 1 < ((uint64_t)1 << 40) ? SIZE_MAX - 1 : (size_t)((uint64_t)1 << 40))
 
-/* image-storage-limit: IMAGE_BUDGET_AUTO, or bytes; 0 holds nothing */
+/* image-storage-limit: IMAGE_BUDGET_AUTO, or bytes up to IMAGE_BUDGET_LIMIT_MAX; 0 holds nothing */
 void image_budget_set_limit(size_t limit);
 /* the limit in bytes now */
 size_t image_budget_limit(void);
@@ -101,5 +105,25 @@ void image_budget_remove_picture(size_t bytes);
  */
 int image_budget_add_screen(struct tsm_screen *con);
 void image_budget_remove_screen(struct tsm_screen *con);
+
+/*
+ * A terminal's images: its screen in the budget, and sixel on its vte while
+ * the configuration asks for it, the limit is not 0, and every display the
+ * terminal draws on has a renderer that draws image placements. Otherwise
+ * sixel is off, as with no-sixel: DA1 omits attribute 4 and no picture is
+ * stored. The limit is set before terminals are made.
+ */
+struct image_budget_terminal {
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	bool sixel;	    /* sixel in the configuration */
+	unsigned int blind; /* displays drawn by a renderer without placements */
+};
+
+int image_budget_add_terminal(struct image_budget_terminal *t, struct tsm_screen *con,
+			      struct tsm_vte *vte, bool sixel);
+void image_budget_remove_terminal(struct image_budget_terminal *t);
+/* a display the terminal draws on came or went; @draws_images: its renderer's */
+void image_budget_terminal_display(struct image_budget_terminal *t, bool draws_images, bool added);
 
 #endif /* KMSCON_IMAGE_BUDGET_H */

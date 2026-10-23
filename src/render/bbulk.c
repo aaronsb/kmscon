@@ -937,16 +937,30 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 }
 
 /*
+ * This display's share of the budget by size: limit x px / all, divided
+ * before it is multiplied, so a set limit of up to IMAGE_BUDGET_LIMIT_MAX on
+ * the largest displays does not wrap 64 bits
+ */
+static uint64_t picture_share(struct bbulk *bb)
+{
+	uint64_t px = (uint64_t)bb->sw * bb->sh, all = image_budget_displays_px();
+	uint64_t limit = image_budget_limit();
+
+	if (!all)
+		return limit;
+	return limit / all * px + limit % all * px / all;
+}
+
+/*
  * This display's scaled pictures between frames: twice its screen in ARGB, or
- * its share of the budget by size if that is less, so the displays' pictures
- * together stay within it and leave a frame room to scale more
+ * its share of the budget if that is less, so the displays' pictures together
+ * stay within it and leave a frame room to scale more
  */
 static size_t picture_limit(struct bbulk *bb)
 {
-	uint64_t px = (uint64_t)bb->sw * bb->sh, all = image_budget_displays_px(), share;
+	uint64_t screens = (uint64_t)bb->sw * bb->sh * 4 * 2, share = picture_share(bb);
 
-	share = all ? image_budget_limit() * px / all : image_budget_limit();
-	return px * 4 * 2 < share ? px * 4 * 2 : share;
+	return screens < share ? screens : share;
 }
 
 /*
@@ -1801,4 +1815,5 @@ struct kmscon_text_ops kmscon_text_bbulk_ops = {
 	.render = bbulk_render,
 	.abort = NULL,
 	.release = bbulk_release,
+	.draws_images = true,
 };

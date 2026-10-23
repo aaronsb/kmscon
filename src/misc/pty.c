@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <pthread.h>
 #include <pty.h>
 #include <signal.h>
@@ -62,6 +63,9 @@ struct kmscon_pty {
 	/* io_buf[held_off, held_len) is what the input callback has not taken */
 	size_t held_off;
 	size_t held_len;
+	bool feeding; /* held_idle is registered */
+	/* the size last set with TIOCSWINSZ */
+	struct winsize ws;
 
 	kmscon_pty_input_cb input_cb;
 	kmscon_pty_exit_cb exit_cb;
@@ -417,20 +421,41 @@ static void rearm(struct kmscon_pty *pty)
 	ev_fd_update(pty->efd, mask);
 }
 
+static void held_idle(struct ev_eloop *eloop, void *unused, void *data);
+
+static void feeding_stop(struct kmscon_pty *pty)
+{
+	if (!pty->feeding)
+		return;
+	ev_eloop_unregister_idle_cb(pty->eloop, held_idle, pty, EV_NORMAL);
+	pty->feeding = false;
+}
+
 /*
  * Hands io_buf[@off, @len) to the input callback. What it does not take is
- * held, and nothing more is read until kmscon_pty_feed_held hands it all over.
- * Returns true when all of it was taken.
+ * held: nothing more is read, and an idle source on the pty's loop hands the
+ * rest over on later turns, so other events are handled between the parts.
+ * Without an idle source the rest is handed over at once. Returns true when
+ * all of it was taken.
  */
 static bool feed(struct kmscon_pty *pty, size_t off, size_t len)
 {
-	size_t n = pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
-
-	if (n >= len - off) {
+	off += pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
+	if (off < len && !pty->feeding) {
+		if (!ev_eloop_register_idle_cb(pty->eloop, held_idle, pty, EV_NORMAL)) {
+			pty->feeding = true;
+		} else {
+			log_warn("cannot feed pty output in parts");
+			while (off < len)
+				off += pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
+		}
+	}
+	if (off >= len) {
 		pty->held_len = 0;
+		feeding_stop(pty);
 		return true;
 	}
-	pty->held_off = off + n;
+	pty->held_off = off;
 	pty->held_len = len;
 	return false;
 }
@@ -471,15 +496,15 @@ static int read_buf(struct kmscon_pty *pty)
 	return 0;
 }
 
-bool kmscon_pty_held(struct kmscon_pty *pty)
+/* the held output, one input call a turn; reading resumes once it is all taken */
+static void held_idle(struct ev_eloop *eloop, void *unused, void *data)
 {
-	return pty && pty->held_len;
-}
+	struct kmscon_pty *pty = data;
 
-void kmscon_pty_feed_held(struct kmscon_pty *pty)
-{
-	if (!pty || !pty->held_len)
+	if (!pty->held_len) {
+		feeding_stop(pty);
 		return;
+	}
 	if (feed(pty, pty->held_off, pty->held_len))
 		rearm(pty);
 }
@@ -547,11 +572,25 @@ static void sig_child(struct ev_eloop *eloop, struct ev_child_data *chld, void *
 	pty->exit_cb(pty, true, pty->data);
 }
 
-int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short height,
-		    unsigned short xpixel, unsigned short ypixel, bool drm)
+/* a TIOCSWINSZ pixel size, which holds 16 bits */
+static unsigned short winsize_px(unsigned int cells, unsigned int cell)
 {
-	struct winsize ws = {
-		.ws_col = width, .ws_row = height, .ws_xpixel = xpixel, .ws_ypixel = ypixel};
+	return (uint64_t)cells * cell > USHRT_MAX ? USHRT_MAX : cells * cell;
+}
+
+static struct winsize winsize(unsigned short width, unsigned short height, unsigned int cell_w,
+			      unsigned int cell_h)
+{
+	return (struct winsize){.ws_col = width,
+				.ws_row = height,
+				.ws_xpixel = winsize_px(width, cell_w),
+				.ws_ypixel = winsize_px(height, cell_h)};
+}
+
+int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short height,
+		    unsigned int cell_w, unsigned int cell_h, bool drm)
+{
+	struct winsize ws = winsize(width, height, cell_w, cell_h);
 	int ret;
 	int master;
 
@@ -578,6 +617,7 @@ int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short
 	ret = pty_spawn(pty, master, &ws, drm);
 	if (ret)
 		goto err_sig;
+	pty->ws = ws;
 
 	return 0;
 
@@ -602,6 +642,7 @@ void kmscon_pty_close(struct kmscon_pty *pty)
 	close(pty->fd);
 	pty->fd = -1;
 	pty->held_len = 0;
+	feeding_stop(pty);
 }
 
 int kmscon_pty_write(struct kmscon_pty *pty, const char *u8, size_t len)
@@ -662,13 +703,16 @@ int kmscon_pty_get_slave_name(struct kmscon_pty *pty, char *buf, size_t len)
 }
 
 void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned short height,
-		       unsigned short xpixel, unsigned short ypixel)
+		       unsigned int cell_w, unsigned int cell_h)
 {
 	int ret;
-	struct winsize ws = {
-		.ws_col = width, .ws_row = height, .ws_xpixel = xpixel, .ws_ypixel = ypixel};
+	struct winsize ws = winsize(width, height, cell_w, cell_h);
 
 	if (!pty || !pty_is_open(pty))
+		return;
+	/* a new font with the same size in cells changes the pixels alone */
+	if (ws.ws_col == pty->ws.ws_col && ws.ws_row == pty->ws.ws_row &&
+	    ws.ws_xpixel == pty->ws.ws_xpixel && ws.ws_ypixel == pty->ws.ws_ypixel)
 		return;
 
 	/*
@@ -680,4 +724,5 @@ void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned sh
 		log_warn("cannot set window size");
 		return;
 	}
+	pty->ws = ws;
 }

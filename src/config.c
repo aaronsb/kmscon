@@ -273,7 +273,8 @@ static void print_help()
 		"\t                                      Bytes for all images: auto (four\n"
 		"\t                                      frames of the displays, 16M to\n"
 		"\t                                      192M), a number with an optional\n"
-		"\t                                      K, M or G, or 0 for no images\n"
+		"\t                                      K, M or G up to 1024G, or 0 for\n"
+		"\t                                      no images\n"
 		"\t    --sixel                         [on]\n"
 		"\t                                      Sixel graphics\n"
 		"\t    --kitty-graphics                [on]\n"
@@ -1012,7 +1013,8 @@ static const struct conf_type conf_render_timer = {
 
 /*
  * Image storage limit type
- * `auto`, or a number of bytes with an optional K, M or G (KiB, MiB, GiB).
+ * `auto`, or a number of bytes with an optional K, M or G (KiB, MiB, GiB), at
+ * most 1 TiB: each display's share is that times its pixels, in 64 bits.
  */
 
 static void conf_default_image_storage(struct conf_option *opt)
@@ -1035,9 +1037,9 @@ static int conf_parse_image_storage(struct conf_option *opt, bool on, const char
 	if (*end == 'K' || *end == 'M' || *end == 'G')
 		shift = *end == 'K' ? 10 : *end == 'M' ? 20 : 30;
 	if (!isdigit((unsigned char)arg[0]) || errno || end[shift ? 1 : 0] ||
-	    n > (SIZE_MAX - 1) >> shift) {
+	    n > IMAGE_BUDGET_LIMIT_MAX >> shift) {
 		log_error("invalid 'image-storage-limit' value '%s': expected auto, or bytes "
-			  "with an optional K, M or G",
+			  "with an optional K, M or G, at most 1024G",
 			  arg);
 		return -EFAULT;
 	}

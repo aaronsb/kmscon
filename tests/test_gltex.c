@@ -342,6 +342,8 @@ static void test_blink(void)
 
 int main(void)
 {
+	/* gltex draws no image placements until ADR-103 step 3f, and says so */
+	assert(!kmscon_text_gltex_ops.draws_images);
 	test_bounded();
 	test_blink();
 	return 0;

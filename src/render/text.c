@@ -756,3 +756,14 @@ void kmscon_text_release(struct kmscon_text *txt)
 	if (txt && txt->ops->release)
 		txt->ops->release(txt);
 }
+
+/**
+ * kmscon_text_draws_images:
+ * @txt: valid text renderer
+ *
+ * Returns true when the renderer draws the frame's image placements (ADR-103).
+ */
+bool kmscon_text_draws_images(struct kmscon_text *txt)
+{
+	return txt && txt->ops->draws_images;
+}

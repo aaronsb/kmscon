@@ -142,6 +142,11 @@ struct kmscon_text_ops {
 	void (*abort)(struct kmscon_text *txt);
 	/* optional: free what the renderer keeps and can make again */
 	void (*release)(struct kmscon_text *txt);
+	/*
+	 * It draws the frame's image placements (ADR-103). A terminal offers
+	 * sixel only while every display it draws on has a renderer that does.
+	 */
+	bool draws_images;
 };
 
 #define FONT_WIDTH(txt) ((txt)->font->width)
@@ -175,6 +180,7 @@ int kmscon_text_render(struct kmscon_text *txt);
 int kmscon_text_present(struct kmscon_text *txt);
 void kmscon_text_abort(struct kmscon_text *txt);
 void kmscon_text_release(struct kmscon_text *txt);
+bool kmscon_text_draws_images(struct kmscon_text *txt);
 
 /* kmscon_text_render(): the frame drew nothing, so the display needs no swap */
 #define KMSCON_TEXT_UNCHANGED 1

@@ -628,7 +628,8 @@ font-name=Ubuntu Mono
                 removed or changes mode. A number sets the limit in bytes,
                 with an optional <literal>K</literal>, <literal>M</literal> or
                 <literal>G</literal> for KiB, MiB or GiB, such as
-                <literal>image-storage-limit=512M</literal>.
+                <literal>image-storage-limit=512M</literal>, at most 1 TiB
+                (<literal>1024G</literal>).
                 <literal>0</literal> turns sixel and the kitty graphics
                 protocol off. When a new picture would pass the limit, kmscon
                 frees scaled copies not on screen, then pictures no longer

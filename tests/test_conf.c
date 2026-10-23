@@ -336,6 +336,14 @@ static void test_parse_images(void)
 	assert(!parse_conf(&ctx, "image-storage-limit=AUTO\n"));
 	assert(!parse_conf(&ctx, "image-storage-limit=99999999999999999999\n"));
 	assert(!parse_conf(&ctx, "image-storage-limit=17179869184G\n"));
+	/* at most 1 TiB: a display's share is the limit times its pixels */
+	conf = parse_conf(&ctx, "image-storage-limit=1024G\n");
+	assert(conf && conf->image_storage_limit == (size_t)1 << 40);
+	conf = parse_conf(&ctx, "image-storage-limit=1099511627776\n");
+	assert(conf && conf->image_storage_limit == (size_t)1 << 40);
+	assert(!parse_conf(&ctx, "image-storage-limit=1025G\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=2048G\n"));
+	assert(!parse_conf(&ctx, "image-storage-limit=1099511627777\n"));
 
 	conf = parse_conf(&ctx, "no-sixel\nno-kitty-graphics\nno-private-color-registers\n");
 	assert(conf && !conf->sixel && !conf->kitty_graphics && !conf->private_color_registers);

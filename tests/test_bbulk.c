@@ -1095,6 +1095,36 @@ static void test_budget_images(void)
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 }
 
+/*
+ * The largest set limit, 1 TiB, on a 7680x4320 display: its share of the
+ * budget by size is exact, not a product of limit and pixels that wrapped 64
+ * bits (beside the small main test display, nearly the whole limit); with a
+ * second one, about half.
+ */
+static void test_budget_huge(void)
+{
+	struct kmscon_text a, b;
+	struct bbulk *ba = open_txt(&a, 0x44, 7680, 4320);
+
+	uint64_t px = (uint64_t)7680 * 4320;
+
+	image_budget_set_limit((size_t)1 << 40);
+	assert(image_budget_limit() == (size_t)1 << 40);
+	/* the main test display counts too: limit x px / all, exactly */
+	assert(picture_share(ba) ==
+	       (uint64_t)(((unsigned __int128)1 << 40) * px / image_budget_displays_px()));
+	assert(picture_share(ba) > ((uint64_t)1 << 40) - ((uint64_t)1 << 34));
+	open_txt(&b, 0x45, 7680, 4320);
+	assert(picture_share(ba) ==
+	       (uint64_t)(((unsigned __int128)1 << 40) * px / image_budget_displays_px()));
+	assert(picture_limit(ba) == (size_t)7680 * 4320 * 4 * 2);
+	close_txt(&b);
+	close_txt(&a);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+	disp_w = 640;
+	disp_h = 480;
+}
+
 /* the scaler: copies at 1:1, means when it shrinks, keeps opaque pictures
  * opaque, and gives the same pixels whether or not it slices the columns */
 static void test_picture_scale(void)
@@ -1144,6 +1174,8 @@ int main(void)
 	int ret;
 
 	init_fake_txt(&txt);
+	/* bbulk draws image placements, so its terminals may offer sixel */
+	assert(kmscon_text_bbulk_ops.draws_images);
 
 	ret = kmscon_text_bbulk_ops.init(&txt);
 	assert(ret == 0);
@@ -1190,6 +1222,7 @@ int main(void)
 	test_starved_retry();
 	test_budget_trim();
 	test_budget_images();
+	test_budget_huge();
 	test_picture_cache(&txt);
 
 	bbulk_unset(&txt);

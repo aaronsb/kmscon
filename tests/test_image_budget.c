@@ -248,14 +248,15 @@ static bool da1_sixel(struct tsm_vte *vte)
 	return strstr(reply, ";4;") || strstr(reply, ";4c");
 }
 
+/* 8 x 12 pixels of register 1 */
+static const char six[] = "\033Pq\"1;1;8;12#1;2;100;0;0#1!8~-#1!8~\033\\";
+
 /*
  * A sixel through the vte reserves its picture from the budget, and gives it
  * back when cleared; a sixel past the budget is dropped.
  */
 static void test_sixel(void)
 {
-	/* 8 x 12 pixels of register 1 */
-	static const char six[] = "\033Pq\"1;1;8;12#1;2;100;0;0#1!8~-#1!8~\033\\";
 	struct tsm_screen *con = new_screen();
 	struct tsm_vte *vte;
 
@@ -278,6 +279,66 @@ static void test_sixel(void)
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 }
 
+/*
+ * A terminal's images: its screen joins the budget and leaves it; sixel is
+ * offered (DA1 attribute 4) and pictures stored only while the configuration
+ * asks for it, the limit is not 0, and every display the terminal draws on
+ * draws image placements; a display that does not (gltex, until ADR-103 step
+ * 3f) turns sixel off as if no-sixel were set.
+ */
+static void test_terminal(void)
+{
+	struct image_budget_terminal t = {0};
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, 40, 10) == 0);
+	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
+
+	assert(image_budget_add_terminal(&t, con, vte, true) == 0);
+	assert(budget.n_screens == 1 && da1_sixel(vte));
+
+	/* a display without placement drawing: off, and nothing stored */
+	image_budget_terminal_display(&t, false, true);
+	assert(!da1_sixel(vte));
+	tsm_vte_input(vte, six, sizeof(six) - 1);
+	assert(image_budget_used() == 0 && tsm_screen_test_image_count(con) == 0);
+	/* one that draws them beside it: still off */
+	image_budget_terminal_display(&t, true, true);
+	assert(!da1_sixel(vte));
+	/* the first one gone: on, and a picture is stored */
+	image_budget_terminal_display(&t, false, false);
+	assert(da1_sixel(vte));
+	tsm_vte_input(vte, six, sizeof(six) - 1);
+	assert(image_budget_used() > 0 && tsm_screen_test_image_count(con) == 1);
+
+	/* leaving gives the bytes back and turns sixel off */
+	image_budget_remove_terminal(&t);
+	assert(budget.n_screens == 0 && !budget.screens && image_budget_used() == 0);
+	assert(!da1_sixel(vte));
+	image_budget_remove_terminal(&t);
+	tsm_vte_input(vte, "\033[2J", 4);
+
+	/* no-sixel, and image-storage-limit=0 */
+	assert(image_budget_add_terminal(&t, con, vte, false) == 0);
+	assert(!da1_sixel(vte));
+	image_budget_remove_terminal(&t);
+	image_budget_set_limit(0);
+	assert(image_budget_add_terminal(&t, con, vte, true) == 0);
+	assert(!da1_sixel(vte));
+	image_budget_remove_terminal(&t);
+	assert(budget.n_screens == 0);
+
+	/* a set limit past 1 TiB is held to it */
+	image_budget_set_limit((size_t)1 << 41);
+	assert(image_budget_limit() == IMAGE_BUDGET_LIMIT_MAX);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+}
+
 int main(void)
 {
 	fake.cache.trim = fake_trim;
@@ -288,6 +349,7 @@ int main(void)
 	test_display_recount();
 	test_zero();
 	test_sixel();
+	test_terminal();
 
 	image_budget_remove_cache(&fake.cache);
 	assert(!budget.caches && image_budget_used() == 0);

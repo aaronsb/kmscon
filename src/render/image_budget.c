@@ -131,7 +131,9 @@ void image_budget_set_limit(size_t limit)
 {
 	size_t old = image_budget_limit();
 
-	budget.setting = limit;
+	budget.setting = limit == IMAGE_BUDGET_AUTO || limit <= IMAGE_BUDGET_LIMIT_MAX
+				 ? limit
+				 : IMAGE_BUDGET_LIMIT_MAX;
 	if (image_budget_limit() == old)
 		return;
 	budget.gen++;
@@ -260,4 +262,45 @@ void image_budget_remove_screen(struct tsm_screen *con)
 		free(budget.screens);
 		budget.screens = NULL;
 	}
+}
+
+/* sixel on @t's vte, or off, by the rule in image_budget.h */
+static void terminal_update(struct image_budget_terminal *t)
+{
+	tsm_vte_set_sixel(t->vte, t->sixel && image_budget_limit() && !t->blind);
+}
+
+int image_budget_add_terminal(struct image_budget_terminal *t, struct tsm_screen *con,
+			      struct tsm_vte *vte, bool sixel)
+{
+	int ret = image_budget_add_screen(con);
+
+	if (ret)
+		return ret;
+	t->con = con;
+	t->vte = vte;
+	t->sixel = sixel;
+	t->blind = 0;
+	terminal_update(t);
+	return 0;
+}
+
+void image_budget_remove_terminal(struct image_budget_terminal *t)
+{
+	if (!t->con)
+		return;
+	tsm_vte_set_sixel(t->vte, false);
+	image_budget_remove_screen(t->con);
+	t->con = NULL;
+}
+
+void image_budget_terminal_display(struct image_budget_terminal *t, bool draws_images, bool added)
+{
+	if (!t->con || draws_images)
+		return;
+	if (added)
+		t->blind++;
+	else if (t->blind)
+		t->blind--;
+	terminal_update(t);
 }

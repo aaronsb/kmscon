@@ -102,6 +102,8 @@ struct kmscon_terminal {
 	struct tsm_vte *vte;
 	struct kmscon_pty *pty;
 	struct ev_fd *ptyfd;
+	/* the child's output was parsed this loop turn, and is drawn at its end */
+	bool redraw_owed;
 	/* the screen in the image budget, and sixel while every display draws images */
 	struct image_budget_terminal images;
 	/* the cell size libtsm and TIOCSWINSZ were last given */
@@ -385,6 +387,24 @@ static void redraw_all(struct kmscon_terminal *term)
 	{
 		redraw_screen(scr);
 	}
+}
+
+/*
+ * After each turn of the event loop: draws the child's output parsed in the
+ * turn once, however many input calls it took. A draw walks the whole frame,
+ * and output arrives a pty read of about 4 KB at a time, up to 50 reads a
+ * turn, so drawing after each one walked a 7680x2160 screen hundreds of times
+ * a second while a sixel picture streamed in and nothing on it changed (#139).
+ * A keystroke's echo is read and drawn in the same turn.
+ */
+static void terminal_turn_end(struct ev_eloop *eloop, void *unused, void *data)
+{
+	struct kmscon_terminal *term = data;
+
+	if (!term->redraw_owed)
+		return;
+	term->redraw_owed = false;
+	redraw_all(term);
 }
 
 static bool has_kms_display(struct kmscon_terminal *term)
@@ -1494,6 +1514,7 @@ void terminal_destroy(struct kmscon_terminal *term)
 	kmscon_asciinema_free(term->asciinema);
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 	input_unregister_key_cb(term->input, input_event, term);
+	ev_eloop_unregister_post_cb(term->eloop, terminal_turn_end, term);
 	ev_eloop_rm_fd(term->ptyfd);
 	kmscon_pty_unref(term->pty);
 	kmscon_font_unref(term->font);
@@ -1508,18 +1529,17 @@ void terminal_destroy(struct kmscon_terminal *term)
  * The child's output, parsed a bounded amount of image work at a time: a few
  * bytes of sixel can fill a large picture. What one call leaves is held by the
  * pty, which hands it back on later turns of its loop, so input, drawing and
- * VT switches are handled between the parts.
+ * VT switches are handled between the parts. Drawing waits for the end of the
+ * turn (terminal_turn_end).
  */
 static size_t pty_input(struct kmscon_pty *pty, const char *u8, size_t len, void *data)
 {
 	struct kmscon_terminal *term = data;
-	size_t n;
 
 	if (!len)
 		return 0;
-	n = tsm_vte_input_bounded(term->vte, u8, len);
-	redraw_all(term);
-	return n;
+	term->redraw_owed = true;
+	return tsm_vte_input_bounded(term->vte, u8, len);
 }
 
 static void pty_exit(struct kmscon_pty *pty, bool restart, void *data)
@@ -1617,9 +1637,13 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 	if (ret)
 		goto err_pty;
 
-	ret = input_register_key_cb(term->input, input_event, term);
+	ret = ev_eloop_register_post_cb(term->eloop, terminal_turn_end, term);
 	if (ret)
 		goto err_ptyfd;
+
+	ret = input_register_key_cb(term->input, input_event, term);
+	if (ret)
+		goto err_turn;
 
 	if (term->conf->mouse) {
 		ret = input_register_pointer_cb(term->input, pointer_event, term);
@@ -1662,6 +1686,8 @@ err_pointer:
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 err_input:
 	input_unregister_key_cb(term->input, input_event, term);
+err_turn:
+	ev_eloop_unregister_post_cb(term->eloop, terminal_turn_end, term);
 err_ptyfd:
 	ev_eloop_rm_fd(term->ptyfd);
 err_pty:

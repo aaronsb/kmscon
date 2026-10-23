@@ -2,7 +2,8 @@
 """Self-test for the parts of tier 3 that run on the host without a guest:
 the caption and screen text a case's report carries (t3_evaluate.py), the
 packages a run installs and the guest's account of them (t3_scenario.py),
-and the logger a worker process receives (t3_common.py).
+the console lines the driver waits for (t3_qemu.py), and the logger a worker
+process receives (t3_common.py).
 
     python3 -I fork/tier3/test_t3.py
 """
@@ -18,6 +19,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3_evaluate  # noqa: E402
+import t3_qemu  # noqa: E402
 import t3_scenario  # noqa: E402
 from t3_common import Logger  # noqa: E402
 
@@ -196,6 +198,68 @@ class PackagesTest(unittest.TestCase):
         os.environ.pop("T3_LIBTSM_REV")
         with self.assertRaisesRegex(RuntimeError, "names no libtsm commit"):
             t3_scenario.check_install(self.LINE, self.UP)
+
+
+class SerialTest(unittest.TestCase):
+    """The guest writes its console a few bytes at a time, so the driver can
+    read a line before its end has arrived (#61)."""
+    LINE = (b"TIER3-INSTALL-OK packages: kmscon-aaronsb 10.0.4.r208.gb5e9e66-1 "
+            b"kmscon-aaronsb-terminfo 10.0.4.r208.gb5e9e66-1 ; libtsm: " + LIBTSM.encode())
+
+    class Clock:
+        """Stands in for t3_qemu's time: each sleep advances the clock and
+        lets the guest write its next chunk."""
+        def __init__(self, path, chunks):
+            self.path, self.chunks, self.now = path, list(chunks), 0.0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+            if self.chunks:
+                with open(self.path, "ab") as f:
+                    f.write(self.chunks.pop(0))
+
+    class Proc:
+        def poll(self):
+            return None
+
+    def wait(self, chunks, marker="TIER3-INSTALL-OK", timeout=180):
+        with tempfile.TemporaryDirectory() as d:
+            vm = t3_qemu.Qemu.__new__(t3_qemu.Qemu)
+            vm.serial, vm.proc = os.path.join(d, "serial.log"), self.Proc()
+            with open(vm.serial, "wb") as f:
+                f.write(b"[  OK  ] Started \x1b[0;1;39mUser Login Management\x1b[0m.\r\r\n")
+            saved = t3_qemu.time
+            t3_qemu.time = self.Clock(vm.serial, chunks)
+            try:
+                return vm.wait_serial(marker, timeout)
+            finally:
+                t3_qemu.time = saved
+
+    def test_two_chunks(self):
+        cut = self.LINE.index(b" kmscon-aaronsb-terminfo")
+        self.assertEqual(self.wait([self.LINE[:cut], self.LINE[cut:] + b"\r\r\n"]),
+                         self.LINE.decode())
+
+    def test_many_chunks(self):
+        # One byte at a time, a marker split across chunks included.
+        data = self.LINE + b"\r\r\n"
+        self.assertEqual(self.wait([data[i:i + 1] for i in range(len(data))]),
+                         self.LINE.decode())
+
+    def test_partial_line_times_out(self):
+        # A line whose end never arrives is never read, and the wait fails
+        # at its deadline.
+        with self.assertRaisesRegex(RuntimeError, "no 'TIER3-INSTALL-OK' within 5 s"):
+            self.wait([self.LINE[:40], self.LINE[40:]], timeout=5)
+
+    def test_split_utf8(self):
+        # A character split between chunks is read whole once the line ends.
+        line = "T3-DONE cjk \u4e2d".encode()
+        self.assertEqual(self.wait([line[:-1], line[-1:] + b"\n"], marker="T3-DONE"),
+                         "T3-DONE cjk \u4e2d")
 
 
 class LoggerTest(unittest.TestCase):

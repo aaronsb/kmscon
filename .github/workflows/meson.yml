@@ -56,5 +56,5 @@ jobs:
 
     - name: Test
       working-directory: ./build
-      run: meson test
+      run: meson test --print-errorlogs
 

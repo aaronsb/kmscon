@@ -141,7 +141,7 @@ static struct kmscon_conf_t *parse_conf(struct conf_ctx **ctx, const char *confi
 	return ret ? NULL : conf_ctx_get_mem(*ctx);
 }
 
-/* grapheme-width, underline-color, strike-color, force-decoration-colors */
+/* grapheme-width, underline-color, strike-color, force-decoration-colors, emoji-color */
 static void test_parse_text(void)
 {
 	struct conf_ctx *ctx;
@@ -154,11 +154,13 @@ static void test_parse_text(void)
 	assert(conf->underline_color.kind == KMSCON_COLOR_FG);
 	assert(conf->strike_color.kind == KMSCON_COLOR_FG);
 	assert(!conf->force_decoration_colors);
+	assert(conf->emoji_color);
 
 	conf = parse_conf(&ctx, "grapheme-width=wcwidth\n"
 				"underline-color=196\n"
 				"strike-color=#12ab9F\n"
-				"force-decoration-colors\n");
+				"force-decoration-colors\n"
+				"no-emoji-color\n");
 	assert(conf);
 	assert(conf->grapheme_width == TSM_WIDTH_WCWIDTH);
 	assert(conf->underline_color.kind == KMSCON_COLOR_INDEX);
@@ -168,13 +170,15 @@ static void test_parse_text(void)
 	assert(conf->strike_color.rgb[1] == 0xab);
 	assert(conf->strike_color.rgb[2] == 0x9f);
 	assert(conf->force_decoration_colors);
+	assert(!conf->emoji_color);
 
 	conf = parse_conf(&ctx, "grapheme-width=unicode\nunderline-color=fg\n"
-				"no-force-decoration-colors\n");
+				"no-force-decoration-colors\nemoji-color\n");
 	assert(conf);
 	assert(conf->grapheme_width == TSM_WIDTH_UNICODE);
 	assert(conf->underline_color.kind == KMSCON_COLOR_FG);
 	assert(!conf->force_decoration_colors);
+	assert(conf->emoji_color);
 
 	/* rejected values */
 	assert(!parse_conf(&ctx, "grapheme-width=both\n"));

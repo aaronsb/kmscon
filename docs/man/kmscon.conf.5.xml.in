@@ -599,6 +599,21 @@ font-name=Ubuntu Mono
         </listitem>
       </varlistentry>
 
+      <varlistentry>
+        <term><option>emoji-color</option></term>
+        <listitem>
+          <para>Draw emoji in color, from a color emoji font such as Noto Color
+                Emoji, scaled to fit their cells. A ZWJ sequence, a flag, a
+                keycap, a skin tone or an emoji with VS16 draws as one emoji.
+                Set <option>no-emoji-color</option> to draw every emoji as text
+                instead: from a font without color where one has the
+                character, else as the shape of the color emoji, in the
+                foreground color and fitted the same way, so emoji follow the
+                palette and the reader's color settings like any other text.
+                (default: on)</para>
+        </listitem>
+      </varlistentry>
+
     </variablelist>
   </refsect1>
 

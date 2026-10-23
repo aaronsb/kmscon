@@ -88,23 +88,39 @@ pango_deps = dependency(
     disabler: true,
     required: get_option('font_pango'),
 )
+# Both font backends draw colour glyphs through FreeType, fontconfig and
+# HarfBuzz (src/font/font_colour.c, ADR-102), so either one requires them.
+require_ft = get_option('font_freetype').enabled() or get_option('font_pango').enabled()
 freetype_deps = dependency(
     'freetype2',
     disabler: true,
-    required: get_option('font_freetype'),
+    required: require_ft,
 )
 fontconfig_deps = dependency(
     'fontconfig',
     version: '>=2.16.0',  # FcConfigSetFontSetFilter()
     disabler: true,
-    required: get_option('font_freetype'),
+    required: require_ft,
 )
 # The freetype backend shapes multi-codepoint clusters with HarfBuzz (ADR-102)
 harfbuzz_deps = dependency(
     'harfbuzz',
     disabler: true,
-    required: get_option('font_freetype'),
+    required: require_ft,
 )
+# HarfBuzz's rasteriser paints COLRv1 glyphs; its API is stable from 14.2.0.
+# Without it, COLRv1 glyphs draw as masks.
+harfbuzz_raster_deps = dependency(
+    'harfbuzz-raster',
+    version: '>=14.2.0',
+    required: false,
+)
+if harfbuzz_raster_deps.found()
+    harfbuzz_raster_deps = declare_dependency(
+        dependencies: harfbuzz_raster_deps,
+        compile_args: '-DKMSCON_HB_RASTER=1',
+    )
+endif
 dbus_deps = dependency('dbus-1', disabler: true, required: get_option('dbus'))
 xsltproc = find_program(
     'xsltproc',
@@ -137,7 +153,7 @@ foreach name, reqs : {
     'font_psf': [],
     'font_unifont': [],
     'font_freetype': [freetype_deps, fontconfig_deps, harfbuzz_deps],
-    'font_pango': [pango_deps],
+    'font_pango': [pango_deps, freetype_deps, fontconfig_deps, harfbuzz_deps],
     'dbus': [dbus_deps],
 }
     found = true

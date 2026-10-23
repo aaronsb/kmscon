@@ -36,6 +36,8 @@
 #include "../src/font/font_box.c"
 #undef LOG_SUBSYSTEM		       /* font.c and font_freetype.c both define it */
 #include "../src/font/font_freetype.c" /* backend ops + ft_data layout */
+#undef LOG_SUBSYSTEM
+#include "../src/font/font_colour.c"
 
 #define ARABIC_ALEF 0x0627u
 
@@ -421,6 +423,70 @@ static void test_coverage_grey_strikes(void)
 	FT_Done_FreeType(ft);
 }
 
+/* ADR-102 step 4c: which clusters ask for emoji presentation */
+static void test_wants_colour(void)
+{
+	static const uint32_t grin[] = {0x1f600};
+	static const uint32_t heart16[] = {0x2764, 0xfe0f};
+	static const uint32_t heart15[] = {0x2764, 0xfe0e};
+	static const uint32_t keycap[] = {'1', 0xfe0f, 0x20e3};
+	static const uint32_t text_keycap[] = {'1', 0x20e3};
+	static const uint32_t wide15[] = {0x1f600, 0xfe0e};
+
+	assert(kmscon_font_wants_colour(grin, 1, 2));
+	assert(!kmscon_font_wants_colour(grin, 1, 1));
+	assert(kmscon_font_wants_colour(heart16, 2, 2));
+	/* the wcwidth method keeps it narrow; VS16 still asks */
+	assert(kmscon_font_wants_colour(heart16, 2, 1));
+	assert(!kmscon_font_wants_colour(heart15, 2, 1));
+	assert(kmscon_font_wants_colour(keycap, 3, 2));
+	assert(!kmscon_font_wants_colour(text_keycap, 2, 1));
+	assert(!kmscon_font_wants_colour(wide15, 2, 2));
+}
+
+/*
+ * The box filter averages the area under each output pixel exactly, and the
+ * fit leaves a pixel clear on every side of the box, centred.
+ */
+static void test_colour_fit(void)
+{
+	uint32_t src[4 * 2], out[2];
+	struct kmscon_glyph *g;
+	unsigned int x, y, i;
+
+	/* two 2x2 blocks: opaque white and half-transparent grey */
+	for (i = 0; i < 8; i++)
+		src[i] = (i % 4) < 2 ? 0xffffffff : 0x80404040;
+	assert(!colour_box_filter(src, 4, 2, out, 2, 1));
+	assert(out[0] == 0xffffffff && out[1] == 0x80404040);
+
+	/* 3 to 2: the middle pixel is split between the two outputs */
+	src[0] = 0xff000000;
+	src[1] = 0xff000000 | 0x00ff0000;
+	src[2] = 0xff000000 | 0x000000ff;
+	assert(!colour_box_filter(src, 3, 1, out, 2, 1));
+	assert(out[0] == 0xff550000 && out[1] == 0xff5500aa);
+
+	/* a wide picture in a 10x16 box: 8 wide, a pixel each side */
+	for (i = 0; i < 8; i++)
+		src[i] = 0xffffffff;
+	g = colour_fit(src, 4, 2, 10, 16, 1, false);
+	assert(g && g->buf.format == VIDEO_FORMAT_A8 && g->buf.width == 10 && g->buf.height == 16);
+	for (y = 0; y < 16; y++)
+		for (x = 0; x < 10; x++)
+			assert(g->buf.data[y * 10 + x] == ((x >= 1 && x < 9 && y >= 6 && y < 10) ? 255 : 0));
+	free(g);
+
+	/* a tall one in a two-cell 20x8 box: 6 tall, centred across */
+	g = colour_fit(src, 2, 4, 20, 8, 2, true);
+	assert(g && g->buf.format == VIDEO_FORMAT_ARGB32 && g->double_width);
+	for (y = 0; y < 8; y++)
+		for (x = 0; x < 20; x++)
+			assert(((uint32_t *)g->buf.data)[y * 20 + x] ==
+			       ((x >= 8 && x < 11 && y >= 1 && y < 7) ? 0xffffffff : 0));
+	free(g);
+}
+
 int main(void)
 {
 	assert(FcInit());
@@ -432,6 +498,8 @@ int main(void)
 	test_cluster_stacked_mark();
 	test_centre_dx_bounded();
 	test_coverage_grey_strikes();
+	test_wants_colour();
+	test_colour_fit();
 
 	FcFini();
 	return 0;

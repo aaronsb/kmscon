@@ -390,11 +390,6 @@ static struct kmscon_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, ui
 		return glyph;
 
 	cps = kmscon_text_get_cluster(txt, key, &one, &len);
-	if (!kmscon_font_has_glyph(font, &attr, cps[0])) {
-		one = FONT_REPLACEMENT_CHAR;
-		cps = &one;
-		len = 1;
-	}
 
 	glyph = kmscon_font_render(font, &attr, cps, len, width);
 	if (!glyph)
@@ -448,15 +443,16 @@ static inline uint32_t over_div255(uint32_t t)
 }
 
 /*
- * Paint mask @src, tinted with @c, over the premultiplied ARGB scratch @dst,
- * with @src's top-left at @ox, @oy, clipped to @dst. Both are packed.
+ * Paint @src over the premultiplied ARGB scratch @dst, with @src's top-left at
+ * @ox, @oy, clipped to @dst: a mask tinted with @c, or a colour glyph as it is
+ * (premultiplied, @c unused). Both are packed.
  */
 static void compose(struct video_buffer *dst, const struct video_buffer *src, unsigned int ox,
 		    unsigned int oy, struct tsm_screen_color c)
 {
+	bool argb = src->format == VIDEO_FORMAT_ARGB32;
 	unsigned int x, y, w, h;
 	uint32_t *d;
-	const uint8_t *m;
 
 	if (ox >= dst->width || oy >= dst->height)
 		return;
@@ -465,16 +461,29 @@ static void compose(struct video_buffer *dst, const struct video_buffer *src, un
 
 	for (y = 0; y < h; y++) {
 		d = &((uint32_t *)dst->data)[(oy + y) * dst->width + ox];
-		m = &src->data[y * src->width];
 		for (x = 0; x < w; x++) {
-			uint32_t a = m[x], na = 255 - a, p = d[x];
+			uint32_t a, na, p = d[x], sr, sg, sb;
 
+			if (argb) {
+				uint32_t s = ((const uint32_t *)src->data)[y * src->width + x];
+
+				a = s >> 24;
+				sr = (s >> 16) & 0xff;
+				sg = (s >> 8) & 0xff;
+				sb = s & 0xff;
+			} else {
+				a = src->data[y * src->width + x];
+				sr = over_div255(c.r * a);
+				sg = over_div255(c.g * a);
+				sb = over_div255(c.b * a);
+			}
 			if (!a)
 				continue;
+			na = 255 - a;
 			d[x] = ((a + over_div255((p >> 24) * na)) << 24) |
-			       ((over_div255(c.r * a) + over_div255(((p >> 16) & 0xff) * na)) << 16) |
-			       ((over_div255(c.g * a) + over_div255(((p >> 8) & 0xff) * na)) << 8) |
-			       (over_div255(c.b * a) + over_div255((p & 0xff) * na));
+			       ((sr + over_div255(((p >> 16) & 0xff) * na)) << 16) |
+			       ((sg + over_div255(((p >> 8) & 0xff) * na)) << 8) |
+			       (sb + over_div255((p & 0xff) * na));
 		}
 	}
 }

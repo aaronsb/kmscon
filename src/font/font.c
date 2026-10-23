@@ -215,6 +215,7 @@ int kmscon_font_find(struct kmscon_font **out, const char *name, unsigned int he
 		log_error("cannot allocate memory for new font");
 		return -ENOMEM;
 	}
+	font->emoji_color = true;
 
 	ret = new_font(font, name, height, backend);
 	if (ret)
@@ -316,9 +317,11 @@ static struct kmscon_glyph *fit_glyph(struct kmscon_font *font, struct kmscon_gl
  *
  * Renders the glyph for the cluster @cps, exactly @cwidth cells wide. A single
  * box drawing or block element codepoint is drawn to fill the cell
- * (font_box.c), not taken from the font. If the glyph cannot be found or is
- * invalid, the replacement character is drawn instead, and if that fails too,
- * NULL is returned.
+ * (font_box.c), not taken from the font. A cluster whose first codepoint the
+ * font lacks, or whose glyph cannot be drawn, is drawn as the replacement
+ * character, and if that fails too, NULL is returned. An emoji cluster the
+ * font lacks goes to a backend that draws its own missing glyph
+ * (draws_missing), which the freetype backend fits to the cell (ADR-102).
  *
  * Returns: a new allocated glyph object on success, NULL on failure
  */
@@ -349,7 +352,10 @@ struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_
 		}
 	}
 
-	glyph = font->ops->render(font, attr, cps, len, cwidth);
+	glyph = NULL;
+	if (kmscon_font_has_glyph(font, attr, cps[0]) ||
+	    (font->ops->draws_missing && kmscon_font_wants_colour(cps, len, cwidth)))
+		glyph = font->ops->render(font, attr, cps, len, cwidth);
 	if (!glyph)
 		glyph = font->ops->render(font, attr, &replacement, 1, cwidth);
 	if (!glyph)

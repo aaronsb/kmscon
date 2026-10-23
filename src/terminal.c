@@ -567,6 +567,7 @@ retry:
 		}
 		return ret;
 	}
+	font->emoji_color = term->conf->emoji_color;
 	kmscon_font_unref(term->font);
 	term->font = font;
 	term->font_size = new_size;
@@ -680,6 +681,7 @@ retry:
 	if (kmscon_font_find(&font, scr->term->conf->font_name, scaled_height,
 			     scr->term->conf->font_engine))
 		return;
+	font->emoji_color = scr->term->conf->emoji_color;
 
 	if (kmscon_text_get_cols(scr->txt, font->width) < scr->term->cols ||
 	    kmscon_text_get_rows(scr->txt, font->height) < scr->term->rows) {

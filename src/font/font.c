@@ -316,8 +316,8 @@ static struct kmscon_glyph *fit_glyph(struct kmscon_font *font, struct kmscon_gl
  * @cwidth: width of the glyph in cells, 1 or 2, as the frame gives it
  *
  * Renders the glyph for the cluster @cps, exactly @cwidth cells wide. A single
- * box drawing or block element codepoint is drawn to fill the cell
- * (font_box.c), not taken from the font. A cluster whose first codepoint the
+ * box drawing, block element, Braille, sextant or octant codepoint is drawn to
+ * fill the cell (font_box.c), not taken from the font. A cluster whose first codepoint the
  * font lacks, or whose glyph cannot be drawn, is drawn as the replacement
  * character, and if that fails too, NULL is returned. A cluster the font
  * lacks that asks for emoji presentation, which is any wide cluster (an
@@ -340,8 +340,8 @@ struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_
 	if (cwidth != 2)
 		cwidth = 1;
 
-	/* box drawing and blocks fill the cell, which can be taller than the
-	 * font's own glyph for them (#46) */
+	/* box drawing, blocks, Braille and the mosaics fill the cell, which can
+	 * be taller than the font's own glyph for them (#46, #76) */
 	if (len == 1 && kmscon_font_box_has(cps[0])) {
 		struct kmscon_font_deco m;
 
@@ -413,8 +413,9 @@ void kmscon_font_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out
  * @ch: Symbol to find a glyph for
  * @len: Length of @ch
  *
- * Checks if the font has a glyph for the given symbol @ch. Box drawing and
- * block elements are always drawn, whatever the font holds.
+ * Checks if the font has a glyph for the given symbol @ch. Box drawing, block
+ * elements, Braille, sextants and octants are always drawn, whatever the font
+ * holds.
  *
  * Returns: true if the font has a glyph for the given symbol, false otherwise
  */

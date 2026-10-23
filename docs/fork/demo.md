@@ -156,12 +156,13 @@ What each page should and should not look like is in its section file's `# look-
 | blink | SGR 5 beside steady text: plain, coloured, on a background, reversed, bold, underlined, curly, struck, CJK and combining, and a line that SGR 25 makes steady halfway |
 | boxdraw | box drawing, shades and blocks |
 | blocks | block elements and box lines stacked across rows and columns (tier 2's `blocks` screen as well), which show the line spacing gap of #46 if the font draws them |
+| mosaic | every Braille pattern, sextant and octant, then checkerboards, a dot grid, a wave and bands of them stacked across cells (tier 2's `mosaic` screen as well) |
 | cjk | CJK beside Latin |
 | wide-margin | double-width characters placed and typed at the right margin |
 | combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 |
 | emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji, each between bars; the text heart alone and with VS15; emoji in a line, underlined and reversed |
 
-Every section but blink is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin, combining and emoji are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+Every section but blink is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, mosaic, wide-margin, combining and emoji are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
 blink is not a tier 3 screen: tier 3's guest runs kmscon with `no-blink`, and a capture would catch whichever phase the timer was in. The demo leaves blinking on, kmscon's default, since a person watches it: the blink page blinks and so does the cursor. `-- --no-blink` turns it off for one run. `tests/test_blink.c`, part of `make test`, checks both phases through both of bbulk's buffers.
 
@@ -184,6 +185,7 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 |---|---|
 | sgr, boxdraw, cjk | Nothing beyond the font: their tier 3 goldens match upstream's behaviour. |
 | blocks | Every block and box line comes from the font, so wherever the font's line height has spacing beyond its glyphs, a dark line runs between rows of blocks and along vertical lines. With a font that has none, no gap shows, but line weights, junctions and shades are the font's own. |
+| mosaic | Every Braille pattern, sextant and octant comes from the font: where the font has them, Braille dots and blocks sit inside the font's glyph box rather than on the cell's grid, and with line spacing the checkerboards and bands show a dark line between rows; where it has none, they are missing-glyph boxes or come from a fallback font with other metrics. |
 | colour-forms | The colon rows have no colour: upstream libtsm discards a whole SGR sequence that holds a colon, so their text is the default colour and their backgrounds are empty. The colon half of the mixed line is plain. The semicolon rows are right. |
 | underline-styles | Only the plain `4` line is underlined. Every line set with `4:n`, including the red, bold, reverse and blue-background ones, is drawn with none of its attributes. |
 | underline-colour | No line has a coloured underline. The colon rows have no underline. Upstream does not know 58, so the numbers after it are read as SGR codes of their own: `4;58;5;196` is underlined in the text's colour and blinks (5), and in `4;58;2;0;160;255` the 0 resets the line, which loses its underline. |

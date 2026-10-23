@@ -110,6 +110,10 @@ struct output {
 	struct video_rect rects[COLS * ROWS]; /* the damage of the last frame */
 	size_t n_rects;
 	const unsigned int *pointer; /* the next frame draws the pointer here, if set */
+	/* the hardware cursor, which only a swap puts on screen, as on drm */
+	bool cursor_visible;
+	int32_t cursor_x, cursor_y;
+	bool need_commit;
 };
 
 static struct output *output_of(struct display *disp)
@@ -128,6 +132,35 @@ int display_swap(struct display *disp)
 
 	o->d2d.current_rb ^= 1;
 	o->swaps++;
+	o->need_commit = false;
+	return 0;
+}
+
+bool display_need_commit(struct display *disp)
+{
+	return output_of(disp)->need_commit;
+}
+
+/* drm_display_show_cursor and drm_display_hide_cursor: the state waits for a swap */
+int display_show_cursor(struct display *disp, int32_t x, int32_t y)
+{
+	struct output *o = output_of(disp);
+
+	if (!o->cursor_visible || o->cursor_x != x || o->cursor_y != y)
+		o->need_commit = true;
+	o->cursor_visible = true;
+	o->cursor_x = x;
+	o->cursor_y = y;
+	return 0;
+}
+
+int display_hide_cursor(struct display *disp)
+{
+	struct output *o = output_of(disp);
+
+	if (o->cursor_visible)
+		o->need_commit = true;
+	o->cursor_visible = false;
 	return 0;
 }
 
@@ -838,6 +871,67 @@ static void test_damage_extent(void)
 	free(ref);
 }
 
+/*
+ * The hardware cursor on a display with damage: terminal.c shows, moves and
+ * hides it through the display, which puts it on screen only with a swap, and
+ * then redraws, so the frame draws nothing. Each such frame must still be
+ * swapped, once; a frame after it without change must not be. The steps are
+ * those of a pointer that appears, moves, stays put, and hides when idle.
+ */
+static void test_hw_cursor(void)
+{
+	static char bytes[4096];
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	struct output o;
+	uint32_t *ref = malloc(fb_bytes);
+	static const struct {
+		const char *what;
+		int show; /* 1: show at x, y; -1: hide; 0: leave */
+		int32_t x, y;
+		unsigned int swaps;
+	} steps[] = {
+		{"no change", 0, 0, 0, 0},  {"shown", 1, 40, 30, 1},
+		{"no change", 0, 0, 0, 0},  {"moved", 1, 90, 50, 1},
+		{"shown in place", 1, 90, 50, 0}, {"hidden after the timeout", -1, 0, 0, 1},
+		{"hidden again", -1, 0, 0, 0}, {"no change", 0, 0, 0, 0},
+		{"shown again", 1, 10, 10, 1}, {"no change", 0, 0, 0, 0},
+	};
+	char label[128];
+
+	screen_bytes(bytes, sizeof(bytes), BLINKING);
+	console_new(&con, &vte);
+	tsm_vte_input(vte, bytes, strlen(bytes));
+	output_init(&o, "hw cursor", font, true);
+	fresh(ref, bytes, false, NULL);
+
+	/* the full redraws and their catch-up */
+	for (int i = 0; i < 3; i++)
+		output_frame(&o, con, vte, false, "hw cursor: first frames");
+
+	for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+		unsigned int swaps = o.swaps;
+
+		if (steps[i].show > 0)
+			display_show_cursor(&o.disp, steps[i].x, steps[i].y);
+		else if (steps[i].show < 0)
+			display_hide_cursor(&o.disp);
+		snprintf(label, sizeof(label), "hw cursor: step %zu (%s)", i, steps[i].what);
+		same(output_frame(&o, con, vte, false, label), ref, label);
+		compared++;
+		if (o.n_rects || o.swaps - swaps != steps[i].swaps) {
+			fprintf(stderr, "test_blink: %s: %zu damage rects and %u swaps, not %u\n",
+				label, o.n_rects, o.swaps - swaps, steps[i].swaps);
+			failures++;
+		}
+	}
+
+	output_destroy(&o);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+	free(ref);
+}
+
 /* Replace the process's fontconfig with one that knows only the pinned files. */
 static void pin_fonts(void)
 {
@@ -889,6 +983,7 @@ int main(int argc, char **argv)
 	test_phases();
 	test_buffers();
 	test_damage_extent();
+	test_hw_cursor();
 
 	kmscon_font_unref(font);
 	fprintf(stderr, "test_blink: %u screens compared, %d failures\n", compared, failures);

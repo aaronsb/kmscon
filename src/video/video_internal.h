@@ -80,6 +80,7 @@ struct video_ops {
 #define DISPLAY_INUSE 0x100
 #define DISPLAY_DAMAGE 0x200
 #define DISPLAY_NEED_REDRAW 0x400
+#define DISPLAY_NEED_COMMIT 0x800 /* state outside the primary plane waits for a swap */
 
 struct display {
 	char *name;

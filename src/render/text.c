@@ -586,15 +586,17 @@ int kmscon_text_render(struct kmscon_text *txt)
  * @txt: valid text renderer
  *
  * This renders the frame with kmscon_text_render() and swaps it onto the
- * display, unless the renderer reports it unchanged: a frame that drew nothing
- * is in both buffers already, and the back buffer stays the back buffer. On a
- * display with damage clips, a commit without clips updates the whole plane.
+ * display, unless the renderer reports it unchanged and the display has no
+ * other change waiting for a swap (display_need_commit(), such as a moved
+ * hardware cursor). A frame that drew nothing is in both buffers already, and
+ * the back buffer stays the back buffer. On a display with damage clips, a
+ * commit without clips updates the whole plane.
  *
  * Returns: 0 on success, negative error code if the swap failed.
  */
 int kmscon_text_present(struct kmscon_text *txt)
 {
-	if (kmscon_text_render(txt) == KMSCON_TEXT_UNCHANGED)
+	if (kmscon_text_render(txt) == KMSCON_TEXT_UNCHANGED && !display_need_commit(txt->disp))
 		return 0;
 	return display_swap(txt->disp);
 }

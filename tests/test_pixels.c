@@ -74,6 +74,10 @@ int display_swap(struct display *disp)
 {
 	return 0;
 }
+bool display_need_commit(struct display *disp)
+{
+	return false;
+}
 void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y) {}
 
 /*

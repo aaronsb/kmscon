@@ -22,6 +22,10 @@ int display_swap(struct display *disp)
 {
 	return 0;
 }
+bool display_need_commit(struct display *disp)
+{
+	return false;
+}
 unsigned int display_get_height(struct display *disp)
 {
 	return 0;

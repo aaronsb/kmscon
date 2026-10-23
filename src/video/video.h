@@ -163,6 +163,7 @@ int display_swap(struct display *disp);
 bool display_is_swapping(struct display *disp);
 void display_set_need_redraw(struct display *disp);
 bool display_need_redraw(struct display *disp);
+bool display_need_commit(struct display *disp);
 
 int display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b);
 

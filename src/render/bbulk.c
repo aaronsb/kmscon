@@ -645,48 +645,67 @@ static inline uint32_t over_div255(uint32_t t)
 	return (t + (t >> 8)) >> 8;
 }
 
+/* premultiplied @a, @r, @g, @b over the premultiplied ARGB pixel @p */
+static inline uint32_t over_pixel(uint32_t p, uint32_t a, uint32_t r, uint32_t g, uint32_t b)
+{
+	uint32_t na = 255 - a;
+
+	return ((a + over_div255((p >> 24) * na)) << 24) |
+	       ((r + over_div255(((p >> 16) & 0xff) * na)) << 16) |
+	       ((g + over_div255(((p >> 8) & 0xff) * na)) << 8) |
+	       (b + over_div255((p & 0xff) * na));
+}
+
 /*
  * Paint @src over the premultiplied ARGB scratch @dst, with @src's top-left at
  * @ox, @oy, clipped to @dst: a mask tinted with @c, or a colour glyph as it is
  * (premultiplied, @c unused). Both are packed.
+ *
+ * This runs for every cell of every frame, so the format is chosen once, with
+ * a loop for each, and what the loops read is copied into locals first.
  */
 static void compose(struct video_buffer *dst, const struct video_buffer *src, unsigned int ox,
 		    unsigned int oy, struct tsm_screen_color c)
 {
-	bool argb = src->format == VIDEO_FORMAT_ARGB32;
+	const unsigned int sw = src->width, dw = dst->width;
+	const uint32_t cr = c.r, cg = c.g, cb = c.b;
+	uint32_t *const ddata = (uint32_t *)dst->data;
 	unsigned int x, y, w, h;
-	uint32_t *d;
 
-	if (ox >= dst->width || oy >= dst->height)
+	if (ox >= dw || oy >= dst->height)
 		return;
-	w = min(src->width, dst->width - ox);
+	w = min(sw, dw - ox);
 	h = min(src->height, dst->height - oy);
 
-	for (y = 0; y < h; y++) {
-		d = &((uint32_t *)dst->data)[(oy + y) * dst->width + ox];
-		for (x = 0; x < w; x++) {
-			uint32_t a, na, p = d[x], sr, sg, sb;
+	if (src->format == VIDEO_FORMAT_ARGB32) {
+		const uint32_t *const sdata = (const uint32_t *)src->data;
 
-			if (argb) {
-				uint32_t s = ((const uint32_t *)src->data)[y * src->width + x];
+		for (y = 0; y < h; y++) {
+			const uint32_t *s = &sdata[y * sw];
+			uint32_t *d = &ddata[(oy + y) * dw + ox];
 
-				a = s >> 24;
-				sr = (s >> 16) & 0xff;
-				sg = (s >> 8) & 0xff;
-				sb = s & 0xff;
-			} else {
-				a = src->data[y * src->width + x];
-				sr = over_div255(c.r * a);
-				sg = over_div255(c.g * a);
-				sb = over_div255(c.b * a);
+			for (x = 0; x < w; x++) {
+				uint32_t v = s[x], a = v >> 24;
+
+				if (a)
+					d[x] = over_pixel(d[x], a, (v >> 16) & 0xff,
+							  (v >> 8) & 0xff, v & 0xff);
 			}
-			if (!a)
-				continue;
-			na = 255 - a;
-			d[x] = ((a + over_div255((p >> 24) * na)) << 24) |
-			       ((sr + over_div255(((p >> 16) & 0xff) * na)) << 16) |
-			       ((sg + over_div255(((p >> 8) & 0xff) * na)) << 8) |
-			       (sb + over_div255((p & 0xff) * na));
+		}
+	} else {
+		const uint8_t *const sdata = src->data;
+
+		for (y = 0; y < h; y++) {
+			const uint8_t *s = &sdata[y * sw];
+			uint32_t *d = &ddata[(oy + y) * dw + ox];
+
+			for (x = 0; x < w; x++) {
+				uint32_t a = s[x];
+
+				if (a)
+					d[x] = over_pixel(d[x], a, over_div255(cr * a),
+							  over_div255(cg * a), over_div255(cb * a));
+			}
 		}
 	}
 }

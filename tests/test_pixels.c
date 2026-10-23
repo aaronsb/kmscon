@@ -1166,6 +1166,163 @@ static int run_checks(const struct screen *s, unsigned int cw, unsigned int ch)
 	return ret;
 }
 
+/*
+ * bbulk's compose() as 6ca1445 wrote it, one loop that tests the format at
+ * every pixel, kept to judge the loop per format: both write the same bytes.
+ */
+static void compose_ref(struct video_buffer *dst, const struct video_buffer *src, unsigned int ox,
+			unsigned int oy, struct tsm_screen_color c)
+{
+	bool argb = src->format == VIDEO_FORMAT_ARGB32;
+	unsigned int x, y, w, h;
+	uint32_t *d;
+
+	if (ox >= dst->width || oy >= dst->height)
+		return;
+	w = min(src->width, dst->width - ox);
+	h = min(src->height, dst->height - oy);
+
+	for (y = 0; y < h; y++) {
+		d = &((uint32_t *)dst->data)[(oy + y) * dst->width + ox];
+		for (x = 0; x < w; x++) {
+			uint32_t a, na, p = d[x], sr, sg, sb;
+
+			if (argb) {
+				uint32_t s = ((const uint32_t *)src->data)[y * src->width + x];
+
+				a = s >> 24;
+				sr = (s >> 16) & 0xff;
+				sg = (s >> 8) & 0xff;
+				sb = s & 0xff;
+			} else {
+				a = src->data[y * src->width + x];
+				sr = over_div255(c.r * a);
+				sg = over_div255(c.g * a);
+				sb = over_div255(c.b * a);
+			}
+			if (!a)
+				continue;
+			na = 255 - a;
+			d[x] = ((a + over_div255((p >> 24) * na)) << 24) |
+			       ((sr + over_div255(((p >> 16) & 0xff) * na)) << 16) |
+			       ((sg + over_div255(((p >> 8) & 0xff) * na)) << 8) |
+			       (sb + over_div255((p & 0xff) * na));
+		}
+	}
+}
+
+static uint32_t xorshift(uint32_t *s)
+{
+	*s ^= *s << 13;
+	*s ^= *s >> 17;
+	*s ^= *s << 5;
+	return *s;
+}
+
+/*
+ * compose() and compose_ref() paint @src over the same backgrounds, in each of
+ * a few colours, at offsets that place it whole, clipped on the right and
+ * bottom, and wholly outside: 0 if every byte agrees.
+ */
+static int compose_matches(const char *name, const struct video_buffer *src)
+{
+	static const struct tsm_screen_color colours[] = {
+		{.r = 0, .g = 0, .b = 0},	{.r = 255, .g = 255, .b = 255},
+		{.r = 200, .g = 150, .b = 100}, {.r = 1, .g = 254, .b = 127},
+		{.r = 128, .g = 64, .b = 32},
+	};
+	unsigned int dw = src->width + 3, dh = src->height + 2;
+	unsigned int offs[][2] = {{0, 0}, {1, 1}, {3, 2}, {dw, 0}, {0, dh}};
+	size_t size = (size_t)dw * dh * 4;
+	struct video_buffer *a = malloc(sizeof(*a) + size), *b = malloc(sizeof(*b) + size);
+	uint32_t seed = 0x9e3779b9;
+	int ret = 0;
+
+	assert(a && b);
+	a->width = b->width = dw;
+	a->height = b->height = dh;
+	a->format = b->format = VIDEO_FORMAT_ARGB32;
+	for (size_t c = 0; c < sizeof(colours) / sizeof(colours[0]); c++)
+		for (size_t o = 0; o < sizeof(offs) / sizeof(offs[0]); o++)
+			for (int bg = 0; bg < 3; bg++) {
+				/* clear, as a default background is; opaque; anything */
+				for (size_t i = 0; i < size / 4; i++)
+					((uint32_t *)a->data)[i] = bg == 0   ? 0
+								   : bg == 1 ? 0xff203040
+									     : xorshift(&seed);
+				memcpy(b->data, a->data, size);
+				compose(a, src, offs[o][0], offs[o][1], colours[c]);
+				compose_ref(b, src, offs[o][0], offs[o][1], colours[c]);
+				if (memcmp(a->data, b->data, size)) {
+					fprintf(stderr,
+						"test_pixels: %s: compose() of a %ux%u %s buffer "
+						"at %u,%u differs from the reference\n",
+						name, src->width, src->height,
+						src->format == VIDEO_FORMAT_ARGB32 ? "ARGB" : "A8",
+						offs[o][0], offs[o][1]);
+					ret = -EINVAL;
+					goto out;
+				}
+			}
+out:
+	free(a);
+	free(b);
+	return ret;
+}
+
+/*
+ * Every glyph and sprite the screen left in bbulk's caches, and a mask and a
+ * colour buffer that hold every alpha, composed both ways: 0 if they agree.
+ */
+static int check_compose(struct kmscon_text *txt, const char *name)
+{
+	struct bbulk *bb = txt->data;
+	struct shl_lru_entry *entry;
+	struct htable_iter it;
+	struct video_buffer *every;
+	unsigned int n = 0;
+	uint32_t seed = 1;
+	int ret = 0;
+
+	for (entry = htable_first(&bb->glyphs->tbl, &it); entry && !ret;
+	     entry = htable_next(&bb->glyphs->tbl, &it), n++)
+		ret = compose_matches(name, &((struct kmscon_glyph *)entry->value)->buf);
+	for (int i = 0; i < KMSCON_DECO_COUNT && !ret; i++) {
+		if (!bb->sprites[i])
+			continue;
+		ret = compose_matches(name, &bb->sprites[i]->buf);
+		n++;
+	}
+	if (ret)
+		return ret;
+	if (!n) {
+		fprintf(stderr, "test_pixels: %s: no glyph or sprite to compose\n", name);
+		return -EINVAL;
+	}
+
+	every = malloc(sizeof(*every) + 16 * 16 * 4);
+	assert(every);
+	every->width = 16;
+	every->height = 16;
+	every->format = VIDEO_FORMAT_A8;
+	for (unsigned int i = 0; i < 256; i++)
+		every->data[i] = i;
+	ret = compose_matches(name, every);
+	every->format = VIDEO_FORMAT_ARGB32;
+	for (unsigned int i = 0; i < 256 && !ret; i++) {
+		uint32_t r = xorshift(&seed);
+
+		/* premultiplied: no channel above alpha */
+		((uint32_t *)every->data)[i] = i << 24 | (r & 0xff) * i / 255 << 16 |
+					       (r >> 8 & 0xff) * i / 255 << 8 |
+					       (r >> 16 & 0xff) * i / 255;
+	}
+	if (!ret)
+		ret = compose_matches(name, every);
+	free(every);
+	return ret;
+}
+
 static void draw_frame(struct kmscon_text *txt, struct tsm_screen *con, struct tsm_vte *vte,
 		       const struct kmscon_conf_t *conf)
 {
@@ -1298,6 +1455,8 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 
 	if (!ret)
 		ret = run_checks(s, font->width, font->height);
+	if (!ret)
+		ret = check_compose(txt, s->name);
 	fb = fake_d2d.rb[1].map;
 
 	kmscon_text_unref(txt);

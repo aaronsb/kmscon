@@ -145,7 +145,7 @@ The report's `bench` entry for a screen holds `lines`, `seconds` and `lines_per_
 
 A build with the render timer configured that logs no line in the window fails the case. Upstream's build does not know the key: it logs `unknown config option 'render-timer'`, keeps going, and its entry gets a note instead of figures, with `lines_per_s` still measured.
 
-The figures are measured on a guest: a vCPU preempted by the host still counts as the thread's CPU time, so with `JOBS=2` one variant's scroll inflates the other's. At 7680x2160 the CPU time per frame read 9.6 to 14.0 ms across four `JOBS=2` runs. A baseline for comparing builds is taken with `JOBS=1`.
+The figures are measured on a guest: a vCPU preempted by the host still counts as the thread's CPU time, so whatever else loads the host (the other variant's scroll under `JOBS=2`, or other work) inflates them. At 7680x2160 the CPU time per frame read 9.6 to 14.0 ms across five `JOBS=2` runs; at 1280x800 two `JOBS=1` runs of one build on a busy host read 0.91 and 1.15 ms, and 179 000 and 103 000 lines per second. Compare builds with `JOBS=1`, several runs each, on a host doing nothing else.
 
 ## The gate has been seen red
 

@@ -29,8 +29,8 @@ _Escape protocols and the screen model - libtsm parsing, cells, scrollback_
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-200](./terminal/ADR-200-mode-handling-in-libtsm-and-kmscon-as-of-libtsm-e8185ae.md) | Mode handling in libtsm and kmscon as of libtsm e8185ae | proposed |
-| [ADR-201](./terminal/ADR-201-one-mode-registry-in-libtsm-and-synchronized-output-mode-2026.md) | One mode registry in libtsm, and synchronized output (mode 2026) | proposed |
+| [ADR-200](./terminal/ADR-200-mode-handling-in-libtsm-and-kmscon-as-of-libtsm-e8185ae.md) | Mode handling in libtsm and kmscon as of libtsm e8185ae | accepted |
+| [ADR-201](./terminal/ADR-201-one-mode-registry-in-libtsm-and-synchronized-output-mode-2026.md) | One mode registry in libtsm, and synchronized output (mode 2026) | accepted |
 
 ## Fork
 _Carrying this fork - upstream tracking, packaging, contribution back_

@@ -27,6 +27,8 @@ Switch to that VT, judge each page with one key (below), and press q to finish. 
 
 `VT` and `DEMO_ARGS` reach the script through the environment, never as recipe text. `DEMO_ARGS` is split into words the way `xargs` splits them: quotes and backslashes are honoured and nothing is expanded or run, so a value with spaces is quoted inside it, as the font name is above. Each option is one word, `--name=value` or `--name` / `--no-name`; `run-vt.sh` refuses any other form (see below). `VT_DEMO_DRY_RUN=1 make vt-demo` builds and stages, picks the VT and prints the `run-vt.sh` command without running it.
 
+`make showcase BAD_APPLE=/path/to/video` runs the Bad Apple!! showcase the same way, with `fork/showcase/bad-apple.sh` as the session in place of the paged demo; it records no answers, so its run ends with the health check alone. See [fork/showcase/README.md](../../fork/showcase/README.md).
+
 ### By hand
 
 `make vt-demo` runs `fork/demo/run-vt.sh`, which can also be run directly:
@@ -78,11 +80,11 @@ The script is `fork/demo/vt-demo.sh [N] [-- KMSCON-OPTION...]`; `tests/demo/vt_d
 
 ## What `run-vt.sh` does
 
-1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists. It also refuses every kmscon option after `--` but display, font, palette, text and input ones, named in full (kmscon takes a unique prefix, so `--lo` would be `--login`), each as one word: `--name=value`, or `--name` / `--no-name` for a switch. A value in a word of its own would be taken as the option's value or, as a stray word, be moved by kmscon into the login command that runs as root. Left out on purpose: the VT, seat and session options, `--login`, `--configdir`, `--oneshot`, the grabs, and the options that name files (`--asciicast`, `--issue-path`, `--xkb-keymap`, `--xkb-compose-file`). The list is `valued` and `switches` in `run-vt.sh`.
+1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists. It also refuses every kmscon option after `--` but display, font, palette, text and input ones, named in full (kmscon takes a unique prefix, so `--lo` would be `--login`), each as one word: `--name=value`, or `--name` / `--no-name` for a switch. A value in a word of its own would be taken as the option's value or, as a stray word, be moved by kmscon into the login command that runs as root. Left out on purpose: the VT, seat and session options, `--login`, `--configdir`, `--oneshot`, the grabs, and the options that name files (`--asciicast`, `--issue-path`, `--xkb-keymap`, `--xkb-compose-file`). The list is `valued` and `switches` in `run-vt.sh`. Before N, `--showcase=VIDEO` (an absolute path the user can read) makes the session the showcase on that video, with `--showcase-from=N` (an act from 1 to 7) and `--showcase-audio`; it refuses either of those without `--showcase`.
 2. Refuses the VT on screen (`fgconsole`) and any VT a logind session is on, the desktop's included: stopping the unit there would end that session.
 3. Records whether `kmsconvt@ttyN.service` is active and stops it. A trap on exit, Ctrl-C, SIGTERM and SIGHUP stops kmscon with SIGTERM if it still runs, waits for it (SIGKILL after 5 seconds), and starts the unit again if it was active, so the stock console comes back after a normal end, an interrupt or a kmscon failure. While it restores, it ignores Ctrl-C, SIGTERM, SIGHUP and SIGPIPE, so a second Ctrl-C or a closed terminal cannot cut it short before the unit is started.
 4. Prints the steps and the manual restore command.
-5. Runs the staged kmscon on VT N with `--no-switchvt --oneshot`, the demo config and the demonstration as its session, in the background so that only the script's trap stops it, and waits for it.
+5. Runs the staged kmscon on VT N with `--no-switchvt --oneshot`, the demo config and the demonstration (or the showcase, which `env` also hands `BAD_APPLE` and the user's `XDG_RUNTIME_DIR`) as its session, in the background so that only the script's trap stops it, and waits for it.
 
 `--dry-run` prints each of these commands (and the checks it would make) without running any, and needs no root.
 

@@ -13,6 +13,12 @@
 # it is not on screen (/sys/class/tty/tty0/active) and no logind session is on
 # it; run-vt.sh refuses the same VTs again before it stops anything.
 #
+# VT_DEMO_SHOWCASE names a video and runs the Bad Apple!! showcase
+# (fork/showcase/bad-apple.sh) in place of the demo, as make showcase does;
+# VT_DEMO_SHOWCASE_FROM starts it at an act and VT_DEMO_SHOWCASE_AUDIO=1 plays
+# the soundtrack. The showcase records no answers, so its run ends with the
+# health check alone.
+#
 # VT_DEMO_DRY_RUN=1 picks the VT and prints the run-vt.sh command without
 # running it. For the tests, VT_DEMO_ACTIVE, VT_DEMO_LOGINCTL, VT_DEMO_SUDO
 # (empty: no sudo), VT_DEMO_RUN_VT and VT_DEMO_FEEDBACK replace the sysfs file,
@@ -31,6 +37,14 @@ die() {
 
 vt=${VT_DEMO_VT:-}
 extra=()
+session=()
+if [ -n "${VT_DEMO_SHOWCASE:-}" ]; then
+	video=$(readlink -f -- "$VT_DEMO_SHOWCASE") && [ -f "$video" ] && [ -r "$video" ] ||
+		die "BAD_APPLE=$VT_DEMO_SHOWCASE is not a readable file"
+	session=(--showcase="$video")
+	[ -z "${VT_DEMO_SHOWCASE_FROM:-}" ] || session+=(--showcase-from="$VT_DEMO_SHOWCASE_FROM")
+	[ -z "${VT_DEMO_SHOWCASE_AUDIO:-}" ] || [ "$VT_DEMO_SHOWCASE_AUDIO" = 0 ] || session+=(--showcase-audio)
+fi
 if [ -n "${VT_DEMO_ARGS:-}" ]; then
 	printf '%s' "$VT_DEMO_ARGS" | xargs -r printf '%s\0' >/dev/null ||
 		die "DEMO_ARGS cannot be split into words: $VT_DEMO_ARGS"
@@ -101,7 +115,7 @@ else
 	back="your desktop's Ctrl-Alt-F key returns to it"
 fi
 
-cmd=("$run_vt" "$vt" -- "${extra[@]}")
+cmd=("$run_vt" "${session[@]}" "$vt" -- "${extra[@]}")
 [ -z "$sudo" ] || cmd=("$sudo" "${cmd[@]}")
 dir=${feedback%/*}
 log=$dir/vt-demo-$(date +%Y%m%dT%H%M%S)-tty$vt-XXXXXX.log
@@ -166,12 +180,15 @@ fi
 echo "kmscon log: $log"
 echo
 
-[ -z "$run" ] || "$here/feedback.sh" --file "$feedback" --run "$run"
-echo
-echo "results: $(readlink -m "$feedback")"
+if [ ${#session[@]} -eq 0 ]; then
+	[ -z "$run" ] || "$here/feedback.sh" --file "$feedback" --run "$run"
+	echo
+	echo "results: $(readlink -m "$feedback")"
+fi
 
 if [ "$status" -ne 0 ]; then
 	echo "vt-demo: run-vt.sh exited with status $status: kmscon failed or the demo was cut short" >&2
 	exit "$status"
 fi
+[ ${#session[@]} -eq 0 ] || exit 0
 [ -n "$run" ] || die "no answers from this run in $feedback: the demo did not run, or q was pressed before any page was rated"

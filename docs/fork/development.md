@@ -196,7 +196,7 @@ Every changed golden is read: a tier 1 golden line by line in the diff, a tier 2
 
 ### Tier 3
 
-Tier 3 runs the installed package in a KVM guest and needs KVM and QEMU on the host; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements. `make tier3-image` provisions the guest once. `make tier3 JOBS=2` builds the package and runs the 2D variants two at a time. It runs locally only, and the GL variant is outside the default run until #17 is fixed.
+Tier 3 runs the installed package in a KVM guest and needs KVM and QEMU on the host; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements. `make tier3-image` provisions the guest once per set of inputs, into `fork/vm/images` (link it from the main checkout in a new worktree, so every checkout shares the build). `make tier3 JOBS=2` builds the package and runs the 2D variants two at a time. It runs locally only, and the GL variant is outside the default run until #17 is fixed.
 
 ## Goldens are the judge
 
@@ -290,7 +290,8 @@ git fetch origin
 git worktree add ../kmscon-ledger-<date> -b docs/ledger-<date> origin/main
 cd ../kmscon-ledger-<date>
 make tier3                              # optional: includes tier 3 in the run; a new worktree first needs
-                                        # fork/vm/base.qcow2 and fork/vm/images linked from the main checkout
+                                        # fork/vm/images linked from the main checkout, which holds
+                                        # the shared base images (fork/tier3/README.md)
 make sheet NOTE="what this run marks"
 git add docs/conformance
 git commit -m "docs(conformance): ledger run at <short hash of main>: <what this run marks>"

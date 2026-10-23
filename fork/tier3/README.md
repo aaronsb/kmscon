@@ -6,7 +6,7 @@ Tier 3 of the conformance harness (ADR-301). The fork is packaged the way a user
 
 ```sh
 make pkg            # build kmscon-aaronsb from this checkout -> fork/build/pkg
-make tier3-image    # once: fetch, verify and provision fork/vm/base.qcow2
+make tier3-image    # fetch, verify and provision the base image, or reuse one built from the same inputs
 make tier3          # pkg, then the 2D variants; report in fork/build/tier3-report.json
 make tier3-gl       # pkg, then the GL variant, which is outside the default run (#17)
 make tier3 VARIANTS="2d-1280x800 2d-1366x768-potato gl-1280x800"   # any set of variants
@@ -29,7 +29,9 @@ Host needs: docker (for `make pkg`), `qemu-system-x86_64` with KVM, `qemu-img`, 
 | Fonts | `ttf-dejavu 2.37+18+g9b5d1b2f-8` (DejaVu Sans Mono, Latin and box drawing), `wqy-microhei 0.2.0_beta-12` (CJK fallback through pango) and `noto-fonts-emoji 1:2.051-1` (Noto Color Emoji, colour emoji), from the snapshot |
 | Sixel acceptance programs (ADR-103's A1, A2, A4) | `chafa 1.18.3-1`, `libsixel 1.10.5-1` (img2sixel), `mpv 1:0.41.0-6` (which brings `ffmpeg 2:9.0.2-2`), `tmux 3.8-1` and `xplanet 1.3.1-7`, whose NASA Visible Earth photographs of the Earth (`/usr/share/xplanet/images/earth.jpg` and `night.jpg`, 2048x1024) are the pictures A1 draws; its images/README says they are not copyrighted. Together they install 329.7 MiB and grow the provisioned base image from 842 MiB to 1150 MiB. A run downloads nothing |
 
-The pins live at the top of `fork/tier3.mk`, and the package list in `guest/user-data.in`. A change to that list provisions the base image again on the next `make tier3`, because `fork/vm/base.qcow2` depends on it; a worktree that links the main checkout's `base.qcow2` rather than its own would rewrite that shared file, so link `fork/vm/images` alone and let the worktree provision its own base. The snapshot date has to be no older than the dev image the package is built in, or the package can need a newer glibc than the guest has.
+The pins live at the top of `fork/tier3.mk`, and the package list in `guest/user-data.in`.
+
+Provisioning downloads the guest's packages from the archive (about 330 MiB for the acceptance programs) and keeps no cache, so it is done once per set of inputs: the base image is `fork/vm/images/base-<digest>.qcow2`, named by a digest of the guest files it is built from (`BASE_INPUTS` in `t3_common.py`), the pristine image and the archive date, and `fork/vm/base.qcow2` is a link to it. `make tier3-image` (and so `make tier3`) builds it only when it is missing, under a lock beside it, and otherwise only links it. A worktree that links `fork/vm/images` from the main checkout, as development.md says, therefore shares every base image the main checkout or another worktree has built: a branch that changes the package list downloads once, and every checkout with the same list reuses the build. A changed list gets a new image beside the old, so a base a running VM backs on is never rewritten; old ones stay until removed by hand. The base names the pristine image by its real path, so it outlives the worktree that built it. The snapshot date has to be no older than the dev image the package is built in, or the package can need a newer glibc than the guest has.
 
 ## How a run works
 

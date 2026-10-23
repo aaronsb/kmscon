@@ -586,7 +586,7 @@ static struct kmscon_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, ui
 	k.bold = attr.bold;
 	k.italic = attr.italic;
 	k.width = width;
-	hash = kmscon_glyph_key_hash(&k);
+	hash = kmscon_glyph_key_hash(key, attr.bold, attr.italic, width, 0);
 
 	glyph = shl_lru_find(bb->glyphs, hash, glyph_matches, &k);
 	if (glyph)

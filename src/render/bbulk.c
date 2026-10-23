@@ -268,55 +268,15 @@ static struct kmscon_glyph *bbulk_rotate_glyph(struct kmscon_glyph *glyph,
 	struct video_buffer *buf = &glyph->buf;
 	struct kmscon_glyph *rglyph;
 	unsigned int bpp = buf->format == VIDEO_FORMAT_ARGB32 ? 4 : 1;
-	int width, height, i, j;
-	uint8_t *dst, *src;
+	bool turn = orientation == OR_RIGHT || orientation == OR_LEFT;
 
 	rglyph = calloc(1, sizeof(*rglyph) + glyph->buf.width * glyph->buf.height * bpp);
 	if (!rglyph)
 		goto err_free;
 
-	if (orientation == OR_NORMAL || orientation == OR_UPSIDE_DOWN) {
-		width = buf->width;
-		height = buf->height;
-	} else {
-		width = buf->height;
-		height = buf->width;
-	}
-	src = buf->data;
-	dst = rglyph->buf.data;
-
-	switch (orientation) {
-	default:
-	case OR_NORMAL:
-		/* should never happen */
-		break;
-	case OR_RIGHT:
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++)
-				memcpy(&dst[(j * width + (width - i - 1)) * bpp], &src[j * bpp],
-				       bpp);
-			src += buf->width * bpp;
-		}
-		break;
-	case OR_UPSIDE_DOWN:
-		src += (buf->height - 1) * buf->width * bpp;
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++)
-				memcpy(&dst[j * bpp], &src[(buf->width - j - 1) * bpp], bpp);
-			dst += width * bpp;
-			src -= buf->width * bpp;
-		}
-		break;
-	case OR_LEFT:
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++)
-				memcpy(&dst[((height - j - 1) * width + i) * bpp], &src[j * bpp],
-				       bpp);
-			src += buf->width * bpp;
-		}
-	}
-	rglyph->buf.width = width;
-	rglyph->buf.height = height;
+	picture_rotate(buf->data, buf->width, buf->height, bpp, rglyph->buf.data, orientation);
+	rglyph->buf.width = turn ? buf->height : buf->width;
+	rglyph->buf.height = turn ? buf->width : buf->height;
 	rglyph->buf.format = buf->format;
 	rglyph->double_width = glyph->double_width;
 	rglyph->key = glyph->key;
@@ -1167,7 +1127,7 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 		ret = picture_scale(src, stride, fp->src_width, fp->src_height, dw, dh, u0, v0, u1,
 				    v1, tmp ? tmp : pic->pixels);
 		if (!ret && tmp)
-			picture_rotate(tmp, w, h, pic->pixels, txt->orientation);
+			picture_rotate(tmp, w, h, sizeof(*tmp), pic->pixels, txt->orientation);
 		free(tmp);
 		if (ret) {
 			free(pic);

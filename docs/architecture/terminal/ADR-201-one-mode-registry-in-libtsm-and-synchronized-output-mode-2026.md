@@ -264,3 +264,7 @@ Relayed by the team lead; each followed the draft's recommendation, and the Deci
 2. **A stall inside a synchronized frame:** a brief freeze. The last complete frame stays until the frame ends or the timeout fires.
 3. **Coalescing without 2026:** yes, with at most one refresh skipped part way through a write; a keystroke's echo still draws at once.
 4. **Test check:** each supported mode's named test sets and resets it.
+
+## Note (2026-10-23): the terminfo column covers standard capabilities
+
+The registry's terminfo column names every capability whose string sets or resets the mode, the standard ones included, beside the extensions. On today's rows: mode 5 has `flash`, mode 25 `civis` and `cnorm`, mode 1049 `smcup` and `rmcup` (`kmscon.ti:58`, `:71`, `:74`; ADR-200's corrections). Their generated `terminfo-mode-<number>` probes pass from the start. What was decided is unchanged.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Checks fork/showcase/bad-apple.sh without a video, a terminal or any of
-the media tools: its act table (--list), its plan (--dry-run), its refusals,
-that every act listed has its function, and the pure helpers of fx.py that
-the acts draw with.
+the media tools: its act and effect tables (--list), its plan (--dry-run),
+its refusals, that every act listed has its function, and the pure helpers
+the acts draw with (screen.py, frames.py, effects.py).
 
     showcase.py --root SOURCE_ROOT
 """
@@ -13,6 +13,8 @@ import re
 import subprocess
 import sys
 import tempfile
+
+EFFECTS = ["plasma", "shadebobs", "fire", "copper", "stars", "braille", "banner"]
 
 ACTS = [
     ("1", "stick figures"),
@@ -53,7 +55,8 @@ def main():
         # --list: one row per act, in order, with what it needs and how it
         # plays on kmscon today.
         p = run("--list")
-        rows = [l for l in p.stdout.splitlines()[1:] if l.strip()]
+        blocks = p.stdout.split("\n\n")
+        rows = [l for l in blocks[0].splitlines()[1:] if l.strip()]
         got = [(l[:4].strip(), l[4:29].strip()) for l in rows]
         check("--list prints the seven acts in order", p.returncode == 0 and got == ACTS,
               f"{got!r}\n{p.stderr}")
@@ -61,6 +64,9 @@ def main():
         check("each act lists what it needs", all(needs.get(n) for n, _ in ACTS), repr(needs))
         check("acts 5 and 7 are placeholders on kmscon today, the rest play",
               all(("placeholder" in l) == (l[:4].strip() in ("5", "7")) for l in rows), p.stdout)
+
+        effects = [l.split()[0] for l in blocks[1].splitlines()[1:] if l.strip()] if len(blocks) > 1 else []
+        check("--list names the effects --fx runs", effects == EFFECTS, repr(effects))
 
         # Every act in the table has its function.
         fns = subprocess.run(["bash", "-c", 'source "$1"; for n in 1 2 3 4 5 6 7; do declare -F "act_$n" >/dev/null || echo "missing act_$n"; done; echo "$LAST_ACT"', "sh", script],
@@ -109,6 +115,15 @@ def main():
         p = run("--act", "3", BAD_APPLE=os.path.join(tmp, "nothing.mp4"))
         check("a missing video fails, naming it", p.returncode != 0 and "nothing.mp4 is not a readable file" in p.stderr,
               p.stderr)
+        p = run("--act", "7", "--banner-only")
+        check("act 7 with --banner-only needs no video", p.returncode != 0 and "BAD_APPLE" not in p.stderr
+              and ("needs a terminal" in p.stderr or "missing:" in p.stderr), p.stderr)
+        p = run("--fx", "lava")
+        check("an unknown effect is refused, naming the effects",
+              p.returncode != 0 and "no effect 'lava'" in p.stderr and all(e in p.stderr for e in EFFECTS), p.stderr)
+        p = run("--dry-run")
+        check("--dry-run lists the effects",
+              all(f"  {e}: " in p.stdout for e in EFFECTS), p.stdout)
         p = run("--prepare")
         check("--prepare without BAD_APPLE fails", p.returncode != 0 and "BAD_APPLE is unset" in p.stderr, p.stderr)
         # Act 2 needs no video: it gets past that check and stops only for
@@ -117,21 +132,36 @@ def main():
         check("act 2 needs no video", p.returncode != 0 and "BAD_APPLE" not in p.stderr
               and ("needs a terminal" in p.stderr or "missing:" in p.stderr), p.stderr)
 
-    # fx.py's pure helpers, imported without leaving bytecode in the tree.
+    # The helpers, imported without leaving bytecode in the tree.
     sys.dont_write_bytecode = True
     sys.path.insert(0, os.path.join(root, "fork/showcase"))
-    import fx  # noqa: E402
+    import effects  # noqa: E402
+    import frames  # noqa: E402
+    import fx  # noqa: E402,F401  (the command line imports every module)
+    import screen  # noqa: E402
 
-    check("the outline table covers all 16 cell patterns", sorted(fx.OUTLINE) == list(range(16)), repr(sorted(fx.OUTLINE)))
-    r, w, b, d = 0xFF0000, 0xFFFFFF, 0x0000FF, fx.DEFAULT
-    s = fx.render([[r, w, d], [r, b, b]])
+    check("the outline table covers all 16 cell patterns", sorted(frames.OUTLINE) == list(range(16)),
+          repr(sorted(frames.OUTLINE)))
+    check("every effect --list names has its code",
+          sorted(list(effects.EFFECTS) + list(effects.DOT_EFFECTS) + ["banner"]) == sorted(EFFECTS))
+    r, w, b, d = 0xFF0000, 0xFFFFFF, 0x0000FF, screen.DEFAULT
+    s = screen.render([[r, w, d], [r, b, b]])
     want = ("\x1b[1;1H\x1b[48;2;255;0;0m \x1b[38;2;255;255;255;48;2;0;0;255m▀"
             "\x1b[38;2;0;0;255;49m▄\x1b[0m")
     check("render draws a cell row as ▀/▄ with SGR only on change", s == want, repr(s))
-    s = fx.render([[r, r, r], [r, r, r]], top=3, left=2, mask=[[True, False, True]])
+    s = screen.render([[r, r, r], [r, r, r]], top=3, left=2, mask=[[True, False, True]])
     check("render skips masked cells with a cursor move, keeping its colours",
           s == "\x1b[3;2H\x1b[48;2;255;0;0m \x1b[3;4H \x1b[0m", repr(s))
-    s = fx.caca_sgr("\x1b[0;37;5;47;107mX\x1b[0;36;5;40;100m.\x1b[0m")
+    p = screen.Painter()
+    p.draw([[r, w, b], [r, w, b]])
+    s = p.draw([[r, b, b], [r, w, b]])
+    check("a painter sends only the cells that changed",
+          s == "\x1b[1;2H\x1b[38;2;0;0;255;48;2;255;255;255m▀\x1b[0m", repr(s))
+    dots = screen.Dots(2, 1)
+    dots.line(0, 0, 3, 3, w)
+    check("Braille dots: a diagonal sets one dot per row, two cells",
+          [chr(0x2800 + c) for c in dots.code] == ["⠑", "⢄"], repr(dots.code))
+    s = frames.caca_sgr("\x1b[0;37;5;47;107mX\x1b[0;36;5;40;100m.\x1b[0m")
     check("img2txt's blink is dropped and its colours folded to greys",
           s == "\x1b[0;37;47;107mX\x1b[0;37;40;100m.\x1b[0m", repr(s))
 

@@ -1,4 +1,5 @@
 #!/bin/bash
+# kit: sixel
 # look-for: Ramps of red, green, blue and grey from black to full, a hue sweep,
 # look-for: and skin tones and pastels, each sixel row above a row of text
 # look-for: cells in the same colours: every column matches the one under it.

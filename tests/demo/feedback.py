@@ -127,13 +127,54 @@ def main():
     base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": tmp,
             "TERM": "xterm-256color", "DEMO_FEEDBACK": path}
 
-    # Every section carries both guidance lines.
+    # Every section carries both guidance lines, and belongs to a review kit
+    # (#123): its "# kit:" line, or text without one.
     sections = os.path.join(root, "fork/demo/sections")
+    kits = {}
     for name in sorted(os.listdir(sections)):
         with open(os.path.join(sections, name), encoding="utf-8") as f:
             text = f.read()
         check(all(re.search(rf"^# {k}: \S", text, re.M) for k in ("look-for", "wrong-looks-like")),
               f"{name} has look-for and wrong-looks-like lines")
+        found = re.findall(r"^# kit: (\S+)$", text, re.M)
+        check(len(found) <= 1 and set(found) <= {"text", "sixel", "kitty"},
+              f"{name} names one known kit, or none", repr(found))
+        kits.setdefault(found[0] if found else "text", []).append(name[:-3])
+    check(kits.get("sixel") == ["80-sixel", "81-sixel-ramps", "82-sixel-article", "83-photos",
+                                "84-photo-scroll", "85-mpv-sixel", "86-tmux-2x2", "87-tmux-3x3"],
+          "the sixel kit holds the sixel pages and the acceptance pages", repr(kits.get("sixel")))
+    check(kits.get("kitty") == ["90-kitty"], "the kitty kit holds its placeholder page",
+          repr(kits.get("kitty")))
+    check("10-sgr" in kits.get("text", []) and "70-emoji" in kits.get("text", []),
+          "the text kit holds the text pages", repr(kits.get("text")))
+
+    # DEMO_KIT picks the pages: text by default, all for every page; an
+    # unknown kit is refused. Named sections run whatever their kit.
+    def listed(env, *args):
+        p = subprocess.run(["bash", os.path.join(root, "fork/demo/demo.sh"), *args],
+                           env={**base, "DEMO_NOPAGE": "1", **env}, stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=120)
+        names = re.findall(rb"^ +\d+  (\S+)$", p.stdout, re.M)
+        return p.returncode, [n.decode() for n in names], p.stdout.decode(errors="replace") + p.stderr.decode()
+
+    every = sorted(n[3:] for k in kits.values() for n in k)
+    status, names, out = listed({})
+    check(status == 0 and names == [n[3:] for n in kits["text"]],
+          "with no DEMO_KIT the title page lists the text kit", out)
+    check("kit       text" in out, "the title page names the kit", out)
+    status, names, out = listed({"DEMO_KIT": "sixel"})
+    check(status == 0 and names == [n[3:] for n in kits["sixel"]],
+          "DEMO_KIT=sixel lists the sixel kit", out)
+    status, names, out = listed({"DEMO_KIT": "kitty"})
+    check(status == 0 and names == ["kitty"] and "step 4" in out,
+          "DEMO_KIT=kitty lists its placeholder, which names step 4", out)
+    status, names, out = listed({"DEMO_KIT": "all"})
+    check(status == 0 and sorted(names) == every, "DEMO_KIT=all lists every page", out)
+    status, names, out = listed({"DEMO_KIT": "bogus"})
+    check(status == 2 and "DEMO_KIT=bogus" in out and "text, sixel, kitty or all" in out,
+          "an unknown DEMO_KIT is refused", out)
+    status, names, out = listed({}, "sixel", "cjk")
+    check(status == 0 and names == ["cjk", "sixel"], "named sections run whatever their kit", out)
 
     # Run 1: reprompts on x and on Ctrl-D, ratings 1 and 3, a comment of two
     # lines ended by "." and rated 2, b, an empty comment, a comment ended by

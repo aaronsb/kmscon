@@ -32,5 +32,6 @@ demo: pkg ## Build the package and stage it in fork/build/demo-root for fork/dem
 .PHONY: vt-demo
 vt-demo: export VT_DEMO_VT = $(value VT)
 vt-demo: export VT_DEMO_ARGS = $(value DEMO_ARGS)
+vt-demo: export VT_DEMO_KIT = $(value KIT)
 vt-demo: demo ## Build, stage and run the demo on a free VT, then print its answers (VT=N, DEMO_ARGS='...')
 	fork/demo/vt-demo.sh

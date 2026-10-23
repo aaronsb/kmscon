@@ -337,7 +337,8 @@ static void run(struct kmscon_font *font, unsigned int si, unsigned int frames)
 	}
 	qsort(cpu, frames, sizeof(*cpu), cmp_u64);
 	printf("{\"scenario\": \"%s\", \"width\": %u, \"height\": %u, \"cols\": %u, \"rows\": %u, "
-	       "\"cell\": \"%ux%u\", \"frames\": %u, \"cpu_ms_mean\": %.3f, \"cpu_ms_median\": %.3f, "
+	       "\"cell\": \"%ux%u\", \"frames\": %u, \"cpu_ms_mean\": %.3f, \"cpu_ms_median\": "
+	       "%.3f, "
 	       "\"cpu_ms_p95\": %.3f, \"cpu_ms_max\": %.3f, \"damage_pct\": %.1f, "
 	       "\"requests_mean\": %u}\n",
 	       scenarios[si].name, fb_w, fb_h, b.cols, b.rows, b.cw, b.ch, frames,
@@ -364,7 +365,8 @@ int main(int argc, char **argv)
 	FcConfig *cfg;
 
 	if (argc < 4) {
-		fprintf(stderr, "usage: %s FONT_DIR WIDTH HEIGHT [FRAMES [SCENARIO...]]\n", argv[0]);
+		fprintf(stderr, "usage: %s FONT_DIR WIDTH HEIGHT [FRAMES [SCENARIO...]]\n",
+			argv[0]);
 		return 2;
 	}
 	fb_w = atoi(argv[2]);

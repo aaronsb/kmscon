@@ -54,8 +54,14 @@ if enable_renderer_gltex
         'test_gltex',
         [
             'test_gltex.c',
-            embed_gen.process('../src/render/gltex_atlas.vert', extra_args: shader_regex),
-            embed_gen.process('../src/render/gltex_atlas.frag', extra_args: shader_regex),
+            embed_gen.process(
+                '../src/render/gltex_atlas.vert',
+                extra_args: shader_regex,
+            ),
+            embed_gen.process(
+                '../src/render/gltex_atlas.frag',
+                extra_args: shader_regex,
+            ),
         ],
         include_directories: src_inc,
         dependencies: [
@@ -112,7 +118,9 @@ if enable_font_freetype
         'test_font_freetype',
         'test_font_freetype.c',
         include_directories: src_inc,
-        c_args: '-DTEST_FONT_DIR="@0@"'.format(meson.current_source_dir() / 'fonts'),
+        c_args: '-DTEST_FONT_DIR="@0@"'.format(
+            meson.current_source_dir() / 'fonts',
+        ),
         dependencies: [
             libtsm_deps,
             freetype_deps,
@@ -164,8 +172,10 @@ test_capabilities = executable(
 )
 caps_args = [
     files('capabilities/run.py'),
-    '--list', files('capabilities/capabilities.list'),
-    '--probe', test_capabilities,
+    '--list',
+    files('capabilities/capabilities.list'),
+    '--probe',
+    test_capabilities,
 ]
 if enable_font_freetype
     test_capabilities_font = executable(
@@ -183,16 +193,21 @@ if enable_font_freetype
         ],
     )
     caps_args += [
-        '--font-probe', test_capabilities_font,
-        '--fonts', meson.current_source_dir() / 'fonts',
+        '--font-probe',
+        test_capabilities_font,
+        '--fonts',
+        meson.current_source_dir() / 'fonts',
     ]
 endif
 infocmp = find_program('infocmp', required: false)
 if tic.found() and infocmp.found()
     caps_args += [
-        '--terminfo', meson.project_source_root() / 'scripts/terminfo/kmscon.ti',
-        '--tic', tic,
-        '--infocmp', infocmp,
+        '--terminfo',
+        meson.project_source_root() / 'scripts/terminfo/kmscon.ti',
+        '--tic',
+        tic.full_path(),
+        '--infocmp',
+        infocmp.full_path(),
     ]
 endif
 test('capabilities', python, args: caps_args)
@@ -222,12 +237,18 @@ if enable_font_freetype and enable_video_drm2d
         python,
         args: [
             files('tier2/run.py'),
-            '--render', test_pixels,
-            '--fonts', meson.current_source_dir() / 'fonts',
-            '--goldens', meson.current_source_dir() / 'goldens/tier2',
-            '--out', meson.project_build_root() / 'tier2',
-            '--report', meson.project_build_root() / 'tier2-report.json',
-            '--root', meson.project_source_root(),
+            '--render',
+            test_pixels,
+            '--fonts',
+            meson.current_source_dir() / 'fonts',
+            '--goldens',
+            meson.current_source_dir() / 'goldens/tier2',
+            '--out',
+            meson.project_build_root() / 'tier2',
+            '--report',
+            meson.project_build_root() / 'tier2-report.json',
+            '--root',
+            meson.project_source_root(),
         ],
     )
 
@@ -275,7 +296,8 @@ else
         python,
         args: [
             files('tier2/run.py'),
-            '--skip', 'tier 2 needs the freetype font backend and the drm2d video backend',
+            '--skip',
+            'tier 2 needs the freetype font backend and the drm2d video backend',
         ],
     )
 endif

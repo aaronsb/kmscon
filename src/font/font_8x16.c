@@ -129,7 +129,8 @@ static bool kmscon_font_8x16_has_glyph(struct kmscon_font *font, struct kmscon_f
 
 static struct kmscon_glyph *kmscon_font_8x16_render(struct kmscon_font *font,
 						    struct kmscon_font_attr *attr,
-						    const uint32_t *cps, size_t len, unsigned int cwidth)
+						    const uint32_t *cps, size_t len,
+						    unsigned int cwidth)
 {
 	unsigned int scale = font->height / 16;
 	uint32_t ch = cps[0];

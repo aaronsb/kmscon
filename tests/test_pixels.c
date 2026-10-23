@@ -20,12 +20,12 @@
 #include <assert.h>
 #include <errno.h>
 #include <fontconfig/fontconfig.h>
+#include <libtsm.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <libtsm.h>
-#include <limits.h>
 
 #include "../src/font/font.c"
 #include "../src/font/font_box.c"
@@ -36,14 +36,14 @@
 #undef LOG_SUBSYSTEM
 #include "../src/render/text.c"
 #undef LOG_SUBSYSTEM
-#include "../src/render/picture.c"
 #include "../src/render/bbulk.c"
+#include "../src/render/picture.c"
 #undef LOG_SUBSYSTEM
 #include "../src/render/deco.c"
 #undef LOG_SUBSYSTEM
 #include "../src/video/drm2d_render.c"
-#include "config.h"
 #include "box_model.h"
+#include "config.h"
 
 void shl_module_ref(struct shl_module *module) {}
 void shl_module_unref(struct shl_module *module) {}
@@ -208,22 +208,22 @@ static const struct kmscon_conf_t conf_deco_force = {
 #define VS16 "\xef\xb8\x8f"
 #define ZWJ "\xe2\x80\x8d"
 #define KEYCAP "\xe2\x83\xa3"
-#define GRIN "\xf0\x9f\x98\x80"	    /* U+1F600 */
-#define THUMB "\xf0\x9f\x91\x8d"	    /* U+1F44D */
-#define TONE3 "\xf0\x9f\x8f\xbd"	    /* U+1F3FD, medium skin tone */
-#define MAN "\xf0\x9f\x91\xa8"	    /* U+1F468 */
-#define WOMAN "\xf0\x9f\x91\xa9"	    /* U+1F469 */
-#define GIRL "\xf0\x9f\x91\xa7"	    /* U+1F467 */
-#define RI_J "\xf0\x9f\x87\xaf"	    /* U+1F1EF, regional indicator J */
-#define RI_P "\xf0\x9f\x87\xb5"	    /* U+1F1F5, regional indicator P */
-#define SMILE "\xe2\x98\xba"	    /* U+263A, text presentation */
+#define GRIN "\xf0\x9f\x98\x80"	   /* U+1F600 */
+#define THUMB "\xf0\x9f\x91\x8d"   /* U+1F44D */
+#define TONE3 "\xf0\x9f\x8f\xbd"   /* U+1F3FD, medium skin tone */
+#define MAN "\xf0\x9f\x91\xa8"	   /* U+1F468 */
+#define WOMAN "\xf0\x9f\x91\xa9"   /* U+1F469 */
+#define GIRL "\xf0\x9f\x91\xa7"	   /* U+1F467 */
+#define RI_J "\xf0\x9f\x87\xaf"	   /* U+1F1EF, regional indicator J */
+#define RI_P "\xf0\x9f\x87\xb5"	   /* U+1F1F5, regional indicator P */
+#define SMILE "\xe2\x98\xba"	   /* U+263A, text presentation */
 #define SHAKING "\xf0\x9f\xab\xa8" /* U+1FAE8, in no pinned font */
 
 #define DECO_CONFIG_BYTES                                                                          \
-	ESC "[4mconfigured underline" ESC "[0m " ESC "[9mconfigured strike" ESC "[0m\r\n" ESC        \
-	"[4:3;58:5:46mSGR 58 green" ESC "[0m " ESC "[4:4;58:2::255:255:0mSGR 58 yellow" ESC         \
-	"[0m\r\n" ESC "[32;4mgreen text" ESC "[0m " ESC "[33;9mstruck yellow text" ESC "[0m\r\n" ESC \
-	"[4:2;9mdouble and strike" ESC "[0m\r\n"
+	ESC "[4mconfigured underline" ESC "[0m " ESC "[9mconfigured strike" ESC "[0m\r\n" ESC      \
+	    "[4:3;58:5:46mSGR 58 green" ESC "[0m " ESC "[4:4;58:2::255:255:0mSGR 58 yellow" ESC    \
+	    "[0m\r\n" ESC "[32;4mgreen text" ESC "[0m " ESC "[33;9mstruck yellow text" ESC         \
+	    "[0m\r\n" ESC "[4:2;9mdouble and strike" ESC "[0m\r\n"
 
 /*
  * Blocks and box lines stacked across rows and columns (#46): full blocks,
@@ -273,10 +273,21 @@ static const struct check blocks_checks[] = {
 #define MOSAIC_BRAILLE_2 "⢀⢁⢂⢃⢄⢅⢆⢇⢈⢉⢊⢋⢌⢍⢎⢏⢐⢑⢒⢓⢔⢕⢖⢗⢘⢙⢚⢛⢜⢝⢞⢟⢠⢡⢢⢣⢤⢥⢦⢧⢨⢩⢪⢫⢬⢭⢮⢯⢰⢱⢲⢳⢴⢵⢶⢷⢸⢹⢺⢻⢼⢽⢾⢿"
 #define MOSAIC_BRAILLE_3 "⣀⣁⣂⣃⣄⣅⣆⣇⣈⣉⣊⣋⣌⣍⣎⣏⣐⣑⣒⣓⣔⣕⣖⣗⣘⣙⣚⣛⣜⣝⣞⣟⣠⣡⣢⣣⣤⣥⣦⣧⣨⣩⣪⣫⣬⣭⣮⣯⣰⣱⣲⣳⣴⣵⣶⣷⣸⣹⣺⣻⣼⣽⣾⣿"
 #define MOSAIC_SEXTANTS "🬀🬁🬂🬃🬄🬅🬆🬇🬈🬉🬊🬋🬌🬍🬎🬏🬐🬑🬒🬓🬔🬕🬖🬗🬘🬙🬚🬛🬜🬝🬞🬟🬠🬡🬢🬣🬤🬥🬦🬧🬨🬩🬪🬫🬬🬭🬮🬯🬰🬱🬲🬳🬴🬵🬶🬷🬸🬹🬺🬻"
-#define MOSAIC_OCTANTS_0 "𜴀𜴁𜴂𜴃𜴄𜴅𜴆𜴇𜴈𜴉𜴊𜴋𜴌𜴍𜴎𜴏𜴐𜴑𜴒𜴓𜴔𜴕𜴖𜴗𜴘𜴙𜴚𜴛𜴜𜴝𜴞𜴟𜴠𜴡𜴢𜴣𜴤𜴥𜴦𜴧𜴨𜴩𜴪𜴫𜴬𜴭𜴮𜴯𜴰𜴱𜴲𜴳𜴴𜴵𜴶𜴷𜴸𜴹𜴺𜴻𜴼𜴽𜴾𜴿"
-#define MOSAIC_OCTANTS_1 "𜵀𜵁𜵂𜵃𜵄𜵅𜵆𜵇𜵈𜵉𜵊𜵋𜵌𜵍𜵎𜵏𜵐𜵑𜵒𜵓𜵔𜵕𜵖𜵗𜵘𜵙𜵚𜵛𜵜𜵝𜵞𜵟𜵠𜵡𜵢𜵣𜵤𜵥𜵦𜵧𜵨𜵩𜵪𜵫𜵬𜵭𜵮𜵯𜵰𜵱𜵲𜵳𜵴𜵵𜵶𜵷𜵸𜵹𜵺𜵻𜵼𜵽𜵾𜵿"
-#define MOSAIC_OCTANTS_2 "𜶀𜶁𜶂𜶃𜶄𜶅𜶆𜶇𜶈𜶉𜶊𜶋𜶌𜶍𜶎𜶏𜶐𜶑𜶒𜶓𜶔𜶕𜶖𜶗𜶘𜶙𜶚𜶛𜶜𜶝𜶞𜶟𜶠𜶡𜶢𜶣𜶤𜶥𜶦𜶧𜶨𜶩𜶪𜶫𜶬𜶭𜶮𜶯𜶰𜶱𜶲𜶳𜶴𜶵𜶶𜶷𜶸𜶹𜶺𜶻𜶼𜶽𜶾𜶿"
-#define MOSAIC_OCTANTS_3 "𜷀𜷁𜷂𜷃𜷄𜷅𜷆𜷇𜷈𜷉𜷊𜷋𜷌𜷍𜷎𜷏𜷐𜷑𜷒𜷓𜷔𜷕𜷖𜷗𜷘𜷙𜷚𜷛𜷜𜷝𜷞𜷟𜷠𜷡𜷢𜷣𜷤𜷥"
+#define MOSAIC_OCTANTS_0                                                                           \
+	"𜴀𜴁𜴂𜴃𜴄𜴅𜴆𜴇𜴈𜴉𜴊𜴋𜴌𜴍𜴎𜴏𜴐𜴑𜴒𜴓𜴔𜴕" \
+	"𜴖𜴗𜴘𜴙𜴚𜴛𜴜𜴝𜴞𜴟𜴠𜴡𜴢𜴣𜴤𜴥𜴦𜴧𜴨𜴩𜴪𜴫" \
+	"𜴬𜴭𜴮𜴯𜴰𜴱𜴲𜴳𜴴𜴵𜴶𜴷𜴸𜴹𜴺𜴻𜴼𜴽𜴾𜴿"
+#define MOSAIC_OCTANTS_1                                                                           \
+	"𜵀𜵁𜵂𜵃𜵄𜵅𜵆𜵇𜵈𜵉𜵊𜵋𜵌𜵍𜵎𜵏𜵐𜵑𜵒𜵓𜵔𜵕" \
+	"𜵖𜵗𜵘𜵙𜵚𜵛𜵜𜵝𜵞𜵟𜵠𜵡𜵢𜵣𜵤𜵥𜵦𜵧𜵨𜵩𜵪𜵫" \
+	"𜵬𜵭𜵮𜵯𜵰𜵱𜵲𜵳𜵴𜵵𜵶𜵷𜵸𜵹𜵺𜵻𜵼𜵽𜵾𜵿"
+#define MOSAIC_OCTANTS_2                                                                           \
+	"𜶀𜶁𜶂𜶃𜶄𜶅𜶆𜶇𜶈𜶉𜶊𜶋𜶌𜶍𜶎𜶏𜶐𜶑𜶒𜶓𜶔𜶕" \
+	"𜶖𜶗𜶘𜶙𜶚𜶛𜶜𜶝𜶞𜶟𜶠𜶡𜶢𜶣𜶤𜶥𜶦𜶧𜶨𜶩𜶪𜶫" \
+	"𜶬𜶭𜶮𜶯𜶰𜶱𜶲𜶳𜶴𜶵𜶶𜶷𜶸𜶹𜶺𜶻𜶼𜶽𜶾𜶿"
+#define MOSAIC_OCTANTS_3                                                                           \
+	"𜷀𜷁𜷂𜷃𜷄𜷅𜷆𜷇𜷈𜷉𜷊𜷋𜷌𜷍𜷎𜷏𜷐𜷑𜷒𜷓𜷔𜷕" \
+	"𜷖𜷗𜷘𜷙𜷚𜷛𜷜𜷝𜷞𜷟𜷠𜷡𜷢𜷣𜷤𜷥"
 #define MOSAIC_SEXT_A "🬗🬗🬗🬗🬗🬗🬗🬗"
 #define MOSAIC_SEXT_B "🬤🬤🬤🬤🬤🬤🬤🬤"
 #define MOSAIC_OCT "𜶉𜶉𜶉𜶉𜶉𜶉𜶉𜶉"
@@ -352,24 +363,26 @@ static const struct check mosaic_checks[] = {
  * covers, and an emoji written at the last column, which wraps.
  */
 #define EMOJI_BYTES                                                                                \
-	GRIN " " THUMB " a" SMILE "b  wide, wide, narrow text\r\n" MAN ZWJ WOMAN ZWJ GIRL " " THUMB    \
-	TONE3 " " RI_J RI_P " 1" VS16 KEYCAP "  family, tone, flag, keycap\r\n" HEART VS16 " " HEART  \
-	VS15 " " HEART "  VS16, VS15, none\r\n"                                                       \
-	"a" GRIN "b  between letters\r\n" ESC "[4m" GRIN ESC "[0m " ESC "[9m" GRIN ESC "[0m " ESC     \
-	"[7m" GRIN ESC "[0m " ESC "[4:3;58:5:196m" THUMB TONE3 ESC "[0m  under, strike, reverse, "  \
-	"curl\r\n" SHAKING "  missing\r\n" ESC "[7;48H" GRIN
+	GRIN " " THUMB " a" SMILE "b  wide, wide, narrow text\r\n" MAN ZWJ WOMAN ZWJ GIRL          \
+	     " " THUMB TONE3 " " RI_J RI_P " 1" VS16 KEYCAP                                        \
+	     "  family, tone, flag, keycap\r\n" HEART VS16 " " HEART VS15 " " HEART                \
+	     "  VS16, VS15, none\r\n"                                                              \
+	     "a" GRIN "b  between letters\r\n" ESC "[4m" GRIN ESC "[0m " ESC "[9m" GRIN ESC        \
+	     "[0m " ESC "[7m" GRIN ESC "[0m " ESC "[4:3;58:5:196m" THUMB TONE3 ESC                 \
+	     "[0m  under, strike, reverse, "                                                       \
+	     "curl\r\n" SHAKING "  missing\r\n" ESC "[7;48H" GRIN
 
 /* the boxes of the emoji drawn on the default background, and in reverse */
 #define EMOJI_BOXES(kind)                                                                          \
-	{kind, 0, 0, 2, 1}, /* grin */                                                             \
-	{kind, 3, 0, 2, 1}, /* thumb */                                                            \
-	{kind, 0, 1, 2, 1}, /* family */                                                           \
-	{kind, 3, 1, 2, 1}, /* skin tone */                                                        \
-	{kind, 6, 1, 2, 1}, /* flag */                                                             \
-	{kind, 9, 1, 2, 1}, /* keycap */                                                           \
-	{kind, 0, 2, 2, 1}, /* VS16 heart */                                                       \
-	{kind, 1, 3, 2, 1}, /* between letters */                                                  \
-	{kind, 6, 4, 2, 1}  /* reverse */
+	{kind, 0, 0, 2, 1},	    /* grin */                                                     \
+		{kind, 3, 0, 2, 1}, /* thumb */                                                    \
+		{kind, 0, 1, 2, 1}, /* family */                                                   \
+		{kind, 3, 1, 2, 1}, /* skin tone */                                                \
+		{kind, 6, 1, 2, 1}, /* flag */                                                     \
+		{kind, 9, 1, 2, 1}, /* keycap */                                                   \
+		{kind, 0, 2, 2, 1}, /* VS16 heart */                                               \
+		{kind, 1, 3, 2, 1}, /* between letters */                                          \
+		{kind, 6, 4, 2, 1}  /* reverse */
 
 /* Noto Color Emoji draws the family in greys, so it is left out of 'c' */
 static const struct check emoji_checks[] = {
@@ -393,7 +406,7 @@ static const struct check emoji_mono_checks[] = {
 };
 
 #define EMOJI_DESC                                                                                 \
-	"Emoji: two wide emoji and a narrow text smiley; a ZWJ family, a skin tone, a flag and a "  \
+	"Emoji: two wide emoji and a narrow text smiley; a ZWJ family, a skin tone, a flag and a " \
 	"keycap; a heart with VS16, VS15 and no selector; an emoji between letters; emoji under "  \
 	"underline, strike, reverse and a red curl; a codepoint no font covers; an emoji written " \
 	"at the last column, which wraps to the next line."
@@ -426,14 +439,15 @@ static uint32_t *picture(enum pattern pattern, unsigned int w, unsigned int h, u
 	assert(px);
 	for (y = 0; y < h; y++) {
 		for (x = 0; x < w; x++) {
-			uint32_t r = w > 1 ? x * 255 / (w - 1) : 0, g = h > 1 ? y * 255 / (h - 1) : 0;
+			uint32_t r = w > 1 ? x * 255 / (w - 1) : 0,
+				 g = h > 1 ? y * 255 / (h - 1) : 0;
 			uint32_t b = (seed * 97 + 64) & 0xff, a = 255;
 			long dx = 2 * (long)x + 1 - (long)w, dy = 2 * (long)y + 1 - (long)h;
 
 			if (pattern == PIC_HALF && x >= w / 2)
 				a = 128;
-			if (pattern == PIC_DISC && dx * dx * (long)h * h + dy * dy * (long)w * w >
-							   (long)w * w * h * h)
+			if (pattern == PIC_DISC &&
+			    dx * dx * (long)h * h + dy * dy * (long)w * w > (long)w * w * h * h)
 				a = 0;
 			if (pattern == PIC_STRIPES) {
 				r = (x + y) % 2 ? 255 : 0;
@@ -464,8 +478,13 @@ static uint64_t add_image(struct tsm_screen *con, enum pattern pattern, unsigned
 static void place(struct tsm_screen *con, uint64_t image, uint32_t id, unsigned int col,
 		  unsigned int row, unsigned int cols, unsigned int rows, int32_t z)
 {
-	struct tsm_test_placement pl = {
-		.image = image, .id = id, .col = col, .row = row, .cols = cols, .rows = rows, .z = z};
+	struct tsm_test_placement pl = {.image = image,
+					.id = id,
+					.col = col,
+					.row = row,
+					.cols = cols,
+					.rows = rows,
+					.z = z};
 	uint64_t key;
 
 	assert(tsm_screen_test_place(con, &pl, &key) == 0);
@@ -483,14 +502,15 @@ static void images_bands(struct tsm_screen *con, struct tsm_vte *vte, unsigned i
 	static const int32_t z[3] = {Z_BELOW_BG, Z_BELOW_TEXT, Z_ABOVE_TEXT};
 
 	for (unsigned int b = 0; b < 3; b++)
-		place(con, add_image(con, PIC_HALF, 24 * cw, 3 * ch, b, TSM_IMAGE_KITTY, b + 1), 0, 14,
-		      3 * b, 0, 0, z[b]);
+		place(con, add_image(con, PIC_HALF, 24 * cw, 3 * ch, b, TSM_IMAGE_KITTY, b + 1), 0,
+		      14, 3 * b, 0, 0, z[b]);
 }
 
-#define BAND_TEXT(row) ESC "[" #row ";16HText " ESC "[44m    " ESC "[0m over " ESC "[42m  " ESC "[0m pic"
+#define BAND_TEXT(row)                                                                             \
+	ESC "[" #row ";16HText " ESC "[44m    " ESC "[0m over " ESC "[42m  " ESC "[0m pic"
 #define BANDS_BYTES                                                                                \
-	"lowest band" BAND_TEXT(2) ESC "[4;1Hmiddle band" BAND_TEXT(5) ESC "[7;1Htop band"        \
-		BAND_TEXT(8)
+	"lowest band" BAND_TEXT(2) ESC "[4;1Hmiddle band" BAND_TEXT(5) ESC                         \
+		"[7;1Htop band" BAND_TEXT(8)
 
 /* the band below backgrounds leaves the blue cells solid */
 static const struct check bands_checks[] = {
@@ -529,14 +549,14 @@ static void images_scale(struct tsm_screen *con, struct tsm_vte *vte, unsigned i
 
 	place(con, small, 0, 1, 1, 0, 0, 0);
 	place(con, small, 0, 7, 1, 10, 5, 0);
-	place(con, add_image(con, PIC_STRIPES, 480, 160, 0, TSM_IMAGE_KITTY, 2), 0, 19, 1, 12, 2, 0);
+	place(con, add_image(con, PIC_STRIPES, 480, 160, 0, TSM_IMAGE_KITTY, 2), 0, 19, 1, 12, 2,
+	      0);
 	assert(tsm_screen_set_cell_size(con, 5, 8) == 0);
 	place(con, add_image(con, PIC_GRADIENT, 20, 16, 2, TSM_IMAGE_KITTY, 3), 0, 33, 1, 0, 0, 0);
 	assert(tsm_screen_set_cell_size(con, cw, ch) == 0);
 }
 
-#define SCALE_BYTES                                                                                \
-	ESC "[8;2H1:1" ESC "[8;8Hfit 10x5" ESC "[8;20Hshrunk 12x2" ESC "[8;34H5x8 cells"
+#define SCALE_BYTES ESC "[8;2H1:1" ESC "[8;8Hfit 10x5" ESC "[8;20Hshrunk 12x2" ESC "[8;34H5x8 cells"
 
 /*
  * A region scroll: a sixel inside the region loses the rows pushed out of its
@@ -582,16 +602,16 @@ static void images_moves(struct tsm_screen *con, struct tsm_vte *vte, unsigned i
 	if (frame == 0) {
 		kitty = add_image(con, PIC_GRADIENT, 8 * cw, 3 * ch, 1, TSM_IMAGE_KITTY, 1);
 		place(con, kitty, 1, 2, 1, 0, 0, 0);
-		place(con, add_image(con, PIC_DISC, 8 * cw, 2 * ch, 2, TSM_IMAGE_SIXEL, 0), 0, 20, 1, 0,
-		      0, 0);
-		place(con, add_image(con, PIC_GRADIENT, 4 * cw, 2 * ch, 4, TSM_IMAGE_KITTY, 3), 0, 40,
-		      3, 0, 0, 0);
+		place(con, add_image(con, PIC_DISC, 8 * cw, 2 * ch, 2, TSM_IMAGE_SIXEL, 0), 0, 20,
+		      1, 0, 0, 0);
+		place(con, add_image(con, PIC_GRADIENT, 4 * cw, 2 * ch, 4, TSM_IMAGE_KITTY, 3), 0,
+		      40, 3, 0, 0, 0);
 	} else if (frame == 2) {
 		place(con, kitty, 1, 6, 5, 0, 0, 0);
 		add_image(con, PIC_GRADIENT, 4 * cw, 2 * ch, 5, TSM_IMAGE_KITTY, 3);
 		input(vte, ESC "[2;21H" ESC "[K" ESC "[3;21H" ESC "[K");
-		place(con, add_image(con, PIC_GRADIENT, 6 * cw, 2 * ch, 3, TSM_IMAGE_KITTY, 2), 0, 30,
-		      6, 0, 0, Z_BELOW_TEXT);
+		place(con, add_image(con, PIC_GRADIENT, 6 * cw, 2 * ch, 3, TSM_IMAGE_KITTY, 2), 0,
+		      30, 6, 0, 0, Z_BELOW_TEXT);
 	}
 }
 
@@ -603,8 +623,8 @@ static void images_moves(struct tsm_screen *con, struct tsm_vte *vte, unsigned i
  * region with it; below backgrounds or below text. Frame 3 repeats frame 2, so
  * both buffers end with the same screen.
  */
-static void banner(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
-		   unsigned int cw, unsigned int ch, int32_t z)
+static void banner(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame, unsigned int cw,
+		   unsigned int ch, int32_t z)
 {
 	char line[128];
 
@@ -614,7 +634,8 @@ static void banner(struct tsm_screen *con, struct tsm_vte *vte, unsigned int fra
 	place(con, add_image(con, PIC_GRADIENT, COLS * cw, ROWS * ch, frame, TSM_IMAGE_KITTY, 1), 0,
 	      0, 0, 0, 0, z);
 	snprintf(line, sizeof(line),
-		 "\r\n" ESC "[44;97m banner %u " ESC "[0m text " ESC "[42m over " ESC "[0m video", frame);
+		 "\r\n" ESC "[44;97m banner %u " ESC "[0m text " ESC "[42m over " ESC "[0m video",
+		 frame);
 	input(vte, line);
 }
 
@@ -660,8 +681,8 @@ static const struct screen screens[] = {
 	 "Correct: the bold text drawn in the bold face at the same cell width, the coloured words"
 	 " in their colours.",
 	 "regular " ESC "[1mbold" ESC "[0m regular\r\n" ESC "[1mThe quick brown fox jumps over\r\n"
-	 "the lazy dog 0123456789 !@#$%^&*()" ESC "[0m\r\n" ESC "[1;31mbold red" ESC
-	 "[0m " ESC "[1;32mbold green" ESC "[0m " ESC "[1;34mbold blue" ESC "[0m\r\n"},
+	 "the lazy dog 0123456789 !@#$%^&*()" ESC "[0m\r\n" ESC "[1;31mbold red" ESC "[0m " ESC
+	 "[1;32mbold green" ESC "[0m " ESC "[1;34mbold blue" ESC "[0m\r\n"},
 
 	{"palette",
 	 "The 16 ANSI background colours, the 16 foreground colours on letter pairs, a ramp "
@@ -670,19 +691,19 @@ static const struct screen screens[] = {
 	 /* 16 ANSI backgrounds, then foregrounds, then a 256-colour ramp and a
 	  * truecolour gradient */
 	 ESC "[40m  " ESC "[41m  " ESC "[42m  " ESC "[43m  " ESC "[44m  " ESC "[45m  " ESC
-	 "[46m  " ESC "[47m  " ESC "[100m  " ESC "[101m  " ESC "[102m  " ESC "[103m  " ESC
-	 "[104m  " ESC "[105m  " ESC "[106m  " ESC "[107m  " ESC "[0m\r\n" ESC "[30mAB" ESC
-	 "[31mAB" ESC "[32mAB" ESC "[33mAB" ESC "[34mAB" ESC "[35mAB" ESC "[36mAB" ESC
-	 "[37mAB" ESC "[90mAB" ESC "[91mAB" ESC "[92mAB" ESC "[93mAB" ESC "[94mAB" ESC
-	 "[95mAB" ESC "[96mAB" ESC "[97mAB" ESC "[0m\r\n" ESC "[48;5;16m  " ESC "[48;5;52m  " ESC
-	 "[48;5;88m  " ESC "[48;5;124m  " ESC "[48;5;160m  " ESC "[48;5;196m  " ESC
-	 "[48;5;202m  " ESC "[48;5;214m  " ESC "[48;5;226m  " ESC "[48;5;154m  " ESC
-	 "[48;5;46m  " ESC "[48;5;48m  " ESC "[48;5;51m  " ESC "[48;5;27m  " ESC
-	 "[48;5;21m  " ESC "[48;5;129m  " ESC "[48;5;232m  " ESC "[48;5;244m  " ESC
-	 "[48;5;255m  " ESC "[0m\r\n" ESC "[48;2;255;0;0m  " ESC "[48;2;223;32;0m  " ESC
-	 "[48;2;191;64;0m  " ESC "[48;2;159;96;0m  " ESC "[48;2;127;128;0m  " ESC
-	 "[48;2;95;160;0m  " ESC "[48;2;63;192;0m  " ESC "[48;2;31;224;0m  " ESC
-	 "[48;2;0;255;0m  " ESC "[0m\r\n"},
+	     "[46m  " ESC "[47m  " ESC "[100m  " ESC "[101m  " ESC "[102m  " ESC "[103m  " ESC
+	     "[104m  " ESC "[105m  " ESC "[106m  " ESC "[107m  " ESC "[0m\r\n" ESC "[30mAB" ESC
+	     "[31mAB" ESC "[32mAB" ESC "[33mAB" ESC "[34mAB" ESC "[35mAB" ESC "[36mAB" ESC
+	     "[37mAB" ESC "[90mAB" ESC "[91mAB" ESC "[92mAB" ESC "[93mAB" ESC "[94mAB" ESC
+	     "[95mAB" ESC "[96mAB" ESC "[97mAB" ESC "[0m\r\n" ESC "[48;5;16m  " ESC
+	     "[48;5;52m  " ESC "[48;5;88m  " ESC "[48;5;124m  " ESC "[48;5;160m  " ESC
+	     "[48;5;196m  " ESC "[48;5;202m  " ESC "[48;5;214m  " ESC "[48;5;226m  " ESC
+	     "[48;5;154m  " ESC "[48;5;46m  " ESC "[48;5;48m  " ESC "[48;5;51m  " ESC
+	     "[48;5;27m  " ESC "[48;5;21m  " ESC "[48;5;129m  " ESC "[48;5;232m  " ESC
+	     "[48;5;244m  " ESC "[48;5;255m  " ESC "[0m\r\n" ESC "[48;2;255;0;0m  " ESC
+	     "[48;2;223;32;0m  " ESC "[48;2;191;64;0m  " ESC "[48;2;159;96;0m  " ESC
+	     "[48;2;127;128;0m  " ESC "[48;2;95;160;0m  " ESC "[48;2;63;192;0m  " ESC
+	     "[48;2;31;224;0m  " ESC "[48;2;0;255;0m  " ESC "[0m\r\n"},
 
 	{"inverse",
 	 "Reverse video (SGR 7): one word, a whole line, red on green swapped, and bold with "
@@ -700,8 +721,7 @@ static const struct screen screens[] = {
 	 "中文字符 漢字 ひらがな カタカナ\r\n"
 	 "한글 테스트\r\n"
 	 "ＡＢＣＤ０１２３ abcd 0123\r\n"
-	 "a日b本c語d\r\n"
-	 ESC "[1m日本語 bold" ESC "[0m " ESC "[7m日本語 inverse" ESC "[0m\r\n"},
+	 "a日b本c語d\r\n" ESC "[1m日本語 bold" ESC "[0m " ESC "[7m日本語 inverse" ESC "[0m\r\n"},
 
 	{"box",
 	 "Box drawing in light and double lines, shades and block elements, eighth blocks, and "
@@ -723,22 +743,23 @@ static const struct screen screens[] = {
 	 "background, in reverse and in bold. Correct: the five styles distinct, the coloured ones"
 	 " in their SGR 58 colour, and the line after SGR 59 in the text colour.",
 	 ESC "[4mSingle gjpqy" ESC "[0m  " ESC "[4;58:5:196mSingle gjpqy" ESC "[0m\r\n" ESC
-	 "[4:2mDouble gjpqy" ESC "[0m  " ESC "[4:2;58:2::0:200:255mDouble gjpqy" ESC "[0m\r\n" ESC
-	 "[4:3mCurly  gjpqy" ESC "[0m  " ESC "[4:3;58:5:46mCurly  gjpqy" ESC "[0m\r\n" ESC
-	 "[4:4mDotted gjpqy" ESC "[0m  " ESC "[4:4;58:2::255:128:0mDotted gjpqy" ESC "[0m\r\n" ESC
-	 "[4:5mDashed gjpqy" ESC "[0m  " ESC "[4:5;58:5:201mDashed gjpqy" ESC "[0m\r\n" ESC
-	 "[31;4:3;58:5:226mred, yellow curl" ESC "[59m then fg" ESC "[0m\r\n" ESC
-	 "[44;4mon blue" ESC "[0m " ESC "[7;4minverse" ESC "[0m " ESC "[1;4:2mbold double" ESC
-	 "[0m\r\n"},
+	     "[4:2mDouble gjpqy" ESC "[0m  " ESC "[4:2;58:2::0:200:255mDouble gjpqy" ESC
+	     "[0m\r\n" ESC "[4:3mCurly  gjpqy" ESC "[0m  " ESC "[4:3;58:5:46mCurly  gjpqy" ESC
+	     "[0m\r\n" ESC "[4:4mDotted gjpqy" ESC "[0m  " ESC
+	     "[4:4;58:2::255:128:0mDotted gjpqy" ESC "[0m\r\n" ESC "[4:5mDashed gjpqy" ESC
+	     "[0m  " ESC "[4:5;58:5:201mDashed gjpqy" ESC "[0m\r\n" ESC
+	     "[31;4:3;58:5:226mred, yellow curl" ESC "[59m then fg" ESC "[0m\r\n" ESC
+	     "[44;4mon blue" ESC "[0m " ESC "[7;4minverse" ESC "[0m " ESC "[1;4:2mbold double" ESC
+	     "[0m\r\n"},
 
 	{"strike",
 	 "Strike-through (SGR 9) alone, in colour, on a background, with straight and curly "
 	 "underlines, in bold, in reverse, and over spaces. Correct: a line through the middle of "
 	 "every struck cell, the spaces included.",
 	 ESC "[9mstruck through gjpqy" ESC "[0m plain\r\n" ESC "[9;31mred strike" ESC "[0m " ESC
-	 "[9;42mstrike on green" ESC "[0m\r\n" ESC "[9;4mstrike and underline" ESC "[0m " ESC
-	 "[9;4:3;58:5:51mcurly too" ESC "[0m\r\n" ESC "[1;9mbold struck" ESC "[0m " ESC
-	 "[7;9minverse struck" ESC "[0m\r\n" ESC "[9m      " ESC "[0m struck spaces\r\n"},
+	     "[9;42mstrike on green" ESC "[0m\r\n" ESC "[9;4mstrike and underline" ESC "[0m " ESC
+	     "[9;4:3;58:5:51mcurly too" ESC "[0m\r\n" ESC "[1;9mbold struck" ESC "[0m " ESC
+	     "[7;9minverse struck" ESC "[0m\r\n" ESC "[9m      " ESC "[0m struck spaces\r\n"},
 
 	/* underline-color=196, strike-color=#00c0ff */
 	{"deco-config",
@@ -761,8 +782,8 @@ static const struct screen screens[] = {
 	 "precomposed: " E_ACUTE " " A_TILDE " " N_TILDE "\r\n"
 	 "decomposed:  e" COMB_ACUTE " a" COMB_TILDE COMB_GRAVE " n" COMB_DIAER "\r\n"
 	 "in words: cafe" COMB_ACUTE " na" COMB_TILDE COMB_GRAVE "o n" COMB_DIAER "ice\r\n" ESC
-	 "[4mu" COMB_DIAER "nderlined e" COMB_ACUTE ESC "[0m " ESC "[9mstruck a" COMB_TILDE
-	 COMB_GRAVE ESC "[0m\r\n"
+	 "[4mu" COMB_DIAER "nderlined e" COMB_ACUTE ESC "[0m " ESC
+	 "[9mstruck a" COMB_TILDE COMB_GRAVE ESC "[0m\r\n"
 	 "bold: " ESC "[1me" COMB_ACUTE " a" COMB_TILDE COMB_GRAVE " n" COMB_DIAER ESC "[0m\r\n"},
 
 	/* a heart with VS16 takes two cells and draws as the colour emoji */
@@ -782,8 +803,8 @@ static const struct screen screens[] = {
 	 "every decoration spans both cells of its wide character; the one in the last column is "
 	 "cut at the edge.",
 	 ESC "[4m日本語" ESC "[0m " ESC "[4:3m漢字" ESC "[0m " ESC "[4:4;58:5:196mカタカナ" ESC
-	 "[0m\r\n" ESC "[4:2m한글" ESC "[0m " ESC "[4:5m中文" ESC "[0m " ESC "[9m日本語" ESC
-	 "[0m\r\n" ESC "[4ma日b本c" ESC "[0m\r\n" ESC "[5;48H" ESC "[4;9m語" ESC "[0m"},
+	     "[0m\r\n" ESC "[4:2m한글" ESC "[0m " ESC "[4:5m中文" ESC "[0m " ESC "[9m日本語" ESC
+	     "[0m\r\n" ESC "[4ma日b本c" ESC "[0m\r\n" ESC "[5;48H" ESC "[4;9m語" ESC "[0m"},
 
 	/* #46: drawn to the cell, not the font's glyph box */
 	{"blocks", BLOCKS_DESC " The cell is the font's own line height.", BLOCKS_BYTES, NULL, NULL,
@@ -813,20 +834,23 @@ static const struct screen screens[] = {
 
 	/* ADR-102 step 4c: colour emoji fitted to their cells */
 	{"emoji",
-	 EMOJI_DESC " Correct: each emoji in colour, whole and centred in its two cells with a "
-		    "pixel clear at every edge; the family, tone, flag and keycap one picture each; the"
-		    " VS15 and plain hearts and the smiley narrow text; the missing one the text font's"
-		    " missing-glyph box, fitted the same way.",
+	 EMOJI_DESC
+	 " Correct: each emoji in colour, whole and centred in its two cells with a "
+	 "pixel clear at every edge; the family, tone, flag and keycap one picture each; the"
+	 " VS15 and plain hearts and the smiley narrow text; the missing one the text font's"
+	 " missing-glyph box, fitted the same way.",
 	 EMOJI_BYTES, NULL, NULL, 0, 0, emoji_checks},
 	{"emoji-spaced",
-	 EMOJI_DESC " The font is larger and the cell is 6 pixel rows taller than its line height. "
-		    "Correct: as the emoji screen, each emoji fitted to the taller cell and centred in "
-		    "it.",
+	 EMOJI_DESC
+	 " The font is larger and the cell is 6 pixel rows taller than its line height. "
+	 "Correct: as the emoji screen, each emoji fitted to the taller cell and centred in "
+	 "it.",
 	 EMOJI_BYTES, NULL, NULL, 22, 6, emoji_checks},
 	{"emoji-mono",
-	 EMOJI_DESC " With no-emoji-color. Correct: every emoji drawn in the grey text colour, as "
-		    "its shape, at the size and place the emoji screen draws it in colour; the hearts "
-		    "and the smiley from the text font.",
+	 EMOJI_DESC
+	 " With no-emoji-color. Correct: every emoji drawn in the grey text colour, as "
+	 "its shape, at the size and place the emoji screen draws it in colour; the hearts "
+	 "and the smiley from the text font.",
 	 EMOJI_BYTES, NULL, NULL, 0, 0, emoji_mono_checks, true},
 
 	/* frame N changes cells that frame N+1 must draw again into the other
@@ -839,32 +863,42 @@ static const struct screen screens[] = {
 	 "line two, before\r\n"
 	 "line three stays\r\n",
 	 ESC "[2;1Hline 2 CHANGED " ESC "[4:3mcurly" ESC "[0m" ESC "[4;1H" ESC "[9mnew struck" ESC
-	 "[0m"},
+	     "[0m"},
 
 	/* ADR-103 step 3b: placements made through libtsm's test calls */
 	{.name = "img-bands",
-	 .desc = "The same picture in each composition band, its left half opaque and its right half "
+	 .desc = "The same picture in each composition band, its left half opaque and its right "
+		 "half "
 		 "at half alpha, behind a row of text with blue and green backgrounds. Correct: in "
-		 "the lowest band the picture shows only through cells on the default background, so "
-		 "the blue and green cells stay solid, and the text draws over it; in the middle band "
-		 "the picture covers the backgrounds and the text draws over it; in the top band the "
+		 "the lowest band the picture shows only through cells on the default background, "
+		 "so "
+		 "the blue and green cells stay solid, and the text draws over it; in the middle "
+		 "band "
+		 "the picture covers the backgrounds and the text draws over it; in the top band "
+		 "the "
 		 "left half hides the text and the right half shows it dimmed through.",
 	 .bytes = BANDS_BYTES,
 	 .checks = bands_checks,
 	 .images = images_bands},
 	{.name = "img-sixel",
-	 .desc = "Three sixels over rows of text. Correct: the left picture hides the text under it, "
+	 .desc = "Three sixels over rows of text. Correct: the left picture hides the text under "
+		 "it, "
 		 "its right and bottom edges ending inside their cells with the text there showing "
-		 "past them; the middle one is a disc with the text visible around it; the right one "
-		 "has a hole in its middle row where TEXT was written over it, drawn as plain text.",
+		 "past them; the middle one is a disc with the text visible around it; the right "
+		 "one "
+		 "has a hole in its middle row where TEXT was written over it, drawn as plain "
+		 "text.",
 	 .bytes = SIXEL_BYTES,
 	 .images = images_sixel},
 	{.name = "img-scale",
-	 .desc = "Scaled pictures in the top band: a 40x20 gradient at its own size; the same fitted "
-		 "and centred in 10x5 cells, letterboxed; 480x160 one-pixel stripes shrunk into 12x2 "
+	 .desc = "Scaled pictures in the top band: a 40x20 gradient at its own size; the same "
+		 "fitted "
+		 "and centred in 10x5 cells, letterboxed; 480x160 one-pixel stripes shrunk into "
+		 "12x2 "
 		 "cells, which a box filter turns into an even mix of the two colours; and a 20x16 "
 		 "picture made in 5x8-pixel cells, drawn over the 4x2 font cells it was given. "
-		 "Correct: smooth gradients with no blocky steps, the stripes an even olive with no "
+		 "Correct: smooth gradients with no blocky steps, the stripes an even olive with "
+		 "no "
 		 "moire, each picture inside its labelled place.",
 	 .bytes = SCALE_BYTES,
 	 .images = images_scale},
@@ -906,14 +940,16 @@ static const struct screen screens[] = {
 	 .images = images_banner_bg},
 	{.name = "img-banner-text",
 	 .desc = "ADR-103's A6 below text: the same, with the picture over the cell backgrounds. "
-		 "Correct: the picture under every cell, only the banner's glyphs over it, and both "
+		 "Correct: the picture under every cell, only the banner's glyphs over it, and "
+		 "both "
 		 "buffers equal to a fresh draw.",
 	 .bytes = BANNER_BYTES,
 	 .next = "",
 	 .images = images_banner_text},
 	{.name = "img-ed2",
 	 .desc = "ADR-103's A3: a sixel and a kitty picture shown for two frames, then ED 2 and a "
-		 "word. Correct: only the word, with no pixel of either picture left in either buffer.",
+		 "word. Correct: only the word, with no pixel of either picture left in either "
+		 "buffer.",
 	 .bytes = TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW,
 	 .next = ESC "[2J" ESC "[Hcleared",
 	 .images = images_ed2},
@@ -923,7 +959,8 @@ static const struct screen screens[] = {
 	 .desc = "The render timer's on-screen display over text, then replaced by a shorter "
 		 "line two frames later. Correct: the figures in light grey on a dark grey box at "
 		 "the right end of the top row, over the text there; the longer first line leaves "
-		 "nothing behind, the text it covered drawn again; both buffers equal a fresh draw.",
+		 "nothing behind, the text it covered drawn again; both buffers equal a fresh "
+		 "draw.",
 	 .bytes = TEXT_ROW TEXT_ROW TEXT_ROW,
 	 .next = "",
 	 .osd = "59.9 fps 12.345 ms 100.0%",
@@ -1067,7 +1104,9 @@ static int run_checks(const struct screen *s, unsigned int cw, unsigned int ch)
 							 : check_box(c->kind, x0, y0, x1, y1);
 
 			if (why) {
-				fprintf(stderr, "test_pixels: %s: check %c on cells %u,%u +%ux%u fails: %s\n",
+				fprintf(stderr,
+					"test_pixels: %s: check %c on cells %u,%u +%ux%u fails: "
+					"%s\n",
 					s->name, c->kind, c->col, c->row, c->cols, c->rows, why);
 				ret = -EINVAL;
 			}
@@ -1150,7 +1189,8 @@ static int check_fresh(struct kmscon_font *font, struct tsm_screen *con, struct 
 	memset(fb, 0, size);
 	draw_frame(txt, con, vte, s->conf);
 	if (memcmp(fb_back, last, size)) {
-		fprintf(stderr, "test_pixels: %s: the incremental frames differ from a fresh draw\n",
+		fprintf(stderr,
+			"test_pixels: %s: the incremental frames differ from a fresh draw\n",
 			s->name);
 		ret = -EINVAL;
 	}
@@ -1207,7 +1247,8 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 		draw_frame(txt, con, vte, s->conf);
 		/* both buffers now hold the last frame */
 		if (memcmp(fb, fb_back, (size_t)fb_w * fb_h * sizeof(*fb))) {
-			fprintf(stderr, "test_pixels: %s: the two buffers differ after the last frame\n",
+			fprintf(stderr,
+				"test_pixels: %s: the two buffers differ after the last frame\n",
 				s->name);
 			ret = -EINVAL;
 		}
@@ -1281,7 +1322,8 @@ static void check_font_files(struct kmscon_font *font, const char *font_dir)
 		for (int i = 0; i < sets[k]->nfont; i++) {
 			FcChar8 *path = NULL;
 
-			if (FcPatternGetString(sets[k]->fonts[i], FC_FILE, 0, &path) != FcResultMatch ||
+			if (FcPatternGetString(sets[k]->fonts[i], FC_FILE, 0, &path) !=
+				    FcResultMatch ||
 			    !realpath((char *)path, file) || strncmp(file, dir, strlen(dir)) != 0 ||
 			    file[strlen(dir)] != '/') {
 				fprintf(stderr, "test_pixels: font %s is not under %s\n",

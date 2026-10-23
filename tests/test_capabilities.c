@@ -61,8 +61,7 @@ static struct term *term_new(unsigned int cols, unsigned int rows)
 {
 	struct term *t = calloc(1, sizeof(*t));
 
-	if (!t || tsm_screen_new(&t->con, NULL, NULL) ||
-	    tsm_screen_resize(t->con, cols, rows) ||
+	if (!t || tsm_screen_new(&t->con, NULL, NULL) || tsm_screen_resize(t->con, cols, rows) ||
 	    tsm_vte_new(&t->vte, t->con, on_write, t, NULL, NULL)) {
 		fprintf(stderr, "test_capabilities: cannot create a terminal\n");
 		exit(2);
@@ -123,8 +122,7 @@ static bool reply_is(struct term *t, const char *query, const char *want)
 }
 
 /* feed @query and expect a reply that starts with @prefix and ends with @suffix */
-static bool reply_matches(struct term *t, const char *query, const char *prefix,
-			  const char *suffix)
+static bool reply_matches(struct term *t, const char *query, const char *prefix, const char *suffix)
 {
 	size_t lp = strlen(prefix), ls = strlen(suffix);
 
@@ -132,8 +130,8 @@ static bool reply_matches(struct term *t, const char *query, const char *prefix,
 	feed(t, query);
 	if (t->reply_len < lp + ls || strncmp(t->reply, prefix, lp) ||
 	    strcmp(t->reply + t->reply_len - ls, suffix))
-		return fail("%s replied \"%s\", want \"%s...%s\"", shown(query),
-			    shown(t->reply), shown(prefix), shown(suffix));
+		return fail("%s replied \"%s\", want \"%s...%s\"", shown(query), shown(t->reply),
+			    shown(prefix), shown(suffix));
 	return true;
 }
 
@@ -197,10 +195,10 @@ static bool probe_sgr_underline_styles(struct term *t)
 	feed(t, "\e[4:1mA\e[4:2mB\e[4:3mC\e[4:4mD\e[4:5mE\e[21mF\e[24mG");
 	for (unsigned int x = 0; x < sizeof(want); x++)
 		if (cell(t, x, 0)->underline != want[x])
-			return fail("column %u (SGR %s) drew underline %u, want %u", x,
-				    (const char *[]){"4:1", "4:2", "4:3", "4:4", "4:5", "21",
-						     "24"}[x],
-				    cell(t, x, 0)->underline, want[x]);
+			return fail(
+				"column %u (SGR %s) drew underline %u, want %u", x,
+				(const char *[]){"4:1", "4:2", "4:3", "4:4", "4:5", "21", "24"}[x],
+				cell(t, x, 0)->underline, want[x]);
 	return true;
 }
 
@@ -325,8 +323,8 @@ static bool probe_rep(struct term *t)
 
 /* erased cells take the pen's background only (no underline, strike, bold),
  * for erases, scrolls and reverse index */
-static bool erased_blank(struct term *t, unsigned int x, unsigned int y,
-			 struct tsm_screen_color bg, const char *what)
+static bool erased_blank(struct term *t, unsigned int x, unsigned int y, struct tsm_screen_color bg,
+			 const char *what)
 {
 	const struct tsm_frame_cell *c = cell(t, x, y);
 
@@ -369,8 +367,7 @@ static bool probe_frame_age_per_caller(struct term *t)
 	if (!(tsm_frame_cell_at(tsm_screen_frame_since(t->con, &a), 0, 0)->flags &
 	      TSM_FRAME_CHANGED))
 		return fail("caller A's frame did not mark the new cell changed");
-	if (tsm_frame_cell_at(tsm_screen_frame_since(t->con, &a), 0, 0)->flags &
-	    TSM_FRAME_CHANGED)
+	if (tsm_frame_cell_at(tsm_screen_frame_since(t->con, &a), 0, 0)->flags & TSM_FRAME_CHANGED)
 		return fail("caller A's second frame still marks the cell changed");
 	if (!(tsm_frame_cell_at(tsm_screen_frame_since(t->con, &b), 0, 0)->flags &
 	      TSM_FRAME_CHANGED))
@@ -577,18 +574,15 @@ static bool probe_mouse_1000(struct term *t)
 static bool probe_mouse_1006(struct term *t)
 {
 	feed(t, "\e[?1000h\e[?1006h");
-	return mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_PRESSED,
-			"\e[<0;3;4M") &&
-	       mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_RELEASED,
-			"\e[<0;3;4m");
+	return mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_PRESSED, "\e[<0;3;4M") &&
+	       mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_RELEASED, "\e[<0;3;4m");
 }
 
 /* 1006 is an encoding, independent of which tracking mode came first */
 static bool probe_mouse_1006_first(struct term *t)
 {
 	feed(t, "\e[?1006h\e[?1000h");
-	return mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_PRESSED,
-			"\e[<0;3;4M");
+	return mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_PRESSED, "\e[<0;3;4M");
 }
 
 /* any-event tracking reports motion with no button (35) in SGR */
@@ -608,8 +602,7 @@ static bool probe_mouse_1003_x10(struct term *t)
 static bool probe_mouse_1016(struct term *t)
 {
 	feed(t, "\e[?1000h\e[?1016h");
-	return mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_PRESSED,
-			"\e[<0;20;30M");
+	return mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_PRESSED, "\e[<0;20;30M");
 }
 
 static bool probe_bracketed_paste(struct term *t)
@@ -635,8 +628,8 @@ static bool probe_reflow(struct term *t)
 		return fail("resize failed");
 	for (unsigned int x = 0; x < strlen(line); x++)
 		if (cell(t, x, 0)->key != (uint64_t)line[x])
-			return fail("after widening, row 0 column %u holds U+%04llX, want '%c'",
-				    x, (unsigned long long)cell(t, x, 0)->key, line[x]);
+			return fail("after widening, row 0 column %u holds U+%04llX, want '%c'", x,
+				    (unsigned long long)cell(t, x, 0)->key, line[x]);
 	return true;
 }
 
@@ -650,13 +643,15 @@ static bool placeholder(const char *what)
 static bool probe_focus_1004(struct term *t)
 {
 	(void)t;
-	return placeholder("libtsm has no call for kmscon to report focus in and out (CSI I, CSI O)");
+	return placeholder(
+		"libtsm has no call for kmscon to report focus in and out (CSI I, CSI O)");
 }
 
 static bool probe_osc_8(struct term *t)
 {
 	(void)t;
-	return placeholder("cells carry no hyperlink, and OSC 8 is passed to kmscon, which drops it");
+	return placeholder(
+		"cells carry no hyperlink, and OSC 8 is passed to kmscon, which drops it");
 }
 
 static bool probe_osc_52(struct term *t)

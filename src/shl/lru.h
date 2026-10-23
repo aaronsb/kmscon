@@ -94,7 +94,8 @@ static inline void shl_lru_free(struct shl_lru *lru)
  * full key, so a collision is a miss. A NULL @match takes the first value.
  */
 static inline void *shl_lru_find(struct shl_lru *lru, uint64_t key,
-				 bool (*match)(const void *value, const void *data), const void *data)
+				 bool (*match)(const void *value, const void *data),
+				 const void *data)
 {
 	struct htable_iter i;
 	struct shl_lru_entry *entry;

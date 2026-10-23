@@ -32,7 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "../src/font/font.c"	       /* real dispatch: register / find / render */
+#include "../src/font/font.c" /* real dispatch: register / find / render */
 #include "../src/font/font_box.c"
 #undef LOG_SUBSYSTEM		       /* font.c and font_freetype.c both define it */
 #include "../src/font/font_freetype.c" /* backend ops + ft_data layout */
@@ -367,7 +367,8 @@ static void test_cluster_stacked_mark(void)
  */
 static void test_centre_dx_bounded(void)
 {
-	static const long advs[] = {-100 * 64, -3 * 8 * 64, -64, 0, 4 * 64, 8 * 64, 16 * 64, 40 * 64};
+	static const long advs[] = {-100 * 64, -3 * 8 * 64, -64,     0,
+				    4 * 64,    8 * 64,	    16 * 64, 40 * 64};
 	struct kmscon_font font = {.width = 8, .height = 16};
 	struct kmscon_glyph glyph = {.double_width = true, .buf = {.width = 16, .height = 16}};
 	unsigned int i;
@@ -474,7 +475,8 @@ static void test_colour_fit(void)
 	assert(g && g->buf.format == VIDEO_FORMAT_A8 && g->buf.width == 10 && g->buf.height == 16);
 	for (y = 0; y < 16; y++)
 		for (x = 0; x < 10; x++)
-			assert(g->buf.data[y * 10 + x] == ((x >= 1 && x < 9 && y >= 6 && y < 10) ? 255 : 0));
+			assert(g->buf.data[y * 10 + x] ==
+			       ((x >= 1 && x < 9 && y >= 6 && y < 10) ? 255 : 0));
 	free(g);
 
 	/* a tall one in a two-cell 20x8 box: 6 tall, centred across */

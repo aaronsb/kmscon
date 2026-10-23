@@ -639,8 +639,8 @@ int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool curso
 	if (!frame)
 		return -ENOMEM;
 
-	cursor_on = frame->cursor.visible &&
-		    !(is_cursor_blinking(frame->cursor.style) && cursor_blink);
+	cursor_on =
+		frame->cursor.visible && !(is_cursor_blinking(frame->cursor.style) && cursor_blink);
 
 	txt->screen = con;
 	ret = txt->ops->draw(txt, frame, cursor_on);

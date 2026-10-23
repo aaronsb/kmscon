@@ -342,8 +342,8 @@ static void copy_mono(struct video_buffer *buf, FT_GlyphSlot glyph, unsigned int
  * clipped at the top and bottom, and centred when it is wider than the cell
  * space to its right.
  */
-static void copy_map(struct video_buffer *buf, const uint8_t *map, int map_w, int map_h,
-		     int pitch, int left, int top)
+static void copy_map(struct video_buffer *buf, const uint8_t *map, int map_w, int map_h, int pitch,
+		     int left, int top)
 {
 	int width, height;
 	int left_src = 0;
@@ -607,7 +607,8 @@ static struct kmscon_glyph *render_cluster(struct kmscon_font *font, FT_Face fac
 					continue;
 				if (map->pixel_mode == FT_PIXEL_MODE_MONO)
 					v = !!(map->buffer[y * map->pitch + x / 8] &
-					       (1 << (7 - (x % 8)))) * 0xff;
+					       (1 << (7 - (x % 8)))) *
+					    0xff;
 				else
 					v = map->buffer[y * map->pitch + x];
 				d = &canvas[(gy + y) * cw + gx + x];
@@ -700,7 +701,8 @@ static int get_fallback(uint32_t ch, struct ft_font *ftf)
 			FcCharSet *cs;
 			FcBool colour = FcFalse;
 
-			if (FcPatternGetCharSet(ftf->fc->fonts[i], FC_CHARSET, 0, &cs) != FcResultMatch ||
+			if (FcPatternGetCharSet(ftf->fc->fonts[i], FC_CHARSET, 0, &cs) !=
+				    FcResultMatch ||
 			    !FcCharSetHasChar(cs, ch))
 				continue;
 			FcPatternGetBool(ftf->fc->fonts[i], FC_COLOR, 0, &colour);
@@ -803,8 +805,8 @@ static struct kmscon_glyph *kmscon_font_freetype_render(struct kmscon_font *font
 	if (!face)
 		return NULL;
 	if (kmscon_colour_face_has_colour(face)) {
-		glyph = kmscon_colour_render(font, kmscon_colour_face_open(&ftd->colour, pattern), cps,
-					     len, cwidth, !(emoji && font->emoji_color));
+		glyph = kmscon_colour_render(font, kmscon_colour_face_open(&ftd->colour, pattern),
+					     cps, len, cwidth, !(emoji && font->emoji_color));
 		if (glyph)
 			return glyph;
 	}

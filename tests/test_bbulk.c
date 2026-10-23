@@ -12,7 +12,7 @@
 #include "../src/render/text.h"
 
 /* ---- Stubs for external dependencies used by text_bbulk.c ---- */
-#include "../src/font/font.h"	/* for kmscon_font_* */
+#include "../src/font/font.h" /* for kmscon_font_* */
 #include "../src/render/deco.h"
 #include "../src/video/video.h" /* for display_* prototypes */
 /* the fake display's size; test_budget_8k changes it */
@@ -230,8 +230,8 @@ void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y)
 #undef log_debug
 #define log_debug(f, ...)
 /* Pull in the implementation so we can call bbulk_set directly */
-#include "../src/render/picture.c"
 #include "../src/render/bbulk.c"
+#include "../src/render/picture.c"
 
 /* Fake font objects with valid width/height for FONT_WIDTH/FONT_HEIGHT macros */
 static struct kmscon_font fake_font = {.width = FAKE_CELL_W, .height = FAKE_CELL_H};
@@ -519,8 +519,11 @@ static void settle(struct kmscon_text *txt, unsigned int n)
  */
 static void test_placement_damage(struct kmscon_text *txt)
 {
-	test_images[1] = (struct tsm_frame_image){
-		.width = 128, .height = 32, .stride = 128 * 4, .pixels = picture_px, .opaque = true};
+	test_images[1] = (struct tsm_frame_image){.width = 128,
+						  .height = 32,
+						  .stride = 128 * 4,
+						  .pixels = picture_px,
+						  .opaque = true};
 
 	settle(txt, 0);
 

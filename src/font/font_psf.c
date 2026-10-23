@@ -279,7 +279,8 @@ static bool kmscon_font_psf_has_glyph(struct kmscon_font *kfont, struct kmscon_f
 
 static struct kmscon_glyph *kmscon_font_psf_render(struct kmscon_font *kfont,
 						   struct kmscon_font_attr *attr,
-						   const uint32_t *cps, size_t len, unsigned int cwidth)
+						   const uint32_t *cps, size_t len,
+						   unsigned int cwidth)
 {
 	psf_font_t *font = kfont->data;
 	uint32_t ch = cps[0];

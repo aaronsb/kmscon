@@ -120,8 +120,7 @@ static FT_Face colour_face_of(struct face *face, PangoLayoutLine *line)
 	if (!run || !run->item || !PANGO_IS_FC_FONT(run->item->analysis.font))
 		return NULL;
 	pattern = pango_fc_font_get_pattern(PANGO_FC_FONT(run->item->analysis.font));
-	if (!pattern || FcPatternGetBool(pattern, FC_COLOR, 0, &colour) != FcResultMatch ||
-	    !colour)
+	if (!pattern || FcPatternGetBool(pattern, FC_COLOR, 0, &colour) != FcResultMatch || !colour)
 		return NULL;
 	return kmscon_colour_face_open(&face->colour, pattern);
 }
@@ -427,7 +426,8 @@ static bool kmscon_font_pango_has_glyph(struct kmscon_font *font, struct kmscon_
 
 static struct kmscon_glyph *kmscon_font_pango_render(struct kmscon_font *font,
 						     struct kmscon_font_attr *attr,
-						     const uint32_t *cps, size_t len, unsigned int cwidth)
+						     const uint32_t *cps, size_t len,
+						     unsigned int cwidth)
 {
 	return get_glyph(font, font->data, attr, cps, len, cwidth);
 }

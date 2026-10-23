@@ -122,7 +122,6 @@ struct kmscon_text {
 	uint64_t overlay_count;		     /* the overlays made, for their keys */
 };
 
-
 struct kmscon_text_ops {
 	const char *name;
 	struct shl_module *owner;

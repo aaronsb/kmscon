@@ -78,20 +78,20 @@ uint64_t image_budget_displays_px(void)
 	return budget.displays_px;
 }
 
-/* the screen whose image tsm_screen_image_victim names first across all */
-static struct tsm_screen *next_victim(void)
+/* the screen whose image tsm_screen_image_victim names first across all, and that image in @best */
+static struct tsm_screen *next_victim(struct tsm_image_victim *best)
 {
-	struct tsm_image_victim v, best;
+	struct tsm_image_victim v;
 	struct tsm_screen *con = NULL;
 	unsigned int i;
 
 	for (i = 0; i < budget.n_screens; i++) {
 		if (!tsm_screen_image_victim(budget.screens[i], &v))
 			continue;
-		if (!con || v.rank < best.rank ||
-		    (v.rank == best.rank && v.last_use < best.last_use)) {
+		if (!con || v.rank < best->rank ||
+		    (v.rank == best->rank && v.last_use < best->last_use)) {
 			con = budget.screens[i];
-			best = v;
+			*best = v;
 		}
 	}
 	return con;
@@ -99,25 +99,40 @@ static struct tsm_screen *next_victim(void)
 
 /*
  * Frees, in ADR-103's order, until @bytes more fit under the limit: pictures
- * no renderer drew on its last frame, then libtsm's images by rank and least
- * recently used. Returns 0, or -ENOSPC when they still do not fit.
+ * no renderer but @self drew on its last frame, then libtsm's images by rank
+ * and least recently used, stopping at the first that @drawn, if given, says
+ * is drawn. Returns 0, or -ENOSPC when they still do not fit.
  */
-static int make_room(size_t bytes)
+static int make_room(size_t bytes, struct image_budget_cache *self, image_budget_drawn_cb drawn,
+		     void *data)
 {
 	size_t limit = image_budget_limit();
 	struct image_budget_cache *c;
+	struct tsm_image_victim v;
 	struct tsm_screen *con;
 
 	if (bytes > limit)
 		return -ENOSPC;
 	for (c = budget.caches; c && image_budget_used() > limit - bytes; c = c->next)
-		c->trim(c, image_budget_used() - (limit - bytes));
+		if (c != self)
+			c->trim(c, image_budget_used() - (limit - bytes));
 	while (image_budget_used() > limit - bytes) {
-		con = next_victim();
-		if (!con || !tsm_screen_image_evict(con))
+		con = next_victim(&v);
+		if (!con || (drawn && drawn(con, v.key, data)) || !tsm_screen_image_evict(con))
 			return -ENOSPC;
 	}
 	return 0;
+}
+
+/*
+ * The images a frame draws were the last its screen used, so once the next
+ * victim is one of them, every image left to evict is: stopping there evicts
+ * none of them.
+ */
+int image_budget_picture_room(struct image_budget_cache *self, size_t bytes,
+			      image_budget_drawn_cb drawn, void *data)
+{
+	return make_room(bytes, self, drawn, data);
 }
 
 /*
@@ -138,7 +153,7 @@ void image_budget_set_limit(size_t limit)
 		return;
 	budget.gen++;
 	if (image_budget_limit() < old)
-		make_room(0);
+		make_room(0, NULL, NULL, NULL);
 }
 
 int image_budget_count_display(const void *disp, uint64_t px)
@@ -217,7 +232,7 @@ static int screen_reserve(struct tsm_screen *con, size_t bytes, void *data)
 {
 	(void)con;
 	(void)data;
-	if (make_room(bytes))
+	if (make_room(bytes, NULL, NULL, NULL))
 		return -ENOSPC;
 	budget.images += bytes;
 	return 0;

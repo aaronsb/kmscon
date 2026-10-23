@@ -100,7 +100,9 @@ static struct tsm_frame_image test_images[16];
 int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
 			  struct tsm_frame_image *out)
 {
-	(void)txt;
+	/* a libtsm key, of the screen a test set */
+	if (!overlay && key >= 16 && txt->screen)
+		return tsm_screen_frame_image(txt->screen, key, out);
 	if (overlay || key >= 16 || !test_images[key].pixels)
 		return -ENOENT;
 	*out = test_images[key];
@@ -1095,6 +1097,113 @@ static void test_budget_images(void)
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 }
 
+/* a libtsm screen's image @id of 320 x 240, 40 x 15 cells, placed at the top left
+ * of the screen unless @unplaced; its key */
+static uint64_t screen_image(struct tsm_screen *con, uint32_t id, bool unplaced)
+{
+	static uint32_t px[320 * 240];
+	struct tsm_test_image img = {
+		.width = 320, .height = 240, .pixels = px, .kind = TSM_IMAGE_KITTY, .id = id};
+	struct tsm_test_placement pl = {0};
+	uint64_t key, pkey;
+
+	assert(tsm_screen_test_image(con, &img, &key) == 0);
+	pl.image = key;
+	if (!unplaced)
+		assert(tsm_screen_test_place(con, &pl, &pkey) == 0);
+	return key;
+}
+
+static bool screen_holds(struct tsm_screen *con, uint64_t key)
+{
+	struct tsm_frame_image img;
+
+	return tsm_screen_frame_image(con, key, &img) == 0;
+}
+
+/*
+ * On a display that scales pictures, a picture on screen takes its room from
+ * the terminal's history (operator's answer to ADR-103 Q1, 2026-10-23), in
+ * ADR-103's order: another display's picture its last frame did not draw,
+ * then the images unplaced, then those placed only in scrollback. An image
+ * placed on the screen's lines stays, and so does one the frame draws from
+ * scrollback, as when the view is scrolled back: a picture that needs its
+ * room is left out, and idle frames do not try it again.
+ */
+static void test_budget_history(void)
+{
+	struct kmscon_text a, b;
+	struct bbulk *ba = open_txt(&a, 0x46, 640, 480), *bb = open_txt(&b, 0x47, 640, 480);
+	uint32_t *src = half_images(640, 480, 2);
+	size_t pic = (size_t)640 * 480 * 4, img = (size_t)320 * 240 * 4 + TSM_SCREEN_IMAGE_OVERHEAD;
+	const struct tsm_frame *lf;
+	struct tsm_frame_age age = {0};
+	struct tsm_screen *con;
+	uint64_t scrolled, unplaced, viewed, onscreen;
+	unsigned int i, n;
+
+	image_budget_set_limit(16 * pic);
+	/* the other display keeps a picture of two rows its last frame did not draw */
+	set_band(0, 95, 2, 0, 2);
+	draw_idle(&b, 1);
+	draw_idle(&b, 0);
+	assert(pictures_of(bb, 2) == 1 && bb->picture_bytes < img);
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, a.cols, a.rows) == 0);
+	tsm_screen_set_max_sb(con, 200);
+	assert(image_budget_add_screen(con) == 0);
+
+	/* one far up the scrollback; one unplaced; one at the scrollback's end
+	 * the view is scrolled back to; one on the screen's lines */
+	scrolled = screen_image(con, 1, false);
+	for (i = 0; i < 100; i++)
+		tsm_screen_newline(con);
+	viewed = screen_image(con, 2, false);
+	unplaced = screen_image(con, 3, true);
+	for (i = 0; i < a.rows; i++)
+		tsm_screen_newline(con);
+	onscreen = screen_image(con, 4, false);
+	assert(image_budget_used() == 4 * img + bb->picture_bytes);
+	tsm_screen_sb_up(con, a.rows);
+
+	/* the frame libtsm gives: the viewed image, at the view's top */
+	lf = tsm_screen_frame_since(con, &age);
+	for (i = n = 0; i < lf->placement_count; i++) {
+		assert(tsm_frame_placement_at(lf, i)->image_key == viewed);
+		placements[n++] = *tsm_frame_placement_at(lf, i);
+	}
+	assert(n == 1 && placements[0].row == 0);
+	a.screen = con;
+
+	/* a picture over it takes the other display's picture's room, then the unplaced image's */
+	image_budget_set_limit(pic + 3 * img);
+	set_scaled(1, 90, 1);
+	assert(draw_placements(&a, 2) == 0);
+	assert(!ba->starving && picture_drawn(&a, 20));
+	assert(pictures_of(bb, 2) == 0 && !screen_holds(con, unplaced));
+	assert(screen_holds(con, scrolled) && screen_holds(con, viewed) &&
+	       screen_holds(con, onscreen));
+	settle(&a, 2);
+
+	/* a second takes the scrolled one's, needs the viewed one's too, and is left out */
+	set_scaled(2, 91, 2);
+	assert(draw_placements(&a, 3) == 0);
+	assert(ba->starving && picture_drawn(&a, 20) && !screen_holds(con, scrolled));
+	assert(screen_holds(con, viewed) && screen_holds(con, onscreen));
+	assert(draw_placements(&a, 3) == 0);
+	assert(draw_placements(&a, 3) == KMSCON_TEXT_UNCHANGED);
+	assert(ba->starving && screen_holds(con, viewed));
+
+	a.screen = NULL;
+	close_txt(&b);
+	close_txt(&a);
+	image_budget_remove_screen(con);
+	tsm_screen_unref(con);
+	drop_images(src, 2);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+
 /*
  * The largest set limit, 1 TiB, on a 7680x4320 display: its share of the
  * budget by size is exact, not a product of limit and pixels that wrapped 64
@@ -1222,6 +1331,7 @@ int main(void)
 	test_starved_retry();
 	test_budget_trim();
 	test_budget_images();
+	test_budget_history();
 	test_budget_huge();
 	test_picture_cache(&txt);
 

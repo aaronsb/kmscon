@@ -71,17 +71,22 @@
  * scaled and rotated once and kept, per image and drawn size, up to twice the
  * screen's size in ARGB; the least recently used goes first. The pictures draw
  * on ADR-103's image budget (image_budget.c), which libtsm's images share, and
- * with them never pass it, not even within a frame: a picture that would is
- * left out until the room in the budget grows (pictures or images freed, a
- * display added or removed, a larger limit) or this display's placements
- * change, and idle frames do not compose it again. A libtsm image that needs
- * room takes it first from the pictures the last frame did not draw. While
- * one is left out on any display, each display frees the pictures no placement
- * of its shows any more as its frame starts, and that frame tries its own
- * left-out placements again. A terminal whose session leaves the foreground
- * frees its pictures. The scaler's working memory (at most 16 MiB) and the
- * buffer a picture is rotated in (at most one screen) live only while one
- * picture is made and are not counted.
+ * with them never pass it, not even within a frame. A picture that needs room
+ * takes it from this display's pictures the frame does not place, then, in
+ * ADR-103's order, from other displays' pictures their last frame did not
+ * draw and from libtsm's images that are unplaced or placed only in
+ * scrollback, never one this frame draws (operator's answer, 2026-10-23):
+ * viewing a new picture can push older ones out of scrollback. One that still
+ * does not fit is left out until the room in the budget grows (pictures or
+ * images freed, a display added or removed, a larger limit) or this display's
+ * placements change, and idle frames do not compose it again. A libtsm image
+ * that needs room takes it first from the pictures the last frame did not
+ * draw. While one is left out on any display, each display frees the pictures
+ * no placement of its shows any more as its frame starts, and that frame tries
+ * its own left-out placements again. A terminal whose session leaves the
+ * foreground frees its pictures. The scaler's working memory (at most 16 MiB)
+ * and the buffer a picture is rotated in (at most one screen) live only while
+ * one picture is made and are not counted.
  *
  * Placement damage: this display keeps the placements it drew last. One added,
  * removed, or changed in any way that changes what it draws (moved, resized,
@@ -1021,6 +1026,24 @@ static void pictures_settle(struct bbulk *bb)
 }
 
 /*
+ * @con's image @key is shown by a placement of the frame that renderer @data
+ * draws; without the frame's screen, every image counts as drawn
+ */
+static bool frame_draws(struct tsm_screen *con, uint64_t key, void *data)
+{
+	struct kmscon_text *txt = data;
+	struct bbulk *bb = txt->data;
+	unsigned int i;
+
+	if (con != txt->screen)
+		return !txt->screen;
+	for (i = 0; i < bb->n_places; i++)
+		if (!bb->places[i].overlay && bb->places[i].fp.image_key == key)
+			return true;
+	return false;
+}
+
+/*
  * Where @p's picture draws and its pixels, scaled and rotated for this display
  * when its size or the orientation asks for it: 1, -1 when it draws nothing,
  * -ENOSPC when it does not fit the budget, or -ENOMEM.
@@ -1111,7 +1134,8 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 		 * it the cells are drawn without the picture, and drawn again
 		 * once the budget has changed
 		 */
-		if (image_budget_used() + bytes > image_budget_limit())
+		if (image_budget_used() + bytes > image_budget_limit() &&
+		    image_budget_picture_room(&bb->cache, bytes, frame_draws, txt))
 			return -ENOSPC;
 		pic = malloc(sizeof(*pic) + bytes);
 		tmp = txt->orientation == OR_NORMAL ? NULL : malloc(bytes);

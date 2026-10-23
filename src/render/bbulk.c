@@ -40,6 +40,12 @@
  * (the cursor and text blink phases, the pointer, a full redraw) are tracked
  * here; a full redraw also asks the next frame for every cell.
  *
+ * On a display with damage clips, a frame's damage is every cell drawn into
+ * the buffer on that frame (cell_flags.drawn): the cells changed on this frame
+ * or the one before, the two frames the buffer is behind. That is the buffer's
+ * own damage, a superset of the change since the frame on screen, which is
+ * what a driver that uploads each buffer separately needs.
+ *
  * A cell draws its background, then its underline, then its glyph, then its
  * strike-through. An undecorated cell is one alpha-mask request; a decorated
  * one is composed in system memory and sent as one premultiplied ARGB request
@@ -69,6 +75,7 @@ typedef union {
 		uint8_t force : 1;   /* draw on the next frame whatever the frame says */
 		uint8_t cursor : 1;  /* last drawn as the cursor */
 		uint8_t hidden : 1;  /* last drawn in the blink phase that hides text */
+		uint8_t drawn : 1;   /* drawn on this frame: in its damage */
 	};
 	uint8_t u8;
 } cell_flags_t;
@@ -121,6 +128,7 @@ static void damage_cell(struct bbulk *bb, unsigned int off)
 {
 	bb->cell_flags[off].force = 1;
 	bb->cell_flags[off].damaged = 1;
+	bb->cell_flags[off].drawn = 1;
 }
 
 static void compute_border(struct kmscon_text *txt)
@@ -624,9 +632,11 @@ static int bbulk_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 			f->force = 0;
 			f->cursor = is_cursor;
 			f->hidden = hidden;
+			f->drawn = 1;
 			if (ncells == 2) {
 				f[1].damaged = changed;
 				f[1].force = 0;
+				f[1].drawn = 1;
 			}
 
 			key = hidden ? 0 : cell->key;
@@ -795,7 +805,8 @@ static void merge_damage(struct bbulk *bb, struct video_rect *r)
 
 /*
  * Simple merge algorithm, on each line, if two damaged cells are less than
- * DAMAGE_MERGE_LEN away, include the two cells in one damage rectangle.
+ * DAMAGE_MERGE_LEN away, include the two cells in one damage rectangle. Each
+ * frame's drawn cells are reported once.
  */
 static void bbulk_compute_damage(struct kmscon_text *txt)
 {
@@ -818,11 +829,12 @@ static void bbulk_compute_damage(struct kmscon_text *txt)
 		prev = 0;
 		for (posx = 0; posx < txt->cols; posx++) {
 			off = posx + posy * txt->cols;
-			if (!bb->cell_flags[off].damaged) {
+			if (!bb->cell_flags[off].drawn) {
 				if (prev)
 					prev--;
 				continue;
 			}
+			bb->cell_flags[off].drawn = 0;
 			set_coordinate(txt, &x1, &y1, posx, posy);
 			r.x1 = x1;
 			r.y1 = y1;
@@ -868,20 +880,18 @@ static int bbulk_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	bb->attr = *attr;
 	bb->deco = txt->deco;
 
+	/*
+	 * The cells the last frame changed need no forcing: bbulk_draw draws
+	 * and reports them once more, as unchanged. Forced, they would count
+	 * as changed on every later frame, and the whole screen with them.
+	 */
 	if (bb->redraw) {
 		kmscon_text_redraw_all(txt);
 		display_clear(txt->disp, attr->br, attr->bg, attr->bb);
 		for (i = 0; i < bb->cell_count; i++)
 			damage_cell(bb, i);
-	} else if (display_has_damage(txt->disp)) {
-		log_debug("Carry over damage from previous frame");
-		for (i = 0; i < bb->cell_count; i++) {
-			if (bb->cell_flags[i].damaged)
-				bb->cell_flags[i].force = 1;
-		}
-	}
-	if (bb->redraw)
 		bb->redraw--;
+	}
 
 	return 0;
 }

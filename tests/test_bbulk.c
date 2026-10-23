@@ -149,11 +149,6 @@ bool display_need_redraw(struct display *disp)
 	(void)disp;
 	return false;
 }
-bool display_has_damage(struct display *disp)
-{
-	(void)disp;
-	return false;
-}
 bool display_supports_damage(struct display *disp)
 {
 	(void)disp;
@@ -311,15 +306,19 @@ static void test_two_frame_rule(struct kmscon_text *txt)
 	draw_frame(txt, 5, 3);
 	assert(n_blended == 1 && was_blended(x, y));
 	assert(bb->damage_rect_len == 1);
+	assert(bb->damage_rects[0].x1 == x && bb->damage_rects[0].y1 == y);
 
-	/* frame N+1: unchanged, but drawn again into the other buffer */
+	/* frame N+1: unchanged, but drawn again into the other buffer, and
+	 * that buffer's damage */
 	draw_frame(txt, -1, -1);
 	assert(n_blended == 1 && was_blended(x, y));
-	assert(bb->damage_rect_len == 0);
+	assert(bb->damage_rect_len == 1);
+	assert(bb->damage_rects[0].x1 == x && bb->damage_rects[0].y1 == y);
 
 	/* frame N+2: both buffers hold it */
 	draw_frame(txt, -1, -1);
 	assert(n_blended == 0);
+	assert(bb->damage_rect_len == 0);
 }
 
 /*

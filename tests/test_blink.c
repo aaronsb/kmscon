@@ -12,12 +12,14 @@
  * render of the same screen in the same blink phase. A second display draws
  * the same console on some frames only, skipping frames that change the
  * screen, so its own frame age spans those changes. Each run is drawn again
- * with damage reporting on, as on a plane with FB_DAMAGE_CLIPS, and every
- * pixel that differs from the frame on screen must lie in a reported rect.
- * That check finds a cell left out of the damage, not damage that is too
- * large: bbulk's carry-over keeps every damaged cell damaged while the
- * display has damage (#67), so after the first frames the rects cover the
- * whole screen, and the damage runs redraw every cell.
+ * with damage reporting on, as on a plane with FB_DAMAGE_CLIPS: every pixel
+ * that differs from the frame on screen must lie in a reported rect, and a
+ * display's frame that follows one of its frames with no change, and brings
+ * none itself, must report no damage. A scripted run of single-cell writes and
+ * blink flips then holds each frame's damage to exactly the cells changed on
+ * that frame or the one before, the two frames its buffer is behind: damage
+ * that outlives them (#67) fails, and so does a change left out. The run
+ * prints how many cells it damaged.
  *
  * What a phase looks like is judged against plain screens: in the visible
  * phase the blinking screen equals the same text without SGR 5, and in the
@@ -190,6 +192,21 @@ static void check_damage(struct output *o, const uint32_t *drawn, const uint32_t
 			failures++;
 			return;
 		}
+	}
+}
+
+/* the cells @o's damage covers */
+static void damage_cells(const struct output *o, bool cells[ROWS][COLS])
+{
+	unsigned int fw = FONT_WIDTH(o->txt), fh = FONT_HEIGHT(o->txt);
+
+	memset(cells, 0, sizeof(bool) * ROWS * COLS);
+	for (size_t i = 0; i < o->n_rects; i++) {
+		const struct video_rect *r = &o->rects[i];
+
+		for (unsigned int row = r->y1 / fh; row * fh < (unsigned int)r->y2; row++)
+			for (unsigned int col = r->x1 / fw; col * fw < (unsigned int)r->x2; col++)
+				cells[row][col] = true;
 	}
 }
 
@@ -503,7 +520,9 @@ struct step {
  * Every frame each display draws must equal a fresh render of the screen as
  * it is, in the frame's phase. @mask: which of the two displays draws at each
  * step (bit 0 the first, drawing every step unless @mask says otherwise).
- * @damage: the displays report damage.
+ * @damage: the displays report damage. A display's frame changes nothing when
+ * no bytes were written since its last frame and its phase is that frame's;
+ * its first two frames redraw every cell.
  */
 static void run_steps(const char *what, const struct step *steps, size_t n, const char *initial,
 		      const unsigned int *mask, bool damage)
@@ -514,6 +533,10 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 	struct output outs[2];
 	uint32_t *ref = malloc(fb_bytes);
 	char label[256];
+	/* per display: bytes written since its last frame, that frame's phase,
+	 * and whether it changed anything */
+	bool pending[2] = {false, false}, last_hidden[2] = {false, false};
+	bool last_changed[2] = {true, true};
 
 	console_new(&con, &vte);
 	tsm_vte_input(vte, initial, strlen(initial));
@@ -527,14 +550,18 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 		if (steps[i].bytes) {
 			tsm_vte_input(vte, steps[i].bytes, strlen(steps[i].bytes));
 			strncat(bytes, steps[i].bytes, sizeof(bytes) - strlen(bytes) - 1);
+			pending[0] = pending[1] = true;
 		}
 		fresh(ref, bytes, steps[i].hidden);
 
 		for (int d = 0; d < 2; d++) {
 			const uint32_t *drawn;
+			bool changed;
 
 			if (!(draws & (1u << d)))
 				continue;
+			changed = pending[d] || steps[i].hidden != last_hidden[d] ||
+				  outs[d].frames < 2;
 			snprintf(label, sizeof(label),
 				 "%s%s: step %zu (%s phase), display '%s' frame %u into buffer %d",
 				 what, damage ? " with damage" : "", i,
@@ -542,6 +569,19 @@ static void run_steps(const char *what, const struct step *steps, size_t n, cons
 				 outs[d].frames + 1, outs[d].d2d.current_rb ^ 1);
 			drawn = output_frame(&outs[d], con, vte, steps[i].hidden, label);
 			same(drawn, ref, label);
+			if (damage && !changed && !last_changed[d]) {
+				compared++;
+				if (outs[d].n_rects) {
+					fprintf(stderr,
+						"test_blink: %s: %zu damage rects after two frames "
+						"without change\n",
+						label, outs[d].n_rects);
+					failures++;
+				}
+			}
+			pending[d] = false;
+			last_hidden[d] = steps[i].hidden;
+			last_changed[d] = changed;
 		}
 	}
 
@@ -614,6 +654,131 @@ static void test_buffers(void)
 	}
 }
 
+/*
+ * Whether @r is one row of cells that starts and ends on a cell of @want,
+ * with no run of other cells inside it as long as DAMAGE_MERGE_LEN.
+ */
+static bool rect_fits(const struct output *o, const struct video_rect *r, bool want[ROWS][COLS])
+{
+	unsigned int fw = FONT_WIDTH(o->txt), fh = FONT_HEIGHT(o->txt);
+	unsigned int row = r->y1 / fh, first = r->x1 / fw, last = (r->x2 - 1) / fw, run = 0;
+
+	if (r->y1 % fh || r->y2 - r->y1 != (int)fh || r->x1 % fw || r->x2 % fw)
+		return false;
+	if (!want[row][first] || !want[row][last])
+		return false;
+	for (unsigned int col = first; col <= last; col++) {
+		run = want[row][col] ? 0 : run + 1;
+		if (run >= DAMAGE_MERGE_LEN)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * One display with damage draws the blinking screen for EXTENT_FRAMES frames,
+ * as a shell prompt would see it: one frame in three writes one cell of the
+ * free rows, and the blink phase flips every eight frames, which changes the
+ * blinking cells. Each frame's damage must cover exactly the cells changed on
+ * that frame or the one before, give or take bbulk's merging: a rect starts
+ * and ends on such a cell, and a run of other cells inside it is shorter than
+ * DAMAGE_MERGE_LEN. The first three frames are left out: the first two redraw
+ * every cell, so the third draws every cell again into the buffer the second
+ * left behind.
+ */
+#define EXTENT_FRAMES 100
+
+static void test_damage_extent(void)
+{
+	static char bytes[8192];
+	static bool now[ROWS][COLS], before[ROWS][COLS], want[ROWS][COLS], got[ROWS][COLS];
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	struct output o;
+	uint32_t *ref = malloc(fb_bytes);
+	unsigned int typed = 0, total = 0, judged = 0, most = 0, none = 0;
+	bool hidden = false;
+	char label[128], cell[32];
+
+	screen_bytes(bytes, sizeof(bytes), BLINKING);
+	console_new(&con, &vte);
+	tsm_vte_input(vte, bytes, strlen(bytes));
+	output_init(&o, "extent", font, true);
+
+	for (unsigned int f = 0; f < EXTENT_FRAMES; f++) {
+		unsigned int n = 0;
+		bool reported = false;
+
+		memset(now, 0, sizeof(now));
+		if (f && f % 8 == 0) {
+			hidden = !hidden;
+			memcpy(now, blink_cell, sizeof(now));
+		}
+		if (f >= 4 && f % 3 == 1) {
+			unsigned int row = ROWS_USED + typed / (COLS - 1) % (ROWS - ROWS_USED);
+			unsigned int col = typed % (COLS - 1);
+
+			snprintf(cell, sizeof(cell), ESC "[%u;%uH%c", row + 1, col + 1,
+				 'a' + typed % 26);
+			tsm_vte_input(vte, cell, strlen(cell));
+			strncat(bytes, cell, sizeof(bytes) - strlen(bytes) - 1);
+			now[row][col] = true;
+			typed++;
+		}
+
+		fresh(ref, bytes, hidden);
+		snprintf(label, sizeof(label), "damage extent: frame %u (%s phase)", f + 1,
+			 hidden ? "hidden" : "visible");
+		same(output_frame(&o, con, vte, hidden, label), ref, label);
+
+		damage_cells(&o, got);
+		for (unsigned int row = 0; row < ROWS; row++) {
+			for (unsigned int col = 0; col < COLS; col++) {
+				n += got[row][col];
+				want[row][col] = now[row][col] || before[row][col];
+				if (f >= 3 && want[row][col] && !got[row][col] && !reported) {
+					fprintf(stderr,
+						"test_blink: %s: cell %u,%u changed but left out of "
+						"the damage\n",
+						label, col, row);
+					reported = true;
+					failures++;
+				}
+			}
+		}
+		if (f >= 3) {
+			compared++;
+			for (size_t i = 0; i < o.n_rects && !reported; i++) {
+				if (!rect_fits(&o, &o.rects[i], want)) {
+					fprintf(stderr,
+						"test_blink: %s: damage rect %d,%d-%d,%d reaches "
+						"past the cells changed in two frames\n",
+						label, o.rects[i].x1, o.rects[i].y1, o.rects[i].x2,
+						o.rects[i].y2);
+					reported = true;
+					failures++;
+				}
+			}
+		}
+		total += n;
+		if (f >= 3) {
+			judged += n;
+			most = n > most ? n : most;
+			none += !n;
+		}
+		memcpy(before, now, sizeof(now));
+	}
+	fprintf(stderr,
+		"test_blink: damage extent: %u frames, %u cells damaged, %u in frames 4-%u "
+		"(at most %u in one frame, %u frames with none)\n",
+		EXTENT_FRAMES, total, judged, EXTENT_FRAMES, most, none);
+
+	output_destroy(&o);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+	free(ref);
+}
+
 /* Replace the process's fontconfig with one that knows only the pinned files. */
 static void pin_fonts(void)
 {
@@ -664,6 +829,7 @@ int main(int argc, char **argv)
 
 	test_phases();
 	test_buffers();
+	test_damage_extent();
 
 	kmscon_font_unref(font);
 	fprintf(stderr, "test_blink: %u screens compared, %d failures\n", compared, failures);

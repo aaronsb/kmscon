@@ -96,6 +96,8 @@ Someone other than the author verifies the PR before it merges: see [Verificatio
 
 Every PR gets a code review, and every finding is fixed or filed: see [Reviews](#reviews).
 
+Some PRs also need the operator before they merge: a visual review on a real VT ([The visual review before merge](#the-visual-review-before-merge)), or a discussion of a security change or a change in approach ([Changes the operator decides](#changes-the-operator-decides)).
+
 ### 7. Merge
 
 The PR merges with a regular merge commit, which keeps the branch's commits (the decision, the code, the goldens, the review fixes) in `main`'s history:
@@ -235,6 +237,21 @@ The conformance tiers compare against goldens; the [local VT demo](demo.md) is w
 
 A change that adds something visible adds its demo section in the same PR. [demo.md's "Adding a section"](demo.md#adding-a-section) gives the rules for a section file.
 
+### The visual review before merge
+
+The operator asked to look at changes live before they merge: "I'd still like to be involved in a visual review before merge (viewing live in the vtty - not the bad apple demo but our regular feedback review)". The review is the regular demo feedback run (`make vt-demo` with the PR's build staged), not the showcase (#75); the run's answers are read back, and a page rated wrong or unsure is resolved before the merge. The PR body names the demo sections to look at and what right and wrong look like.
+
+Which PRs take it is the steering session's reading of those words, not yet ruled on by the operator: every PR that can change what appears on a VT. That includes kmscon's render, font and video code, libtsm changes to screen behaviour, and refactors meant to draw the same pixels, where regressions hide. PRs that cannot change what appears merge after code review alone: libtsm code kmscon does not call yet (the ADR-103 image store and sixel decoder before they are wired in), the conformance harness and other tooling, and documentation. The first PR that puts such work on screen takes the review.
+
+### Changes the operator decides
+
+The operator asked to discuss two kinds of change before they merge, whatever they draw: "if there's a security change or a change in approach (necessary because limitations, opportunity, or archictechture [sic] I'd like to discuss)".
+
+How the steering session applies that, its own process rather than the operator's words:
+- A security change includes anything that changes what runs as root, what a program in the session can make kmscon read, write or execute, a trust boundary, a privilege, or a resource limit that guards against abuse.
+- A change in approach includes a departure from an accepted ADR, or from the plan the PR set out with where no ADR covers it, made because of a limitation found on the way, an opportunity, or the architecture. A choice an ADR leaves open is raised when it changes behaviour other terminals or users would notice.
+- Each is raised with the operator as a numbered question before the merge, not left as a note in a PR body. Where the answer changes an accepted ADR, the ADR gets an appended note recording it.
+
 ## The conformance record
 
 A committed ledger run (`make sheet NOTE=...` and its entry in [LEDGER.md](../conformance/LEDGER.md)) happens once per working session, at its bring-home point: when the session's workstreams and the upstream sync have merged and `main` is green, measured from the head of `main` at that point. Never per PR, and never during the work.
@@ -293,6 +310,8 @@ In progress: the ledger's format is being changed to one markdown page per run, 
 ## Working with coding agents
 
 The fork's code is written by AI coding agents under the operator's direction. A steering session briefs each agent with the files to read, the gates to run and the shape of the report it returns; the agent works in its own worktree and opens the PR. The steering session verifies each PR itself, as above, has it reviewed, and merges. Agents never merge.
+
+Agents push their own feature branches to aaronsb/kmscon and aaronsb/libtsm and open PRs without asking each time; the operator approved this on 2026-10-23. Pushes to `main`, force pushes, history rewrites, release tags and any write to a repository the operator does not own are still asked for each time.
 
 The rules on this page apply to agents unchanged.
 

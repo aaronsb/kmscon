@@ -85,7 +85,7 @@ S4 and S5 take about twice their 7680x2160 time, as the pixels double: above a 6
 
 ## Memory, computed
 
-Computed from the sizes, not measured. One frame is width x height x 4 bytes; ADR-103's `image-storage-limit=auto` budget is four frames of the process's displays, clamped to 16 MiB to 192 MiB (`IMAGE_BUDGET_MIN` and `IMAGE_BUDGET_MAX` in `src/render/bbulk.c`, one display here). Until step 3d (#125) the budget is the scaled pictures' alone; libtsm's image stores keep their own limit until then. The scaled-picture cache's peak within a frame never passes the budget; with full-screen pictures it holds as many whole screens as fit. Between frames a display keeps at most twice its screen, or the budget if that is less.
+Computed from the sizes, not measured. One frame is width x height x 4 bytes; ADR-103's `image-storage-limit=auto` budget is four frames of the process's displays, clamped to 16 MiB to 192 MiB (`IMAGE_BUDGET_MIN` and `IMAGE_BUDGET_MAX` in `src/render/bbulk.c`, one display here). Until step 3d (#125) the budget is the scaled pictures' alone; libtsm's image stores keep their own limit until then. The scaled-picture cache's peak within a frame never passes the budget; with full-screen pictures it holds as many whole screens as fit. Between frames a display keeps at most twice its screen, or its share of the budget by size if that is less (the whole budget for one display). Each display counts once, however many sessions draw it, and a session that leaves the foreground frees its pictures. Outside the budget, and only while one picture is being made: the scaler's working memory, at most 16 MiB, and the buffer a picture is rotated in on a rotated display, at most one screen.
 
 | Display | One frame | Four frames | Budget | Screens the budget holds | Cache peak in a frame, full-screen pictures | Cache between frames, at most |
 |---|---|---|---|---|---|---|
@@ -93,9 +93,9 @@ Computed from the sizes, not measured. One frame is width x height x 4 bytes; AD
 | 1920x1080 | 7.9 MiB | 31.6 MiB | 31.6 MiB | 4.0 | 4 screens, 31.6 MiB | 15.8 MiB |
 | 3840x2160 | 31.6 MiB | 126.6 MiB | 126.6 MiB | 4.0 | 4 screens, 126.6 MiB | 63.3 MiB |
 | 7680x2160 | 63.3 MiB | 253.1 MiB | 192 MiB (cap) | 3.0 | 3 screens, 189.8 MiB | 126.6 MiB |
-| 7680x4320 | 126.6 MiB | 506.3 MiB | 192 MiB (cap) | 1.5 | 1 screen, 126.6 MiB | 1 screen, 126.6 MiB |
+| 7680x4320 | 126.6 MiB | 506.3 MiB | 192 MiB (cap) | 1.5 | 1 screen, 126.6 MiB | 192 MiB (with full-screen pictures, 1 screen) |
 
-At 7680x4320 a full-screen scaled picture draws, but a second one over it at the same time never fits: it is left out, and its cells are drawn again on every frame kmscon draws while both are placed (test_bbulk `test_budget` checks both sizes). The budget's ceiling is the one constant `IMAGE_BUDGET_MAX`.
+At 7680x4320 a full-screen scaled picture draws, but a second one over it at the same time never fits: it is left out until the budget changes, and idle frames (the blink timers redraw twice a second each) do not compose it again (test_bbulk `test_budget` checks both sizes). The budget's ceiling is the one constant `IMAGE_BUDGET_MAX`.
 
 ## Results in tier 3
 

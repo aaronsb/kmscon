@@ -562,7 +562,8 @@ static void test_placement_damage(struct kmscon_text *txt)
 
 /*
  * Cells wholly under an opaque picture with nothing over them go as one
- * request per row; a glyph splits the run, and its cell is composed.
+ * request per row; a glyph under a picture below the text splits the run, and
+ * its cell is composed, while one under a top-band picture is hidden by it.
  */
 static void test_opaque_runs(struct kmscon_text *txt)
 {
@@ -589,6 +590,18 @@ static void test_opaque_runs(struct kmscon_text *txt)
 	set_coordinate(txt, &x, &y, 7, 1);
 	assert(blended_at(x, y) && blended_at(x, y)->buf == bb->strip);
 	assert(n_blended == 4);
+
+	/* in the top band the picture hides the glyph: one run again */
+	settle(txt, 0);
+	set_placement(0, 10, 1, 2, 10, TSM_FRAME_BAND_ABOVE_TEXT);
+	blank_frame(txt);
+	frame.placement_size = sizeof(placements[0]);
+	frame.placement_count = 1;
+	frame.placements = placements;
+	cell_at(6, 1)->key = 'x';
+	cell_at(6, 1)->flags = TSM_FRAME_CHANGED;
+	run_frame(txt, false);
+	assert(n_blended == 2 && blended_at(16, 16) && blended_at(16, 16)->buf == bb->strip);
 	settle(txt, 0);
 }
 

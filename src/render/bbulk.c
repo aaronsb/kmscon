@@ -1040,9 +1040,10 @@ static void compose_place(struct video_buffer *dst, const struct video_blend_req
 }
 
 /*
- * The placement whose pixels a cell takes as they are, or -1: the cell has no
- * glyph and no decoration, and the last placement over it is opaque, covers it
- * wholly, and is above the cell's background or on the default one.
+ * The placement whose pixels a cell takes as they are, or -1: the last
+ * placement over the cell is opaque and covers it wholly, and nothing draws
+ * over it: in the top band it hides the text; below it, the cell has no glyph
+ * and no decoration, and in the lowest band its background is the default.
  */
 static int cell_fast(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
 		     unsigned int posx, unsigned int posy)
@@ -1052,14 +1053,15 @@ static int cell_fast(struct kmscon_text *txt, const struct tsm_frame_cell *cell,
 	unsigned int n;
 	bool retry = false;
 
-	if ((key && key != ' ') || cell->underline != TSM_UNDERLINE_NONE ||
-	    (cell->flags & TSM_FRAME_STRIKE))
-		return -1;
 	n = cell_cover(txt, posx, posy, 1, &retry);
 	if (!n || retry)
 		return -1;
 	p = &bb->places[bb->cover[n - 1]];
 	if (!(p->fp.flags & TSM_FRAME_OPAQUE) || !place_covers(txt, p, posx, posy, 1))
+		return -1;
+	if (p->fp.band != TSM_FRAME_BAND_ABOVE_TEXT &&
+	    ((key && key != ' ') || cell->underline != TSM_UNDERLINE_NONE ||
+	     (cell->flags & TSM_FRAME_STRIKE)))
 		return -1;
 	if (p->fp.band == TSM_FRAME_BAND_BELOW_BG && !default_bg(bb, cell))
 		return -1;
@@ -1166,11 +1168,13 @@ static void compose_covered(struct kmscon_text *txt, struct video_blend_req *req
 		while (i < n && bb->places[bb->cover[i]].fp.band == TSM_FRAME_BAND_BELOW_BG)
 			i++;
 	}
-	/* an opaque picture over every pixel hides what is under it */
+	/* an opaque picture over every pixel hides what is under it, the
+	 * text too when it is in the top band */
 	for (k = n; k-- > i;) {
 		p = &bb->places[bb->cover[k]];
 		if ((p->fp.flags & TSM_FRAME_OPAQUE) && place_covers(txt, p, posx, posy, ncells)) {
 			i = k;
+			text = p->fp.band == TSM_FRAME_BAND_ABOVE_TEXT;
 			break;
 		}
 	}

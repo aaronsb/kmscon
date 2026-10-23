@@ -133,6 +133,7 @@ make sheet-save SAVE=DIR       # keep the last run's reports and screens for com
 make sheet-compare A=DIR B=DIR LABEL_A=.. LABEL_B=..   # pair two saved runs' screens
 make sheet-selftest            # unit tests of the page generators (also in make test, through meson)
 make bench-compose             # ADR-103's S1 to S6 through bbulk in memory, on one CPU (ADR-104)
+make bench-fbdev               # fbdev's blend against the single loop it replaced, on one CPU
 ```
 
 Tier 3 needs KVM and QEMU on the host besides docker; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements, pins and variants:

@@ -101,6 +101,25 @@ if enable_video_drm2d
     test('test_blend', test_blend)
 endif
 
+if enable_video_fbdev
+    # fbdev's per-depth blend against the single loop it replaced (fbdev_ref.h)
+    test_fbdev_blend = executable(
+        'test_fbdev_blend',
+        'test_fbdev_blend.c',
+        include_directories: [src_inc, include_directories('../src/video')],
+        dependencies: [shl_deps, htable_deps],
+    )
+    test('test_fbdev_blend', test_fbdev_blend)
+
+    # the same, timed; run by make bench-fbdev, not a test
+    executable(
+        'bench_fbdev',
+        'bench_fbdev.c',
+        include_directories: [src_inc, include_directories('../src/video')],
+        dependencies: [shl_deps, htable_deps, math_deps],
+    )
+endif
+
 test_asciinema = executable(
     'test_asciinema',
     'test_asciinema.c',

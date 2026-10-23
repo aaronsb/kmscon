@@ -21,4 +21,5 @@ RUN pacman -Syu --noconfirm --needed \
         libdrm libxkbcommon systemd-libs dbus glib2 zlib \
         freetype2 fontconfig pango libglvnd mesa seatd \
         docbook-xsl libxslt linux-api-headers \
+        noto-fonts-emoji python-fonttools \
     && pacman -Scc --noconfirm

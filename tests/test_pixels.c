@@ -667,6 +667,8 @@ static const char *check_mosaic(const struct check *c, unsigned int cw, unsigned
 	bool seen_on = false, seen_off = false;
 
 	assert(want);
+	if ((c->col + c->cols) * cw > fb_w || (c->row + c->rows) * ch > fb_h)
+		why = "the check's cells reach past the screen";
 	for (unsigned int r = 0; r < c->rows && !why; r++) {
 		for (unsigned int k = 0; k < c->cols && !why; k++) {
 			uint32_t cp = *s ? utf8_next(&s) : 0;

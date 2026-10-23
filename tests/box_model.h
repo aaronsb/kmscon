@@ -2,6 +2,7 @@
  * kmscon - What the Braille, sextant and octant sprites should be
  *
  * Copyright (c) 2026 the kmscon fork authors
+ * Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files
@@ -30,8 +31,11 @@
  * the Unicode 16.0.0 character names, BLOCK SEXTANT-n and BLOCK OCTANT-n,
  * each block's edges at its exact fraction of the cell, rounded as Ghostty's
  * common.zig Fraction.min() and max() round them. The Braille dots follow
- * Ghostty's braille.zig, whose layout is a choice rather than a fraction of
- * the cell, so this restates it.
+ * Ghostty's braille.zig (MIT, src/font/sprite/draw/ at f987028f), whose
+ * layout is a choice rather than a fraction of the cell, so this restates
+ * its steps; test_font_box holds that restatement and font_box.c to dot
+ * layouts worked out by hand from braille.zig for a few cell sizes, so one
+ * transcription error made in both cannot pass.
  */
 
 #ifndef KMSCON_TEST_BOX_MODEL_H

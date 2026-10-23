@@ -31,7 +31,8 @@
  * - each sprite is the cell's size and equals box_model.h's, pixel for pixel;
  * - a mosaic and its complement cover the cell exactly once over, so blocks
  *   of neighbouring patterns meet with no gap;
- * - Braille's eight dots, apart from any layout rule: equal squares inside
+ * - Braille's eight dots against layouts worked out by hand from Ghostty's
+ *   braille.zig for ten cell sizes, and, apart from any layout rule: equal squares inside
  *   the cell, the two columns and four rows aligned and in order, evenly
  *   spaced down the cell, not overlapping, at least a pixel wide once the cell
  *   is 4x8, and every pattern the union of its dots.
@@ -135,6 +136,54 @@ static void check_complements(unsigned int w, unsigned int h, const char *const 
 struct dot {
 	unsigned int x0, y0, x1, y1, n;
 };
+
+/*
+ * Braille dot layouts worked out by hand from braille.zig draw2800_28FF()
+ * (Ghostty, MIT, at f987028f), step by step on paper rather than through
+ * box_model.h, for the cell sizes the tiers draw, the operator's 20x40, the
+ * smallest cells and two lopsided ones: the dot's side, the two columns' x
+ * and the four rows' y.
+ */
+static const struct {
+	unsigned int w, h, side, x[2], y[4];
+} braille_layouts[] = {
+	{1, 1, 0, {0, 0}, {0, 0, 0, 0}},       /* no room for a dot */
+	{2, 4, 1, {0, 1}, {0, 1, 2, 3}},       /* a one-pixel dot bought from what is left */
+	{4, 8, 1, {0, 3}, {0, 2, 4, 6}},       /* the left-over pixel widens the gap */
+	{9, 16, 2, {1, 6}, {1, 5, 9, 13}},     /* tier 2 mosaic */
+	{10, 19, 2, {1, 6}, {1, 6, 11, 16}},   /* tier 3 */
+	{12, 28, 3, {1, 8}, {2, 9, 16, 23}},   /* tier 2 mosaic-spaced */
+	{20, 40, 5, {2, 13}, {2, 12, 22, 32}}, /* Monoid 30 on the operator's display */
+	{7, 30, 1, {1, 4}, {2, 7, 12, 17}},    /* narrow and tall */
+	{32, 8, 1, {5, 15}, {0, 2, 4, 6}},     /* wide and short */
+	{1000, 2000, 250, {125, 625}, {125, 625, 1125, 1625}},
+};
+
+/* box_model.h and font_box.c against the hand-worked layouts */
+static void check_braille_layouts(uint8_t *want)
+{
+	for (size_t i = 0; i < sizeof(braille_layouts) / sizeof(braille_layouts[0]); i++) {
+		unsigned int w = braille_layouts[i].w, h = braille_layouts[i].h;
+		unsigned int side = braille_layouts[i].side;
+		struct kmscon_glyph *g = render(0x28ff, w, h);
+
+		memset(want, 0, (size_t)w * h);
+		for (unsigned int c = 0; c < 2; c++)
+			for (unsigned int r = 0; r < 4; r++)
+				for (unsigned int y = 0; y < side; y++)
+					memset(&want[(braille_layouts[i].y[r] + y) * w +
+						     braille_layouts[i].x[c]],
+					       0xff, side);
+		if (memcmp(g->buf.data, want, (size_t)w * h))
+			fail(0x28ff, w, h, "font_box.c's dots differ from the hand-worked layout");
+		free(g);
+		g = render(0x28ff, w, h);
+		assert(model_render(0x28ff, w, h, g->buf.data));
+		if (memcmp(g->buf.data, want, (size_t)w * h))
+			fail(0x28ff, w, h, "box_model.h's dots differ from the hand-worked layout");
+		free(g);
+	}
+}
 
 /* the lit pixels' bounding box and count */
 static struct dot find_dot(const struct kmscon_glyph *g)
@@ -254,6 +303,7 @@ int main(void)
 	assert(mosaic_cp(model_sextants, 60, 0x1fb00, 0x19) == 0x1fb17);
 	assert(mosaic_cp(model_octants, 230, 0x1cd00, 0x99) == 0x1cd89);
 
+	check_braille_layouts(want);
 	for (unsigned int h = 1; h <= 64; h++)
 		for (unsigned int w = 1; w <= 32; w++)
 			check_size(w, h, want);

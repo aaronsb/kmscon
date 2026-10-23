@@ -74,13 +74,17 @@ struct kmscon_glyph_key {
 	uint8_t extra;
 };
 
-/* a 64-bit hash of @k for a hash table that compares the full key */
-static inline uint64_t kmscon_glyph_key_hash(const struct kmscon_glyph_key *k)
+/*
+ * A 64-bit hash of the glyph key with these fields, for a hash table that
+ * compares the full key. It takes the values rather than a filled key, so a
+ * caller that fills one does not read back the bytes it has just stored.
+ */
+static inline uint64_t kmscon_glyph_key_hash(uint64_t key, uint8_t bold, uint8_t italic,
+					     uint8_t width, uint8_t extra)
 {
-	uint64_t x = k->key;
+	uint64_t x = key;
 
-	x ^= (uint64_t)(k->bold | k->italic << 1 | k->width << 2 | k->extra << 8) *
-	     0x9e3779b97f4a7c15ULL;
+	x ^= (uint64_t)(bold | italic << 1 | width << 2 | extra << 8) * 0x9e3779b97f4a7c15ULL;
 	/* splitmix64 finaliser */
 	x ^= x >> 30;
 	x *= 0xbf58476d1ce4e5b9ULL;

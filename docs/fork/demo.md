@@ -9,8 +9,9 @@ It is written for a host that runs the stock kmscon package on its VTs as `kmsco
 One command builds, stages, picks a VT, runs the demo there and, when it ends, prints what was recorded:
 
 ```sh
-make vt-demo                       # the first free VT of 5, 6, 4, 3, 2
+make vt-demo                       # the first free VT of 5, 6, 4, 3, 2, the text kit
 make vt-demo VT=4                  # that VT
+make vt-demo KIT=sixel             # the sixel review kit (see "Review kits")
 make vt-demo DEMO_ARGS='--font-name="Monoid Nerd Font Mono" --font-size=30 --mode=7680x2160 --no-use-original-mode'
                                    # options for kmscon
 ```
@@ -25,7 +26,7 @@ It asks for sudo's password first if sudo wants one, then prints the VT to switc
 
 Switch to that VT, judge each page with one key (below), and press q to finish. The command blocks until then. When the demonstration ends, kmscon exits, the stock console starts again on that VT, and the command prints a health check of kmscon's log, the path of the full log, this run's answers as `fork/demo/feedback.sh --run` prints them, and the path of the results file. It exits non-zero when kmscon failed (with `run-vt.sh`'s status, 130 after Ctrl-C) or nothing was recorded.
 
-`VT` and `DEMO_ARGS` reach the script through the environment, never as recipe text. `DEMO_ARGS` is split into words the way `xargs` splits them: quotes and backslashes are honoured and nothing is expanded or run, so a value with spaces is quoted inside it, as the font name is above. Each option is one word, `--name=value` or `--name` / `--no-name`; `run-vt.sh` refuses any other form (see below). `VT_DEMO_DRY_RUN=1 make vt-demo` builds and stages, picks the VT and prints the `run-vt.sh` command without running it.
+`VT`, `KIT` and `DEMO_ARGS` reach the script through the environment, never as recipe text. `DEMO_ARGS` is split into words the way `xargs` splits them: quotes and backslashes are honoured and nothing is expanded or run, so a value with spaces is quoted inside it, as the font name is above. Each option is one word, `--name=value` or `--name` / `--no-name`; `run-vt.sh` refuses any other form (see below). `VT_DEMO_DRY_RUN=1 make vt-demo` builds and stages, picks the VT and prints the `run-vt.sh` command without running it.
 
 `make showcase BAD_APPLE=/path/to/video` runs the Bad Apple!! showcase the same way, with `fork/showcase/bad-apple.sh` as the session in place of the paged demo; it records no answers, so its run ends with the health check alone. See [fork/showcase/README.md](../../fork/showcase/README.md).
 
@@ -72,7 +73,7 @@ Display settings belong to one machine, so they are not in `fork/demo/kmscon.con
 1. Runs `make demo`.
 2. Picks the VT: `VT=` if given, else the first free one of 5, 6, 4, 3 and 2. A VT is free when it is not on screen (`/sys/class/tty/tty0/active`) and no logind session is on it (`loginctl`). It refuses a `VT=` that is not free, and when no VT is free it fails naming each VT and why it was refused. `run-vt.sh` checks the same again before it stops anything.
 3. Reads the desktop's VT, the one on screen at the start, for the key back.
-4. Runs `sudo -v`, prints the line naming the VT, and runs `sudo fork/demo/run-vt.sh N -- DEMO_ARGS` in the foreground, its output and kmscon's log copied to a new file, `/tmp/kmscon-demo/vt-demo-<time>-ttyN-<random>.log` (mode 0600). `/tmp/kmscon-demo` is created with mode 0700 when it is missing, and refused when it is a symlink or another user's. Ctrl-C, a closed terminal or SIGTERM reaches `run-vt.sh`, whose trap stops kmscon and restarts the stock console; the copy (`tee`) ignores those signals, so the restore never writes into a closed pipe. After Ctrl-C the summary still follows.
+4. Runs `sudo -v`, prints the line naming the VT, and runs `sudo fork/demo/run-vt.sh [--kit=KIT] N -- DEMO_ARGS` in the foreground, its output and kmscon's log copied to a new file, `/tmp/kmscon-demo/vt-demo-<time>-ttyN-<random>.log` (mode 0600). `/tmp/kmscon-demo` is created with mode 0700 when it is missing, and refused when it is a symlink or another user's. Ctrl-C, a closed terminal or SIGTERM reaches `run-vt.sh`, whose trap stops kmscon and restarts the stock console; the copy (`tee`) ignores those signals, so the restore never writes into a closed pipe. After Ctrl-C the summary still follows.
 5. Counts `atomic commit failed` and `vt_timeout` lines in that log, the stock-kmscon freeze signature (see "Seen on hardware").
 6. Finds this run by its run id: the last run of a `dev build` label among the answers appended to `/tmp/kmscon-demo/feedback.tsv` since step 4, so a stock run on another VT writing to the same file meanwhile is not taken for it. It prints that run with `feedback.sh --run`.
 
@@ -80,7 +81,7 @@ The script is `fork/demo/vt-demo.sh [N] [-- KMSCON-OPTION...]`; `tests/demo/vt_d
 
 ## What `run-vt.sh` does
 
-1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists. It also refuses every kmscon option after `--` but display, font, palette, text and input ones and `--render-timer`, named in full (kmscon takes a unique prefix, so `--lo` would be `--login`), each as one word: `--name=value`, or `--name` / `--no-name` for a switch. A value in a word of its own would be taken as the option's value or, as a stray word, be moved by kmscon into the login command that runs as root. Left out on purpose: the VT, seat and session options, `--login`, `--configdir`, `--oneshot`, the grabs, and the options that name files (`--asciicast`, `--issue-path`, `--xkb-keymap`, `--xkb-compose-file`). The list is `valued` and `switches` in `run-vt.sh`. Before N, `--showcase=VIDEO` (an absolute path the user can read) makes the session the showcase on that video, with `--showcase-from=N` (an act from 1 to 7) and `--showcase-audio`; it refuses either of those without `--showcase`.
+1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists. It also refuses every kmscon option after `--` but display, font, palette, text and input ones and `--render-timer`, named in full (kmscon takes a unique prefix, so `--lo` would be `--login`), each as one word: `--name=value`, or `--name` / `--no-name` for a switch. A value in a word of its own would be taken as the option's value or, as a stray word, be moved by kmscon into the login command that runs as root. Left out on purpose: the VT, seat and session options, `--login`, `--configdir`, `--oneshot`, the grabs, and the options that name files (`--asciicast`, `--issue-path`, `--xkb-keymap`, `--xkb-compose-file`). The list is `valued` and `switches` in `run-vt.sh`. Before N, `--kit=KIT` picks the demo's review kit (text, sixel, kitty or all; any other name is refused), which reaches the demo as `DEMO_KIT`, one word of `env`'s after `setpriv`; and `--showcase=VIDEO` (an absolute path the user can read) makes the session the showcase on that video, with `--showcase-from=N` (an act from 1 to 7) and `--showcase-audio`; it refuses either of those without `--showcase`, and `--kit` with it.
 2. Refuses the VT on screen (`fgconsole`) and any VT a logind session is on, the desktop's included: stopping the unit there would end that session.
 3. Records whether `kmsconvt@ttyN.service` is active and stops it. A trap on exit, Ctrl-C, SIGTERM and SIGHUP stops kmscon with SIGTERM if it still runs, waits for it (SIGKILL after 5 seconds), and starts the unit again if it was active, so the stock console comes back after a normal end, an interrupt or a kmscon failure. While it restores, it ignores Ctrl-C, SIGTERM, SIGHUP and SIGPIPE, so a second Ctrl-C or a closed terminal cannot cut it short before the unit is started.
 4. Prints the steps and the manual restore command.
@@ -113,6 +114,19 @@ wrong:    Every style drawn as one single line, or a line with none of its
 Any other key asks again. Keys typed before the footer appears are discarded, so a double press does not rate the next page unseen. The footer sits below the page when it fits there: demo.sh asks the terminal for the cursor's row (DSR) and compares it with the screen's height. When it does not fit, or the terminal does not answer within a second, a key shows the footer on a screen of its own. At 80x25 every section fits with its footer; the tallest, colour-forms, ends its prompt on row 25.
 
 The summary page lists this pass's rating and comment for each section, how many pages were skipped, and the file they went to, then asks `r review again from page 1  q exit`. `r` goes through the pages again as a new run, with its own run id, so `feedback.sh` shows that pass as the latest run and its summary page shows only that pass.
+
+### Review kits
+
+The pages fall into review kits (#123), so a visual review runs the pages a change can affect. A section's `# kit:` line names its kit; a section without one is in the text kit. `make vt-demo KIT=NAME` (or `DEMO_KIT=NAME` for demo.sh) picks one:
+
+| Kit | Pages |
+|---|---|
+| `text`, the default | every page from sgr to emoji: text, colour, decorations, box drawing, CJK, combining marks, emoji |
+| `sixel` | sixel, sixel-ramps and sixel-article, then ADR-103's acceptance pages: photos, photo-scroll, mpv-sixel, tmux-2x2 and tmux-3x3 |
+| `kitty` | one placeholder page until the kitty graphics protocol arrives with ADR-103 step 4 |
+| `all` | every page |
+
+The title page names the kit. Sections named on demo.sh's command line run whatever their kit. The acceptance pages run real programs on the host: mpv for the photographs and the video, tmux for the grids, and xplanet's photographs. A page whose program or photographs are missing says what to install and shows nothing else. The video pages print what was measured under the page (mpv's frames shown and dropped, kmscon's CPU time); with `--render-timer=osd` or `both` in `DEMO_ARGS` kmscon's own figures show in a corner while they play.
 
 ### Where the answers go
 
@@ -164,8 +178,13 @@ What each page should and should not look like is in its section file's `# look-
 | sixel | sixel pictures the page makes from the cell size the terminal reports (XTWINOPS 16) and sends through the pty, each a whole number of cells: opaque colour bars over a checkerboard with TEXT written across them, an orange ring with transparent corners over text, and seven discs in the primaries, the secondaries and the ring's orange, each with a square of the same colour drawn as text (SGR 48;2) beside it and its name under both; then the same pairs as larger squares on a mid-grey band, and the cell size. A disc unlike its square is a kmscon fault; a pair off alike is the display (a colour profile, or dimming of a small bright patch on black). Without an XTWINOPS answer the pictures are made for 12x24 cells and the page says so. When the DA1 reply lacks attribute 4, the page says so and sends no picture |
 | sixel-ramps | sixel ramps of red, green, blue and grey from black to full, a hue sweep and skin-tone and pastel swatches, each above the same colours drawn as text cells (SGR 48;2), so each sixel step can be compared with the text cell under it; then a ring with a transparent hole over text on yellow. Sixel colours are whole percents: a ramp has 101 steps of 1% when the screen has the columns and the terminal the registers (XTSMGRAPHICS), fewer otherwise, and the page says so |
 | sixel-article | a short article the script word-wraps itself to the screen's width (up to 100 columns): prose whose phrases are styled as they describe themselves (bold, italic, faint, the underline styles, a red underline, strike-through, reverse, 256-colour and truecolour, a CJK word, a combining mark, an emoji), a landscape centred on rows of its own, and a bar chart floated left with the last paragraph wrapping beside it and then at full width. The sentences about each picture give its size and place in cells and pixels from the reported cell size |
+| photos | ADR-103's A1: two NASA Visible Earth photographs of the Earth, by day and by night (xplanet's images, not copyrighted), six rows tall in whole cells, drawn through libsixel's encoder by mpv, with their names under them; then how many bytes img2sixel wrote for the day one. img2sixel itself writes nothing on current Arch (libsixel 1.10.5 with gdk-pixbuf 2.44), which is why mpv draws them |
+| photo-scroll | A1's second half: the day photograph under a caption, then one numbered line per screen row, so the picture scrolls into scrollback. Shift+PageUp shows it again above line 1, and Shift+PageDown returns |
+| mpv-sixel | ADR-103's A2: mpv --vo=sixel plays ffmpeg's testsrc2 pattern full screen for five seconds, then the page comes back with nothing of the video left and prints what was measured |
+| tmux-2x2, tmux-3x3 | ADR-103's A4: tmux in a 2x2 and a 3x3 grid, each pane playing the pattern through mpv --vo=sixel, on a tmux server of the page's own whose config names kmscon's sixel support; then "[exited]", the page and what was measured |
+| kitty | the kitty kit's placeholder: the kitty graphics protocol is ADR-103 step 4 |
 
-Every section but blink is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, mosaic, wide-margin, combining, emoji, sixel, sixel-ramps and sixel-article are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+Every section but blink and kitty is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, mosaic, wide-margin, combining, emoji, sixel, sixel-ramps, sixel-article, photos, photo-scroll, mpv-sixel and the tmux grids are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
 blink is not a tier 3 screen: tier 3's guest runs kmscon with `no-blink`, and a capture would catch whichever phase the timer was in. The demo leaves blinking on, kmscon's default, since a person watches it: the blink page blinks and so does the cursor. `-- --no-blink` turns it off for one run. `tests/test_blink.c`, part of `make test`, checks both phases through both of bbulk's buffers.
 
@@ -198,6 +217,7 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 | combining | The decomposed column is blank: kmscon draws a cell of more than one code point as nothing. The precomposed column is right except its last row, which is a precomposed letter plus a mark. |
 | emoji | Every cluster (family, flag, keycap, skin tone, VS16 heart) is drawn blank or as separate pieces, so its bars do not line up. Each emoji is the grey top-left corner of the colour font's large bitmap, cut at its cells: kmscon has no colour glyphs and does not scale them. |
 | sixel | No pictures: stock kmscon's DA1 reply has no attribute 4, so the page says so and sends none. Sent anyway, a sixel string would be skipped. |
+| sixel-ramps to tmux-3x3 | The same: each page says the terminal does not offer sixel graphics and shows nothing else. |
 
 ## Seen on hardware
 
@@ -215,6 +235,7 @@ The first real run, on 2026-10-22: Arch Linux, one output (DP-8) at 7680x2160, t
 A capability that adds something visible adds its section in the same PR. A section is one file, `fork/demo/sections/NN-name.sh`, normally a symlink to the tier 3 screen script `fork/tier3/guest/screens/name.sh` that holds it:
 
 - `NN` places it in the order; `name` is what the title page lists and what `demo.sh name` runs.
+- A `# kit:` line names its review kit, `sixel` or `kitty`; a section without one is in the text kit. `tests/demo/feedback.py` fails a section naming any other kit, and holds the list of each kit's pages.
 - Its guidance is two comment fields, each one or more lines that demo.sh joins with spaces, in terms a person can check by eye. `# look-for:` says what a correct screen looks like; `# wrong-looks-like:` says what a defect looks like, naming what stock kmscon is known to get wrong and any defect the fork already knows about (with its issue), so that one is not reported again. Keep each to about 130 characters of ASCII, so it wraps to two rows of the footer at 80 columns. `tests/demo/feedback.py` fails a section without both fields.
 - It draws one screen and nothing else: deterministic output (no clock, no randomness, no dependence on the locale; write invisible code points as UTF-8 bytes, `$'\xcc\x81'`), self-contained so it can be copied into the tier 3 guest, and at most 17 rows and 80 columns, so the page fits 80x25 with its header and a footer of two-row guidance. A taller page still works: its footer moves to a screen of its own. A section that must sit at the screen's edge reads the size from the terminal, as `55-wide-margin.sh` does.
 

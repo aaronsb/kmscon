@@ -1,10 +1,13 @@
 # Capability probes
 
-One small check per terminal feature, so `make test` says what kmscon does and what it is missing. The probes measure features; the conformance tiers measure that what exists is drawn correctly. They are kept light on purpose: one probe proves a feature is there, and the feature's own tests, written with it, cover its behaviour.
+One small check per terminal feature, so `make test` says what kmscon does and what it is missing. The `works` rows come first and matter most: they guard the features the fork built (colon sub-parameters, underline styles and colours, clusters, REP, erase colours, per-display frame age and more) against regression, a second guard beside libtsm's own suite, run against the libtsm kmscon actually pins. The `missing` rows record features of other terminals kmscon lacks, each with its issue. Probes are light on purpose: one probe proves a feature is there, and the feature's own tests cover its behaviour.
+
+[COVERAGE.md](COVERAGE.md) maps every feature the fork built to the tests that guard it, by font engine, renderer and video backend, and names the issue for each gap.
 
 | Path | What it is |
 |---|---|
-| `capabilities.list` | Every probe with its recorded status (`works` or `missing`), the issue that tracks a missing feature, and a note. |
+| `capabilities.list` | Every probe with its recorded status (`works` or `missing`), the issue that tracks a missing feature (`#N` on aaronsb/kmscon, `libtsm#N` on aaronsb/libtsm), and a note. |
+| `COVERAGE.md` | The fork's features, the tests that guard each, and the gaps. |
 | `run.py` | Runs every probe and judges it against the list. Meson runs it as the `capabilities` test. |
 | `../test_capabilities.c` | Probes through libtsm's public API: feed the bytes a program sends, check the reply or the screen state. |
 | `../test_capabilities_font.c` | Probes of the freetype backend: one glyph drawn with and without an attribute, with fonts pinned from `tests/fonts`. |

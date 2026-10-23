@@ -23,6 +23,7 @@ skipped, probe by probe.
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,8 @@ TERMINFO = {
 }
 
 STATUSES = ("works", "missing")
+# #N is an aaronsb/kmscon issue, libtsm#N an aaronsb/libtsm one
+ISSUE = re.compile(r"(libtsm)?#[0-9]+")
 
 
 def read_list(path):
@@ -60,8 +63,8 @@ def read_list(path):
             note = fields[3].strip() if len(fields) > 3 else ""
             if status not in STATUSES:
                 sys.exit(f"{path}:{n}: status {status!r} is not one of {', '.join(STATUSES)}")
-            if status == "missing" and not issue.startswith("#"):
-                sys.exit(f"{path}:{n}: a missing probe names its issue (#N)")
+            if status == "missing" and not ISSUE.fullmatch(issue):
+                sys.exit(f"{path}:{n}: a missing probe names its issue (#N or libtsm#N)")
             if status == "works" and issue != "-":
                 sys.exit(f"{path}:{n}: a working probe has no issue (-)")
             entries.append((name, status, issue, note, n))

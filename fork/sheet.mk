@@ -10,7 +10,7 @@
 #                       [VERDICTS=FILE] [OUT=DIR]
 #                           pair the screens of two saved runs in OUT
 #                           (default fork/build/compare/)
-#   make sheet-selftest     unit tests of the page generators (part of make test)
+#   make sheet-selftest     unit tests of the page generators (also run by make test, through meson)
 #
 # A committed run (`make sheet`) is a milestone record: it refuses a working
 # tree with uncommitted changes, and a HEAD that is not origin/main after a
@@ -89,5 +89,3 @@ sheet-compare: ## Page pairing the screens of saved runs A= and B= (A2=, B2= sec
 sheet-selftest: image ## Unit tests of the run and comparison page generators
 	$(RUN) sh -c 'python3 -B fork/conformance/test_runpage.py && python3 -B fork/conformance/test_compare.py'
 
-# make test runs the generator's tests beside kmscon's and libtsm's suites.
-test: sheet-selftest

@@ -167,6 +167,217 @@ static bool probe_sgr_truecolor(struct term *t)
 	return true;
 }
 
+/* --- the fork's own features: regression guards against the pinned libtsm --- */
+
+/* colon sub-parameters (ADR-102): SGR reads them, any other sequence with them
+ * is ignored whole */
+static bool probe_sgr_colon_subparams(struct term *t)
+{
+	const struct tsm_frame_cell *c;
+
+	feed(t, "\e[4:3mA\e[24m\e[38:2::1:2:3mB\e[m\e[3:1CC");
+	if (cell(t, 0, 0)->underline != TSM_UNDERLINE_CURLY)
+		return fail("SGR 4:3 drew underline %u, want curly", cell(t, 0, 0)->underline);
+	c = cell(t, 1, 0);
+	if (c->fg.r != 1 || c->fg.g != 2 || c->fg.b != 3)
+		return fail("SGR 38:2::1:2:3 drew fg %u,%u,%u", c->fg.r, c->fg.g, c->fg.b);
+	if (cell(t, 2, 0)->key != 'C')
+		return fail("CSI 3:1 C moved the cursor; it must be ignored");
+	return true;
+}
+
+static bool probe_sgr_underline_styles(struct term *t)
+{
+	static const uint8_t want[] = {
+		TSM_UNDERLINE_SINGLE, TSM_UNDERLINE_DOUBLE, TSM_UNDERLINE_CURLY,
+		TSM_UNDERLINE_DOTTED, TSM_UNDERLINE_DASHED, TSM_UNDERLINE_DOUBLE,
+		TSM_UNDERLINE_NONE,
+	};
+
+	feed(t, "\e[4:1mA\e[4:2mB\e[4:3mC\e[4:4mD\e[4:5mE\e[21mF\e[24mG");
+	for (unsigned int x = 0; x < sizeof(want); x++)
+		if (cell(t, x, 0)->underline != want[x])
+			return fail("column %u (SGR %s) drew underline %u, want %u", x,
+				    (const char *[]){"4:1", "4:2", "4:3", "4:4", "4:5", "21",
+						     "24"}[x],
+				    cell(t, x, 0)->underline, want[x]);
+	return true;
+}
+
+/* SGR 58/59; 4;58;5;196 sets an underline colour, never blink */
+static bool probe_sgr_underline_colour(struct term *t)
+{
+	const struct tsm_frame_cell *c;
+
+	feed(t, "\e[4;58;2;10;20;30mA\e[59mB\e[4;58;5;196mC");
+	c = cell(t, 0, 0);
+	if (!(c->flags & TSM_FRAME_UL_SET) || c->ul.r != 10 || c->ul.g != 20 || c->ul.b != 30)
+		return fail("SGR 58;2;10;20;30 drew underline colour %u,%u,%u", c->ul.r, c->ul.g,
+			    c->ul.b);
+	if (cell(t, 1, 0)->flags & TSM_FRAME_UL_SET)
+		return fail("SGR 59 did not clear the underline colour");
+	if (cell(t, 2, 0)->flags & TSM_FRAME_BLINK)
+		return fail("SGR 4;58;5;196 set blink");
+	return true;
+}
+
+static bool probe_sgr_strike(struct term *t)
+{
+	feed(t, "\e[9mA\e[29mB");
+	if (!(cell(t, 0, 0)->flags & TSM_FRAME_STRIKE))
+		return fail("SGR 9 did not set strike");
+	if (cell(t, 1, 0)->flags & TSM_FRAME_STRIKE)
+		return fail("SGR 29 did not clear strike");
+	return true;
+}
+
+static bool probe_sgr_blink(struct term *t)
+{
+	feed(t, "\e[5mA\e[25mB");
+	if (!(cell(t, 0, 0)->flags & TSM_FRAME_BLINK))
+		return fail("SGR 5 did not set blink");
+	if (cell(t, 1, 0)->flags & TSM_FRAME_BLINK)
+		return fail("SGR 25 did not clear blink");
+	return true;
+}
+
+/* colours are kept as written and resolved at draw time: a palette change
+ * recolours text already on the screen */
+static bool probe_palette_at_draw(struct term *t)
+{
+	struct tsm_screen_color before;
+
+	feed(t, "\e[31mA");
+	before = cell(t, 0, 0)->fg;
+	if (tsm_vte_set_palette(t->vte, "solarized"))
+		return fail("cannot set the solarized palette");
+	if (!memcmp(&before, &cell(t, 0, 0)->fg, sizeof(before)))
+		return fail("SGR 31 text kept its colour after a palette change");
+	return true;
+}
+
+/* XTMODKEYS and XTQMODKEYS are not SGR 4 */
+static bool probe_modkeys_not_sgr(struct term *t)
+{
+	feed(t, "\e[>4;1mA\e[?4mB");
+	if (cell(t, 0, 0)->underline || cell(t, 1, 0)->underline)
+		return fail("CSI > 4;1 m or CSI ? 4 m set an underline");
+	return true;
+}
+
+/* grapheme clusters: one cell holds a cluster key whose codepoints read back */
+static bool probe_cluster(struct term *t)
+{
+	const uint32_t *cps;
+	size_t len = 0;
+	uint64_t key;
+
+	feed(t, "e\xcc\x81x");
+	key = cell(t, 0, 0)->key;
+	cps = tsm_screen_frame_cluster(t->con, key, &len);
+	if (!cps || len != 2 || cps[0] != 'e' || cps[1] != 0x301)
+		return fail("e + U+0301 did not read back as one two-codepoint cluster");
+	if (cell(t, 1, 0)->key != 'x')
+		return fail("the cluster took more than one cell");
+	return true;
+}
+
+/* mode 2027 switches the width method, and DECRQM reports it */
+static bool probe_mode_2027(struct term *t)
+{
+	return reply_is(t, "\e[?2027h\e[?2027$p", "\e[?2027;1$y") &&
+	       reply_is(t, "\e[?2027l\e[?2027$p", "\e[?2027;2$y");
+}
+
+/* VS16 widens a text-default emoji to two cells under mode 2027 */
+static bool probe_vs16_width(struct term *t)
+{
+	feed(t, "\e[?2027h\xe2\x9d\xa4\xef\xb8\x8fx");
+	if (cell(t, 0, 0)->width != 2 || cell(t, 2, 0)->key != 'x')
+		return fail("U+2764 U+FE0F is %u cells wide, want 2", cell(t, 0, 0)->width);
+	return true;
+}
+
+/* a wide character that does not fit before the margin wraps whole */
+static bool probe_wide_at_margin(struct term *t)
+{
+	feed(t, "abcd\xe4\xb8\xad");
+	if (cell(t, 4, 0)->key)
+		return fail("the last column holds U+%04llX, want it empty",
+			    (unsigned long long)cell(t, 4, 0)->key);
+	if (cell(t, 0, 1)->key != 0x4e2d || cell(t, 0, 1)->width != 2)
+		return fail("U+4E2D did not wrap whole to the next row");
+	return true;
+}
+
+/* REP repeats the last printed character, a wide one whole */
+static bool probe_rep(struct term *t)
+{
+	feed(t, "ab\e[3b\r\n\xe4\xb8\xad\e[2b");
+	for (unsigned int x = 1; x < 5; x++)
+		if (cell(t, x, 0)->key != 'b')
+			return fail("ab REP 3: column %u is not 'b'", x);
+	for (unsigned int x = 0; x < 6; x += 2)
+		if (cell(t, x, 1)->key != 0x4e2d || cell(t, x, 1)->width != 2)
+			return fail("U+4E2D REP 2: column %u is not the whole wide character", x);
+	return true;
+}
+
+/* erased cells take the pen's background only (no underline, strike, bold),
+ * for erases, scrolls and reverse index */
+static bool erased_blank(struct term *t, unsigned int x, unsigned int y,
+			 struct tsm_screen_color bg, const char *what)
+{
+	const struct tsm_frame_cell *c = cell(t, x, y);
+
+	if (memcmp(&c->bg, &bg, sizeof(bg)))
+		return fail("%s: cell %u,%u has bg %u,%u,%u, not the pen's", what, x, y, c->bg.r,
+			    c->bg.g, c->bg.b);
+	if (c->underline || (c->flags & (TSM_FRAME_STRIKE | TSM_FRAME_BOLD)))
+		return fail("%s: cell %u,%u kept underline, strike or bold", what, x, y);
+	return true;
+}
+
+static bool probe_erase_colours_only(struct term *t)
+{
+	struct tsm_screen_color bg;
+
+	feed(t, "\e[1;4;9;44mX");
+	bg = cell(t, 0, 0)->bg;
+	feed(t, "\e[K");
+	if (!erased_blank(t, 1, 0, bg, "EL"))
+		return false;
+	feed(t, "\e[S");
+	if (!erased_blank(t, 0, 3, bg, "SU"))
+		return false;
+	feed(t, "\e[T");
+	if (!erased_blank(t, 0, 0, bg, "SD"))
+		return false;
+	feed(t, "\e[H\eM");
+	return erased_blank(t, 0, 0, bg, "RI at the top");
+}
+
+/* each display keeps its own frame age: one caller's frame does not hide a
+ * change from another */
+static bool probe_frame_age_per_caller(struct term *t)
+{
+	struct tsm_frame_age a = {0}, b = {0};
+
+	tsm_screen_frame_since(t->con, &a);
+	tsm_screen_frame_since(t->con, &b);
+	feed(t, "A");
+	if (!(tsm_frame_cell_at(tsm_screen_frame_since(t->con, &a), 0, 0)->flags &
+	      TSM_FRAME_CHANGED))
+		return fail("caller A's frame did not mark the new cell changed");
+	if (tsm_frame_cell_at(tsm_screen_frame_since(t->con, &a), 0, 0)->flags &
+	    TSM_FRAME_CHANGED)
+		return fail("caller A's second frame still marks the cell changed");
+	if (!(tsm_frame_cell_at(tsm_screen_frame_since(t->con, &b), 0, 0)->flags &
+	      TSM_FRAME_CHANGED))
+		return fail("caller B missed the change caller A already drew");
+	return true;
+}
+
 /* ECMA-48 SGR 53 overline, 55 not overlined */
 static bool probe_sgr_overline(struct term *t)
 {
@@ -473,6 +684,20 @@ static const struct probe {
 } probes[] = {
 	{"sgr-italic", probe_sgr_italic},
 	{"sgr-truecolor", probe_sgr_truecolor},
+	{"sgr-colon-subparams", probe_sgr_colon_subparams},
+	{"sgr-underline-styles", probe_sgr_underline_styles},
+	{"sgr-underline-colour", probe_sgr_underline_colour},
+	{"sgr-strike", probe_sgr_strike},
+	{"sgr-blink", probe_sgr_blink},
+	{"palette-at-draw", probe_palette_at_draw},
+	{"modkeys-not-sgr", probe_modkeys_not_sgr},
+	{"cluster", probe_cluster},
+	{"mode-2027", probe_mode_2027},
+	{"vs16-width", probe_vs16_width},
+	{"wide-at-margin", probe_wide_at_margin, 5},
+	{"rep", probe_rep},
+	{"erase-colours-only", probe_erase_colours_only},
+	{"frame-age-per-caller", probe_frame_age_per_caller},
 	{"sgr-overline", probe_sgr_overline},
 	{"sgr-super-subscript", probe_sgr_super_subscript},
 	{"mode-2026-sync", probe_mode_2026_sync},

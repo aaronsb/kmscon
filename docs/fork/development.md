@@ -303,6 +303,7 @@ In progress: the ledger's format is being changed to one markdown page per run, 
 
 - Commit messages say why the change is made. Subjects use the area as a prefix (`fix(vte):`, `feat(screen):`, `build:`, `docs(demo):`, `render/bbulk:`). No attribution trailers (`Co-Authored-By` and the like).
 - Always pass `--repo aaronsb/<repo> --base main` to `gh pr create`. Both repositories are GitHub forks, and without `--repo` the PR targets the upstream project.
+- Issues go where the work is: libtsm parser and screen work on [aaronsb/libtsm](https://github.com/aaronsb/libtsm/issues), kmscon and harness work on [aaronsb/kmscon](https://github.com/aaronsb/kmscon/issues). A kmscon issue cites a libtsm one as `aaronsb/libtsm#N`.
 - Docs are written one line per paragraph, with no hard wrapping.
 - Docs say what is unfinished: a gap, a stale golden or an open issue is named where the reader would otherwise assume it works.
 - Gate results in a PR body name the commit they ran on, and a gate that was not run is listed as not run.

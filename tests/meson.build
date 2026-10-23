@@ -264,3 +264,20 @@ test(
     python,
     args: [files('showcase/showcase.py'), '--root', meson.project_source_root()],
 )
+
+# The harness's own Python: the run and comparison page generators
+# (make sheet-selftest) and tier 3's image compare and screen modules
+# (make tier3-selftest), so meson test and CI run them too.
+foreach name, script : {
+    'sheet_runpage': 'fork/conformance/test_runpage.py',
+    'sheet_compare': 'fork/conformance/test_compare.py',
+    'tier3_t3img': 'fork/tier3/test_t3img.py',
+    'tier3_t3': 'fork/tier3/test_t3.py',
+}
+    test(
+        name,
+        python,
+        args: ['-I', '-B', meson.project_source_root() / script],
+        workdir: meson.project_source_root(),
+    )
+endforeach

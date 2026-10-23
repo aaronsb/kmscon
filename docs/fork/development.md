@@ -96,7 +96,7 @@ Someone other than the author verifies the PR before it merges: see [Verificatio
 
 Every PR gets a code review, and every finding is fixed or filed: see [Reviews](#reviews).
 
-A PR that changes what kmscon draws also waits for the operator's visual review on a real VT before it merges: see [The human check: the VT demo](#the-human-check-the-vt-demo).
+Some PRs also need the operator before they merge: a visual review on a real VT ([The visual review before merge](#the-visual-review-before-merge)), or a discussion of a security change or a change in approach ([Changes the operator decides](#changes-the-operator-decides)).
 
 ### 7. Merge
 
@@ -239,15 +239,18 @@ A change that adds something visible adds its demo section in the same PR. [demo
 
 ### The visual review before merge
 
-A PR that changes what kmscon draws merges only after the operator has looked at it live on a VT, in the regular demo feedback review (`~/demo-dev` or `make vt-demo` with the PR's build staged), and the run's answers have been read back. In the operator's words: "I'd still like to be involved in a visual review before merge (viewing live in the vtty - not the bad apple demo but our regular feedback review)". The PR body names the demo sections to look at and what right and wrong look like; a page rated wrong or unsure is resolved before the merge. The review is of the regular demo, not the showcase (#75).
+The operator asked to look at changes live before they merge: "I'd still like to be involved in a visual review before merge (viewing live in the vtty - not the bad apple demo but our regular feedback review)". The review is the regular demo feedback run (`make vt-demo` with the PR's build staged), not the showcase (#75); the run's answers are read back, and a page rated wrong or unsure is resolved before the merge. The PR body names the demo sections to look at and what right and wrong look like.
 
-Two kinds of change are discussed with the operator before they merge, whatever they draw, and are raised as questions rather than left as notes in a PR body:
-- **A security change:** anything that changes what runs as root, what a program in the session can make kmscon read, write or execute, a trust boundary, a privilege, or a resource limit that guards against abuse.
-- **A change in approach:** a departure from an accepted ADR, or a design choice the ADR leaves open, made because of a limitation found on the way, an opportunity, or the architecture.
+Which PRs take it is the steering session's reading of those words, not yet ruled on by the operator: every PR that can change what appears on a VT. That includes kmscon's render, font and video code, libtsm changes to screen behaviour, and refactors meant to draw the same pixels, where regressions hide. PRs that cannot change what appears merge after code review alone: libtsm code kmscon does not call yet (the ADR-103 image store and sixel decoder before they are wired in), the conformance harness and other tooling, and documentation. The first PR that puts such work on screen takes the review.
 
-In the operator's words: "if there's a security change or a change in approach (necessary because limitations, opportunity, or archictechture I'd like to discuss)". The steering session raises each one with the operator as a numbered question, and an accepted ADR it changes gets an appended note recording the answer.
+### Changes the operator decides
 
-Changes that draw nothing new merge after code review alone: libtsm internals that kmscon does not yet draw (the ADR-103 image store and the sixel decoder before they are wired in), harness and tooling changes, and documentation. The first PR that puts such work on screen takes the visual review.
+The operator asked to discuss two kinds of change before they merge, whatever they draw: "if there's a security change or a change in approach (necessary because limitations, opportunity, or archictechture [sic] I'd like to discuss)".
+
+How the steering session applies that, its own process rather than the operator's words:
+- A security change includes anything that changes what runs as root, what a program in the session can make kmscon read, write or execute, a trust boundary, a privilege, or a resource limit that guards against abuse.
+- A change in approach includes a departure from an accepted ADR, or from the plan the PR set out with where no ADR covers it, made because of a limitation found on the way, an opportunity, or the architecture. A choice an ADR leaves open is raised when it changes behaviour other terminals or users would notice.
+- Each is raised with the operator as a numbered question before the merge, not left as a note in a PR body. Where the answer changes an accepted ADR, the ADR gets an appended note recording it.
 
 ## The conformance record
 

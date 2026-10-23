@@ -2,7 +2,8 @@
 # Prints the judgements demo.sh recorded (#47): one line per section, with the
 # last rating given for it in the run, and its comment below it, one indented
 # line per line typed. A rating given again after b replaces the earlier one
-# here; the file keeps both.
+# here; the file keeps both. Sections whose last rating is skipped are listed
+# again at the end, as still to review.
 #
 #   feedback.sh [--file PATH]             the latest run
 #   feedback.sh [--file PATH] --run ID    the run ID (the run column)
@@ -14,7 +15,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '6,9s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,10s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -98,6 +99,12 @@ if [ "$mode" = compare ]; then
 		}
 		for (s = 1; s <= ns; s++)
 			for (c = 1; c <= nl; c++)
+				if (rating[labels[c], ids[s]] == "skipped") {
+					if (!skipped++) printf "\nskipped, still to review\n"
+					printf "%s  %s\n", substr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c, 1), ids[s]
+				}
+		for (s = 1; s <= ns; s++)
+			for (c = 1; c <= nl; c++)
 				if (note[labels[c], ids[s]] != "") {
 					if (!header++) printf "\ncomments\n"
 					printf "%s  %s\n", substr("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c, 1), ids[s]
@@ -126,4 +133,9 @@ END {
 		printf "%-24s  %s\n", ids[s], rating[ids[s]]
 		if (note[ids[s]] != "") comment(note[ids[s]])
 	}
+	for (s = 1; s <= ns; s++)
+		if (rating[ids[s]] == "skipped") {
+			if (!skipped++) printf "\nskipped, still to review\n"
+			printf "  %s\n", ids[s]
+		}
 }' | sed 's/ *$//'

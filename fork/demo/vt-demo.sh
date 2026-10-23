@@ -1,8 +1,8 @@
 #!/bin/bash
 # The local VT demo in one blocking command, as `make vt-demo` runs it (see
 # docs/fork/demo.md): picks a free VT, runs run-vt.sh there through sudo, and
-# when the demo ends prints this run's answers, the results file, and a health
-# check of kmscon's log.
+# when the demo ends prints a health check of kmscon's log, this run's answers
+# (the pages skipped listed again as still to review), and the results file.
 #
 #   vt-demo.sh [N] [-- KMSCON-OPTION...]
 #

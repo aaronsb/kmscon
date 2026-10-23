@@ -187,6 +187,7 @@ def main():
             f.write(HEADER + line("20261022T090000-1", "dev build old", "10-sgr", "wrong"))
         append = (line("20261022T100000-42", "dev build new", "10-sgr", "right")
                   + line("20261022T100000-42", "dev build new", "20-underline-styles", "unsure", "frayed")
+                  + line("20261022T100000-42", "dev build new", "30-strike", "skipped")
                   + line("20261022T100500-77", "stock kmscon 10.0.4-1", "10-sgr", "wrong"))
         log = ("drm_shared: test-only atomic commit failed, -22\\n" * 2
                + "vt_timeout: failed to wake up after 20 retries\\n")
@@ -198,6 +199,9 @@ def main():
               "run       20261022T100000-42" in out and "frayed" in out
               and "20261022T100500-77" not in out and "20261022T090000-1" not in out, out)
         check("results file printed", f"results: {c.feedback}" in out, out)
+        check("skipped pages listed apart from unsure, as still to review",
+              "30-strike                 skipped\n" in out
+              and "\nskipped, still to review\n  30-strike\n" in out and "  20-underline-styles\n" not in out, out)
         check("health counts the freeze signature",
               "health: 2 'atomic commit failed', 1 'vt_timeout'" in out, out)
         logs = [l.split(": ", 1)[1] for l in out.splitlines() if l.startswith("kmscon log: ")]

@@ -28,7 +28,7 @@ VARIANTS = {
     # ADR-103's small machine: one vCPU and 512 MB at a common laptop size.
     # The vCPU is a core of the host, so it bounds parallelism and memory
     # rather than reproducing slow hardware.
-    "2d-1366x768-hamster": {
+    "2d-1366x768-potato": {
         "device": "virtio-vga,xres=1366,yres=768,edid=on",
         "display": "none",
         "conf": "kmscon.conf",
@@ -60,10 +60,10 @@ VARIANTS = {
 
 # What `t3.py run` runs when no variant is named, in the order workers take
 # them: with JOBS=2 the longest, 2d-7680x2160, starts at once, and the
-# hamster follows 2d-1280x800. gl-1280x800 runs only when named
+# potato follows 2d-1280x800. gl-1280x800 runs only when named
 # (`make tier3-gl`) until its intermittent black screen is resolved:
 # aaronsb/kmscon#17.
-DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160", "2d-1366x768-hamster"]
+DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160", "2d-1366x768-potato"]
 
 # Seconds a screen may take to draw; a benchmark scrolls for longer.
 SCREEN_TIMEOUT = 60

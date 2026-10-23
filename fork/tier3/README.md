@@ -9,14 +9,14 @@ make pkg            # build kmscon-aaronsb from this checkout -> fork/build/pkg
 make tier3-image    # once: fetch, verify and provision fork/vm/base.qcow2
 make tier3          # pkg, then the 2D variants; report in fork/build/tier3-report.json
 make tier3-gl       # pkg, then the GL variant, which is outside the default run (#17)
-make tier3 VARIANTS="2d-1280x800 2d-1366x768-hamster gl-1280x800"   # any set of variants
+make tier3 VARIANTS="2d-1280x800 2d-1366x768-potato gl-1280x800"   # any set of variants
 make tier3-run VARIANTS=2d-1280x800     # without rebuilding the package
 make tier3 JOBS=2   # up to two variants at once, each in its own VM
 make tier3-selftest # unit tests of the compare module
 make tier3-upstream JOBS=2   # upstream kmscon in the same guest, for a comparison page (below)
 ```
 
-Host needs: docker (for `make pkg`), `qemu-system-x86_64` with KVM, `qemu-img`, `xorriso`, `gpg`, `curl`, python 3. Everything runs as the invoking user; nothing needs root. QEMU runs headless, one VM per variant with the vCPUs and memory the variant names (see [Variants](#variants)), and the driver stops every VM it starts by the PID it started. Once the base image exists and the package is built, the three 2D variants take about 143 s one after the other and about 90 s with `JOBS=2` (`make tier3-run`, on a 32-thread host); without `2d-1366x768-hamster` the other two take about 61 s with `JOBS=2`, so the hamster adds about 30 s to the default run. `s1-scroll` adds about 7 s to each variant, 9 s at 7680x2160.
+Host needs: docker (for `make pkg`), `qemu-system-x86_64` with KVM, `qemu-img`, `xorriso`, `gpg`, `curl`, python 3. Everything runs as the invoking user; nothing needs root. QEMU runs headless, one VM per variant with the vCPUs and memory the variant names (see [Variants](#variants)), and the driver stops every VM it starts by the PID it started. Once the base image exists and the package is built, the three 2D variants take about 143 s one after the other and about 90 s with `JOBS=2` (`make tier3-run`, on a 32-thread host); without `2d-1366x768-potato` the other two take about 61 s with `JOBS=2`, so the potato adds about 30 s to the default run. `s1-scroll` adds about 7 s to each variant, 9 s at 7680x2160.
 
 ## What is pinned
 
@@ -63,10 +63,10 @@ Upstream reads every key of `guest/kmscon.conf` and logs its character cell, so 
 |---|---|---|---|---|
 | `2d-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga`, EDID 1280x800 | drm2d + bbulk | QMP `screendump` (PPM) |
 | `2d-7680x2160` | 4 vCPUs, 4096 MB | `virtio-vga`, EDID 7680x2160, `max_hostmem=1G` | drm2d + bbulk | QMP `screendump` (PPM) |
-| `2d-1366x768-hamster` | 1 vCPU, 512 MB | `virtio-vga`, EDID 1366x768 | drm2d + bbulk | QMP `screendump` (PPM) |
+| `2d-1366x768-potato` | 1 vCPU, 512 MB | `virtio-vga`, EDID 1366x768 | drm2d + bbulk | QMP `screendump` (PPM) |
 | `gl-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga-gl` with `-display egl-headless` (virgl on the host's render node, `T3_RENDERNODE`, default `/dev/dri/renderD128`) | drm3d + gltex (`hwaccel`) | VNC over a unix socket |
 
-`2d-1366x768-hamster` is ADR-103's small machine: one vCPU and 512 MB at a common laptop size, so a regression on small machines shows in the default run. Its vCPU is a core of the host, so it bounds parallelism and memory; it does not reproduce slow hardware. `make tier3` runs the 2D variants in the order 1280x800, 7680x2160, hamster, so with `JOBS=2` the longest starts first.
+`2d-1366x768-potato`, the potato computer, is ADR-103's small machine (ADR-103 names it `2d-1366x768-hamster`; renamed at the operator's request, noted at the end of ADR-103): one vCPU and 512 MB at a common laptop size, so a regression on small machines shows in the default run. Its vCPU is a core of the host, so it bounds parallelism and memory; it does not reproduce slow hardware. `make tier3` runs the 2D variants in the order 1280x800, 7680x2160, potato, so with `JOBS=2` the longest starts first.
 
 Three findings shaped this table:
 

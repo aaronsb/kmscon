@@ -235,13 +235,13 @@ class VariantTest(unittest.TestCase):
                 self.assertIsInstance(v["cpus"], int)
                 self.assertIsInstance(v["memory_mb"], int)
 
-    def test_hamster(self):
+    def test_potato(self):
         # ADR-103's small machine, in the default run.
-        v = t3_scenario.VARIANTS["2d-1366x768-hamster"]
+        v = t3_scenario.VARIANTS["2d-1366x768-potato"]
         self.assertEqual((v["cpus"], v["memory_mb"], v["renderer"]), (1, 512, "bbulk"))
         self.assertIn("xres=1366,yres=768", v["device"])
-        self.assertFalse(t3_scenario.uses_virgl("2d-1366x768-hamster"))
-        self.assertIn("2d-1366x768-hamster", t3_scenario.DEFAULT_VARIANTS)
+        self.assertFalse(t3_scenario.uses_virgl("2d-1366x768-potato"))
+        self.assertIn("2d-1366x768-potato", t3_scenario.DEFAULT_VARIANTS)
 
     def test_qemu_gets_the_machine(self):
         class Started(Exception):

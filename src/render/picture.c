@@ -29,7 +29,9 @@
  * Weights are 16-bit fixed point and each list sums to exactly 1 << 16, so an
  * opaque picture stays opaque and premultiplied channels never pass their
  * alpha. Source rows are filtered across once each, into a ring holding as
- * many rows as one output row needs, then down.
+ * many rows as one output row needs, then down. The ring is bounded: output
+ * columns go in slices narrow enough that a ring of a slice holds at most
+ * RING_MAX sums, whatever the shrink.
  */
 
 #include <errno.h>
@@ -39,6 +41,7 @@
 #include "picture.h"
 
 #define ONE 65536u
+#define RING_MAX (1u << 20)
 
 /* the weights of each output pixel along one axis, [o0, o1) */
 struct taps {
@@ -125,12 +128,66 @@ static inline unsigned int chan(uint32_t p, unsigned int c)
 	return (p >> (8 * c)) & 0xff;
 }
 
+/* the output columns [@c0, @c1) of every output row, into @dst, @nx a row */
+static void scale_slice(const uint32_t *src, size_t stride, const struct taps *tx,
+			const struct taps *ty, unsigned int ny, unsigned int c0, unsigned int c1,
+			unsigned int nx, uint32_t *ring, long *ring_row, uint32_t *dst)
+{
+	unsigned int w = c1 - c0, x, y, k, c, r, slot;
+
+	for (k = 0; k < ty->max; k++)
+		ring_row[k] = -1;
+
+	for (y = 0; y < ny; y++) {
+		const uint32_t *wy = &ty->w[(size_t)y * ty->max];
+
+		/* the rows this output row reads span at most ty->max, so a row
+		 * is never replaced while it is needed */
+		for (k = 0; k < ty->count[y]; k++) {
+			r = ty->first[y] + k;
+			slot = r % ty->max;
+			if (ring_row[slot] == (long)r)
+				continue;
+			ring_row[slot] = r;
+			for (x = 0; x < w; x++) {
+				const uint32_t *wx = &tx->w[(size_t)(c0 + x) * tx->max];
+				const uint32_t *s = &src[(size_t)r * stride + tx->first[c0 + x]];
+				uint32_t *h = &ring[((size_t)slot * w + x) * 4];
+
+				h[0] = h[1] = h[2] = h[3] = 0;
+				for (unsigned int i = 0; i < tx->count[c0 + x]; i++)
+					for (c = 0; c < 4; c++)
+						h[c] += wx[i] * chan(s[i], c);
+			}
+		}
+
+		for (x = 0; x < w; x++) {
+			uint64_t acc[4] = {0};
+			uint32_t out = 0;
+
+			for (k = 0; k < ty->count[y]; k++) {
+				const uint32_t *h =
+					&ring[(((ty->first[y] + k) % ty->max) * (size_t)w + x) * 4];
+
+				for (c = 0; c < 4; c++)
+					acc[c] += (uint64_t)wy[k] * h[c];
+			}
+			for (c = 0; c < 4; c++) {
+				uint64_t v = (acc[c] + (1ull << 31)) >> 32;
+
+				out |= (uint32_t)(v > 255 ? 255 : v) << (8 * c);
+			}
+			dst[(size_t)y * nx + c0 + x] = out;
+		}
+	}
+}
+
 int picture_scale(const uint32_t *src, size_t stride, unsigned int sw, unsigned int sh,
 		  unsigned int dw, unsigned int dh, unsigned int x0, unsigned int y0,
 		  unsigned int x1, unsigned int y1, uint32_t *dst)
 {
 	struct taps tx = {0}, ty = {0};
-	unsigned int nx = x1 - x0, x, y, k, c, r, slot;
+	unsigned int nx = x1 - x0, slice, c0;
 	uint32_t *ring = NULL;
 	long *ring_row = NULL;
 	int ret;
@@ -145,58 +202,21 @@ int picture_scale(const uint32_t *src, size_t stride, unsigned int sw, unsigned 
 	if (ret)
 		goto out;
 
-	/* rows filtered across, each @nx pixels of four 24-bit sums */
-	ring = malloc((size_t)ty.max * nx * 4 * sizeof(*ring));
+	/* rows filtered across, each a slice of four 24-bit sums a pixel */
+	slice = RING_MAX / ty.max;
+	if (!slice)
+		slice = 1;
+	if (slice > nx)
+		slice = nx;
+	ring = malloc((size_t)ty.max * slice * 4 * sizeof(*ring));
 	ring_row = malloc(ty.max * sizeof(*ring_row));
 	if (!ring || !ring_row) {
 		ret = -ENOMEM;
 		goto out;
 	}
-	for (k = 0; k < ty.max; k++)
-		ring_row[k] = -1;
-
-	for (y = 0; y < y1 - y0; y++) {
-		const uint32_t *wy = &ty.w[(size_t)y * ty.max];
-
-		/* the rows this output row reads span at most ty.max, so a row
-		 * is never replaced while it is needed */
-		for (k = 0; k < ty.count[y]; k++) {
-			r = ty.first[y] + k;
-			slot = r % ty.max;
-			if (ring_row[slot] == (long)r)
-				continue;
-			ring_row[slot] = r;
-			for (x = 0; x < nx; x++) {
-				const uint32_t *wx = &tx.w[(size_t)x * tx.max];
-				const uint32_t *s = &src[(size_t)r * stride + tx.first[x]];
-				uint32_t *h = &ring[((size_t)slot * nx + x) * 4];
-
-				h[0] = h[1] = h[2] = h[3] = 0;
-				for (unsigned int i = 0; i < tx.count[x]; i++)
-					for (c = 0; c < 4; c++)
-						h[c] += wx[i] * chan(s[i], c);
-			}
-		}
-
-		for (x = 0; x < nx; x++) {
-			uint64_t acc[4] = {0};
-			uint32_t out = 0;
-
-			for (k = 0; k < ty.count[y]; k++) {
-				const uint32_t *h =
-					&ring[(((ty.first[y] + k) % ty.max) * (size_t)nx + x) * 4];
-
-				for (c = 0; c < 4; c++)
-					acc[c] += (uint64_t)wy[k] * h[c];
-			}
-			for (c = 0; c < 4; c++) {
-				uint64_t v = (acc[c] + (1ull << 31)) >> 32;
-
-				out |= (uint32_t)(v > 255 ? 255 : v) << (8 * c);
-			}
-			dst[(size_t)y * nx + x] = out;
-		}
-	}
+	for (c0 = 0; c0 < nx; c0 += slice)
+		scale_slice(src, stride, &tx, &ty, y1 - y0, c0, c0 + slice < nx ? c0 + slice : nx,
+			    nx, ring, ring_row, dst);
 
 out:
 	free(ring);

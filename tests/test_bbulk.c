@@ -627,6 +627,49 @@ static void test_below_bg(struct kmscon_text *txt)
 	settle(txt, 0);
 }
 
+/* the scaler: copies at 1:1, means when it shrinks, keeps opaque pictures
+ * opaque, and gives the same pixels whether or not it slices the columns */
+static void test_picture_scale(void)
+{
+	static const uint32_t two[2] = {0xff000000, 0xffffffff};
+	uint32_t src[12], out[64], *tall, *whole, col[1];
+	unsigned int i, x;
+
+	for (i = 0; i < 12; i++)
+		src[i] = 0xff000000 | (i * 0x111111);
+	assert(picture_scale(src, 4, 4, 3, 4, 3, 0, 0, 4, 3, out) == 0);
+	assert(!memcmp(src, out, sizeof(src)));
+	/* a part of it, from a source row longer than the picture */
+	assert(picture_scale(src, 4, 3, 3, 3, 3, 1, 1, 3, 3, out) == 0);
+	assert(out[0] == src[5] && out[1] == src[6] && out[2] == src[9] && out[3] == src[10]);
+
+	assert(picture_scale(two, 2, 2, 1, 1, 1, 0, 0, 1, 1, out) == 0);
+	assert(out[0] == 0xff808080);
+
+	assert(picture_scale(src, 4, 4, 3, 7, 5, 0, 0, 7, 5, out) == 0);
+	for (i = 0; i < 35; i++)
+		assert(out[i] >> 24 == 0xff);
+	assert(picture_scale(src, 4, 4, 3, 3, 2, 0, 0, 3, 2, out) == 0);
+	for (i = 0; i < 6; i++)
+		assert(out[i] >> 24 == 0xff);
+
+	assert(picture_scale(src, 4, 4, 3, 4, 3, 0, 0, 5, 3, out) == -EINVAL);
+
+	/* 200 x 8000 shrunk to 200 x 1: a ring of 8002 rows, sliced */
+	tall = malloc(200 * 8000 * 4);
+	whole = malloc(200 * 4);
+	assert(tall && whole);
+	for (i = 0; i < 200 * 8000; i++)
+		tall[i] = 0xff000000 | ((i * 2654435761u) & 0xffffff);
+	assert(picture_scale(tall, 200, 200, 8000, 200, 1, 0, 0, 200, 1, whole) == 0);
+	for (x = 0; x < 200; x += 37) {
+		assert(picture_scale(tall, 200, 200, 8000, 200, 1, x, 0, x + 1, 1, col) == 0);
+		assert(col[0] == whole[x]);
+	}
+	free(tall);
+	free(whole);
+}
+
 int main(void)
 {
 	struct kmscon_text txt;
@@ -672,6 +715,7 @@ int main(void)
 	test_placement_damage(&txt);
 	test_opaque_runs(&txt);
 	test_below_bg(&txt);
+	test_picture_scale();
 
 	bbulk_unset(&txt);
 	assert(bb->cell_flags == NULL);

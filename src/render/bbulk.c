@@ -783,9 +783,11 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 		if (!bb->prev[i].state)
 			force_cells(txt, &bb->prev[i]);
 
-	memcpy(bb->prev, bb->places, n * sizeof(*bb->places));
+	if (n) {
+		memcpy(bb->prev, bb->places, n * sizeof(*bb->places));
+		qsort(bb->prev, n, sizeof(*bb->prev), cmp_place_key);
+	}
 	bb->n_prev = n;
-	qsort(bb->prev, n, sizeof(*bb->prev), cmp_place_key);
 
 	/* each row's placements, in draw order */
 	if (total > bb->row_places_cap) {
@@ -926,9 +928,13 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 	if (!pic) {
 		bytes = (size_t)w * h * 4;
 		pictures_trim(bb, bytes, picture_limit(bb), true);
-		/* a frame may pass the limit by as much again, no further */
+		/*
+		 * a frame may pass the limit by as much again, no further; past
+		 * that the cells are drawn without the picture and drawn again
+		 * on a later frame, as for a failed allocation
+		 */
 		if (bb->picture_bytes + bytes > 2 * picture_limit(bb))
-			return -1;
+			return -ENOMEM;
 		pic = malloc(sizeof(*pic) + bytes);
 		tmp = txt->orientation == OR_NORMAL ? NULL : malloc(bytes);
 		if (!pic || (txt->orientation != OR_NORMAL && !tmp)) {

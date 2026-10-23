@@ -92,13 +92,13 @@ struct kmscon_glyph *kmscon_deco_render(enum kmscon_deco kind, unsigned int w, u
 }
 
 /* the images placements show, by key; test placements name them */
-static struct tsm_frame_image test_images[4];
+static struct tsm_frame_image test_images[8];
 
 int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
 			  struct tsm_frame_image *out)
 {
 	(void)txt;
-	if (overlay || key >= 4 || !test_images[key].pixels)
+	if (overlay || key >= 8 || !test_images[key].pixels)
 		return -ENOENT;
 	*out = test_images[key];
 	return 0;
@@ -447,7 +447,7 @@ static void test_underline_cursor_colour(struct kmscon_text *txt)
 /* ---- the image layer (ADR-103) ---- */
 
 static uint32_t picture_px[128 * 32];
-static struct tsm_frame_placement placements[4];
+static struct tsm_frame_placement placements[8];
 
 /* placement @i: image 1 (opaque, 128 x 32) over @cols x 2 cells at @col, @row */
 static void set_placement(unsigned int i, uint64_t key, int row, unsigned int col,
@@ -627,6 +627,97 @@ static void test_below_bg(struct kmscon_text *txt)
 	settle(txt, 0);
 }
 
+/* a full-screen placement @i of image @image, made in half-size cells, so
+ * drawn at twice its size: a scaled picture of the whole screen */
+static void set_scaled(unsigned int i, uint64_t key, uint64_t image)
+{
+	struct tsm_frame_placement *p = &placements[i];
+
+	memset(p, 0, sizeof(*p));
+	p->key = key;
+	p->image_key = image;
+	p->cols = 640 / FAKE_CELL_W;
+	p->rows = 480 / FAKE_CELL_H;
+	p->width = p->cols * FAKE_CELL_W / 2;
+	p->height = p->rows * FAKE_CELL_H / 2;
+	p->src_width = p->width;
+	p->src_height = p->height;
+	p->cell_width = FAKE_CELL_W / 2;
+	p->cell_height = FAKE_CELL_H / 2;
+	p->band = TSM_FRAME_BAND_ABOVE_TEXT;
+}
+
+static unsigned int pictures_of(struct bbulk *bb, uint64_t image)
+{
+	unsigned int n = 0;
+
+	for (struct picture *p = bb->pictures; p; p = p->next)
+		n += p->image_key == image;
+	return n;
+}
+
+/*
+ * The scaled pictures stay within twice the screen between frames, however
+ * many a run of frames draws; within a frame, a picture the frame draws is
+ * never freed to make room, so three half-transparent full-screen pictures
+ * past the limit still compose from all three; past twice the limit a
+ * picture is left out and its cells retried on later frames.
+ */
+static void test_picture_cache(struct kmscon_text *txt)
+{
+	static uint32_t half[320 * 240];
+	struct bbulk *bb = txt->data;
+	uint32_t want = 0;
+	unsigned int i, k;
+
+	for (i = 0; i < 320 * 240; i++)
+		half[i] = 0x80404040;
+	for (i = 1; i <= 5; i++)
+		test_images[i] = (struct tsm_frame_image){
+			.width = 320, .height = 240, .stride = 320 * 4, .pixels = half};
+	settle(txt, 0);
+
+	/* five full-screen pictures, one a frame, twice over: 6 MiB of them */
+	for (k = 0; k < 10; k++) {
+		set_scaled(0, 30, k % 5 + 1);
+		draw_placements(txt, 1);
+		assert(pictures_of(bb, k % 5 + 1) == 1);
+		assert(bb->picture_bytes <= picture_limit(bb));
+	}
+
+	/* three at once, 3.6 MiB against a 2.4 MiB limit, composed in a cell */
+	for (i = 0; i < 3; i++)
+		set_scaled(i, 40 + i, i + 1);
+	draw_placements(txt, 3);
+	for (i = 0; i < 3; i++)
+		want = 0x80404040 + ((over_div255((want >> 24) * 127) << 24) |
+				     (over_div255(((want >> 16) & 0xff) * 127) << 16) |
+				     (over_div255(((want >> 8) & 0xff) * 127) << 8) |
+				     over_div255((want & 0xff) * 127));
+	assert(blended_at(0, 0) && blended_at(0, 0)->buf == bb->scratch);
+	assert(blended_at(0, 0)->first == want);
+	assert(bb->picture_bytes <= picture_limit(bb));
+
+	/*
+	 * five at once pass the in-frame cap of twice the limit: the last is
+	 * left out, and its cells are drawn again on every later frame until
+	 * it fits, not only on the two frames that follow the change
+	 */
+	for (i = 0; i < 5; i++)
+		set_scaled(i, 50 + i, i + 1);
+	assert(draw_placements(txt, 5) == 0);
+	assert(draw_placements(txt, 5) == 0);
+	assert(draw_placements(txt, 5) == 0 && n_blended > 0);
+	set_scaled(0, 50, 1);
+	draw_placements(txt, 1);
+	assert(draw_placements(txt, 1) == 0);
+	assert(draw_placements(txt, 1) == KMSCON_TEXT_UNCHANGED);
+
+	settle(txt, 0);
+	for (i = 1; i <= 5; i++)
+		test_images[i].pixels = NULL;
+}
+
 /* the scaler: copies at 1:1, means when it shrinks, keeps opaque pictures
  * opaque, and gives the same pixels whether or not it slices the columns */
 static void test_picture_scale(void)
@@ -716,6 +807,7 @@ int main(void)
 	test_opaque_runs(&txt);
 	test_below_bg(&txt);
 	test_picture_scale();
+	test_picture_cache(&txt);
 
 	bbulk_unset(&txt);
 	assert(bb->cell_flags == NULL);

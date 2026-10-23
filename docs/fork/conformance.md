@@ -87,6 +87,20 @@ make tier3 && make sheet-save SAVE=fork/build/saved/after    # on the branch
 make sheet-compare A=fork/build/saved/before B=fork/build/saved/after LABEL_A=main LABEL_B=branch
 ```
 
+Upstream kmscon is set beside the fork the same way, each build run twice, tier 3 only (`make tier3-upstream`, described in [fork/tier3/README.md](../../fork/tier3/README.md#upstream-through-the-same-harness)):
+
+```sh
+make tier3-upstream JOBS=2 && make sheet-save TIERS=3 SAVE=fork/build/saved/upstream-1
+make tier3 JOBS=2          && make sheet-save TIERS=3 SAVE=fork/build/saved/fork-1
+make tier3-upstream JOBS=2 && make sheet-save TIERS=3 SAVE=fork/build/saved/upstream-2
+make tier3 JOBS=2          && make sheet-save TIERS=3 SAVE=fork/build/saved/fork-2
+make sheet-compare A=fork/build/saved/upstream-1 A2=fork/build/saved/upstream-2 \
+    B=fork/build/saved/fork-1 B2=fork/build/saved/fork-2 LABEL_A=upstream LABEL_B=fork \
+    VERDICTS=fork/conformance/upstream-verdicts.txt
+```
+
+`fork/conformance/upstream-verdicts.txt` says, for each screen where the two differ, which side is correct and why, citing the specification or the reference terminals.
+
 ## Comparison pages
 
 `make sheet-compare` writes `fork/build/compare/README.md` (or `OUT=`): each screen two saved runs both captured, A beside B, paired by name. A screen only one run has is listed, not dropped. The same comparison sets upstream kmscon beside the fork, built and run in the same tier 3 machine, which is the evidence the fork is announced with; the page is written for a reader who has not seen this repository.
@@ -96,7 +110,7 @@ make sheet-compare A=fork/build/saved/before B=fork/build/saved/after LABEL_A=ma
 - `A2=` and `B2=` take a second run of each build; the page then reports, per screen, whether each build reproduced its own capture exactly. Each report carries a run id, and a second run with the first's id (the same run saved twice) is refused.
 - The footer says how the screens were made: the guest image and its SHA-256, the package snapshot, each display's QEMU device, kmscon configuration and cell size, the dev image the packages were built in, both builds' commits, and the command that regenerates the page. The tier 3 report records these at run time (`tools` and `variants` in `fork/build/tier3-report.json`). Where the two runs recorded different values, the page gives each run's, and it says both builds ran in the same machine only when every one of these agrees.
 
-`make sheet-save SAVE=DIR` copies the last run's tier 2 and tier 3 reports and every screen they captured into `DIR`, with paths relative to it, so a run can be kept and compared later. `DIR` must be inside the checkout, because the generators run in the dev image with only the checkout mounted.
+`make sheet-save SAVE=DIR` copies the last run's tier 2 and tier 3 reports and every screen they captured into `DIR`, with paths relative to it, so a run can be kept and compared later; `TIERS=3` keeps tier 3 alone. `DIR` must be inside the checkout, because the generators run in the dev image with only the checkout mounted. Tier 2 always draws the fork's renderer and its report names no kmscon commit, so saving it beside a tier 3 run of another build, such as upstream's, is refused.
 
 `sheet-save`, `sheet-compare` and the run page empty part of their output directory before writing, so each writes only into a directory that is new, empty, or one it wrote before (marked by a `.saved-run`, `.compare-page` or `.run-page` file), and never into one holding the current directory or one of its inputs. `SAVE=.` or `OUT=fork` is refused and deletes nothing.
 
@@ -111,7 +125,7 @@ make tier2                     # tier 2 only, with its report
 make tier2-golden              # regenerate tier 2 goldens (review, then commit on their own)
 make sheet-preview             # write this run's page into fork/build/run/, uncommitted
 make sheet NOTE="what it marks"   # run page and ledger row, once per session on a green main
-make sheet-save SAVE=DIR       # keep the last run's reports and screens for comparing
+make sheet-save SAVE=DIR       # keep the last run's reports and screens for comparing (TIERS=3: tier 3 only)
 make sheet-compare A=DIR B=DIR LABEL_A=.. LABEL_B=..   # pair two saved runs' screens
 make sheet-selftest            # unit tests of the page generators (part of make test)
 ```
@@ -125,6 +139,7 @@ make tier3                     # pkg, then the 2D variants; report in fork/build
 make tier3-gl                  # pkg, then the GL variant, outside the default run (#17)
 make tier3-bless               # copy the last run's captures over the goldens (review, then commit on their own)
 make tier3-selftest            # unit tests of the tier 3 image compare module
+make tier3-upstream            # upstream kmscon and libtsm at the pins in fork/upstream.mk, same guest and screens
 ```
 
 `make sheet` includes tier 3 when a tier 3 run has written its report to `fork/build`, so run `make tier3` first at the same commit.

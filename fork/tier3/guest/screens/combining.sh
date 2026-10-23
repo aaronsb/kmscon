@@ -2,9 +2,9 @@
 # look-for: Each mark sits on its letter in one cell: the marks column
 # look-for: matches the one-code-point column, and the bars line up with
 # look-for: |x|.
-# wrong-looks-like: A blank marks column (stock kmscon draws nothing for a
-# wrong-looks-like: cell of several code points), a mark beside its letter,
-# wrong-looks-like: or bars out of line.
+# wrong-looks-like: Bare letters in the marks column and "cafe manana" in
+# wrong-looks-like: the words (stock kmscon drops every combining mark), a
+# wrong-looks-like: mark beside its letter, or bars out of line.
 # Combining marks: a base letter followed by one or two marks forms one cell.
 # The left column builds each letter from a base and marks; the right column
 # is the precomposed character where Unicode has one. The marks are written as

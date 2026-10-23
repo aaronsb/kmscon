@@ -3,7 +3,9 @@
 #   make sheet-preview      run the tiers and write the page to fork/build/run/
 #   make sheet NOTE="..."   write docs/conformance/runs/<date>-<kmscon>-<libtsm>/
 #                           and add its row to docs/conformance/LEDGER.md
-#   make sheet-save SAVE=DIR    copy the last run's reports and screens to DIR
+#   make sheet-save SAVE=DIR [TIERS="2 3"]
+#                           copy the last run's reports and screens to DIR;
+#                           TIERS=3 keeps tier 3 only, as for upstream's run
 #   make sheet-compare A=DIR B=DIR [A2=DIR] [B2=DIR] [LABEL_A=..] [LABEL_B=..]
 #                       [VERDICTS=FILE] [OUT=DIR]
 #                           pair the screens of two saved runs in OUT
@@ -67,12 +69,13 @@ sheet: sheet-check ## Commit-ready run page + ledger row (NOTE="what this run ma
 sheet-save: ## Save the last run's reports and screens to SAVE=<dir in the checkout>
 	@test -n "$(SAVE)" || { echo 'sheet-save: give SAVE=<dir>, e.g. fork/build/saved/fork-1' >&2; exit 1; }
 	$(RUN) python3 -B fork/conformance/compare.py save --out $(SAVE) \
-		$(wildcard $(BUILD)/tier2-report.json $(BUILD)/tier3-report.json)
+		$(wildcard $(foreach t,$(TIERS),$(BUILD)/tier$(t)-report.json))
 
 COMPARE_OUT ?= $(or $(OUT),$(BUILD)/compare)
 COMPARE_CMD  = make sheet-compare A=$(A) B=$(B)$(if $(A2), A2=$(A2))$(if $(B2), B2=$(B2)) \
 	LABEL_A='$(LABEL_A)' LABEL_B='$(LABEL_B)'$(if $(VERDICTS), VERDICTS=$(VERDICTS))
 LABEL_A     ?= A
+TIERS       ?= 2 3
 LABEL_B     ?= B
 
 .PHONY: sheet-compare

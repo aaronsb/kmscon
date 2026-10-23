@@ -55,12 +55,19 @@ def slug(name):
 def save(out, reports):
     """Copy each report and every screen it captured into `out`, replacing
     what an earlier save left there."""
+    reps = [json.loads(Path(path).read_text()) for path in reports]
+    # Tier 2 draws only the fork's renderer, and its report names no kmscon
+    # commit: beside another build's tier 3 run it would pass for that build's.
+    other = [r["tools"]["kmscon_repo"] for r in reps
+             if r["tier"] == 3 and (r.get("tools") or {}).get("kmscon_repo") not in (None, REPO)]
+    if other and any(r["tier"] == 2 for r in reps):
+        raise SystemExit("compare.py save: the tier 3 run is of %s, and the tier 2 report is "
+                         "the fork's; save tier 3 alone (make sheet-save TIERS=3)" % other[0])
     out = claim("compare.py save", out, SAVED, reports)
     for old in out.iterdir():
         if old.name != SAVED:
             shutil.rmtree(old) if old.is_dir() and not old.is_symlink() else old.unlink()
-    for path in reports:
-        rep = json.loads(Path(path).read_text())
+    for path, rep in zip(reports, reps):
         for case in rep["cases"]:
             src = case.get("actual")
             for key in ("golden", "diff", "thumb_actual", "thumb_golden", "thumb_diff"):
@@ -324,7 +331,9 @@ class Page:
         if not rev:
             return "not recorded"
         bare, _, dirty = rev.partition("+")
-        repo = REPO if key == "kmscon" else REPO.replace("kmscon", "libtsm")
+        # A report names the repository it built from; one written before
+        # reports did is the fork's.
+        repo = run.tools.get(key + "_repo") or (REPO if key == "kmscon" else REPO.replace("kmscon", "libtsm"))
         return "[`%s`](%s/commit/%s)%s" % (bare, repo, bare, " with uncommitted changes" if dirty else "")
 
     def reproducibility(self, both):

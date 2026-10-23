@@ -20,4 +20,7 @@ install -m755 "$disc"/t3 /usr/local/bin/t3
 stty -F /dev/ttyS1 clocal
 chmod 0666 /dev/ttyS1
 echo 'echo "T3-LOGIN $(tty)" > /dev/ttyS1' > /etc/profile.d/tier3.sh
-echo "TIER3-INSTALL-OK $(pacman -Q kmscon-aaronsb)" > /dev/ttyS0
+# Every kmscon or libtsm package now installed, and the libtsm commit the
+# package was built with, so the log shows which build drew the screens.
+echo "TIER3-INSTALL-OK packages: $(pacman -Q | grep -e kmscon -e libtsm | tr '\n' ' ');" \
+    "libtsm: $(cat /usr/share/doc/kmscon*/libtsm-commit 2>/dev/null || echo none)" > /dev/ttyS0

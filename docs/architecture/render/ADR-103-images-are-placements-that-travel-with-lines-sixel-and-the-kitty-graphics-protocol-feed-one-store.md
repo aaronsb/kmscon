@@ -12,6 +12,14 @@ basis:
     level: guided
     said: "I'd rather not invent new security conventions if possible"
     via: Claude Code session, relayed verbatim by the team lead, on reading files that kitty commands name while kmscon runs as root
+  - operator: aaronsb
+    level: directed
+    said: "we need to make it configurable. it should be able to run on hamster wheels"
+    via: Claude Code session, relayed verbatim by the team lead, answering the memory-default probe
+  - operator: aaronsb
+    level: guided
+    said: "not everyone's going to have a ginormous 8k display"
+    via: Claude Code session, relayed verbatim by the team lead, on benchmark targets that named only 7680x2160
   - precedent: ADR-101
   - precedent: ADR-102
   - precedent: ADR-300
@@ -33,7 +41,7 @@ basis:
 agent:
   name: claude
   model: claude-opus-5-5
-status: proposed
+status: accepted
 date: 2026-10-22
 deciders:
   - aaronsb
@@ -45,11 +53,23 @@ considered:
     said: "on 5, I would think the tty owner would be the right move, but I'd defer to other systems that use this"
     via: "Claude Code session, relayed verbatim by the team lead, 2026-10-22; '5' was the fifth point of the team lead's summary of the image-access design, the sudo identity question. The team lead then checked other systems: desktop terminals and sudoedit read as the session's user"
     covers: [sudo-identity]
+  - operator: aaronsb
+    said: "1. yes."
+    via: Claude Code session, relayed verbatim by the team lead, 2026-10-22, answering whether PNG and compressed data are decoded in the helper as the session's user
+    covers: [helper-decoding]
+  - operator: aaronsb
+    said: "2. we need to make it configurable. it should be able to run on hamster wheels"
+    via: Claude Code session, relayed verbatim by the team lead, 2026-10-22, answering the 320 MB per screen default; the default became a per-process budget scaled from the displays, 16 MiB to 192 MiB
+    covers: [memory-default]
+  - operator: aaronsb
+    said: "not everyone's going to have a ginormous 8k display"
+    via: Claude Code session, relayed verbatim by the team lead, 2026-10-22, on benchmark targets that named only 7680x2160; targets now cover 1366x768 and 1920x1080 on a small tier 3 variant
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
   - "A kitty client run by the logged-in user that names a root-only file with t=f gets EBADF:Failed to read image file, the same reply as for a missing file"
-  - "mpv --vo=sixel and mpv --vo=kitty (inline and with --vo-kitty-use-shm=yes) play an animation full screen on drm2d with bbulk at 1920x1080 and 7680x2160, and the render timer's presented rate matches mpv's output rate"
+  - "mpv --vo=sixel and mpv --vo=kitty (inline and with --vo-kitty-use-shm=yes) play an animation full screen on drm2d with bbulk at 1366x768, 1920x1080 and 7680x2160, and the render timer's presented rate matches mpv's output rate"
+  - "The 2d-1366x768-hamster tier 3 variant (1 vCPU, 512 MB) runs the image screens and S1 to S6 on every tier 3 run"
   - "tmux in a 3x3 grid of panes, each running mpv --vo=sixel, plays all nine and leaves no stale pixels when the panes close"
   - "The tier 2 screens for each composition band, and the render timer's figures for acceptance scenarios A1 to A7 recorded as an evidence record"
 ---
@@ -59,24 +79,25 @@ observable:
 ## Summary
 
 - **Decided:** Steps 3 and 4 of ADR-101, made concrete.
-  - **Store:** one image store per screen buffer, capped by `image-storage-limit` (320 MB, the kitty and Ghostty default). A new image evicts images with no placement first, then images placed only in scrollback. An image placed on the screen is never evicted; a new image that still does not fit is refused.
+  - **Store and budget:** one image store per screen buffer. Every store and the renderer's scaled pictures draw on one budget per kmscon process, `image-storage-limit`. By default it is four frames of the process's displays in ARGB, at least 16 MiB and at most 192 MiB: 16 MiB at 1024x768 and 1366x768, 31.6 MiB at 1920x1080, 192 MiB at 7680x2160. Over budget, scaled pictures not on screen go first, then images with no placement, then images placed only in scrollback. An image placed on the screen is never evicted; a new image that still does not fit is refused.
   - **Placements:** each is anchored to the line holding its top row, so it travels into scrollback and back with the text. A sixel behaves as cell content: text written or erased over it removes that part, as foot does and as terminals that keep image tiles in cells behave. A kitty placement follows the kitty spec: of the erase commands only ED 2 touches it.
   - **Parsing:** sixel and kitty payloads are decoded as they stream in, never buffered whole.
   - **Files:** all four kitty media are supported. Opening files and shared memory, and decoding PNG and zlib, happen in a per-session helper process running as the session's user, never as the foreground process, as a desktop terminal reads as its desktop user. It follows the kitty spec's file rules and Ghostty's checks. kmscon, which runs as root, decodes only sixel and base64 itself.
   - **Drawing:** bbulk composes the three placement bands per covered cell, sends cells nothing draws over an opaque picture as row strips, and damages placement rectangles on both buffers. gltex follows with a texture per image, after ADR-102 step 6.
-  - **Acceptance:** full-motion video through mpv (`--vo=sixel`, and `--vo=kitty` inline and over shared memory) on drm2d with bbulk at 1920x1080 and 7680x2160, the showcase's text banner over a full-screen video, and tmux grids of sixel videos. No frame rate can be justified before measuring, so the first measurement is an early step and sets the targets. A `render-timer` overlay (foot's option) shows frames presented, CPU time and damaged area per frame, drawn as a top-band placement.
+  - **Acceptance:** full-motion video through mpv (`--vo=sixel`, and `--vo=kitty` inline and over shared memory) on drm2d with bbulk, the showcase's text banner over a full-screen video, and tmux grids of sixel videos. 1366x768 and 1920x1080 are the common case and carry targets, judged on a small tier 3 machine (1 vCPU, 512 MB); 7680x2160 is the stress case, with no target until the first measurement, an early step. A `render-timer` overlay (foot's option) shows frames presented, CPU time and damaged area per frame, drawn as a top-band placement.
   - **Settings:** `image-storage-limit` (Ghostty), `max-graphic-size`, `num-color-registers` and `private-color-registers` (xterm), and `render-timer` (foot).
 - **Trades away:**
   - A program run under `sudo` cannot show root-only files through the file media, because the helper reads as the session's user, as a desktop terminal does under `sudo mpv`.
   - An optional dependency on sd-login (systemd's or elogind's) to find the session's user.
   - A file or PNG image costs a round trip to the helper, and that VT's output pauses until the reply.
   - Animation, relative placements and Unicode placeholders wait for step 5. Clients that use them get EINVAL.
+  - Ghostty's meaning of `image-storage-limit`, which is per screen with a 320 MB default; here it is one budget per kmscon process, sized from its displays.
   - Byte-for-byte agreement with upstream on every tier 1 golden that records the DA1 reply, which gains attribute 4.
 - **One-way?** No. `image-storage-limit=0` turns both protocols off. Reversing becomes expensive once programs rely on the replies, and once the helper protocol and the frame's placement list are interfaces both kmscon and libtsm build on.
 - **Probes:**
   1. *Not confident (sudo-identity):* answered. The helper reads files as the session's user. Under `sudo`, a program running as root that asks to show `/root/picture.png` is refused with the protocol's generic error, though it could read the file itself. The alternative was to read as whichever program is in the foreground. The operator chose the session's user, deferring to what other systems do, and desktop terminals and sudoedit read as the session's user. The image helper section says how that user is found.
-  2. *Confident (helper-decoding):* a PNG or compressed image from any program, remote ones included, is decoded by the helper running as you, so a fault in the PNG library cannot become a root fault. The cost is that every PNG image, even one sent inline, passes through that helper.
-  3. *Not confident (memory-default):* each screen may hold 320 MB of images, kitty's and Ghostty's default, so a VT whose programs fill both screens holds up to 640 MB, and six such VTs nearly 4 GB. Is that right for a console, or should the default be lower?
+  2. *Confident (helper-decoding):* answered yes. A PNG or compressed image from any program, remote ones included, is decoded by the helper running as you, so a fault in the PNG library cannot become a root fault. The cost is that every PNG image, even one sent inline, passes through that helper.
+  3. *Not confident (memory-default):* answered. The draft gave each screen 320 MB, kitty's and Ghostty's default, so one VT could hold 640 MB. The operator asked for a setting, and for kmscon to run on very small machines, so the default now scales with the displays and is capped well below that.
 - **Inversion:** Between "images are cell content" (sixel's own model; mlterm and WezTerm store tiles in cells) and "images are a free layer text never touches" (the kitty spec's model). The answer keeps ADR-101's one layer and gives each protocol the erase rules its own specification describes.
 
 ## Context
@@ -107,11 +128,12 @@ Upstream's sixel request (kmscon/kmscon#138) carries a proposal to route sixel D
   - width, height and premultiplied ARGB32 pixels, the colour glyph format of ADR-102;
   - an opaque flag, set when no pixel is below full alpha;
   - its last use, the transient hint (`N=1`) and its origin, sixel or kitty.
-- An image costs width x height x 4 bytes. The store's total never exceeds `image-storage-limit`.
-- A new image that would pass the limit evicts, in order:
-  1. images with no placement, transient ones first, least recently used first;
-  2. images whose placements all sit on lines in scrollback, least recently used first, together with those placements.
-- An image with a placement on the screen's own lines is never evicted. If the new image still does not fit, it is refused: kitty replies ENOSPC, and a sixel is dropped.
+- An image costs width x height x 4 bytes, reserved from the process's image budget before it is allocated (Memory, below). libtsm asks its host for each reservation. Without a host budget, as in `tsm-replay`, a per-screen limit set through the screen applies instead.
+- When a reservation would pass the budget, kmscon frees, in order, across every screen it runs:
+  1. its own scaled pictures and textures that the current frame does not draw;
+  2. images with no placement, transient ones first, least recently used first;
+  3. images whose placements all sit on lines in scrollback, least recently used first, together with those placements.
+- An image with a placement on a screen's own lines is never evicted. If the new image still does not fit, it is refused: kitty replies ENOSPC, and a sixel is dropped.
 - Sixel images are anonymous. No kitty command addresses them, and one is freed when its last placement goes. A kitty image without placements stays until it is deleted or evicted, so a lowercase delete keeps its data, as the spec says.
 - Transmitting an id again replaces the image and deletes all its placements (spec).
 - With `image-storage-limit=0`, both protocols are parsed only to find where they end, DA1 omits attribute 4, and kitty commands get no reply, so the spec's detection (a query followed by DA1) reports no support.
@@ -141,6 +163,7 @@ What each event does to placements. "Part" means the cells of the placement the 
 | Event | Sixel placement | Kitty placement |
 |---|---|---|
 | A character written into a cell | The part under the written cells is removed | No effect |
+| A new sixel placed over cells | When the new sixel is opaque (P2 other than 1), the parts of older sixels under it are removed, as a character written there would remove them; a transparent one leaves them | No effect |
 | ED 0, ED 1, EL, ECH, DECSED, DECSEL | The part under the erased cells is removed | No effect (spec) |
 | ED 2 | Every sixel on the screen's lines is removed | Every placement on the screen's lines is removed, as `a=d` does; the image data stays (spec, "so that the clear command works") |
 | ED 3 | Placements anchored on the dropped scrollback lines go | Same |
@@ -274,9 +297,20 @@ A frame is drawn in ADR-101's order, shown in figure A: the default background; 
 
 ### Memory
 
-- Images: at most twice `image-storage-limit` per terminal session, one store per screen buffer. kmsconvt@ runs one session per kmscon process, so that is per VT.
-- bbulk's scaled pictures, or gltex's textures: at most twice the screen's ARGB size per display, 132 MB at 7680x2160.
-- The helper: one decode at a time, bounded by `max-graphic-size` x 4 plus the compressed input.
+- **One budget per kmscon process.** `image-storage-limit` covers every image in every screen's stores, main and alternate, across all the process's sessions, and the renderers' scaled pictures (bbulk) or textures (gltex). kmsconvt@ runs one session per process, so it is also the ceiling per VT.
+- **Default, `auto`:** four frames of the process's displays in ARGB (width x height x 4, added over its displays), at least 16 MiB and at most 192 MiB, recomputed when a display is added, removed or changes mode. A smaller budget evicts down to fit.
+
+| Display | One ARGB frame | Default budget |
+|---|---|---|
+| 1024x768 | 3.0 MiB | 16 MiB (the floor) |
+| 1366x768 | 4.0 MiB | 16 MiB |
+| 1920x1080 | 7.9 MiB | 31.6 MiB |
+| 3840x2160 | 31.6 MiB | 126.6 MiB |
+| 7680x2160 | 63.3 MiB | 192 MiB (the cap) |
+
+- **Why four frames.** Full-screen video is the largest steady case. Its peak is three frames: the picture still placed, the next one being decoded, and one scaled copy when the picture is drawn at another size. Four leaves one frame for everything else on screen. At 7680x2160 the cap holds just over three frames, still the video peak. On the small tier 3 machine (512 MB at 1366x768) the default is 16 MiB, about 3% of its memory.
+- **Raising it.** `image-storage-limit=<bytes>` in kmscon.conf replaces `auto` with a fixed budget, any size, for galleries or many large pictures at once; `0` turns images off.
+- **The helper** is a separate process. It decodes one image at a time and refuses, from the PNG header and before allocating, any image whose decoded size would not fit the budget or `max-graphic-size`.
 
 ### Render timer (kmscon)
 
@@ -291,7 +325,20 @@ A frame is drawn in ADR-101's order, shown in figure A: the default background; 
 
 ### Acceptance scenarios
 
-The risk ADR-101 named stands: at 7680x2160 a screen is 16.6 million pixels, 66 MB in ARGB, and bbulk composes on the CPU. These scenarios judge it. Each runs on drm2d with bbulk at 1920x1080 and at 7680x2160, on the operator's hardware and in tier 3, with the render timer on. Each run records frames presented per second, CPU time per frame and damaged area per frame (median and 95th percentile), with mpv's output frame rate beside them where mpv plays.
+bbulk composes on the CPU. Most consoles are 1366x768 or 1920x1080 on modest machines; 7680x2160, 16.6 million pixels and 66 MB per ARGB frame, is the stress case ADR-101 named. Every scenario runs on drm2d with bbulk at 1366x768, 1920x1080 and 7680x2160, in tier 3 and on the operator's hardware, with the render timer on.
+
+**Machines.** Tier 3 gains a small variant, `2d-1366x768-hamster`: 1 vCPU, 512 MB of memory, 1366x768, drm2d and bbulk. It runs the image screens and the S1 to S6 scenarios on every tier 3 run, so a regression on small machines shows in the harness. Its vCPU is a core of the host, so it bounds parallelism and memory rather than reproducing slow hardware; real low-end hardware is measured when it is at hand.
+
+**Synthetic scenarios,** drawn through bbulk into the in-memory display tier 2 uses and through drm2d in tier 3:
+
+- **S1.** Text scrolling, no image: the baseline against main.
+- **S2.** Text scrolling in a region beside a static half-screen picture.
+- **S3.** One line of scroll with a full-width picture on screen, so every cell under it moves.
+- **S4.** A full-screen opaque picture replaced every frame, in the top band.
+- **S5.** S4 in the middle band, under a text band that scrolls every frame: the showcase's banner.
+- **S6.** Fifty small pictures.
+
+**Programs.** Each run records frames presented per second, CPU time per frame and damaged area per frame (median and 95th percentile), with mpv's output frame rate beside them where mpv plays.
 
 Step 3, sixel:
 
@@ -309,12 +356,17 @@ Step 4, kitty:
 
 The public post's footage is captured with ffmpeg's `kmsgrab` device. Runs with capture are recorded apart from runs without it, since reading the scanout buffer takes time on the same machine.
 
-### Frame-rate target
+### Targets
 
-- No number can be justified before measuring. bbulk has never drawn a full-screen picture, and at 7680x2160 each frame writes 66 MB to the scanout buffer, so the ceiling is that hardware's write bandwidth, which has not been measured.
-- The criterion that holds without a number: kmscon is not the bottleneck. In A2, A5 and A6 the render timer's presented rate matches mpv's output rate (or the client's send rate in A6), and kmscon's CPU time per frame stays below the frame interval.
-- The first measurement is an early step (3b below): a synthetic full-screen picture replaced every frame, in the top band and in the middle band under a scrolling text band, drawn through bbulk on drm2d at both resolutions. Its figures go in an evidence record together with a frame-rate target for each acceptance scenario, and the scenarios are judged against those.
-- **If a target is missed,** the remedies in order: splitting composition across threads by rows, SIMD scaling and blending, and gltex for video where GL is available. The remedy chosen is a decision that cites the evidence record.
+- **Common sizes, on the small machine** (`2d-1366x768-hamster`, and the same limits at 1920x1080 on one vCPU):
+  - S1: within 5% of main at every size, on every variant.
+  - S4: kmscon's CPU time per frame at most 10 ms at 1366x768 and 16 ms at 1920x1080. At 30 frames per second that is 30% and 48% of the one vCPU, leaving the rest to the program sending the video.
+  - S5: at most one and a half times S4's figure at the same size.
+  - S3: at least 30 lines per second.
+  - A2 and A5 at 1366x768 and 1920x1080: the render timer's presented rate matches mpv's output rate, on the small machine and on the operator's.
+- **Basis.** A frame is 4.0 MiB at 1366x768 and 7.9 MiB at 1920x1080; at 30 frames per second bbulk writes about 120 and 240 MiB per second, which one core should sustain; that is an estimate, not a measurement. The figures are first estimates. 3b's measurement confirms or replaces them in its evidence record, and the scenarios are judged against what that record states.
+- **The stress size,** 7680x2160: no number can be justified before measuring. Each frame writes 66 MB to the scanout buffer, and that hardware's write bandwidth has not been measured. The criterion that holds now: kmscon is not the bottleneck. In A2, A5 and A6 the presented rate matches mpv's output rate (or the client's send rate in A6), and kmscon's CPU time per frame stays below the frame interval. 3b's measurement sets the number.
+- **If a target is missed,** the remedies in order: splitting composition across threads by rows, SIMD scaling and blending, and gltex for video where GL is available. On a one-CPU machine only the last two help. The remedy chosen is a decision that cites the evidence record.
 
 ### Damage for moving text over a changing picture
 
@@ -329,7 +381,7 @@ Each setting takes the name an existing terminal gives it, written in kmscon.con
 
 | Setting | Named after | Default | Meaning |
 |---|---|---|---|
-| `image-storage-limit` | Ghostty `image-storage-limit` | 320000000 (kitty's 320 MB per buffer, Ghostty's default) | Bytes of decoded images per screen buffer. 0 turns sixel and kitty graphics off and removes DA1 attribute 4. |
+| `image-storage-limit` | Ghostty `image-storage-limit` | `auto` (Memory, above) | Bytes for all images and scaled pictures in the kmscon process. 0 turns sixel and kitty graphics off and removes DA1 attribute 4. Ghostty's applies per screen with a 320 MB default; kmscon's covers the process, so one number bounds it. |
 | `max-graphic-size` | xterm `maxGraphicSize` | 10000x10000 | The largest image in pixels, for both protocols. xterm's 1000x1000 is smaller than this console's screens; 10000 is Ghostty's dimension limit. |
 | `num-color-registers` | xterm `numColorRegisters` | 1024 (xterm's value for terminal ids that are not DEC models) | Sixel colour registers. |
 | `private-color-registers` | xterm `privateColorRegisters` | true | The initial state of mode 1070. |
@@ -345,7 +397,7 @@ Each setting takes the name an existing terminal gives it, written in kmscon.con
 - **Unit tests** (kmscon) for the helper: each refusal (`/proc`, `/sys`, `/dev`, a FIFO, a socket, a device, a directory, a symlink loop, a symlink swapped between check and open, a file shorter than `S`, `t=t` outside a temporary directory or without the name, shared memory names with extra slashes or too long) answers byte-identical EBADF; refused temporary files survive; accepted `t=t` files and `t=s` objects are removed.
 - **Fuzzing.** The sixel decoder and the kitty command parser run in kmscon's root process on bytes any program sends. Each has a fuzz target, run for a fixed budget before a change to it lands.
 - **Tier 2** (pixels): each band with text over and under it; the lowest band under default and non-default backgrounds; transparent and opaque sixels; a sixel split by text; a region scroll clipping a placement; scaled and letterboxed placements; a changed cell size. Incremental frames on a display with damage clips: a placement added, moved and removed leaves no stale pixels, the failure that ruled out the community patch (ADR-101); a changing picture under a text band that scrolls every frame, as A6; a sixel cleared by ED 2 after a run of frames, as A3.
-- **Tier 3** (VM): the guest gains img2sixel (libsixel) and viu (MIT), both in Arch's extra repository, and the fork's spec-written client for `t=f`, `t=t` and `t=s`. Screens: a picture from img2sixel, scrolled into scrollback and back, then cleared; kitty pictures through each medium; text over a middle-band picture; a root-owned file refused to the logged-in user, also under `sudo`; the acceptance scenarios that tier 3 can run (mpv, tmux), with the render timer logging. bbulk variants first; GL after #17 and ADR-102 step 6.
+- **Tier 3** (VM): the guest gains img2sixel (libsixel) and viu (MIT), both in Arch's extra repository, and the fork's spec-written client for `t=f`, `t=t` and `t=s`. Screens: a picture from img2sixel, scrolled into scrollback and back, then cleared; kitty pictures through each medium; text over a middle-band picture; a root-owned file refused to the logged-in user, also under `sudo`; the acceptance scenarios that tier 3 can run (mpv, tmux), with the render timer logging. bbulk variants first, `2d-1366x768-hamster` among them; GL after #17 and ADR-102 step 6.
 - **Demo.** The VT demo gains an images section, and its screens become tier 3 screens as the others did. The showcase's acts 5 and 7 (#75) run on top.
 
 ### Order of work
@@ -355,7 +407,7 @@ Each item lands behind the harness, with goldens changed only in their own commi
 Step 3, the image layer and sixel:
 
 1. **3a, libtsm store and placements.** The store, placements, every screen event in the table, the frame's placement list, the image call, and the cell size from the host. Unit tests build placements through a test-only call; `tsm-replay` prints them.
-2. **3b, kmscon composition, the render timer, and the first measurement.** bbulk's bands, scaled-picture cache, opaque fast path and placement damage, after #67. The render timer comes next, as the first placement bbulk draws, so the measuring tool exists before anything it measures. Then the synthetic measurement at both resolutions, recorded as an evidence record with the frame-rate targets. Tier 2 screens for each band draw placements made through libtsm's test-only call.
+2. **3b, kmscon composition, the render timer, and the first measurement.** bbulk's bands, scaled-picture cache, opaque fast path and placement damage, after #67. The render timer comes next, as the first placement bbulk draws, so the measuring tool exists before anything it measures. Then the harness change: `fork/tier3` variants gain their own vCPU count and memory, which are fixed at 4 and 4096 MB for every variant today (`t3_qemu.py`), and `2d-1366x768-hamster` joins the default run. Then S1 to S6 at 1366x768, 1920x1080 and 7680x2160, recorded as an evidence record that confirms or replaces the targets. Tier 2 screens for each band draw placements made through libtsm's test-only call.
 3. **3c, libtsm sixel.** DCS streaming, the decoder, registers, modes 80, 1070 and 8452, DA1 attribute 4, XTSMGRAPHICS, XTWINOPS 14, 16 and 18. A fuzz target. Tier 1 cases from img2sixel streams.
 4. **3d, kmscon wiring.** The cell size to libtsm and `TIOCSWINSZ`, and the settings. Tier 2 sixel screens.
 5. **3e, acceptance.** Tier 3 sixel screens and the demo section; A1, A2 and A3; then A4, step 3's final scenario.
@@ -390,7 +442,8 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 - What an erase does to a picture depends on which protocol drew it. A reader who does not know the source cannot predict what `EL` does.
 - ICH and DCH remove part of a sixel instead of shifting it.
 - CPU composition at 7680x2160 is unmeasured, and the acceptance scenarios have no frame-rate target until 3b measures one. Video on bbulk may fall short at that size.
-- At the default limit, a hostile program can make one VT hold 640 MB of images.
+- A program can still fill the budget, up to 192 MiB at the default on the largest displays; a small default also means a gallery of large pictures evicts sooner, until the user raises `image-storage-limit`.
+- The budget is shared, so a program on one screen can evict another screen's unplaced or scrollback images.
 
 ### Neutral
 
@@ -415,4 +468,7 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 - **Call the helper synchronously.** Simpler, but it blocks kmscon's event loop, and with it drawing and VT switching, for up to the timeout.
 - **libtsm reports removed placements to each caller.** Rejected: libtsm does not know its callers, and keeping removals until every caller has seen them needs that knowledge.
 - **A vendored PNG decoder** (stb_image, spng). Rejected: libpng and zlib are already loaded through FreeType, and a vendored decoder is code the fork would maintain.
+- **Ghostty's default: 320 MB per screen.** Rejected by the operator's answer: on a small machine one VT could hold 640 MB, more than the machine has.
+- **A fixed small default, the same on every machine.** Simple and predictable, but a number that suits 1366x768 starves a 4K or 8K console's full-screen video, and one that suits 8K is too large for a small machine. Scaling with the displays gives each the video case's peak.
+- **A separate setting for the scaled-picture cache.** Rejected: two limits give two ceilings to reason about, and the operator asked for one predictable one.
 - **xterm's default `max-graphic-size` of 1000x1000.** Rejected: it is about an eighth of this console's width, and full-screen images are the case the showcase exists for.

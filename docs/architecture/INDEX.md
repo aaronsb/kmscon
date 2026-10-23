@@ -21,7 +21,7 @@ _Glyphs, images and cells to pixels - fonts, text renderers, video backends_
 | [ADR-100](./render/ADR-100-kmscon-render-pipeline-as-of-upstream-6c03eb4.md) | kmscon render pipeline as of upstream 6c03eb4 | accepted |
 | [ADR-101](./render/ADR-101-rebuild-the-screen-model-and-render-path-around-sprites-and-an-image-layer.md) | Rebuild the screen model and render path around sprites and an image layer | accepted |
 | [ADR-102](./render/ADR-102-cells-carry-clusters-and-unresolved-colour-glyphs-and-underlines-become-sprites.md) | Cells carry clusters and unresolved colour; glyphs and underlines become sprites | accepted |
-| [ADR-103](./render/ADR-103-images-are-placements-that-travel-with-lines-sixel-and-the-kitty-graphics-protocol-feed-one-store.md) | Images are placements that travel with lines; sixel and the kitty graphics protocol feed one store | proposed |
+| [ADR-103](./render/ADR-103-images-are-placements-that-travel-with-lines-sixel-and-the-kitty-graphics-protocol-feed-one-store.md) | Images are placements that travel with lines; sixel and the kitty graphics protocol feed one store | accepted |
 
 ## Fork
 _Carrying this fork - upstream tracking, packaging, contribution back_

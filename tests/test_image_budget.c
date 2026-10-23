@@ -168,9 +168,10 @@ static void test_eviction_order(void)
 	assert(unplaced(a, 10, false, &k) == -ENOSPC);
 	assert(image_budget_used() == IMG);
 
-	/* a screen removed gives its bytes back */
-	free_screen(b);
-	assert(image_budget_used() == 0);
+	/* a screen removed gives its bytes back, before it is freed */
+	image_budget_remove_screen(b);
+	assert(image_budget_used() == 0 && holds(b, onscreen));
+	tsm_screen_unref(b);
 	free_screen(a);
 	assert(!budget.screens && !budget.n_screens);
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);

@@ -2,7 +2,8 @@
  * The pty's held output (ADR-103 step 3d): kmscon feeds the child's output to
  * libtsm a bounded amount of work at a time. Bytes the input callback does not
  * take are held, nothing more is read while they are, and they reach the
- * callback again in order, before anything read later. Closing drops them.
+ * callback again in order, before anything read later, even when a read
+ * filled the pty's buffer and more waits in the pipe. Closing drops them.
  * The child's side is a pipe here, so no child runs.
  */
 
@@ -13,7 +14,7 @@
 #include <unistd.h>
 #include "../src/misc/pty.c"
 
-static char seen[256];
+static char seen[2 * KMSCON_NREAD];
 static size_t n_seen;
 static size_t take; /* the most the callback takes in one call */
 static unsigned int calls;
@@ -43,6 +44,7 @@ static bool seen_is(const char *s)
 
 int main(void)
 {
+	static char big[KMSCON_NREAD];
 	struct kmscon_pty *pty;
 	int fds[2];
 
@@ -78,14 +80,30 @@ int main(void)
 	read_buf(pty);
 	assert(seen_is("abcdefghijklMNO") && !kmscon_pty_held(pty));
 
+	/* a read that fills io_buf: what is in the pipe after it waits until
+	 * the held bytes are taken, then follows them */
+	memset(big, 'x', sizeof(big));
+	n_seen = 0;
+	assert(write(fds[1], big, sizeof(big)) == (ssize_t)sizeof(big));
+	put(fds[1], "tail");
+	read_buf(pty);
+	assert(n_seen == 4 && kmscon_pty_held(pty));
+	take = sizeof(seen);
+	kmscon_pty_feed_held(pty);
+	assert(n_seen == sizeof(big) && !kmscon_pty_held(pty));
+	read_buf(pty);
+	assert(n_seen == sizeof(big) + 4 && !memcmp(seen + sizeof(big), "tail", 4));
+
 	/* closing drops what is held */
+	n_seen = 0;
+	take = 4;
 	put(fds[1], "pqrstu");
 	read_buf(pty);
 	assert(kmscon_pty_held(pty));
 	kmscon_pty_close(pty);
 	assert(!kmscon_pty_held(pty) && pty->fd == -1);
 	kmscon_pty_feed_held(pty);
-	assert(seen_is("abcdefghijklMNOpqrs"));
+	assert(seen_is("pqrs"));
 
 	close(fds[1]);
 	kmscon_pty_unref(pty);

@@ -25,6 +25,7 @@ import t3_evaluate  # noqa: E402
 import t3_qemu  # noqa: E402
 import t3_scenario  # noqa: E402
 import t3img  # noqa: E402
+import t3_common  # noqa: E402
 from t3_common import Logger  # noqa: E402
 
 LOG = Logger()
@@ -349,6 +350,38 @@ class PackagesTest(unittest.TestCase):
         os.environ.pop("T3_LIBTSM_REV")
         with self.assertRaisesRegex(RuntimeError, "names no libtsm commit"):
             t3_scenario.check_install(self.LINE, self.UP)
+
+
+class BaseImageTest(unittest.TestCase):
+    """The provisioned base image is named by what it was built from, in the
+    images directory that worktrees share, so every checkout with the same
+    guest files, pristine image and archive date reuses one build, and a
+    change to any of them builds a new one beside the old."""
+
+    def key(self, guest, image="img.qcow2", archive="2026/10/20"):
+        saved = t3_common.GUEST
+        t3_common.GUEST = guest
+        try:
+            return t3_common.base_image(image, archive)
+        finally:
+            t3_common.GUEST = saved
+
+    def test_keyed_by_inputs(self):
+        with tempfile.TemporaryDirectory() as guest:
+            for name in t3_common.BASE_INPUTS:
+                with open(os.path.join(guest, name), "w") as f:
+                    f.write(name + "\n")
+            first = self.key(guest)
+            self.assertEqual(os.path.dirname(first), os.path.join(t3_common.VM, "images"))
+            self.assertRegex(os.path.basename(first), r"^base-[0-9a-f]{16}\.qcow2$")
+            self.assertEqual(self.key(guest), first)
+            self.assertNotEqual(self.key(guest, archive="2026/10/21"), first)
+            self.assertNotEqual(self.key(guest, image="other.qcow2"), first)
+            for name in t3_common.BASE_INPUTS:
+                with open(os.path.join(guest, name), "a") as f:
+                    f.write("changed\n")
+                self.assertNotEqual(self.key(guest), first, name)
+        self.assertIn("user-data.in", t3_common.BASE_INPUTS)
 
 
 class VariantTest(unittest.TestCase):

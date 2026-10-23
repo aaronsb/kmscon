@@ -133,7 +133,8 @@ bool render_timer_report(struct render_timer *rt, uint64_t screen_px,
 		return false;
 
 	now = rt->clock.now_ns(rt->clock.data);
-	active = rt->flips || rt->frames || rt->skipped;
+	/* a skipped pass draws nothing: blinking that changes no cell is idle */
+	active = rt->flips || rt->frames;
 	line = active || rt->reported;
 
 	if (line) {

@@ -191,6 +191,44 @@ static void test_quiet_after_activity(void)
 	render_timer_free(d.rt);
 }
 
+/*
+ * The blink timers redraw twice a second. With nothing to blink, each pass is
+ * skipped and the log stays quiet; once a blink queues frames and flips, the
+ * second is logged, skipped passes included.
+ */
+static void test_blink_idle_and_flipping(void)
+{
+	struct fake_display d;
+	struct render_timer_stats st;
+	unsigned int i;
+
+	display_init(&d, 100, 100);
+	for (i = 0; i < 10; i++) {
+		display_frame(&d, MS / 10, 0, false, 0);
+		display_frame(&d, MS / 10, 0, false, 0);
+		d.clock.now += S;
+		assert(!display_report(&d, &st));
+	}
+
+	display_frame(&d, MS / 10, 0, false, 0);
+	display_frame(&d, MS, 0, true, 100);
+	render_timer_flip(d.rt);
+	d.clock.now += S;
+	assert(display_report(&d, &st));
+	assert(st.flips == 1 && st.frames == 1 && st.skipped == 1);
+	assert(st.skipped_cpu_ns == MS / 10);
+
+	/* the quiet second after it is logged once, then skipped passes stay quiet */
+	display_frame(&d, MS / 10, 0, false, 0);
+	d.clock.now += S;
+	assert(display_report(&d, &st));
+	assert(st.flips == 0 && st.frames == 0 && st.skipped == 1);
+	display_frame(&d, MS / 10, 0, false, 0);
+	d.clock.now += S;
+	assert(!display_report(&d, &st));
+	render_timer_free(d.rt);
+}
+
 /* Median and 95th percentile by nearest rank, whatever order frames came in. */
 static void test_percentiles(void)
 {
@@ -304,6 +342,7 @@ int main(void)
 	test_skipped_passes();
 	test_intervals_reset();
 	test_quiet_after_activity();
+	test_blink_idle_and_flipping();
 	test_percentiles();
 	test_more_frames_than_samples();
 	test_end_without_begin();

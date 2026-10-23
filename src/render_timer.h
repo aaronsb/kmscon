@@ -85,10 +85,11 @@ void render_timer_flip(struct render_timer *rt);
 
 /*
  * Close the interval and start the next one. Returns true and fills @out
- * when the interval had a flip or a render pass, or when it is the first
+ * when the interval had a flip or a queued frame, or when it is the first
  * quiet interval after one that had, so a log shows where activity stopped;
- * returns false for the quiet intervals after that. @screen_px is the
- * display's size in pixels.
+ * returns false for the quiet intervals after that. Skipped passes alone do
+ * not count: a blink timer that finds nothing to change redraws twice a
+ * second and draws nothing. @screen_px is the display's size in pixels.
  */
 bool render_timer_report(struct render_timer *rt, uint64_t screen_px,
 			 struct render_timer_stats *out);

@@ -643,8 +643,12 @@ font-name=Ubuntu Mono
                 nothing to draw and queued no flip. A renderer that reports no
                 damage counts the whole display. A second with no flip and no
                 frame is logged once, after the last active one, and then no
-                more lines are written until the display draws again.
-                (default: none)</para>
+                more lines are written until the display draws again; skipped
+                passes alone do not count. A blinking cursor, or blinking text
+                on the screen, queues a frame at each blink, so with
+                <option>blink</option> on it keeps the log at a line a second;
+                set <option>no-blink</option> for a log that falls quiet when
+                the console is idle. (default: none)</para>
         </listitem>
       </varlistentry>
 

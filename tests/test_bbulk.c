@@ -1217,6 +1217,35 @@ static void test_budget_history(void)
 }
 
 /*
+ * Another display's picture its last frame did not draw is room too, counted
+ * before anything is freed: with no image to evict, it alone lets a picture
+ * here fit, and goes for it.
+ */
+static void test_budget_cache_room(void)
+{
+	struct kmscon_text a, b;
+	struct bbulk *ba = open_txt(&a, 0x49, 640, 480), *bb = open_txt(&b, 0x4a, 640, 480);
+	uint32_t *src = half_images(640, 480, 2);
+	size_t pic = (size_t)640 * 480 * 4;
+
+	image_budget_set_limit(16 * pic);
+	scaled_screens(0, 1, 2);
+	draw_idle(&b, 1);
+	draw_idle(&b, 0);
+	assert(pictures_of(bb, 2) == 1 && image_budget_used() == pic);
+
+	image_budget_set_limit(pic + pic / 2);
+	scaled_screens(0, 1, 1);
+	assert(draw_placements(&a, 1) == 0);
+	assert(!ba->starving && picture_drawn(&a, 20) && pictures_of(bb, 2) == 0);
+
+	close_txt(&b);
+	close_txt(&a);
+	drop_images(src, 2);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+
+/*
  * The room a picture takes from history comes from every terminal's screen,
  * main and alternate, each screen's as far as the first image the frame draws
  * and no further: another session's images go even when they are newer than
@@ -1416,6 +1445,7 @@ int main(void)
 	test_budget_images();
 	test_budget_history();
 	test_budget_history_screens();
+	test_budget_cache_room();
 	test_budget_huge();
 	test_picture_cache(&txt);
 

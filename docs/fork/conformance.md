@@ -114,6 +114,10 @@ make sheet-compare A=fork/build/saved/upstream-1 A2=fork/build/saved/upstream-2 
 
 `sheet-save`, `sheet-compare` and the run page empty part of their output directory before writing, so each writes only into a directory that is new, empty, or one it wrote before (marked by a `.saved-run`, `.compare-page` or `.run-page` file), and never into one holding the current directory or one of its inputs. `SAVE=.` or `OUT=fork` is refused and deletes nothing.
 
+## Capability probes
+
+Beside the tiers, `make test` runs the capability probes in [tests/capabilities/](../../tests/capabilities/README.md): regression guards for the features the fork built, then one small check per feature of other terminals (escape-sequence replies, modes, SGR attributes, the freetype backend's italic and bold, the terminfo entry), each recorded in `capabilities.list` as `works` or as `missing` with the issue that tracks it. The test fails when a working probe fails and when a missing probe starts passing, so the list always states what kmscon has. The tiers judge what exists against upstream; the probes record what does not exist yet.
+
 ## Commands
 
 In the kmscon fork:
@@ -127,7 +131,7 @@ make sheet-preview             # write this run's page into fork/build/run/, unc
 make sheet NOTE="what it marks"   # run page and ledger row, once per session on a green main
 make sheet-save SAVE=DIR       # keep the last run's reports and screens for comparing (TIERS=3: tier 3 only)
 make sheet-compare A=DIR B=DIR LABEL_A=.. LABEL_B=..   # pair two saved runs' screens
-make sheet-selftest            # unit tests of the page generators (part of make test)
+make sheet-selftest            # unit tests of the page generators (also in make test, through meson)
 ```
 
 Tier 3 needs KVM and QEMU on the host besides docker; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements, pins and variants:
@@ -138,7 +142,7 @@ make tier3-image               # once: fetch, verify and provision the guest bas
 make tier3                     # pkg, then the 2D variants; report in fork/build/tier3-report.json
 make tier3-gl                  # pkg, then the GL variant, outside the default run (#17)
 make tier3-bless               # copy the last run's captures over the goldens (review, then commit on their own)
-make tier3-selftest            # unit tests of the tier 3 image compare module
+make tier3-selftest            # unit tests of the tier 3 image compare module (also in make test, through meson)
 make tier3-upstream            # upstream kmscon and libtsm at the pins in fork/upstream.mk, same guest and screens
 ```
 
@@ -162,4 +166,5 @@ make golden REF=v4.8.0         # rewrite tier 1 goldens from upstream at REF
 | 1 | Running: 26 cases (22 synthetic, 4 recorded programs with 27 checkpoints between them), all matching upstream |
 | 2 | Running: twenty-one screens, pixel-exact: ASCII, bold, palette, inverse, CJK, box drawing; block elements and box lines stacked across rows at two cell sizes, one taller than the font's line height, with checks that fail on a gap between cells (#46); every Braille pattern, sextant and octant and figures of them stacked across cells, at the same two cell sizes, with checks that each cell is the exact sprite of its codepoint (#76); the ADR-102 decorations (each underline style in the foreground and in an SGR 58 colour, strike-through, configured decoration colours with and without force-decoration-colors, decorated wide cells); combining marks shaped by HarfBuzz; a heart with VS16; colour emoji from a pinned Noto Color Emoji subset at two cell sizes and with no-emoji-color, with checks that fail on an emoji cut at its cells or drawn without colour (ADR-102 step 4c); and a redraw case drawn over four frames into two swapped buffers, which judges the two-frame damage rule. `test_blend` checks the drm2d and fbdev (16, 24 and 32 bpp) blend maths. Coverage gaps tracked in #8 |
 | 3 | Running: three 2D variants (virtio-vga at 1280x800 and 7680x2160 on 4 vCPUs and 4 GiB, and ADR-103's small machine, the potato computer, at 1366x768 on 1 vCPU and 512 MB; drm2d + bbulk), fifteen cases each (thirteen screens: SGR, the colour forms, underline styles and colours, strike, box drawing, stacked blocks and box lines, Braille, sextants and octants, wide characters at the margin, combining marks, colour emoji, ADR-103's S1 text-scrolling benchmark and CJK; then the switch to another VT and the screen restored on switching back), all pixel-exact. kmscon's render timer logs during the run, and S1's frames presented per second, CPU time and damage per frame are in the report. The GL variant (drm3d + gltex under virgl) has goldens but is outside the default run: it intermittently draws a black screen, #17. Runs locally only. |
+| Probes | Running: 61 capability probes. 26 work, 14 of them guarding features the fork built ([COVERAGE.md](../../tests/capabilities/COVERAGE.md) maps every fork feature to its tests and gaps); 35 are missing, each tied to an issue on aaronsb/kmscon or aaronsb/libtsm. Input methods (#111) and braille displays (#112) are audited without a probe. |
 | CI | Not wired yet. ADR-301 has tiers 1 and 2 running in CI on every change; until then they run locally through `make test`, and the repository's GitHub workflow is upstream's plain build. |

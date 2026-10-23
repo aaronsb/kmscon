@@ -64,6 +64,18 @@ considered:
   - operator: aaronsb
     said: "not everyone's going to have a ginormous 8k display"
     via: Claude Code session, relayed verbatim by the team lead, 2026-10-22, on benchmark targets that named only 7680x2160; targets now cover 1366x768 and 1920x1080 on a small tier 3 variant
+  - operator: aaronsb
+    said: "yes. can we allocate and hold based on the display size? is it reasonable to provide options to activate and deactivate sixel and kitty support to save on memory of devices that do not want those things? (does that follow a convention that libkms might have already for option management?)"
+    via: "operator's reply in the steering session, 2026-10-23, to the questions raised by the libtsm #16 and #17 reviews (decoder requires a budget)"
+  - operator: aaronsb
+    said: "we should pick the aspect ratio approach that other terminals typically use. if its a compiler flag or option that might (again, if kmscon has a convention like I propose already) be settable that would work"
+    via: "operator's reply in the steering session, 2026-10-23, to the questions raised by the libtsm #16 and #17 reviews (sixel aspect ratio)"
+  - operator: aaronsb
+    said: "yes. this follows on option 2's question about a setting option"
+    via: "operator's reply in the steering session, 2026-10-23, to the questions raised by the libtsm #16 and #17 reviews (libtsm with no host budget fails closed)"
+  - operator: aaronsb
+    said: "keep it"
+    via: "operator's reply in the steering session, 2026-10-23, to the questions raised by the libtsm #16 and #17 reviews (ED 3 clears scrollback)"
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -476,3 +488,13 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 ## Notes (2026-10-23)
 
 - The small tier 3 variant this record calls `2d-1366x768-hamster` is named `2d-1366x768-potato`, the potato computer, at the operator's request: "We should call it potato computer not hamster." It is the same machine (1 vCPU, 512 MB, 1366x768, drm2d and bbulk), and what this record decides about it stands.
+
+## Notes (2026-10-23, operator answers from the step 3a and 3c reviews)
+
+Recorded as considered entries above; what they change:
+
+- **A budget is required.** The sixel decoder refuses to run without a reserve callback and reserves the image's full size before decoding into it, with no transient use above the reservation. libtsm with no host budget defaults its per-screen fallback limit to 0, so images are off unless a host sets a budget (tsm-replay sets its own). The display size sets the ceiling (`image-storage-limit=auto`); memory is reserved as images arrive and released when they go, not held.
+- **Each protocol can be switched off.** Two settings follow kmscon's boolean convention (`CONF_OPTION_BOOL`, as `blink`: `--sixel`/`--no-sixel`, `sixel`/`no-sixel` in kmscon.conf): `sixel` and `kitty-graphics`, both on by default. A protocol that is off is neither advertised (DA1 attribute 4 for sixel) nor decoded. `image-storage-limit=0` still turns both off.
+- **Sixel aspect ratio** follows what most terminals do. The survey in libtsm #16: xterm 411 (`-ti vt340`, measured as a black box), WezTerm and mlterm do not apply P1's pixel aspect or the raster attributes' Pan;Pad; foot applies both per axis. So one sixel dot is one pixel: P1 and Pan;Pad are read and not applied, and Ph;Pv still size the picture. This replaces the Sixel section's "P1 chooses the pixel aspect". No setting is added, since the terminals do not split.
+- **ED 3 clears the scrollback**, as in xterm; the linux and xterm-256color terminfo entries carry `E3`, so `clear` wipes it.
+- **The test-only image API** leaves libtsm's exported symbols and moves to a test-only file linked by the tests and tsm-replay; no test is removed. Once sixel is wired into the parser (3c), the tier 1 image cases move from the private escape to real sixel sequences where they can.

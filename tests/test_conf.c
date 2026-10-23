@@ -226,12 +226,40 @@ static void test_parse_comment(void)
 	assert(conf->strike_color.rgb[2] == 0xff);
 }
 
+/*
+ * blink is on by default and no-blink turns it off; an option on the command
+ * line wins over the file, so `--blink` runs the demo's no-blink config with
+ * blinking text
+ */
+static void test_parse_blink(void)
+{
+	char *argv[] = {"kmscon", "--blink", NULL};
+	struct conf_ctx *ctx;
+	struct kmscon_conf_t *conf;
+	char *buf;
+
+	conf = parse_conf(&ctx, "\n");
+	assert(conf && conf->blink);
+	conf = parse_conf(&ctx, "no-blink\n");
+	assert(conf && !conf->blink);
+
+	kmscon_conf_new(&ctx);
+	conf_ctx_reset(ctx);
+	assert(conf_ctx_parse_argv(ctx, 2, argv) == 0);
+	buf = strdup("no-blink\n");
+	assert(parse_buffer(ctx->opts, ctx->onum, buf, strlen(buf)) == 0);
+	free(buf);
+	conf = conf_ctx_get_mem(ctx);
+	assert(conf->blink);
+}
+
 int main()
 {
 	test_parse_mode(config_file, parsed_modes, 6);
 	test_parse_screen(screen_conf, parsed_screens, 3);
 	test_parse_text();
 	test_parse_comment();
+	test_parse_blink();
 
 	return 0;
 }

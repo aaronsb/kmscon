@@ -1,9 +1,10 @@
 /*
  * The gltex glyph cache stays bounded. A cluster's frame key carries the
  * screen's generation, so a screen that re-creates its clusters asks for new
- * keys every frame; the atlases must not grow with them. The GL and display
- * calls are stubs: the test counts the textures gltex creates and checks where
- * its glyphs land in them. We include the implementation to reach its statics.
+ * keys every frame; the atlases must not grow with them. Blinking cells lose
+ * their glyph in the hidden phase. The GL and display calls are stubs: the
+ * test counts the textures gltex creates and checks where its glyphs land in
+ * them and in the frame. We include the implementation to reach its statics.
  */
 
 #include <GLES2/gl2.h>
@@ -162,6 +163,8 @@ struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
 
 #include "../src/render/gltex.c"
 
+static void vte_write(struct tsm_vte *vte, const char *u8, size_t len, void *data) {}
+
 static struct kmscon_font fake_font = {.width = FAKE_CELL_W, .height = FAKE_CELL_H};
 
 static unsigned int count_atlases(struct gltex *gt)
@@ -243,8 +246,103 @@ static void test_bounded(void)
 	gltex_destroy(&txt);
 }
 
+/*
+ * The glyph drawn at cell @col, @row of the last frame: its atlas and texture
+ * offset, from the quads gltex queued. 0 if no quad starts there.
+ */
+static int drawn_at(struct gltex *gt, unsigned int col, unsigned int row, struct atlas **out,
+		    float *texoff)
+{
+	float x1 = gt->off_x + gt->advance_x * col - 1.0;
+	float y1 = 1.0 - gt->off_y - gt->advance_y * row;
+	struct atlas *atlas;
+	int found = 0;
+
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		for (unsigned int i = 0; i < atlas->cache_num; i++) {
+			if (atlas->cache_pos[i * 12] != x1 || atlas->cache_pos[i * 12 + 1] != y1)
+				continue;
+			*out = atlas;
+			*texoff = atlas->cache_texpos[i * 12];
+			found++;
+		}
+	}
+	return found;
+}
+
+/* cell @col of row 0 was drawn with the glyph for @key and the cell's attributes */
+static void assert_drawn(struct kmscon_text *txt, const struct tsm_frame *frame, unsigned int col,
+			 uint64_t key)
+{
+	const struct tsm_frame_cell *fc = tsm_frame_cell_at(frame, col, 0);
+	struct gl_glyph *want;
+	struct atlas *atlas;
+	float texoff;
+
+	want = find_glyph(txt, key, fc->flags, fc->width == 2 ? 2 : 1, fc->underline,
+			  fc->flags & TSM_FRAME_STRIKE);
+	assert(want);
+	assert(drawn_at(txt->data, col, 0, &atlas, &texoff) == 1);
+	assert(atlas == want->atlas && texoff == want->texoff);
+}
+
+/*
+ * Blinking text (SGR 5): in the hidden phase a blinking cell is drawn with no
+ * glyph and keeps its colours, underline and strike; steady cells, and a cell
+ * whose blink SGR 25 ended, keep their glyphs. gltex clears and draws every
+ * cell each frame, so no buffer can keep a phase, unlike bbulk (test_blink.c).
+ */
+static void test_blink(void)
+{
+	static const char bytes[] = "\x1b[?25l\x1b[5;4;9mA\x1b[0mB\x1b[5;7m\xe6\x97\xa5\x1b[0m"
+				    "\x1b[5;25mC";
+	struct kmscon_text txt = {0};
+	struct tsm_frame_age age = {0};
+	struct tsm_screen_attr attr = {0};
+	const struct tsm_frame *frame;
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, FAKE_COLS, FAKE_ROWS) == 0);
+	tsm_vte_input(vte, bytes, sizeof(bytes) - 1);
+
+	/* visible, hidden, visible, hidden */
+	for (int i = 0; i < 4; i++) {
+		bool hidden = i & 1;
+
+		txt.blinking = hidden;
+		frame = tsm_screen_frame_since(con, &age);
+		assert(frame);
+		assert(tsm_frame_cell_at(frame, 0, 0)->flags & TSM_FRAME_BLINK);
+		assert(!(tsm_frame_cell_at(frame, 4, 0)->flags & TSM_FRAME_BLINK));
+		assert(gltex_prepare(&txt, &attr) == 0);
+		assert(gltex_draw(&txt, frame, false) == 0);
+
+		assert_drawn(&txt, frame, 0, hidden ? 0 : 'A');
+		assert_drawn(&txt, frame, 1, 'B');
+		assert_drawn(&txt, frame, 2, hidden ? 0 : 0x65e5);
+		assert(drawn_at(txt.data, 3, 0, &(struct atlas *){0}, &(float){0}) == 0);
+		assert_drawn(&txt, frame, 4, 'C');
+	}
+
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+}
+
 int main(void)
 {
 	test_bounded();
+	test_blink();
 	return 0;
 }

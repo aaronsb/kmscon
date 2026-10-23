@@ -165,6 +165,24 @@ if enable_font_freetype and enable_video_drm2d
             '--root', meson.project_source_root(),
         ],
     )
+
+    test_blink = executable(
+        'test_blink',
+        'test_blink.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            libtsm_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            libdrm_deps,
+            threads_deps,
+            math_deps,
+            shl_deps,
+            htable_deps,
+        ],
+    )
+    test('test_blink', test_blink, args: [meson.current_source_dir() / 'fonts'])
 else
     # Visible as SKIP, not a silent absence, when the renderer pieces are off.
     test(

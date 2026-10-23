@@ -1,0 +1,560 @@
+/*
+ * Blinking text (SGR 5) through bbulk on a double-buffered display.
+ *
+ * Usage: test_blink FONT_DIR
+ *
+ * The pipeline is tier 2's (test_pixels.c): libtsm builds the screen,
+ * kmscon_text_draw() hands bbulk the frame since this display's own frame age,
+ * and the real drm2d blend draws into a fake display. Here the display has two
+ * buffers that swap after every frame, as a DRM display does, so each frame
+ * is drawn into a buffer that holds the frame before last. bbulk redraws only
+ * the cells it thinks changed, and every presented frame must equal a fresh
+ * render of the same screen in the same blink phase.
+ *
+ * What a phase looks like is judged against plain screens: in the visible
+ * phase the blinking screen equals the same text without SGR 5, and in the
+ * hidden phase it equals the same attributes over spaces, so a blinking cell
+ * keeps its background and its underline and strike and loses its glyph.
+ */
+
+#undef NDEBUG
+#include <assert.h>
+#include <errno.h>
+#include <fontconfig/fontconfig.h>
+#include <libtsm.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "../src/font/font.c"
+#include "../src/font/font_box.c"
+#undef LOG_SUBSYSTEM
+#include "../src/font/font_freetype.c"
+#undef LOG_SUBSYSTEM
+#include "../src/render/text.c"
+#undef LOG_SUBSYSTEM
+#include "../src/render/bbulk.c"
+#undef LOG_SUBSYSTEM
+#include "../src/render/deco.c"
+#undef LOG_SUBSYSTEM
+#include "../src/video/drm2d_render.c"
+#include "config.h"
+
+void shl_module_ref(struct shl_module *module) {}
+void shl_module_unref(struct shl_module *module) {}
+
+#define COLS 40
+#define ROWS 10
+#define FONT_PX 16
+#define ESC "\x1b"
+
+static unsigned int fb_w, fb_h;
+static size_t fb_bytes;
+
+/* ---- double-buffered in-memory display ---- */
+
+unsigned int display_get_width(struct display *disp)
+{
+	return fb_w;
+}
+unsigned int display_get_height(struct display *disp)
+{
+	return fb_h;
+}
+void display_ref(struct display *disp) {}
+void display_unref(struct display *disp) {}
+bool display_need_redraw(struct display *disp)
+{
+	return false;
+}
+bool display_has_damage(struct display *disp)
+{
+	return false;
+}
+bool display_supports_damage(struct display *disp)
+{
+	return false;
+}
+void display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages) {}
+void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y) {}
+
+int display_clear(struct display *disp, uint8_t r, uint8_t g, uint8_t b)
+{
+	return drm2d_display_clear(disp, r, g, b);
+}
+
+int display_blend(struct display *disp, const struct video_blend_req *req)
+{
+	return drm2d_display_blend(disp, req);
+}
+
+/*
+ * One display: drm2d draws into rb[current_rb ^ 1], and a swap flips
+ * current_rb, so the next frame lands in the buffer drawn two frames ago.
+ */
+struct output {
+	const char *name;
+	struct display disp;
+	struct drm2d_display d2d;
+	struct kmscon_text *txt;
+	unsigned int frames;
+};
+
+static void output_init(struct output *o, const char *name, struct kmscon_font *font)
+{
+	int ret;
+
+	memset(o, 0, sizeof(*o));
+	o->name = name;
+	o->disp.width = fb_w;
+	o->disp.height = fb_h;
+	o->disp.data = &o->d2d;
+	for (int i = 0; i < 2; i++) {
+		o->d2d.rb[i].map = calloc(1, fb_bytes);
+		o->d2d.rb[i].stride = fb_w * 4;
+		assert(o->d2d.rb[i].map);
+	}
+	ret = kmscon_text_new(&o->txt, "bbulk", OR_NORMAL, &o->disp);
+	assert(ret == 0);
+	ret = kmscon_text_set(o->txt, font);
+	assert(ret == 0);
+	assert(o->txt->cols == COLS && o->txt->rows == ROWS);
+}
+
+static void output_destroy(struct output *o)
+{
+	kmscon_text_unref(o->txt);
+	free(o->d2d.rb[0].map);
+	free(o->d2d.rb[1].map);
+}
+
+/* draw one frame of @con in phase @hidden; returns the buffer it went to */
+static const uint32_t *output_frame(struct output *o, struct tsm_screen *con, struct tsm_vte *vte,
+				    bool hidden)
+{
+	struct tsm_screen_attr attr;
+	const uint32_t *drawn;
+	int ret;
+
+	drawn = o->d2d.rb[o->d2d.current_rb ^ 1].map;
+	tsm_vte_get_def_attr(vte, &attr);
+	ret = kmscon_text_prepare(o->txt, &attr, hidden);
+	assert(ret == 0);
+	ret = kmscon_text_draw(o->txt, con, false);
+	assert(ret == 0);
+	ret = kmscon_text_render(o->txt);
+	assert(ret == 0);
+	o->d2d.current_rb ^= 1;
+	o->frames++;
+	return drawn;
+}
+
+/* ---- the screen ---- */
+
+/*
+ * A segment of the screen: text drawn with SGR @sgr, blinking when @blink;
+ * @cells is the text's width in cells. A segment with no text ends the row.
+ */
+struct seg {
+	const char *sgr;
+	const char *text;
+	unsigned int cells;
+	bool blink;
+};
+
+#define ROW_END {NULL, NULL, 0, false}
+#define COMB_ACUTE "\xcc\x81"
+#define COMB_TILDE "\xcc\x83"
+#define COMB_GRAVE "\xcc\x80"
+
+static const struct seg segs[] = {
+	{"", "plain ", 6, false},
+	{"", "blink", 5, true},
+	{"", " steady", 7, false},
+	ROW_END,
+	{"31", "red ", 4, false},
+	{"31", "red", 3, true},
+	{"", " ", 1, false},
+	{"33;44", "on blue", 7, true},
+	{"33;44", " not", 4, false},
+	ROW_END,
+	{"7", "rev ", 4, false},
+	{"7", "reversed", 8, true},
+	{"", " ", 1, false},
+	{"1", "bold", 4, true},
+	ROW_END,
+	{"4", "under ", 6, false},
+	{"4", "under", 5, true},
+	{"", " ", 1, false},
+	{"4:3;58:5:196", "curly", 5, true},
+	{"4:2", " dbl", 4, false},
+	ROW_END,
+	{"9", "struck ", 7, false},
+	{"9", "struck", 6, true},
+	{"", " ", 1, false},
+	{"9;4;32", "both", 4, true},
+	ROW_END,
+	{"", "wide ", 5, false},
+	{"", "日本", 4, true},
+	{"", " 日本 ", 6, false},
+	{"7;4", "日本", 4, true},
+	ROW_END,
+	{"", "comb ", 5, false},
+	{"", "e" COMB_ACUTE " a" COMB_TILDE COMB_GRAVE, 3, true},
+	{"", " e" COMB_ACUTE " a" COMB_TILDE COMB_GRAVE, 4, false},
+	ROW_END,
+	{"", "ab", 2, true},
+	{"5;25", "cd", 2, false},
+	{"", " SGR 25 ends it", 15, false},
+	ROW_END,
+};
+
+#define N_SEGS (sizeof(segs) / sizeof(segs[0]))
+#define ROWS_USED 8 /* the rows segs fills */
+
+enum variant {
+	BLINKING, /* the screen as it is: the blinking segments with SGR 5 */
+	VISIBLE,  /* without SGR 5: the visible phase */
+	HIDDEN,	  /* without SGR 5, the blinking segments as spaces: the hidden phase */
+};
+
+/* the bytes of the screen, as @v */
+static void screen_bytes(char *out, size_t size, enum variant v)
+{
+	size_t n = 0;
+
+	out[0] = 0;
+	for (size_t i = 0; i < N_SEGS; i++) {
+		const struct seg *s = &segs[i];
+
+		if (!s->text) {
+			n += snprintf(out + n, size - n, ESC "[0m\r\n");
+			continue;
+		}
+		n += snprintf(out + n, size - n, ESC "[0%s%s%s", *s->sgr ? ";" : "", s->sgr,
+			      v == BLINKING && s->blink ? ";5m" : "m");
+		if (v == HIDDEN && s->blink)
+			for (unsigned int c = 0; c < s->cells; c++)
+				n += snprintf(out + n, size - n, " ");
+		else
+			n += snprintf(out + n, size - n, "%s", s->text);
+		assert(n < size);
+	}
+}
+
+/* the cells of the blinking segments, row by row */
+static bool blink_cell[ROWS][COLS];
+
+static void map_blink_cells(void)
+{
+	unsigned int row = 0, col = 0;
+
+	for (size_t i = 0; i < N_SEGS; i++) {
+		if (!segs[i].text) {
+			row++;
+			col = 0;
+			continue;
+		}
+		for (unsigned int c = 0; c < segs[i].cells; c++)
+			blink_cell[row][col + c] = segs[i].blink;
+		col += segs[i].cells;
+		assert(col <= COLS && row < ROWS_USED);
+	}
+	assert(row == ROWS_USED);
+}
+
+/* rewrites the last row's "ab" with SGR 5 then 25, so it stops blinking */
+#define SGR25_BYTES ESC "[8;1H" ESC "[0;5;25mab" ESC "[0m"
+
+/* ---- fresh renders: what a frame must look like ---- */
+
+static struct kmscon_font *font;
+static const char *font_dir;
+
+static void vte_write(struct tsm_vte *vte, const char *u8, size_t len, void *data) {}
+
+static void console_new(struct tsm_screen **con, struct tsm_vte **vte)
+{
+	int ret;
+
+	ret = tsm_screen_new(con, NULL, NULL);
+	assert(ret == 0);
+	ret = tsm_vte_new(vte, *con, vte_write, NULL, NULL, NULL);
+	assert(ret == 0);
+	tsm_vte_set_palette(*vte, "default");
+	ret = tsm_screen_resize(*con, COLS, ROWS);
+	assert(ret == 0);
+	/* hidden cursor: it would cover a cell, and its blink is not judged here */
+	tsm_vte_input(*vte, ESC "[?25l", 6);
+}
+
+/*
+ * @bytes drawn by a new display in phase @hidden, into @out: its first frame,
+ * every cell drawn over a cleared buffer.
+ */
+static void fresh(uint32_t *out, const char *bytes, bool hidden)
+{
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	struct output o;
+	const uint32_t *drawn;
+
+	console_new(&con, &vte);
+	tsm_vte_input(vte, bytes, strlen(bytes));
+	output_init(&o, "fresh", font);
+	drawn = output_frame(&o, con, vte, hidden);
+	memcpy(out, drawn, fb_bytes);
+	output_destroy(&o);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+}
+
+static int failures;
+static unsigned int compared; /* screens compared */
+
+/* whether @a and @b hold the same screen; if not, report the first cell that differs */
+static bool same(const uint32_t *a, const uint32_t *b, const char *what)
+{
+	compared++;
+	for (unsigned int y = 0; y < fb_h; y++) {
+		for (unsigned int x = 0; x < fb_w; x++) {
+			if (a[y * fb_w + x] == b[y * fb_w + x])
+				continue;
+			fprintf(stderr,
+				"test_blink: %s: differs first at cell %u,%u (pixel %u,%u)\n", what,
+				x / font->width, y / font->height, x, y);
+			failures++;
+			return false;
+		}
+	}
+	return true;
+}
+
+/* whether cells @col, @row to @col + @cols - 1 of @a and @b are the same */
+static bool same_cells(const uint32_t *a, const uint32_t *b, unsigned int col, unsigned int row,
+		       unsigned int cols)
+{
+	for (unsigned int y = row * font->height; y < (row + 1) * font->height; y++) {
+		for (unsigned int x = col * font->width; x < (col + cols) * font->width; x++) {
+			if (a[y * fb_w + x] != b[y * fb_w + x])
+				return false;
+		}
+	}
+	return true;
+}
+
+/* ---- what each phase looks like ---- */
+
+static void test_phases(void)
+{
+	static char blinking[4096], visible[4096], hidden[4096];
+	uint32_t *on = malloc(fb_bytes), *off = malloc(fb_bytes), *ref = malloc(fb_bytes);
+	unsigned int changed = 0;
+
+	screen_bytes(blinking, sizeof(blinking), BLINKING);
+	screen_bytes(visible, sizeof(visible), VISIBLE);
+	screen_bytes(hidden, sizeof(hidden), HIDDEN);
+
+	fresh(on, blinking, false);
+	fresh(ref, visible, false);
+	same(on, ref, "visible phase against the text without SGR 5");
+
+	fresh(off, blinking, true);
+	fresh(ref, hidden, false);
+	same(off, ref, "hidden phase against the attributes over spaces");
+
+	/* the phase moves the blinking cells and nothing else */
+	for (unsigned int y = 0; y < fb_h; y++) {
+		for (unsigned int x = 0; x < fb_w; x++) {
+			unsigned int col = x / font->width, row = y / font->height;
+			bool differs = on[y * fb_w + x] != off[y * fb_w + x];
+
+			if (differs && !blink_cell[row][col]) {
+				fprintf(stderr,
+					"test_blink: steady cell %u,%u differs between the "
+					"phases\n",
+					col, row);
+				failures++;
+				goto out;
+			}
+			changed += differs;
+		}
+	}
+	if (!changed) {
+		fprintf(stderr, "test_blink: the phases draw the same screen\n");
+		failures++;
+	}
+
+	/* hidden-phase rendering of a screen with no SGR 5 is the visible one */
+	fresh(off, visible, true);
+	fresh(ref, visible, false);
+	same(off, ref, "a screen without SGR 5 in the hidden phase");
+
+	/* "ab" rewritten with SGR 25 shows in the hidden phase; "blink" still hides */
+	strncat(blinking, SGR25_BYTES, sizeof(blinking) - strlen(blinking) - 1);
+	fresh(off, blinking, true);
+	compared++;
+	if (!same_cells(off, on, 0, ROWS_USED - 1, 2) || same_cells(off, on, 6, 0, 5)) {
+		fprintf(stderr, "test_blink: SGR 25 does not end the blink of \"ab\" alone\n");
+		failures++;
+	}
+out:
+	free(on);
+	free(off);
+	free(ref);
+}
+
+/* ---- the phases through both buffers ---- */
+
+/*
+ * One step of a run: the bytes written before the frame (or NULL) and the
+ * phase it is drawn in.
+ */
+struct step {
+	const char *bytes;
+	bool hidden;
+};
+
+/*
+ * Every frame each display draws must equal a fresh render of the screen as
+ * it is, in the frame's phase. @mask: which of the two displays draws at each
+ * step (bit 0 the first, drawing every step unless @mask says otherwise).
+ */
+static void run_steps(const char *what, const struct step *steps, size_t n, const char *initial,
+		      const unsigned int *mask)
+{
+	static char bytes[8192];
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	struct output outs[2];
+	uint32_t *ref = malloc(fb_bytes);
+	char label[256];
+
+	console_new(&con, &vte);
+	tsm_vte_input(vte, initial, strlen(initial));
+	snprintf(bytes, sizeof(bytes), "%s", initial);
+	output_init(&outs[0], "every frame", font);
+	output_init(&outs[1], "some frames", font);
+
+	for (size_t i = 0; i < n; i++) {
+		unsigned int draws = mask ? mask[i] : 1;
+
+		if (steps[i].bytes) {
+			tsm_vte_input(vte, steps[i].bytes, strlen(steps[i].bytes));
+			strncat(bytes, steps[i].bytes, sizeof(bytes) - strlen(bytes) - 1);
+		}
+		fresh(ref, bytes, steps[i].hidden);
+
+		for (int d = 0; d < 2; d++) {
+			const uint32_t *drawn;
+
+			if (!(draws & (1u << d)))
+				continue;
+			drawn = output_frame(&outs[d], con, vte, steps[i].hidden);
+			snprintf(label, sizeof(label),
+				 "%s: step %zu (%s phase), display '%s' frame %u into buffer %d",
+				 what, i, steps[i].hidden ? "hidden" : "visible", outs[d].name,
+				 outs[d].frames, outs[d].d2d.current_rb);
+			same(drawn, ref, label);
+		}
+	}
+
+	output_destroy(&outs[0]);
+	output_destroy(&outs[1]);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+	free(ref);
+}
+
+static void test_buffers(void)
+{
+	static char blinking[4096];
+	/*
+	 * V V | H H H | V V | H | V | H | V V: a phase held for several frames,
+	 * so the frame after a toggle goes into the buffer that still holds the
+	 * other phase, and phases of one frame each, so each buffer sees every
+	 * other phase.
+	 */
+	static const struct step phases[] = {
+		{NULL, false}, {NULL, false}, {NULL, true},  {NULL, true},
+		{NULL, true},  {NULL, false}, {NULL, false}, {NULL, true},
+		{NULL, false}, {NULL, true},  {NULL, false}, {NULL, false},
+	};
+	/* the second display misses frames: it draws steps 0, 1, 3, 4, 7, 8, 10 */
+	static const unsigned int some[] = {3, 3, 1, 3, 3, 1, 1, 3, 3, 1, 3, 1};
+	/* SGR 25 rewrites "ab" in the hidden phase; the frames after it show it */
+	static const struct step sgr25[] = {
+		{NULL, false},	     {NULL, true},  {NULL, true},
+		{SGR25_BYTES, true}, {NULL, true},  {NULL, true},
+		{NULL, false},	     {NULL, false}, {ESC "[8;1H" ESC "[0;5mab", true},
+		{NULL, true},	     {NULL, false}, {NULL, false},
+	};
+	/* no-blink: kmscon never leaves the visible phase */
+	static const struct step noblink[] = {
+		{NULL, false}, {NULL, false}, {SGR25_BYTES, false}, {NULL, false}, {NULL, false},
+	};
+
+	screen_bytes(blinking, sizeof(blinking), BLINKING);
+	run_steps("phases", phases, sizeof(phases) / sizeof(phases[0]), blinking, some);
+	run_steps("SGR 25", sgr25, sizeof(sgr25) / sizeof(sgr25[0]), blinking, NULL);
+	run_steps("no-blink", noblink, sizeof(noblink) / sizeof(noblink[0]), blinking, NULL);
+}
+
+/* Replace the process's fontconfig with one that knows only the pinned files. */
+static void pin_fonts(void)
+{
+	static const char *const files[] = {"DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf",
+					    "NotoSansMonoCJKJP-Subset.otf"};
+	FcConfig *cfg = FcConfigCreate();
+	char path[4096];
+
+	assert(cfg);
+	for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+		snprintf(path, sizeof(path), "%s/%s", font_dir, files[i]);
+		if (!FcConfigAppFontAddFile(cfg, (const FcChar8 *)path)) {
+			fprintf(stderr, "test_blink: cannot load font %s\n", path);
+			exit(2);
+		}
+	}
+	if (!FcConfigSetCurrent(cfg)) {
+		fprintf(stderr, "test_blink: cannot install the font configuration\n");
+		exit(2);
+	}
+}
+
+int main(int argc, char **argv)
+{
+	int ret;
+
+	if (argc != 2) {
+		fprintf(stderr, "usage: %s FONT_DIR\n", argv[0]);
+		return 2;
+	}
+	font_dir = argv[1];
+
+	ret = kmscon_font_register(&kmscon_font_freetype_ops);
+	assert(ret == 0);
+	ret = kmscon_text_register(&kmscon_text_bbulk_ops);
+	assert(ret == 0);
+
+	pin_fonts();
+	ret = kmscon_font_find(&font, "DejaVu Sans Mono", FONT_PX, "freetype");
+	if (ret || !font || font->ops != &kmscon_font_freetype_ops) {
+		fprintf(stderr, "test_blink: pinned font not found\n");
+		return 2;
+	}
+	fb_w = COLS * font->width;
+	fb_h = ROWS * font->height;
+	fb_bytes = (size_t)fb_w * fb_h * 4;
+	map_blink_cells();
+
+	test_phases();
+	test_buffers();
+
+	kmscon_font_unref(font);
+	fprintf(stderr, "test_blink: %u screens compared, %d failures\n", compared, failures);
+	if (!compared)
+		failures++;
+	return failures ? 1 : 0;
+}

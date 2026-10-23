@@ -16,6 +16,8 @@ jobs:
     - uses: actions/checkout@v3
     - name: Install clang-format
       run: sudo apt-get update && sudo apt-get install -y clang-format-20
+    - name: Check clang-format version
+      run: clang-format-20 --version && clang-format-20 --version | grep -q 'version 20.1.2 '
     - name: Check format
       run: clang-format-20 -n --Werror src/*.c src/*.h src/*/*.c src/*/*.h tests/*.c tests/*.h
   meson-format:
@@ -36,7 +38,7 @@ jobs:
         fi
   build:
     name: Ubuntu tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v3
     - name: Print env

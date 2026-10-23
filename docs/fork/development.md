@@ -75,7 +75,7 @@ kmscon worktrees are `../kmscon-<topic>`. Branch names follow the change: `fork/
 
 ### 3. Commit
 
-Commit messages follow the conventions below. A golden that changes goes in a commit of its own (see [Goldens are the judge](#goldens-are-the-judge)). Before opening the PR, the author runs the gates in [Verification before merge](#verification-before-merge) that apply to the change, starting with `make test` in the worktree, and records each result for the PR body. `make test` starts with `make lint`, the clang-format and meson format checks the GitHub workflow runs, at the workflow's versions (pinned in `fork/lint.mk`); `make format` rewrites what they flag.
+Commit messages follow the conventions below. A golden that changes goes in a commit of its own (see [Goldens are the judge](#goldens-are-the-judge)). Before opening the PR, the author runs the gates in [Verification before merge](#verification-before-merge) that apply to the change, starting with `make test` in the worktree, and records each result for the PR body. `make test` also runs `make lint`, after the build, the clang-format and meson format checks the GitHub workflow runs, at the workflow's versions (pinned in `fork/lint.mk`); `make format` rewrites what they flag.
 
 ### 4. Open the PR
 

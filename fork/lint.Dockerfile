@@ -15,5 +15,5 @@ RUN apt-get update \
         clang-format-20 python3-pip git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --break-system-packages --no-cache-dir meson==${MESON_FORMAT_VERSION}
-RUN clang-format-20 --version | grep -q "version ${CLANG_FORMAT_VERSION}" \
+RUN clang-format-20 --version | grep -q "version ${CLANG_FORMAT_VERSION} " \
     || { echo "clang-format-20 is not ${CLANG_FORMAT_VERSION}:"; clang-format-20 --version; exit 1; }

@@ -9,8 +9,8 @@
 # (fork/lint.Dockerfile), the one place their versions are set besides the
 # workflow: a version moved here moves there in the same commit.
 
-# Ubuntu 24.04, as GitHub's ubuntu-latest runner, whose clang-format-20 the
-# workflow installs.
+# Ubuntu 24.04, as the workflow's ubuntu-24.04 runners, whose clang-format-20
+# the workflow installs and checks against CLANG_FORMAT_VERSION.
 LINT_BASE            := ubuntu@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
 CLANG_FORMAT_VERSION := 20.1.2
 MESON_FORMAT_VERSION := 1.12.1

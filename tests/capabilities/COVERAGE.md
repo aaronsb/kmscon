@@ -52,7 +52,9 @@ Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex);
 | `make vt-demo`, `run-vt.sh` refusals | #65 | meson `demo_vt_select` | script, stand-in loginctl | guarded |
 | Showcase | #83 | meson `showcase` | script | playback not covered (manual) |
 | Run and comparison page generators | #4, #6, #50, #52, #58 | `test_runpage.py`, `test_compare.py` | Python | now meson tests `sheet_runpage`, `sheet_compare` (were only in the Makefile's `make test`) |
-| Tier 3 harness modules | #14, #21, #55, #56, #74 | `test_t3img.py`, `test_t3.py` | Python | now meson tests `tier3_t3img`, `tier3_t3` (were only `make tier3-selftest`) |
+| Tier 3 harness modules | #14, #21, #55, #56, #74, #89 | `test_t3img.py`, `test_t3.py` | Python | now meson tests `tier3_t3img`, `tier3_t3` (were only `make tier3-selftest`) |
 | Capability probes | #113 | meson `capabilities` | libtsm, FT, terminfo | this map |
+| Render timer `log` (ADR-103): flips, CPU time and damage per frame, one line a second | #89 | `test_render_timer` (fake clock and display: intervals, the quiet line, idle blinking, percentiles, the line); `test_conf` `test_parse_render_timer`; `test_bbulk` `test_damage_measured`; tier 3 `s1-scroll` fails when a fork build logs no line in its window | counters on fakes; terminal.c's wiring PG/BB/D2 in tier 3 only | `osd` not built (ADR-103 step 3b); a failed swap counts as a queued frame: #93; GT and FB not run |
+| S1 text-scrolling benchmark; the potato variant (1 vCPU, 512 MB, 1366x768) | #89 | tier 3 `s1-scroll` and every screen on `2d-1366x768-potato`; `test_t3.py` `BenchTest`, `VariantTest`; `test_t3img.py` padded PPM rows | PG/BB/D2 | figures move with host load; no ADR-103 target judged yet |
 
-The render timer of ADR-103 is not built.
+The render timer's on-screen display (`osd`, ADR-103 step 3b) is not built.

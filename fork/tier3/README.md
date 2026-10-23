@@ -9,14 +9,14 @@ make pkg            # build kmscon-aaronsb from this checkout -> fork/build/pkg
 make tier3-image    # once: fetch, verify and provision fork/vm/base.qcow2
 make tier3          # pkg, then the 2D variants; report in fork/build/tier3-report.json
 make tier3-gl       # pkg, then the GL variant, which is outside the default run (#17)
-make tier3 VARIANTS="2d-1280x800 2d-7680x2160 gl-1280x800"   # any set of variants
+make tier3 VARIANTS="2d-1280x800 2d-1366x768-potato gl-1280x800"   # any set of variants
 make tier3-run VARIANTS=2d-1280x800     # without rebuilding the package
 make tier3 JOBS=2   # up to two variants at once, each in its own VM
 make tier3-selftest # unit tests of the compare module
 make tier3-upstream JOBS=2   # upstream kmscon in the same guest, for a comparison page (below)
 ```
 
-Host needs: docker (for `make pkg`), `qemu-system-x86_64` with KVM, `qemu-img`, `xorriso`, `gpg`, `curl`, python 3. Everything runs as the invoking user; nothing needs root. QEMU runs headless, one VM per variant (4 vCPUs, 4 GiB each), and the driver stops every VM it starts by the PID it started. Once the base image exists, the two 2D variants take about 50 s one after the other and about 28 s with `JOBS=2`.
+Host needs: docker (for `make pkg`), `qemu-system-x86_64` with KVM, `qemu-img`, `xorriso`, `gpg`, `curl`, python 3. Everything runs as the invoking user; nothing needs root. QEMU runs headless, one VM per variant with the vCPUs and memory the variant names (see [Variants](#variants)), and the driver stops every VM it starts by the PID it started. Once the base image exists and the package is built, the three 2D variants take about 143 s one after the other and about 90 s with `JOBS=2` (`make tier3-run`, on a 32-thread host); without `2d-1366x768-potato` the other two take about 61 s with `JOBS=2`, so the potato adds about 30 s to the default run. `s1-scroll` adds about 7 s to each variant, 9 s at 7680x2160.
 
 ## What is pinned
 
@@ -34,9 +34,10 @@ The pins live at the top of `fork/tier3.mk`. The snapshot date has to be no olde
 
 1. `make tier3-image` provisions the base once: a qcow2 overlay on the pristine image, booted with a cloud-init seed disc (`guest/user-data.in`). Cloud-init creates the user `tester` (password `tester`, prompt `$ `, no MOTD), installs kmscon's runtime dependencies and the fonts, points `autovt@.service` at `kmsconvt@.service`, enables the boot hook `tier3-install.service`, disables itself and powers off.
 2. Each variant boots a throwaway overlay of the base with a second disc labelled `T3PKG`: the built packages, the variant's `kmscon.conf`, the screen scripts and `guest/setup`. The boot hook runs `setup`, which installs the packages with `pacman -U`, routes kmscon's log to the serial console, and makes the second serial port (ttyS1) writable as the event port: the login shell and each screen script write a line there. Changing anything on the disc never needs a new base image. `setup` then reports on the console every kmscon or libtsm package installed and the libtsm commit the package was built with (the recipe installs it as `/usr/share/doc/<package>/libtsm-commit`, with `+dirty` when that tree had changes or untracked files). The driver fails the variant when the guest holds any such package that is not on the disc, when the commit is unknown or not the libtsm the run names, or when the two disagree on `+dirty`. A run must name its libtsm, so a fresh worktree needs `subprojects/libtsm` checked out first (`make build` fetches it).
-3. The driver (`t3.py`, with QEMU in `t3_qemu.py`) talks QMP on a unix socket. It waits for `TIER3-INSTALL-OK`, systemd's `Started User Login Management` and `Reached target Login Prompts` on the serial log, then presses Ctrl+Alt+F2: logind spawns kmscon on tty2, and a boot without the keypress has no kmscon there. It waits for kmscon's `vt: using tty /dev/tty2` and a drawn login prompt, logs in, and waits for the login shell's line on the event port. Then it types `t3 NAME` for each screen in `SCREENS` (`t3_evaluate.py`): `sgr`, `colour-forms`, `underline-styles`, `underline-colour`, `strike`, `boxdraw`, `blocks`, `mosaic`, `wide-margin`, `combining`, `emoji`, `cjk`. After each, it waits for the screen script's line on the event port, then captures until two captures a second apart are identical and differ from the screen before.
+3. The driver (`t3.py`, with QEMU in `t3_qemu.py`) talks QMP on a unix socket. It waits for `TIER3-INSTALL-OK`, systemd's `Started User Login Management` and `Reached target Login Prompts` on the serial log, then presses Ctrl+Alt+F2: logind spawns kmscon on tty2, and a boot without the keypress has no kmscon there. It waits for kmscon's `vt: using tty /dev/tty2` and a drawn login prompt, logs in, and waits for the login shell's line on the event port. Then it types `t3 NAME` for each screen in `SCREENS` (`t3_evaluate.py`): `sgr`, `colour-forms`, `underline-styles`, `underline-colour`, `strike`, `boxdraw`, `blocks`, `mosaic`, `wide-margin`, `combining`, `emoji`, `s1-scroll`, `cjk`. After each, it waits for the screen script's line on the event port, then captures until two captures a second apart are identical and differ from the screen before.
 4. VT switch: Ctrl+Alt+F3, then Ctrl+Alt+F2. The `vt-switch` case passes when logind's second kmscon on tty3 draws a screen that is neither blank nor the one just left, so a switch that never happens cannot let `vt-restore` pass on its own. `vt-restore` then requires the tty2 screen to equal the `cjk` golden exactly.
 5. The driver reads kmscon's `Display ... with backend [..] text renderer [..]` line from the serial log and fails the variant if kmscon drew with a renderer other than the one the variant exists to test.
+6. It reads the figures of each benchmark screen (`BENCHMARKS` in `t3_evaluate.py`; see [Benchmarks](#benchmarks)) from kmscon's render-timer lines on the serial log.
 
 Each step waits for state the driver can observe: a line on the serial log or the event port, or a screen that has changed and then settled. Every wait has a timeout that fails the case and names what it waited for. On a slow host a capture taken too early can fail its case; it cannot pass it. The one fixed pause left is 50 ms between key chords, because QEMU's input queue is bounded and shows nothing outside QEMU. A password typed before the prompt is discarded by PAM, so when no login follows within 20 s the driver types it once more.
 
@@ -58,18 +59,24 @@ Upstream reads every key of `guest/kmscon.conf` and logs its character cell, so 
 
 | Variant | Device | kmscon path | Capture |
 |---|---|---|---|
-| `2d-1280x800` | `virtio-vga`, EDID 1280x800 | drm2d + bbulk | QMP `screendump` (PPM) |
-| `2d-7680x2160` | `virtio-vga`, EDID 7680x2160, `max_hostmem=1G` | drm2d + bbulk | QMP `screendump` (PPM) |
-| `gl-1280x800` | `virtio-vga-gl` with `-display egl-headless` (virgl on the host's render node, `T3_RENDERNODE`, default `/dev/dri/renderD128`) | drm3d + gltex (`hwaccel`) | VNC over a unix socket |
+| Variant | Machine | Device | kmscon path | Capture |
+|---|---|---|---|---|
+| `2d-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga`, EDID 1280x800 | drm2d + bbulk | QMP `screendump` (PPM) |
+| `2d-7680x2160` | 4 vCPUs, 4096 MB | `virtio-vga`, EDID 7680x2160, `max_hostmem=1G` | drm2d + bbulk | QMP `screendump` (PPM) |
+| `2d-1366x768-potato` | 1 vCPU, 512 MB | `virtio-vga`, EDID 1366x768 | drm2d + bbulk | QMP `screendump` (PPM) |
+| `gl-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga-gl` with `-display egl-headless` (virgl on the host's render node, `T3_RENDERNODE`, default `/dev/dri/renderD128`) | drm3d + gltex (`hwaccel`) | VNC over a unix socket |
 
-Two findings shaped this table:
+`2d-1366x768-potato`, the potato computer, is ADR-103's small machine (ADR-103 names it `2d-1366x768-hamster`; renamed at the operator's request, noted at the end of ADR-103): one vCPU and 512 MB at a common laptop size, so a regression on small machines shows in the default run. Its vCPU is a core of the host, so it bounds parallelism and memory; it does not reproduce slow hardware. `make tier3` runs the 2D variants in the order 1280x800, 7680x2160, potato, so with `JOBS=2` the longest starts first.
+
+Three findings shaped this table:
 
 - At 7680x2160 each XRGB buffer is 63 MiB. With the default `max_hostmem` (256 MiB) the second kmscon on tty3 fails to create its buffers (`virtio_gpu ... response 0x1201`, out of memory). 1 GiB clears it.
 - Once virgl owns the scanout, QMP `screendump` fails with "no surface". egl-headless reads the scanout back into a surface for a paired VNC server, so the GL variant captures over RFB (raw encoding, implemented in `t3_qemu.py`). Captures are byte-identical across boots, like the 2D ones.
+- QEMU 11.1's `screendump` writes each PPM row padded to a multiple of 4 bytes while the header gives the width. At 1366 pixels a row is 4098 bytes and arrives as 4100, so read as the header says, every row slid 2 bytes and the screens came out sheared, with solid colours split into red, green and blue stripes. `t3img.read_ppm` drops the padding, and refuses a body of any other size.
 
 ## Goldens, tolerances and masks
 
-Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 25 come to about 1 MB, the 7680x2160 ones included).
+Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 42 come to about 2.4 MB, the 7680x2160 ones included).
 
 Comparison is exact unless a tolerance sidecar `golden/<variant>/<screen>.tol` sits beside the golden. It holds `key=value` lines; `#` starts a comment:
 
@@ -124,8 +131,21 @@ The tier exits non-zero on any `fail` or `missing`.
 - `actual`, `diff` and the thumbnails are PNGs, so the run page can show them. The raw PPM captures sit beside them.
 - Thumbnails are at most 480 pixels wide, nearest-neighbour. In the diff thumbnail, any block holding a differing pixel is red, so a one-pixel difference stays visible. Fields are `null` where there is nothing to show.
 - `timing` under each variant holds the seconds from the variant's start to the end of each phase (`install`, `boot`, `kmscon`, `login`, each screen, `vt-switch`, `vt-restore`) and the seconds `evaluate` took.
+- `cpus` and `memory_mb` under each variant are the machine it booted, and `bench` holds each benchmark screen's figures by name (see [Benchmarks](#benchmarks)).
 - `bbox` is a list of at most 16 regions for outlining. Differing pixels in touching 16-pixel tiles share a region, coarser tiles are used while there are many clusters, and then the closest regions merge.
 - A variant that cannot boot or drive reports each of its cases as `fail` with an `error`.
+
+## Benchmarks
+
+ADR-103's synthetic scenarios run as screens: S1, text scrolling with no image, is `s1-scroll`, drawn and compared with its golden like any screen (its golden is the last rows of the text and the prompt). The scenarios S2 to S6 need the image layer and join when it lands.
+
+`guest/kmscon.conf` sets `render-timer=log`, so kmscon writes one line per display per second to its log, which `guest/setup` routes to the serial console: frames presented (page flips completed), frames queued, and their CPU time and damaged area. The log draws nothing, so the goldens are the same with it on. A benchmark script pauses 1.5 s, prints its load, pauses again, and reports its window on the event port as `T3-BENCH NAME lines=N start=S end=E`, both times read from `/proc/uptime`, the clock that also stamps the console lines. `t3_bench.py` takes the render-timer lines whose seconds overlap the window; the pauses keep the frames before and after (the clear, the next prompt) out of those seconds.
+
+The report's `bench` entry for a screen holds `lines`, `seconds` and `lines_per_s`; `flips`, `frames` and `presented_per_s` (flips over the window's length); `cpu_ms_mean` and `damage_px_mean` per frame over the window, with `damage_pct` the damaged share of the screen; and `cpu_ms_median`, `cpu_ms_p95` and `cpu_ms_max`. The lines carry no single frames, so the median is the median of the seconds' medians and the 95th percentile the largest second's. The run page shows them under each variant.
+
+A build with the render timer configured that logs no line in the window fails the case. Upstream's build does not know the key: it logs `unknown config option 'render-timer'`, keeps going, and its entry gets a note instead of figures, with `lines_per_s` still measured.
+
+The figures are measured on a guest: a vCPU preempted by the host still counts as the thread's CPU time, so whatever else loads the host (the other variant's scroll under `JOBS=2`, or other work) inflates them. At 7680x2160 the CPU time per frame read 9.6 to 14.0 ms across five `JOBS=2` runs; at 1280x800 two `JOBS=1` runs of one build on a busy host read 0.91 and 1.15 ms, and 179 000 and 103 000 lines per second. Compare builds with `JOBS=1`, several runs each, on a host doing nothing else.
 
 ## The gate has been seen red
 

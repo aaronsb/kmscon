@@ -256,6 +256,49 @@ static void test_parse_blink(void)
 	assert(conf->blink);
 }
 
+/* render-timer takes foot's values; none is the default */
+static void test_parse_render_timer(void)
+{
+	char *argv[] = {"kmscon", "--render-timer=both", NULL};
+	struct conf_ctx *ctx;
+	struct kmscon_conf_t *conf;
+	char *buf;
+
+	conf = parse_conf(&ctx, "\n");
+	assert(conf && conf->render_timer == KMSCON_RENDER_TIMER_NONE);
+	conf = parse_conf(&ctx, "render-timer=none\n");
+	assert(conf && conf->render_timer == KMSCON_RENDER_TIMER_NONE);
+	conf = parse_conf(&ctx, "render-timer=osd\n");
+	assert(conf && conf->render_timer == KMSCON_RENDER_TIMER_OSD);
+	conf = parse_conf(&ctx, "render-timer=log\n");
+	assert(conf && conf->render_timer == KMSCON_RENDER_TIMER_LOG);
+	conf = parse_conf(&ctx, "render-timer=both\n");
+	assert(conf && conf->render_timer == KMSCON_RENDER_TIMER_BOTH);
+	assert(conf->render_timer & KMSCON_RENDER_TIMER_OSD);
+	assert(conf->render_timer & KMSCON_RENDER_TIMER_LOG);
+	conf = parse_conf(&ctx, "render-timer=log # comment\n");
+	assert(conf && conf->render_timer == KMSCON_RENDER_TIMER_LOG);
+
+	/* conf.c logs an option without its argument and keeps the default */
+	conf = parse_conf(&ctx, "render-timer\n");
+	assert(conf && conf->render_timer == KMSCON_RENDER_TIMER_NONE);
+	assert(!parse_conf(&ctx, "render-timer=\n"));
+	assert(!parse_conf(&ctx, "render-timer=LOG\n"));
+	assert(!parse_conf(&ctx, "render-timer=on\n"));
+	assert(!parse_conf(&ctx, "render-timer=log,osd\n"));
+
+	/* the command line wins over the file; getopt restarts after test_parse_blink */
+	kmscon_conf_new(&ctx);
+	conf_ctx_reset(ctx);
+	optind = 0;
+	assert(conf_ctx_parse_argv(ctx, 2, argv) == 0);
+	buf = strdup("render-timer=none\n");
+	assert(parse_buffer(ctx->opts, ctx->onum, buf, strlen(buf)) == 0);
+	free(buf);
+	conf = conf_ctx_get_mem(ctx);
+	assert(conf->render_timer == KMSCON_RENDER_TIMER_BOTH);
+}
+
 int main()
 {
 	test_parse_mode(config_file, parsed_modes, 6);
@@ -263,6 +306,7 @@ int main()
 	test_parse_text();
 	test_parse_comment();
 	test_parse_blink();
+	test_parse_render_timer();
 
 	return 0;
 }

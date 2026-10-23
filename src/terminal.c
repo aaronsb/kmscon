@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "asciinema.h"
 #include "conf.h"
 #include "config.h"
@@ -44,6 +45,7 @@
 #include "issue.h"
 #include "pty.h"
 #include "render/text.h"
+#include "render_timer.h"
 #include "seat.h"
 #include "shl/dlist.h"
 #include "shl/eloop.h"
@@ -59,6 +61,7 @@ struct screen {
 	struct kmscon_terminal *term;
 	struct display *disp;
 	struct kmscon_text *txt;
+	struct render_timer *timer; /* NULL unless render-timer logs */
 
 	bool config_enabled;
 	bool pending;
@@ -113,11 +116,20 @@ struct kmscon_terminal {
 	bool blinking;
 	bool cursor_blinking;
 
+	/* closes each screen's render timer interval and logs it */
+	struct ev_timer *render_timer;
+
 	struct kmscon_asciinema *asciinema;
 };
 
 #define BLINK_TIMER_NS (500 * 1000 * 1000) // Blinking interval 500ms
 #define BLINK_CURSOR_TYPING 1		   // After keypress, wait 1s before blinking the cursor
+/*
+ * The render timer's interval, one second as ADR-103 sets: its counts read
+ * as rates per second, and at video rates (24 to 60 frames per second) one
+ * interval holds enough frames for a median and a 95th percentile.
+ */
+#define RENDER_TIMER_NS (1000 * 1000 * 1000)
 
 static void coord_to_cell(struct kmscon_terminal *term, int32_t x, int32_t y, unsigned int *posx,
 			  unsigned int *posy)
@@ -329,6 +341,7 @@ static void do_redraw_screen(struct screen *scr)
 
 	scr->pending = false;
 
+	render_timer_frame_begin(scr->timer);
 	kmscon_conf_resolve_deco(scr->term->conf, scr->term->vte, &deco);
 	kmscon_text_set_decorations(scr->txt, &deco);
 	tsm_vte_get_def_attr(scr->term->vte, &attr);
@@ -339,6 +352,8 @@ static void do_redraw_screen(struct screen *scr)
 	ret = kmscon_text_present(scr->txt);
 	if (ret && ret != -EBUSY)
 		log_warning("cannot swap display [%s] %d", display_name(scr->disp), ret);
+	render_timer_frame_end(scr->timer, !ret && scr->txt->frame_queued,
+			       scr->txt->frame_damage_px);
 }
 
 static void redraw_screen(struct screen *scr)
@@ -445,6 +460,8 @@ static void display_pageflip(void *unused, void *unused2, void *data)
 {
 	struct screen *scr = data;
 
+	if (scr->term->awake)
+		render_timer_flip(scr->timer);
 	if (scr->pending)
 		do_redraw_screen(scr);
 }
@@ -458,6 +475,51 @@ static void blink_event(struct ev_timer *timer, uint64_t count, void *data)
 
 	term->blinking = !term->blinking;
 	redraw_all(term);
+}
+
+static uint64_t clock_ns(clockid_t id)
+{
+	struct timespec ts;
+
+	clock_gettime(id, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
+static uint64_t render_timer_now(void *data)
+{
+	return clock_ns(CLOCK_MONOTONIC);
+}
+
+static uint64_t render_timer_cpu(void *data)
+{
+	return clock_ns(CLOCK_THREAD_CPUTIME_ID);
+}
+
+static const struct render_timer_clock render_timer_clock = {
+	.now_ns = render_timer_now,
+	.cpu_ns = render_timer_cpu,
+};
+
+static void render_timer_event(struct ev_timer *timer, uint64_t count, void *data)
+{
+	struct kmscon_terminal *term = data;
+	struct render_timer_stats st;
+	struct screen *scr;
+	char name[256], line[512];
+
+	dlist_for_each_entry(scr, &term->screens, list)
+	{
+		if (!render_timer_report(scr->timer,
+					 (uint64_t)display_get_width(scr->disp) *
+						 display_get_height(scr->disp),
+					 &st))
+			continue;
+		snprintf(name, sizeof(name), "%s[%s]", video_name(display_video(scr->disp)),
+			 display_name(scr->disp));
+		render_timer_format(&st, name, line, sizeof(line));
+		/* asked for in the config, so at the level kmscon logs by default */
+		log_notice("%s", line);
+	}
 }
 
 static void cursor_blink_event(struct ev_timer *timer, uint64_t count, void *data)
@@ -852,6 +914,12 @@ int terminal_add_display(struct kmscon_terminal *term, struct display *disp)
 
 	config_get_screen(term->conf, gpu, connector, &orientation, &scr->config_enabled);
 
+	if (term->conf->render_timer & KMSCON_RENDER_TIMER_LOG) {
+		ret = render_timer_new(&scr->timer, &render_timer_clock);
+		if (ret)
+			log_warning("no render timer for display %s: %d", connector, ret);
+	}
+
 	ret = display_register_pageflip(scr->disp, display_pageflip, scr);
 	if (ret) {
 		log_error("cannot register display callback: %d", ret);
@@ -869,6 +937,7 @@ int terminal_add_display(struct kmscon_terminal *term, struct display *disp)
 		goto err_cb;
 	}
 
+	scr->txt->measure = scr->timer != NULL;
 	dlist_link(&term->screens, &scr->list);
 
 	terminal_update_size_notify(term);
@@ -888,6 +957,7 @@ int terminal_add_display(struct kmscon_terminal *term, struct display *disp)
 err_cb:
 	display_unregister_pageflip(scr->disp, display_pageflip, scr);
 err_free:
+	render_timer_free(scr->timer);
 	free(scr);
 	return ret;
 }
@@ -903,6 +973,7 @@ static void free_screen(struct screen *scr, bool update)
 	kmscon_text_unref(scr->txt);
 	display_unregister_pageflip(scr->disp, display_pageflip, scr);
 	display_unref(scr->disp);
+	render_timer_free(scr->timer);
 	free(scr);
 
 	if (!update || dlist_empty(&term->screens))
@@ -1380,6 +1451,7 @@ void terminal_destroy(struct kmscon_terminal *term)
 	rm_all_screens(term);
 	ev_eloop_rm_timer(term->blink_timer);
 	ev_eloop_rm_timer(term->blink_cursor);
+	ev_eloop_rm_timer(term->render_timer);
 	kmscon_asciinema_free(term->asciinema);
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 	input_unregister_key_cb(term->input, input_event, term);
@@ -1440,6 +1512,10 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 	struct itimerspec blink_interval = {
 		.it_interval = {0, BLINK_TIMER_NS},
 		.it_value = {0, BLINK_TIMER_NS},
+	};
+	struct itimerspec render_timer_interval = {
+		.it_interval = {RENDER_TIMER_NS / 1000000000, RENDER_TIMER_NS % 1000000000},
+		.it_value = {RENDER_TIMER_NS / 1000000000, RENDER_TIMER_NS % 1000000000},
 	};
 	int ret;
 
@@ -1527,6 +1603,16 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 		if (ret)
 			goto err_blink;
 	}
+	/* ADR-103: the overlay is the first placement bbulk draws, in step 3b. */
+	if (term->conf->render_timer & KMSCON_RENDER_TIMER_OSD)
+		log_notice("render-timer: the on-screen display is not yet available until "
+			   "placements land (ADR-103 step 3b)");
+	if (term->conf->render_timer & KMSCON_RENDER_TIMER_LOG) {
+		ret = ev_eloop_new_timer(term->eloop, &term->render_timer,
+					 &render_timer_interval, render_timer_event, term);
+		if (ret)
+			goto err_cursor;
+	}
 	if (term->conf->asciicast) {
 		ret = kmscon_asciinema_new(&term->asciinema, term->eloop, term->conf->asciicast,
 					   term->conf->asciicast_loop, asciinema_write, term);
@@ -1539,6 +1625,8 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 	log_debug("new terminal object %p", term);
 	return term;
 
+err_cursor:
+	ev_eloop_rm_timer(term->blink_cursor);
 err_blink:
 	ev_eloop_rm_timer(term->blink_timer);
 err_pointer:

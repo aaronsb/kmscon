@@ -126,6 +126,14 @@ if enable_font_freetype
     test('test_font_freetype', test_font_freetype)
 endif
 
+test_render_timer = executable(
+    'test_render_timer',
+    'test_render_timer.c',
+    '../src/render_timer.c',
+    include_directories: src_inc,
+)
+test('test_render_timer', test_render_timer)
+
 # Braille, sextant and octant sprites against tests/box_model.h, at every cell
 # size to 32x64 (#76)
 test_font_box = executable(

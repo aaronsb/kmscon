@@ -30,6 +30,7 @@ TOOLS = {"kmscon": "1111111", "libtsm": "2222222", "image_base": "archlinux@sha2
          "archive_date": "2026/10/21", "guest_image": "cloudimg.qcow2",
          "guest_image_sha256": "abc123", "guest_archive": "2026/10/20"}
 META = {"v": {"cell": [10, 20], "device": "virtio-vga,xres=200", "config": ["font-size=16"],
+              "cpus": 4, "memory_mb": 4096,
               "kmscon": ["Display x with backend [drm2d] text renderer [bbulk] font engine [pango]"]}}
 TEXT = ["hello world", "", "the 4:3 curly line"]
 
@@ -161,8 +162,8 @@ class CompareTest(unittest.TestCase):
         self.assertIn("| libtsm commit | [`2222222`](https://github.com/kmscon/libtsm/commit/2222222) |", up)
         self.assertIn("| Text renderer | bbulk | bbulk |", page)
         self.assertIn("`cloudimg.qcow2` (SHA-256 `abc123`)", page)
-        self.assertIn("QEMU device `virtio-vga,xres=200`. kmscon configuration: `font-size=16`. "
-                      "Character cell 10×20 pixels.", page)
+        self.assertIn("QEMU device `virtio-vga,xres=200`. Machine: 4 vCPUs, 4096 MB. kmscon "
+                      "configuration: `font-size=16`. Character cell 10×20 pixels.", page)
         self.assertIn("container image `archlinux@sha256:feed`", page)
         self.assertIn("- **This page:** `make sheet-compare A=a B=b`", page)
         self.assertNotIn("golden", page.lower())
@@ -173,7 +174,7 @@ class CompareTest(unittest.TestCase):
         # when the cells differ.
         self.assertIn("installed in the same virtual machine", self.page())
         tools = dict(TOOLS, guest_image="other.qcow2")
-        meta = {"v": dict(META["v"], device="virtio-gpu", cell=[8, 16])}
+        meta = {"v": dict(META["v"], device="virtio-gpu", cell=[8, 16], cpus=1, memory_mb=512)}
         write_run("c", {"v/curly": screen(CHANGED)}, tools=tools, meta=meta)
         page = self.page("out", "--b", "c")
         self.assertNotIn("same virtual machine", page)
@@ -181,6 +182,7 @@ class CompareTest(unittest.TestCase):
         self.assertIn("cloud image `cloudimg.qcow2` for upstream, `other.qcow2` for fork "
                       "(SHA-256 `abc123`)", page)
         self.assertIn("QEMU device `virtio-vga,xres=200` for upstream, `virtio-gpu` for fork. "
+                      "Machine: 4 vCPUs, 4096 MB for upstream, 1 vCPU, 512 MB for fork. "
                       "kmscon configuration: `font-size=16`. Character cell 10×20 pixels for "
                       "upstream, 8×16 pixels for fork.", page)
         self.assertIn("| 1 | pixels 0,5 to 15,6 |", page)

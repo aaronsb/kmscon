@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Self-test for the parts of tier 3 that run on the host without a guest:
 the caption and screen text a case's report carries (t3_evaluate.py), the
-packages a run installs and the guest's account of them (t3_scenario.py),
-the console lines the driver waits for (t3_qemu.py), and the logger a worker
-process receives (t3_common.py).
+packages a run installs and the guest's account of them, and the machine
+each variant boots (t3_scenario.py), the console lines the driver waits for
+and the QEMU command line (t3_qemu.py), a benchmark screen's figures
+(t3_bench.py), and the logger a worker process receives (t3_common.py).
 
     python3 -I fork/tier3/test_t3.py
 """
@@ -18,9 +19,11 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import t3_bench  # noqa: E402
 import t3_evaluate  # noqa: E402
 import t3_qemu  # noqa: E402
 import t3_scenario  # noqa: E402
+import t3img  # noqa: E402
 from t3_common import Logger  # noqa: E402
 
 LOG = Logger()
@@ -34,6 +37,7 @@ SCRIPTS = {
     "tab": r"printf 'a\tb\n'",
     "charset": r"printf '\033(0q\033(B\n'",
     "title": r"printf '\033]0;title\007x\n'",
+    "scrolls": "# A screen.\n# screen-text: none, it scrolls.\necho never-run",
 }
 
 
@@ -45,11 +49,14 @@ class ScreenTextTest(unittest.TestCase):
         self.assertEqual(t3_evaluate.screen_text("vt-restore", LOG),
                          t3_evaluate.screen_text(t3_evaluate.SCREENS[-1], LOG))
         self.assertIsNone(t3_evaluate.screen_text("vt-switch", LOG))
-        # wide-margin moves the cursor to reach the screen's real edge, so it
-        # has no text on purpose; every other screen has its rows.
-        self.assertIsNone(t3_evaluate.screen_text("wide-margin", LOG))
+        # wide-margin moves the cursor to reach the screen's real edge, and
+        # s1-scroll prints 500 000 lines of which the screen shows the last,
+        # so they have no text on purpose; every other screen has its rows.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(t3_evaluate.screen_text("wide-margin", LOG))
+            self.assertIsNone(t3_evaluate.screen_text("s1-scroll", LOG))
         for name in t3_evaluate.SCREENS:
-            if name != "wide-margin":
+            if name not in ("wide-margin", "s1-scroll"):
                 with self.subTest(name):
                     self.assertTrue(t3_evaluate.screen_text(name, LOG))
         # e and U+0301 between bars: one cell built from two code points.
@@ -97,6 +104,14 @@ class ScreenTextTest(unittest.TestCase):
             os.close(saved)
             os.close(r)
 
+    def test_marked_none_not_run(self):
+        # The script would print a line; its header says its lines are not
+        # its rows, so it is not run.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertIsNone(self.text("scrolls"))
+        self.assertNotIn("never-run", err.getvalue())
+
     def test_other_controls_give_none(self):
         # Each would make line N of the output something other than row N.
         for name in ("moves", "tab", "charset", "title"):
@@ -131,6 +146,19 @@ class DescribeTest(unittest.TestCase):
     def test_check(self):
         self.assertEqual(t3_evaluate.describe("vt-switch"),
                          (t3_evaluate.CHECKS["vt-switch"], None))
+
+    def test_screen_text_not_in_caption(self):
+        self.assertEqual(self.describe("# A screen.\n# screen-text: none, it scrolls.\n"),
+                         ("A screen.", None))
+        caption, _ = t3_evaluate.describe("s1-scroll")
+        self.assertTrue(caption.startswith("S1 (ADR-103): text scrolling"))
+        self.assertNotIn("screen-text", caption)
+        self.assertIn("Correct: Numbered lines", caption)
+
+    def test_benchmarks_are_screens(self):
+        # A benchmark is drawn and compared like any screen, before cjk.
+        for name in t3_evaluate.BENCHMARKS:
+            self.assertIn(name, t3_evaluate.SCREENS[:-1])
 
 
 LIBTSM = "ef2365d0f9f1a370d721a82470d69c3646fe97f0"
@@ -198,6 +226,138 @@ class PackagesTest(unittest.TestCase):
         os.environ.pop("T3_LIBTSM_REV")
         with self.assertRaisesRegex(RuntimeError, "names no libtsm commit"):
             t3_scenario.check_install(self.LINE, self.UP)
+
+
+class VariantTest(unittest.TestCase):
+    def test_every_variant_sizes_its_machine(self):
+        for name, v in t3_scenario.VARIANTS.items():
+            with self.subTest(name):
+                self.assertIsInstance(v["cpus"], int)
+                self.assertIsInstance(v["memory_mb"], int)
+
+    def test_potato(self):
+        # ADR-103's small machine, in the default run.
+        v = t3_scenario.VARIANTS["2d-1366x768-potato"]
+        self.assertEqual((v["cpus"], v["memory_mb"], v["renderer"]), (1, 512, "bbulk"))
+        self.assertIn("xres=1366,yres=768", v["device"])
+        self.assertFalse(t3_scenario.uses_virgl("2d-1366x768-potato"))
+        self.assertIn("2d-1366x768-potato", t3_scenario.DEFAULT_VARIANTS)
+
+    def test_qemu_gets_the_machine(self):
+        class Started(Exception):
+            pass
+
+        def popen(args, **kwargs):
+            raise Started(args)
+
+        saved = t3_qemu.subprocess.Popen
+        t3_qemu.subprocess.Popen = popen
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                with self.assertRaises(Started) as cm:
+                    t3_qemu.Qemu(d, [], "virtio-vga", lambda msg: None, cpus=1, memory_mb=512)
+                args = cm.exception.args[0]
+                self.assertEqual(args[args.index("-smp") + 1], "1")
+                self.assertEqual(args[args.index("-m") + 1], "512")
+                with self.assertRaises(Started) as cm:
+                    t3_qemu.Qemu(d, [], "virtio-vga", lambda msg: None)
+                args = cm.exception.args[0]
+                self.assertEqual(args[args.index("-smp") + 1], "4")
+                self.assertEqual(args[args.index("-m") + 1], "4096")
+        finally:
+            t3_qemu.subprocess.Popen = saved
+
+
+def timer_line(t, flips, frames, interval_ms=1000.0, cpu=(1.0, 1.0, 2.0, 3.0), damage=(500, 1.5),
+               pid=505, before=""):
+    return ("%s[%12.6f] kmscon[%d]: terminal: render-timer: display=pci-0000:00:01.0[Virtual-1] "
+            "interval_ms=%.3f presented_per_s=%.2f flips=%d frames=%d cpu_ms_mean=%.3f "
+            "cpu_ms_median=%.3f cpu_ms_p95=%.3f cpu_ms_max=%.3f damage_px_mean=%d "
+            "damage_pct=%.2f skipped=0 skipped_cpu_ms=0.000"
+            % (before, t, pid, interval_ms, flips * 1000 / interval_ms, flips, frames, cpu[0],
+               cpu[1], cpu[2], cpu[3], damage[0], damage[1]))
+
+
+class BenchTest(unittest.TestCase):
+    EVENT = "T3-BENCH s1-scroll lines=20000 start=100.00 end=102.00"
+    CONF = ["font-size=16", "render-timer=log"]
+
+    def test_timer_lines(self):
+        text = "\n".join([
+            "[  OK  ] Started something.",
+            timer_line(99.5, 3, 3),
+            # a console line after a prompt on the same line
+            timer_line(100.5, 60, 60, before="tier3 login: "),
+            "[  100.600000] kmscon[505]: terminal: Resized terminal to 128x42",
+        ])
+        got = t3_bench.timer_lines(text)
+        self.assertEqual([x["t"] for x in got], [99.5, 100.5])
+        self.assertEqual(got[1]["display"], "pci-0000:00:01.0[Virtual-1]")
+        self.assertEqual((got[1]["flips"], got[1]["frames"], got[1]["pid"]), (60, 60, 505))
+        self.assertEqual(got[1]["damage_pct"], 1.5)
+
+    def test_window(self):
+        self.assertEqual(t3_bench.bench_window("x " + self.EVENT),
+                         ("s1-scroll", 20000, 100.0, 102.0))
+        self.assertIsNone(t3_bench.bench_window("T3-DONE s1-scroll"))
+
+    def test_summarize(self):
+        lines = t3_bench.timer_lines("\n".join([
+            timer_line(99.9, 5, 5),                 # ends before the window: out
+            timer_line(100.6, 30, 30, cpu=(2.0, 2.0, 4.0, 5.0), damage=(1000, 10.0)),
+            timer_line(101.6, 60, 60, cpu=(1.0, 1.0, 3.0, 9.0), damage=(400, 4.0)),
+            timer_line(102.6, 10, 10, cpu=(4.0, 4.0, 6.0, 6.0), damage=(100, 1.0)),
+            timer_line(103.6, 0, 0),                # starts after the window: out
+        ]))
+        got = t3_bench.summarize(lines, 20000, 100.0, 102.0)
+        self.assertEqual(got["intervals"], 3)
+        self.assertEqual((got["flips"], got["frames"]), (100, 100))
+        self.assertEqual(got["presented_per_s"], 50.0)
+        self.assertEqual(got["lines_per_s"], 10000)
+        self.assertEqual(got["cpu_ms_mean"], 1.6)          # (60 + 60 + 40) / 100
+        self.assertEqual(got["cpu_ms_median"], 2.0)        # the seconds' medians 2, 1, 4
+        self.assertEqual((got["cpu_ms_p95"], got["cpu_ms_max"]), (6.0, 9.0))
+        self.assertEqual(got["damage_px_mean"], 550)       # (30000 + 24000 + 1000) / 100
+        self.assertEqual(got["damage_pct"], 5.5)
+        self.assertEqual(got["displays"], ["pci-0000:00:01.0[Virtual-1]"])
+
+    def test_measure(self):
+        serial = timer_line(101.0, 60, 60)
+        got = t3_bench.measure(serial, self.EVENT, self.CONF)
+        self.assertNotIn("error", got)
+        self.assertEqual(got["frames"], 60)
+        # No line in the window: a fault of a build that has the timer...
+        self.assertIn("error", t3_bench.measure(timer_line(50.0, 1, 1), self.EVENT, self.CONF))
+        self.assertIn("error", t3_bench.measure("", self.EVENT, ["render-timer=both"]))
+        # ...and none for a build without it, or a variant not configured.
+        got = t3_bench.measure("[ 3.1] kmscon[9]: config: unknown config option 'render-timer'",
+                               self.EVENT, self.CONF)
+        self.assertEqual(got["note"], "this build has no render timer")
+        self.assertNotIn("error", got)
+        got = t3_bench.measure("", self.EVENT, ["render-timer=none"])
+        self.assertIn("not configured", got["note"])
+        self.assertNotIn("error", got)
+        # A screen that reported no window.
+        self.assertIn("no benchmark window", t3_bench.measure(serial, None, self.CONF)["error"])
+
+    def test_bench_error_fails_case(self):
+        meta = {"bench": {"s1-scroll": {"error": "no render-timer line"}}}
+        with tempfile.TemporaryDirectory() as d:
+            ppm = os.path.join(d, "a.ppm")
+            t3_qemu.write_ppm(ppm, t3img.Image(2, 1, b"\0" * 6))
+            saved = t3_evaluate.GOLDEN, t3_evaluate.RUNDIR
+            t3_evaluate.GOLDEN, t3_evaluate.RUNDIR = d, d
+            try:
+                os.makedirs(os.path.join(d, "v"))
+                t3img.write_png(os.path.join(d, "v", "s1-scroll.png"), t3img.Image(2, 1, b"\0" * 6))
+                with contextlib.redirect_stderr(io.StringIO()):
+                    entry = t3_evaluate.evaluate("v", "s1-scroll", ppm, meta, LOG)
+                self.assertEqual((entry["status"], entry["error"]), ("fail", "no render-timer line"))
+                with contextlib.redirect_stderr(io.StringIO()):
+                    entry = t3_evaluate.evaluate("v", "s1-scroll", ppm, {}, LOG)
+                self.assertEqual(entry["status"], "pass")
+            finally:
+                t3_evaluate.GOLDEN, t3_evaluate.RUNDIR = saved
 
 
 class SerialTest(unittest.TestCase):

@@ -86,6 +86,24 @@ def verdict_word(status):
     return status if status in OK else status.upper()
 
 
+def bench_line(name, b):
+    """One sentence of a benchmark screen's figures (fork/tier3/t3_bench.py)."""
+    head = "Benchmark `%s`" % name
+    if b.get("error"):
+        return "%s: not measured: %s." % (head, b["error"])
+    text = "%s: %s lines in %.2f s, %s lines per second" % (
+        head, format(b["lines"], ","), b["seconds"], format(b["lines_per_s"], ","))
+    if b.get("note"):
+        return "%s; no render-timer figures: %s." % (text, b["note"])
+    if "cpu_ms_mean" not in b:
+        return "%s; %.1f frames presented per second." % (text, b["presented_per_s"])
+    return ("%s; %.1f frames presented per second; kmscon's CPU time per frame %.3f ms mean, "
+            "%.3f ms median, %.3f ms at the 95th percentile, %.3f ms at most; %s pixels "
+            "damaged per frame, %.2f%% of the screen." % (
+                text, b["presented_per_s"], b["cpu_ms_mean"], b["cpu_ms_median"], b["cpu_ms_p95"],
+                b["cpu_ms_max"], format(b["damage_px_mean"], ","), b["damage_pct"]))
+
+
 def case_heading(tier, name, status):
     """A case's heading; the tier keeps it unique, since tiers share names."""
     return "`%s` (tier %d): %s" % (name, tier, verdict_word(status))
@@ -390,6 +408,11 @@ class Page:
         if found:
             self.w("kmscon drew with the %s backend, the %s renderer and the %s font engine." % (
                 found.get("backend", "?"), found.get("text renderer", "?"), found.get("font engine", "?")), "")
+        if meta.get("cpus"):
+            self.w("Its machine had %d vCPU%s and %d MB of memory." % (
+                meta["cpus"], "" if meta["cpus"] == 1 else "s", meta["memory_mb"]), "")
+        for name, b in sorted((meta.get("bench") or {}).items()):
+            self.w(bench_line(name, b), "")
         if meta.get("error"):
             self.w("The variant failed: %s" % meta["error"], "")
 

@@ -21,8 +21,9 @@ import time
 import t3img
 from t3_common import rel
 
-MEMORY = "4096"
-CPUS = "4"
+# The machine provisioning boots; each variant names its own (t3_scenario.py).
+CPUS = 4
+MEMORY_MB = 4096
 
 # A unix socket path, with its terminating NUL, must fit sun_path (108 bytes).
 SUN_PATH_MAX = 107
@@ -43,7 +44,7 @@ class Qemu:
     """One headless QEMU process and its QMP connection."""
 
     def __init__(self, workdir, disks, device, log, display="none", net=False,
-                 capture="screendump"):
+                 capture="screendump", cpus=CPUS, memory_mb=MEMORY_MB):
         os.makedirs(workdir, exist_ok=True)
         self.workdir = workdir
         self.log = log
@@ -63,7 +64,7 @@ class Qemu:
             if os.path.exists(p):
                 os.unlink(p)
         args = ["qemu-system-x86_64", "-machine", "q35,accel=kvm", "-cpu", "host",
-                "-smp", CPUS, "-m", MEMORY, "-no-reboot",
+                "-smp", str(cpus), "-m", str(memory_mb), "-no-reboot",
                 "-display", display, "-device", device,
                 "-qmp", "unix:%s,server=on,wait=off" % self.sock_path,
                 "-serial", "file:%s" % self.serial,
@@ -76,8 +77,12 @@ class Qemu:
             args += ["-vnc", "unix:%s" % self.vnc_path]
         log("starting: " + " ".join(args))
         self.qemu_log = open(os.path.join(workdir, "qemu.log"), "w")
-        self.proc = subprocess.Popen(args, stdout=self.qemu_log,
-                                     stderr=subprocess.STDOUT)
+        try:
+            self.proc = subprocess.Popen(args, stdout=self.qemu_log,
+                                         stderr=subprocess.STDOUT)
+        except BaseException:  # no QEMU started, so its log is closed here
+            self.qemu_log.close()
+            raise
         log("qemu pid %d" % self.proc.pid)
         if on_qemu:
             on_qemu("start", self.proc.pid)

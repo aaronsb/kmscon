@@ -78,6 +78,34 @@ class Io(unittest.TestCase):
         got = t3img.read_ppm(buf)
         self.assertEqual((got.width, got.height, got.data), (4, 3, img.data))
 
+    def test_ppm_padded_rows(self):
+        # QEMU's screendump pads each row to 4 bytes: a 5-pixel row of 15
+        # bytes arrives as 16, and the extra byte is not a pixel.
+        img = gradient(5, 3)
+        rows = b"".join(img.row(y) + b"\xee" for y in range(3))
+        got = t3img.read_ppm(b"P6\n5 3\n255\n" + rows)
+        self.assertEqual(got.data, img.data)
+
+    def test_ppm_padding_of_each_width(self):
+        # Rows of 3w bytes padded to 4: widths 4, 5, 6 and 7 carry 0, 1, 2
+        # and 3 bytes more per row; 1366 (4098 bytes) carries 2, as QEMU's
+        # 1366x768 screendump does.
+        for w in (4, 5, 6, 7, 1366):
+            with self.subTest(width=w):
+                img = gradient(w, 3)
+                pad = (-3 * w) % 4
+                rows = b"".join(img.row(y) + b"\xee" * pad for y in range(3))
+                got = t3img.read_ppm(b"P6\n%d 3\n255\n" % w + rows)
+                self.assertEqual(got.data, img.data)
+
+    def test_ppm_wrong_size_refused(self):
+        # A capture still being written, or one with bytes to spare, is not
+        # read as a whole one.
+        img = gradient(5, 3)
+        for body in (img.data[:-1], img.data + b"\0", img.data + b"\0\0"):
+            with self.subTest(len(body)), self.assertRaises(ValueError):
+                t3img.read_ppm(b"P6\n5 3\n255\n" + body)
+
 
 class Compare(unittest.TestCase):
     def test_identical_images_pass(self):

@@ -52,6 +52,7 @@ kmscon_srcs = [
     'seat.c',
     'config.c',
     'main.c',
+    'render_timer.c',
     'terminal.c',
 ]
 kmscon_dep = [

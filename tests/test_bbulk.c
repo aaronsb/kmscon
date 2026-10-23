@@ -326,6 +326,40 @@ static void test_two_frame_rule(struct kmscon_text *txt)
 }
 
 /*
+ * The render timer's damage area: the pixels in the frame's rectangles while
+ * the text measures, and no work, the field untouched, while it does not.
+ */
+static void test_damage_measured(struct kmscon_text *txt)
+{
+	/* settle: both buffers hold the blank screen */
+	while (draw_frame(txt, -1, -1) != KMSCON_TEXT_UNCHANGED)
+		;
+
+	txt->measure = false;
+	txt->frame_damage_px = 12345;
+	assert(draw_frame(txt, 2, 1) == 0);
+	assert(txt->frame_damage_px == 12345);
+	assert(draw_frame(txt, -1, -1) == 0);
+	assert(draw_frame(txt, -1, -1) == KMSCON_TEXT_UNCHANGED);
+
+	txt->measure = true;
+	assert(draw_frame(txt, 2, 1) == 0);
+	assert(txt->frame_damage_px == FAKE_CELL_W * FAKE_CELL_H);
+	/* two cells three apart merge into one rectangle spanning the gap */
+	blank_frame(txt);
+	cell_at(2, 1)->key = 'x';
+	cell_at(2, 1)->flags = TSM_FRAME_CHANGED;
+	cell_at(5, 1)->key = 'x';
+	cell_at(5, 1)->flags = TSM_FRAME_CHANGED;
+	assert(run_frame(txt, false) == 0);
+	assert(txt->frame_damage_px == 4 * FAKE_CELL_W * FAKE_CELL_H);
+	assert(draw_frame(txt, -1, -1) == 0);
+	assert(draw_frame(txt, -1, -1) == KMSCON_TEXT_UNCHANGED);
+	assert(txt->frame_damage_px == 0);
+	txt->measure = false;
+}
+
+/*
  * A cell whose glyph failed to draw gets its background at once, and its glyph
  * on a later frame.
  */
@@ -435,6 +469,7 @@ int main(void)
 	assert(bb->damage_rect_len > 0);
 
 	test_two_frame_rule(&txt);
+	test_damage_measured(&txt);
 	test_draw_failure_retried(&txt);
 	test_underline_cursor_colour(&txt);
 

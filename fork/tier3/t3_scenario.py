@@ -8,19 +8,33 @@ import shutil
 import subprocess
 import time
 
+import t3_bench
 from t3_common import BASE, GUEST, RUNDIR, rel
-from t3_evaluate import CASES, SCREENS, evaluate
+from t3_evaluate import BENCHMARKS, CASES, SCREENS, evaluate
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
-# Display variants. Each boots its own guest from the base image; the 2D
-# variants draw through drm2d and bbulk, the GL variant through drm3d and
-# gltex on virgl.
+# Display variants. Each boots its own guest from the base image, with its
+# own vCPUs and memory; the 2D variants draw through drm2d and bbulk, the GL
+# variant through drm3d and gltex on virgl.
 VARIANTS = {
     "2d-1280x800": {
         "device": "virtio-vga,xres=1280,yres=800,edid=on",
         "display": "none",
         "conf": "kmscon.conf",
         "renderer": "bbulk",
+        "cpus": 4,
+        "memory_mb": 4096,
+    },
+    # ADR-103's small machine: one vCPU and 512 MB at a common laptop size.
+    # The vCPU is a core of the host, so it bounds parallelism and memory
+    # rather than reproducing slow hardware.
+    "2d-1366x768-potato": {
+        "device": "virtio-vga,xres=1366,yres=768,edid=on",
+        "display": "none",
+        "conf": "kmscon.conf",
+        "renderer": "bbulk",
+        "cpus": 1,
+        "memory_mb": 512,
     },
     "2d-7680x2160": {
         # Each 7680x2160 XRGB buffer is 63 MiB; the console, two kmscon
@@ -29,6 +43,8 @@ VARIANTS = {
         "display": "none",
         "conf": "kmscon.conf",
         "renderer": "bbulk",
+        "cpus": 4,
+        "memory_mb": 4096,
     },
     "gl-1280x800": {
         "device": "virtio-vga-gl,xres=1280,yres=800,edid=on",
@@ -37,13 +53,21 @@ VARIANTS = {
         "conf": "kmscon-gl.conf",
         "renderer": "gltex",
         "capture": "vnc",
+        "cpus": 4,
+        "memory_mb": 4096,
     },
 }
 
-# What `t3.py run` runs when no variant is named. gl-1280x800 runs only when
-# named (`make tier3-gl`) until its intermittent black screen is resolved:
+# What `t3.py run` runs when no variant is named, in the order workers take
+# them: with JOBS=2 the longest, 2d-7680x2160, starts at once, and the
+# potato follows 2d-1280x800. gl-1280x800 runs only when named
+# (`make tier3-gl`) until its intermittent black screen is resolved:
 # aaronsb/kmscon#17.
-DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160"]
+DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160", "2d-1366x768-potato"]
+
+# Seconds a screen may take to draw; a benchmark scrolls for longer.
+SCREEN_TIMEOUT = 60
+BENCH_TIMEOUT = 300
 
 
 def uses_virgl(variant):
@@ -124,6 +148,20 @@ def kmscon_displays(serial):
                    if "Display " in line and "text renderer [" in line})
 
 
+def bench_figures(vm, caps, conf):
+    """Each drawn benchmark screen's figures (t3_bench.measure), by name."""
+    with open(vm.serial, "rb") as f:
+        serial = f.read().decode(errors="replace")
+    with open(vm.events, "rb") as f:
+        events = f.read().decode(errors="replace").splitlines()
+    out = {}
+    for name in BENCHMARKS:
+        if name in caps:
+            line = next((e for e in events if e.startswith("T3-BENCH %s " % name)), None)
+            out[name] = t3_bench.measure(serial, line, conf)
+    return out
+
+
 def kmscon_cell(serial):
     """The [width, height] of a character cell, from the font engine's
     "cell size WxH" log line, or None when kmscon logged none."""
@@ -164,7 +202,7 @@ def run_variant(variant, timing, pkgs, log):
     v = VARIANTS[variant]
     vm = Qemu(work, [(disk, "qcow2", False), (iso, "raw", True)],
               v["device"], log, display=v["display"],
-              capture=v.get("capture", "screendump"))
+              capture=v.get("capture", "screendump"), cpus=v["cpus"], memory_mb=v["memory_mb"])
     caps, errors, error, installed = {}, {}, None, None
     try:
         line = vm.wait_serial("TIER3-INSTALL-OK", timeout=180)
@@ -202,7 +240,8 @@ def run_variant(variant, timing, pkgs, log):
         phase("login")
         for name in SCREENS:
             vm.type("t3 %s\n" % name)
-            vm.wait_event("T3-DONE %s" % name, timeout=60)
+            vm.wait_event("T3-DONE %s" % name,
+                          timeout=BENCH_TIMEOUT if name in BENCHMARKS else SCREEN_TIMEOUT)
             path = os.path.join(work, name + ".ppm")
             # Each screen differs from the one before it, so a capture of the
             # previous screen is never taken for this one.
@@ -245,7 +284,8 @@ def run_variant(variant, timing, pkgs, log):
         conf = [line.strip() for line in f if line.strip() and not line.startswith("#")]
     meta = {"packages": [os.path.basename(p) for p in pkgs], "installed": installed,
             "kmscon": displays, "errors": errors, "device": v["device"], "config": conf,
-            "cell": kmscon_cell(vm.serial)}
+            "cell": kmscon_cell(vm.serial), "cpus": v["cpus"], "memory_mb": v["memory_mb"],
+            "bench": bench_figures(vm, caps, conf)}
     want = "text renderer [%s]" % v["renderer"]
     if not displays or not all(want in d for d in displays):
         caps = {}

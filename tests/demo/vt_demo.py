@@ -290,6 +290,7 @@ def main():
                      ["--vt=tty2"], ["--configdir=/tmp"], ["--conf=/x"], ["-c"],
                      ["--switchvt"], ["--switch"], ["--oneshot"], ["--no-oneshot"],
                      ["--asciicast=/x"], ["--grab-reboot=<Ctrl>r"], ["--blink=1"],
+                     ["--render-timer", "log"],
                      ["Nerd"], ["/path/x"], ["--font-name", "Monoid"],
                      ["--font-name=Monoid", "Nerd", "Font", "Mono"]):
             p = run_vt_with(opts)
@@ -299,7 +300,8 @@ def main():
                   and '--font-name="Monoid Nerd Font Mono"' in p.stderr, p.stderr)
         operator = ["--font-name=Monoid Nerd Font Mono", "--font-size=30", "--mode=7680x2160",
                     "--no-use-original-mode"]
-        p = run_vt_with(operator + ["--no-blink", "--palette-red=255,0,0", "--hwaccel"])
+        p = run_vt_with(operator + ["--no-blink", "--palette-red=255,0,0", "--hwaccel",
+                                    "--render-timer=log"])
         # Past the option checks, a dry run stops at the staging check (no
         # make demo here) or prints its commands.
         check("run-vt.sh accepts the operator's options",

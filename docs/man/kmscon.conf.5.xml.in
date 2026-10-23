@@ -614,6 +614,44 @@ font-name=Ubuntu Mono
         </listitem>
       </varlistentry>
 
+      <varlistentry>
+        <term><option>render-timer</option></term>
+        <listitem>
+          <para>Measure what kmscon presents, for each display: frames
+                presented per second (page flips completed), kmscon's CPU time
+                per frame from preparing it to queuing its flip, and the
+                pixels in each frame's damage rectangles with their share of
+                the screen. The values are foot's: <literal>none</literal>
+                measures nothing; <literal>log</literal> writes one line per
+                display per second to kmscon's log, at level notice, which kmscon logs
+                by default;
+                <literal>osd</literal> is meant to draw the figures in a corner
+                of the screen, which is not yet available, so it only logs a
+                notice; <literal>both</literal> does both.</para>
+          <para>A line covers the second since the previous one:
+                <literal>presented_per_s</literal> and
+                <literal>flips</literal> count the flips completed,
+                <literal>frames</literal> the frames queued,
+                <literal>cpu_ms_mean</literal>,
+                <literal>cpu_ms_median</literal>,
+                <literal>cpu_ms_p95</literal> and
+                <literal>cpu_ms_max</literal> their CPU time,
+                <literal>damage_px_mean</literal> and
+                <literal>damage_pct</literal> their damage, and
+                <literal>skipped</literal> and
+                <literal>skipped_cpu_ms</literal> the passes that found
+                nothing to draw and queued no flip. A renderer that reports no
+                damage counts the whole display. A second with no flip and no
+                frame is logged once, after the last active one, and then no
+                more lines are written until the display draws again; skipped
+                passes alone do not count. A blinking cursor, or blinking text
+                on the screen, queues a frame at each blink, so with
+                <option>blink</option> on it keeps the log at a line a second;
+                set <option>no-blink</option> for a log that falls quiet when
+                the console is idle. (default: none)</para>
+        </listitem>
+      </varlistentry>
+
     </variablelist>
   </refsect1>
 

@@ -485,6 +485,10 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 - **A separate setting for the scaled-picture cache.** Rejected: two limits give two ceilings to reason about, and the operator asked for one predictable one.
 - **xterm's default `max-graphic-size` of 1000x1000.** Rejected: it is about an eighth of this console's width, and full-screen images are the case the showcase exists for.
 
+## Notes (2026-10-23)
+
+- The small tier 3 variant this record calls `2d-1366x768-hamster` is named `2d-1366x768-potato`, the potato computer, at the operator's request: "We should call it potato computer not hamster." It is the same machine (1 vCPU, 512 MB, 1366x768, drm2d and bbulk), and what this record decides about it stands.
+
 ## Notes (2026-10-23, operator answers from the step 3a and 3c reviews)
 
 Recorded as considered entries above; what they change:

@@ -854,9 +854,17 @@ static void bbulk_compute_damage(struct kmscon_text *txt)
 static int bbulk_render(struct kmscon_text *txt)
 {
 	struct bbulk *bb = txt->data;
+	unsigned int i;
 
 	// log_debug("bbulk, redraw %d cells", bb->requests);
 	bbulk_compute_damage(txt);
+	if (txt->measure) {
+		txt->frame_damage_px = 0;
+		for (i = 0; i < bb->damage_rect_len; i++)
+			txt->frame_damage_px +=
+				(uint64_t)(bb->damage_rects[i].x2 - bb->damage_rects[i].x1) *
+				(bb->damage_rects[i].y2 - bb->damage_rects[i].y1);
+	}
 	if (!display_supports_damage(txt->disp))
 		return 0;
 	display_set_damage(txt->disp, bb->damage_rect_len, bb->damage_rects);

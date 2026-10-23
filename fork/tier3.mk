@@ -8,7 +8,8 @@
 #   make tier3-gl       the same for the GL (virgl) variant, see #17
 #   make tier3-bless    rewrite the goldens from the last run's captures
 #
-# JOBS=N runs up to N variants at once, each in its own VM (4 vCPUs, 4 GiB);
+# JOBS=N runs up to N variants at once, each in its own VM (the vCPUs and
+# memory each variant names in fork/tier3/t3_scenario.py);
 # the default, 1, runs them one after another. GL variants never run together.
 # With JOBS above 1, T3_DEADLINE=S stops a variant still running after S seconds.
 #

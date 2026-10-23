@@ -4,13 +4,17 @@
 # ends, or this script is interrupted, or kmscon fails, the unit is started
 # again if it was running before. See docs/fork/demo.md.
 #
-#   sudo fork/demo/run-vt.sh [--dry-run] [N] [-- kmscon-option...]
+#   sudo fork/demo/run-vt.sh [--dry-run] [--showcase=VIDEO ...] [N] [-- kmscon-option...]
 #
 # N is the VT, 2-12, default 3. Options after -- go to kmscon, for display
 # settings of one machine (--mode=..., --no-use-original-mode, --font-size=...).
 # Only display, font, palette, text and input options are accepted, each as one
 # word: --name=value, or --name / --no-name for a switch.
-# --dry-run prints every command and runs none; it needs no root.
+# --showcase=VIDEO runs the Bad Apple!! showcase (fork/showcase/bad-apple.sh)
+# on VIDEO, an absolute path, in place of the demo; --showcase-from=N starts it
+# at act N and --showcase-audio plays the soundtrack.
+# --dry-run prints every command and runs none; it needs no root. A dry run
+# takes the module directory from RUN_VT_MODULEDIR when set, for the tests.
 #
 # kmscon loads its backend modules from a path compiled in (/usr/lib/kmscon)
 # with no option to change it, and would otherwise load the stock package's
@@ -20,7 +24,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,11s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,17s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -32,9 +36,15 @@ die() {
 dry=
 vt=
 extra=()
+video=
+from=
+audio=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
+	--showcase=*) video=${1#*=}; [ -n "$video" ] || die "--showcase needs the video's path: --showcase=/path/to/video" ;;
+	--showcase-from=*) from=${1#*=} ;;
+	--showcase-audio) audio=1 ;;
 	-h | --help) usage ;;
 	--) shift; extra=("$@"); break ;;
 	[0-9]*) [ -z "$vt" ] || usage; vt=$1 ;;
@@ -50,6 +60,9 @@ stage=$(readlink -m "$here/../build/demo-root")
 kmscon=$stage/usr/bin/kmscon
 modules=$stage/usr/lib/kmscon
 moduledir=/usr/lib/kmscon
+# Only a dry run, which mounts nothing, lets the tests point it elsewhere.
+[ -z "$dry" ] || moduledir=${RUN_VT_MODULEDIR:-$moduledir}
+showcase=$(readlink -m "$here/../showcase/bad-apple.sh")
 unit=kmsconvt@tty$vt.service
 
 # show prints a command as it would be typed; run shows it, then runs it unless
@@ -96,6 +109,14 @@ for o in "${extra[@]}"; do
 	fi
 	die "kmscon option '$o' is refused. Accepted: display, font, palette, text and input options, one word each: --name=value (quoted as one word: --font-name=\"Monoid Nerd Font Mono\"), or --name / --no-name for a switch (see docs/fork/demo.md)"
 done
+# The showcase's video is a path the session opens as the user; it reaches the
+# session as one word in its environment, never through a shell.
+if [ -n "$video" ]; then
+	[[ $video == /* ]] || die "--showcase needs an absolute path, not '$video'"
+	[ -z "$from" ] || [[ $from =~ ^[1-7]$ ]] || die "--showcase-from must be an act from 1 to 7, not '$from'"
+elif [ -n "$from" ] || [ -n "$audio" ]; then
+	die "--showcase-from and --showcase-audio go with --showcase=VIDEO"
+fi
 [ -n "$dry" ] || [ "$(id -u)" -eq 0 ] || die "run as root, through sudo"
 [ -x "$kmscon" ] && [ -d "$modules" ] || die "nothing staged in $stage: run make demo first"
 [ -d "$moduledir" ] || die "$moduledir does not exist, so the staged modules have nowhere to be mounted"
@@ -106,6 +127,11 @@ user=${SUDO_USER:-}
 	die "run through sudo from your own account; the demo runs as that user, never as root"
 uid=$(id -u "$user") || die "no such user: $user"
 gid=$(id -g "$user")
+drop=(/usr/bin/setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env)
+if [ -n "$video" ] && [ -z "$dry" ]; then
+	"${drop[@]}" -- /usr/bin/test -f "$video" -a -r "$video" ||
+		die "$user cannot read the showcase video $video"
+fi
 
 # Refuse the VT on screen (the one this command was typed on) and any VT a
 # logind session sits on, the graphical one included: stopping the unit there
@@ -167,12 +193,17 @@ if [ -n "$was_active" ]; then
 else
 	after="$unit was not running, so nothing is started when the demo ends"
 fi
+if [ -n "$video" ]; then
+	what="press a key to start the showcase; q ends it at any time"
+else
+	what="rate each page with 1, 2 or 3 (c adds a comment, b goes back);
+     press q in the demo to finish"
+fi
 cat <<EOF
 
 kmscon dev build $build on VT $vt
   1. switch with Ctrl-Alt-F$vt
-  2. rate each page with 1, 2 or 3 (c adds a comment, b goes back);
-     press q in the demo to finish
+  2. $what
   3. $after;
      switch back to your desktop with Ctrl-Alt-F${fg:-N}
 manual restore: sudo systemctl start $unit
@@ -185,13 +216,21 @@ EOF
 # releasing the VT. unshare and sh exec, so $! is kmscon's own PID. kmscon
 # starts its child with execve, without a PATH search, so its path is absolute.
 # kmscon and setpriv both clear the environment, so DEMO_LABEL, which names the
-# build on the demo's title page, is set last, by env.
+# build on the demo's title page, is set last, by env. The showcase also gets
+# its video, and the user's runtime directory, where the soundtrack finds the
+# user's audio server.
+session=(/usr/bin/env DEMO_LABEL="dev build $build" /bin/bash "$here/demo.sh")
+if [ -n "$video" ]; then
+	session=(/usr/bin/env SHOWCASE_LABEL="dev build $build" BAD_APPLE="$video"
+		XDG_RUNTIME_DIR="/run/user/$uid" /bin/bash "$showcase")
+	[ -z "$from" ] || session+=(--from "$from")
+	[ -z "$audio" ] || session+=(--audio)
+fi
 # shellcheck disable=SC2016 # $1, $2 and $@ are for the inner sh
 cmd=(unshare --mount --propagation private --
 	/bin/sh -c 'mount --bind "$1" "$2" && shift 2 && exec "$@"' sh "$modules" "$moduledir"
 	"$kmscon" --vt="tty$vt" --no-switchvt --configdir "$here" --oneshot "${extra[@]}"
-	--login -- /usr/bin/setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env
-	-- /usr/bin/env DEMO_LABEL="dev build $build" /bin/bash "$here/demo.sh")
+	--login -- "${drop[@]}" -- "${session[@]}")
 show "${cmd[@]}"
 [ -z "$dry" ] || exit 0
 "${cmd[@]}" &

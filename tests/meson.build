@@ -213,3 +213,11 @@ test(
     python,
     args: [files('demo/vt_demo.py'), '--root', meson.project_source_root()],
 )
+
+# The Bad Apple!! showcase (fork/showcase/bad-apple.sh, #75): its act table,
+# its plan and refusals without a video or a terminal, and fx.py's helpers.
+test(
+    'showcase',
+    python,
+    args: [files('showcase/showcase.py'), '--root', meson.project_source_root()],
+)

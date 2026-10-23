@@ -198,6 +198,22 @@ def main():
         check("after a player, tracking goes off and a report already sent is read and dropped",
               b"SURVIVED" in got and b"\x1b[?1003l" in got and b"LEFT" not in got, repr(got[-200:]))
 
+        # mpv's video outputs show the cursor when they exit; act 5 hides it
+        # again, or the next acts draw with it on, and a frame caught half
+        # written shows it as a block in the cells' colours.
+        stubs = os.path.join(tmp, "stubs")
+        os.mkdir(stubs)
+        for name, body in (("mpv", r"printf '\033[?25l\033[?1003h'; sleep 0.2; printf '\033[?25h\033[?1003l\033[?25h'"),
+                           ("ffprobe", "echo 960,718")):
+            with open(os.path.join(stubs, name), "w") as f:
+                f.write(f"#!/bin/sh\n{body}\n")
+            os.chmod(os.path.join(stubs, name), 0o755)
+        got = keys(f"PATH={stubs}:$PATH; have_sixel=1 screen_cols=136 screen_rows=40 cell_w=10 cell_h=19; "
+                   "act5_clip() { echo clip.mp4; }; pause() { :; }; act_5; echo NEXT-ACT", [])
+        shown = re.findall(rb"\x1b\[\?25[hl]", got[:got.find(b"NEXT-ACT")])
+        check("after act 5's player, the cursor is hidden again",
+              b"NEXT-ACT" in got and shown[-1:] == [b"\x1b[?25l"], repr(shown))
+
         # With half a report buffered and stdin closed, the drain stops at
         # once; it used to spin for its second, writing read errors.
         start = time.monotonic()

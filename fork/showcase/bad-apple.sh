@@ -383,12 +383,14 @@ wait_bg() {
 }
 
 # After a player stops: turns its mouse tracking off, in case it did not
-# (#88), then reads what the terminal sent before that took effect through
-# take_key, until 0.2 s pass with no input and no partial report, or stdin
-# ends (1 s at most), so no report reaches fx.py's keys, which take any q as quit.
+# (#88), and hides the cursor, which mpv's video outputs show when they exit,
+# so the acts after it never draw with it on. Then reads what the terminal
+# sent before that took effect through take_key, until 0.2 s pass with no
+# input and no partial report, or stdin ends (1 s at most), so no report
+# reaches fx.py's keys, which take any q as quit.
 player_done() {
 	local k end=$((${EPOCHREALTIME//[!0-9]/} + 1000000))
-	printf '%s' "$MODES_OFF"
+	printf '%s%s[?25l' "$MODES_OFF" "$E"
 	while ((${EPOCHREALTIME//[!0-9]/} < end)); do
 		if read_key 0.2; then
 			take_key "$k"

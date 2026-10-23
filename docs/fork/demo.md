@@ -97,21 +97,22 @@ right:    Each line underlined in the shape it names, all distinct: single,
           double, curly, dotted, dashed; 4:0 and 24 end it mid-line.
 wrong:    Every style drawn as one single line, or a line with none of its
           attributes: on stock kmscon only the plain 4 line is underlined.
- 1 right  2 wrong  3 unsure  c comment  b back  q quit
+ 1 right  2 wrong  3 unsure  s skip for now  c comment  b back  q quit
 ```
 
 | Key | What it does |
 |---|---|
 | `1` | the page looks right; records it and goes to the next page |
 | `2` | the page looks wrong |
-| `3` | unsure |
-| `c` | opens a comment below the page, as many lines as needed, each with line editing; on a full page each line scrolls the page up by one. Ctrl-D on an empty line, or a line holding only `.`, ends it. Then one key rates the page (`1`, `2`, `3`, or Enter for no rating, recorded as `none`) and the next page follows. An empty comment goes back to the page. Ctrl-D never ends the demonstration. |
+| `3` | unsure: the page was looked at and the reviewer cannot tell |
+| `s` | skipped: the page is not being reviewed this time. It is recorded as `skipped`, apart from unsure, and listed again as still to review on the summary page, by `feedback.sh` and at the end of `make vt-demo` |
+| `c` | opens a comment below the page, as many lines as needed, each with line editing; on a full page each line scrolls the page up by one. Ctrl-D on an empty line, or a line holding only `.`, ends it. Then one key rates the page (`1`, `2`, `3`, `s`, or Enter for no rating, recorded as `none`) and the next page follows. An empty comment goes back to the page. Ctrl-D never ends the demonstration. |
 | `b` | back one page; a new answer there replaces the old one on the summary page and in `feedback.sh`, and the file keeps both lines |
 | `q` | quits to the summary page |
 
 Any other key asks again. Keys typed before the footer appears are discarded, so a double press does not rate the next page unseen. The footer sits below the page when it fits there: demo.sh asks the terminal for the cursor's row (DSR) and compares it with the screen's height. When it does not fit, or the terminal does not answer within a second, a key shows the footer on a screen of its own. At 80x25 every section fits with its footer; the tallest, colour-forms, ends its prompt on row 25.
 
-The summary page lists this pass's rating and comment for each section and the file they went to, then asks `r review again from page 1  q exit`. `r` goes through the pages again as a new run, with its own run id, so `feedback.sh` shows that pass as the latest run and its summary page shows only that pass.
+The summary page lists this pass's rating and comment for each section, how many pages were skipped, and the file they went to, then asks `r review again from page 1  q exit`. `r` goes through the pages again as a new run, with its own run id, so `feedback.sh` shows that pass as the latest run and its summary page shows only that pass.
 
 ### Where the answers go
 
@@ -125,10 +126,10 @@ Each answer appends one line to `$DEMO_FEEDBACK`, by default `/tmp/kmscon-demo/f
 | `term` | `TERM` |
 | `size` | rows x columns, such as `25x80` |
 | `section` | the section's file name without `.sh`, such as `20-underline-styles` |
-| `rating` | `right`, `wrong`, `unsure`, or `none` for a comment without a rating |
+| `rating` | `right`, `wrong`, `unsure`, `skipped`, or `none` for a comment without a rating |
 | `note` | the comment, with each line break written as `\n`, each backslash as `\\` and tabs as spaces; empty without one |
 
-`fork/demo/feedback.sh` prints the file as tables, one line per section with the last answer given for it and that answer's comment below it, one indented line per line typed:
+`fork/demo/feedback.sh` prints the file as tables, one line per section with the last answer given for it and that answer's comment below it, one indented line per line typed. The sections whose last answer is `skipped` follow under `skipped, still to review`:
 
 ```sh
 fork/demo/feedback.sh                  # the latest run

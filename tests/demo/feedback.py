@@ -307,6 +307,74 @@ def main():
     status, out = feedback(root, "--file", path, "--run", "nope")
     check(status == 1 and "no run nope" in out, "feedback.sh --run with an unknown id fails")
 
+    # Run 3, a third label: s skips page 1; s on page 2 is replaced after b by
+    # 1; a comment on page 3 is followed by s; page 4 is rated 3.
+    d = Demo(root, ["sgr", "colour-forms", "underline-styles", "strike"], {**base, "DEMO_LABEL": "review"})
+    page = d.expect("press a key for the first section")
+    check("s skips it for now\r\n  (still to review)" in page, "the title page explains s")
+    d.send(" ")
+    page = d.expect(PROMPT)
+    check("s skip for now" in page, "the prompt offers s")
+    d.send("s")
+    d.expect("[2/4] colour-forms")
+    d.expect(PROMPT)
+    d.send("S")
+    d.expect("[3/4] underline-styles")
+    d.expect(PROMPT)
+    d.send("b")
+    d.expect("[2/4] colour-forms")
+    d.expect(PROMPT)
+    d.send("1")
+    d.expect("[3/4] underline-styles")
+    d.expect(PROMPT)
+    d.send("c")
+    d.expect(COMMENT)
+    d.expect("> ")
+    d.send("next time\r")
+    d.expect("> ")
+    d.send(".\r")
+    page = d.expect(RATE)
+    check("s skip for now" in page, "the rating after a comment offers s")
+    d.send("s")
+    d.expect("[4/4] strike")
+    d.expect(PROMPT)
+    d.send("3")
+    page = d.expect(RERUN)
+    check(summary_rows(page) == [
+        "  10-sgr                 skipped",
+        "  15-colour-forms        right",
+        "  20-underline-styles    skipped next time",
+        "  30-strike              unsure"] and "skipped: 2, still to review" in page,
+        "the summary shows the skipped pages and counts them", page)
+    d.send("q")
+    check(d.wait() == 0, "run 3 ends with status 0")
+    rows = rows_of(path)
+    run3 = rows[-1][1]
+    check([r[5:] for r in rows[7:]] == [
+        ["10-sgr", "skipped", ""],
+        ["15-colour-forms", "skipped", ""],
+        ["15-colour-forms", "right", ""],
+        ["20-underline-styles", "skipped", "next time"],
+        ["30-strike", "unsure", ""],
+    ], "s is recorded as skipped, apart from unsure", "\n".join(map(repr, rows[7:])))
+    status, out = feedback(root, "--file", path)
+    check(status == 0 and out == (
+        f"run       {run3}\nlabel     review\nterminal  TERM=xterm-256color, 25x80\n"
+        f"started   {rows[7][0]}\nanswers   5 for 4 sections\n\n"
+        "section                   rating\n"
+        "10-sgr                    skipped\n"
+        "15-colour-forms           right\n"
+        "20-underline-styles       skipped\n"
+        "    next time\n"
+        "30-strike                 unsure\n\n"
+        "skipped, still to review\n"
+        "  10-sgr\n"
+        "  20-underline-styles\n"), "feedback.sh lists the skipped sections as still to review", out)
+    status, out = feedback(root, "--file", path, "--compare")
+    check(status == 0 and "10-sgr                    right    wrong    skipped\n" in out
+          and "\nskipped, still to review\nC  10-sgr\nC  20-underline-styles\n\ncomments\n" in out,
+          "feedback.sh --compare lists the skipped sections by column", out)
+
     # DEMO_NOPROMPT=1: the guidance, no questions, nothing recorded.
     none = os.path.join(tmp, "none", "feedback.tsv")
     d = Demo(root, ["sgr", "colour-forms"], {**base, "DEMO_NOPROMPT": "1", "DEMO_FEEDBACK": none})

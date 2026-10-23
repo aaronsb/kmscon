@@ -33,6 +33,7 @@
 #include "conf.h"
 #include "config.h"
 #include "dbus.h"
+#include "render/image_budget.h"
 #include "render/text.h"
 #include "seat.h"
 #include "shl/eloop.h"
@@ -207,6 +208,10 @@ int main(int argc, char **argv)
 		ev_eloop_run(app.eloop, 100);
 
 	destroy_seat(&app);
+	/* every terminal is freed by now: a screen left would be a terminal
+	 * that never left the image budget */
+	if (image_budget_screens())
+		log_warning("%u screens still in the image budget at exit", image_budget_screens());
 err_unload_app:
 	destroy_app(&app);
 err_unload:

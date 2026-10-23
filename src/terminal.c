@@ -1496,9 +1496,7 @@ void terminal_destroy(struct kmscon_terminal *term)
 	ev_eloop_rm_fd(term->ptyfd);
 	kmscon_pty_unref(term->pty);
 	kmscon_font_unref(term->font);
-	tsm_vte_unref(term->vte);
-	image_budget_remove_terminal(&term->images);
-	tsm_screen_unref(term->console);
+	image_budget_free_terminal(&term->images);
 	input_unref(term->input);
 	ev_eloop_unref(term->eloop);
 	free_selection(term);

@@ -110,8 +110,12 @@ void image_budget_remove_screen(struct tsm_screen *con);
  * A terminal's images: its screen in the budget, and sixel on its vte while
  * the configuration asks for it, the limit is not 0, and every display the
  * terminal draws on has a renderer that draws image placements. Otherwise
- * sixel is off, as with no-sixel: DA1 omits attribute 4 and no picture is
- * stored. The limit is set before terminals are made.
+ * sixel is off, as with no-sixel: DA1 omits attribute 4 and no new picture is
+ * stored; pictures stored before stay until cleared or evicted. The limit is
+ * set before terminals are made.
+ *
+ * The budget holds a reference on the screen from add to remove, so a screen
+ * whose terminal never removed it leaks rather than being read once freed.
  */
 struct image_budget_terminal {
 	struct tsm_screen *con;
@@ -123,6 +127,14 @@ struct image_budget_terminal {
 int image_budget_add_terminal(struct image_budget_terminal *t, struct tsm_screen *con,
 			      struct tsm_vte *vte, bool sixel);
 void image_budget_remove_terminal(struct image_budget_terminal *t);
+/*
+ * The teardown of a terminal whose image_budget_add_terminal succeeded, in
+ * its order: its screen leaves the budget, then the terminal's own references
+ * on its vte and screen go.
+ */
+void image_budget_free_terminal(struct image_budget_terminal *t);
+/* screens still in the budget, which is none once every terminal is freed */
+unsigned int image_budget_screens(void);
 /* a display the terminal draws on came or went; @draws_images: its renderer's */
 void image_budget_terminal_display(struct image_budget_terminal *t, bool draws_images, bool added);
 

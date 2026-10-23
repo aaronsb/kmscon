@@ -277,6 +277,7 @@ int image_budget_add_terminal(struct image_budget_terminal *t, struct tsm_screen
 
 	if (ret)
 		return ret;
+	tsm_screen_ref(con);
 	t->con = con;
 	t->vte = vte;
 	t->sixel = sixel;
@@ -291,7 +292,23 @@ void image_budget_remove_terminal(struct image_budget_terminal *t)
 		return;
 	tsm_vte_set_sixel(t->vte, false);
 	image_budget_remove_screen(t->con);
+	tsm_screen_unref(t->con);
 	t->con = NULL;
+}
+
+void image_budget_free_terminal(struct image_budget_terminal *t)
+{
+	struct tsm_screen *con = t->con;
+
+	image_budget_remove_terminal(t);
+	tsm_vte_unref(t->vte);
+	t->vte = NULL;
+	tsm_screen_unref(con);
+}
+
+unsigned int image_budget_screens(void)
+{
+	return budget.n_screens;
 }
 
 void image_budget_terminal_display(struct image_budget_terminal *t, bool draws_images, bool added)

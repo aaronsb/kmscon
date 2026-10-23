@@ -291,6 +291,7 @@ static void test_terminal(void)
 	struct image_budget_terminal t = {0};
 	struct tsm_screen *con;
 	struct tsm_vte *vte;
+	size_t used;
 
 	assert(tsm_screen_new(&con, NULL, NULL) == 0);
 	assert(tsm_screen_resize(con, 40, 10) == 0);
@@ -312,6 +313,20 @@ static void test_terminal(void)
 	assert(da1_sixel(vte));
 	tsm_vte_input(vte, six, sizeof(six) - 1);
 	assert(image_budget_used() > 0 && tsm_screen_test_image_count(con) == 1);
+
+	/*
+	 * a display without placement drawing arrives: the picture stored
+	 * stays, counted, until cleared or evicted; only new sixel is refused
+	 */
+	used = image_budget_used();
+	image_budget_terminal_display(&t, false, true);
+	assert(!da1_sixel(vte) && image_budget_used() == used);
+	assert(tsm_screen_test_image_count(con) == 1);
+	tsm_vte_input(vte, "\r\n\r\n", 4);
+	tsm_vte_input(vte, six, sizeof(six) - 1);
+	assert(image_budget_used() == used && tsm_screen_test_image_count(con) == 1);
+	image_budget_terminal_display(&t, false, false);
+	assert(da1_sixel(vte) && tsm_screen_test_image_count(con) == 1);
 
 	/* leaving gives the bytes back and turns sixel off */
 	image_budget_remove_terminal(&t);
@@ -339,6 +354,50 @@ static void test_terminal(void)
 	tsm_screen_unref(con);
 }
 
+/*
+ * The terminal's teardown, image_budget_free_terminal, leaves nothing in the
+ * budget. A terminal that dropped its screen without leaving the budget
+ * leaves a screen the budget still holds a reference on, so a later
+ * reservation reads a live screen (ASan would catch a freed one), until it is
+ * removed.
+ */
+static void test_terminal_teardown(void)
+{
+	struct image_budget_terminal t = {0}, lost = {0};
+	struct tsm_screen *con, *other;
+	struct tsm_vte *vte;
+	uint64_t k;
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, 40, 10) == 0);
+	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
+	assert(image_budget_add_terminal(&t, con, vte, true) == 0);
+	tsm_vte_input(vte, six, sizeof(six) - 1);
+	assert(image_budget_used() > 0 && image_budget_screens() == 1);
+	image_budget_free_terminal(&t);
+	assert(image_budget_screens() == 0 && image_budget_used() == 0 && !t.con && !t.vte);
+
+	/* a terminal that never left: its screen outlives its own references */
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, 40, 10) == 0);
+	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
+	assert(image_budget_add_terminal(&lost, con, vte, true) == 0);
+	assert(unplaced(con, 1, false, &k) == 0);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+	image_budget_set_limit(IMG);
+	other = new_screen();
+	assert(unplaced(other, 2, false, &k) == 0);
+	/* the lost screen's image was the victim: the screen was read, live */
+	assert(tsm_screen_test_image_count(con) == 0);
+	free_screen(other);
+	lost.vte = NULL;
+	image_budget_remove_screen(lost.con);
+	tsm_screen_unref(lost.con);
+	assert(image_budget_screens() == 0);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+
 int main(void)
 {
 	fake.cache.trim = fake_trim;
@@ -350,6 +409,7 @@ int main(void)
 	test_zero();
 	test_sixel();
 	test_terminal();
+	test_terminal_teardown();
 
 	image_budget_remove_cache(&fake.cache);
 	assert(!budget.caches && image_budget_used() == 0);

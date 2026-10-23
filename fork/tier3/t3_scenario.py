@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import time
 
-from t3_common import BASE, GUEST, PKGOUT, RUNDIR, rel
+from t3_common import BASE, GUEST, RUNDIR, rel
 from t3_evaluate import CASES, SCREENS, evaluate
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
@@ -50,18 +50,53 @@ def uses_virgl(variant):
     return VARIANTS[variant]["device"].startswith("virtio-vga-gl")
 
 
-def newest_packages():
-    """The newest build of each of the two split packages. A run resolves
-    them once, so every variant installs the same build."""
-    pkgs = sorted(glob.glob(os.path.join(PKGOUT, "kmscon-aaronsb-*.pkg.tar.zst")),
+def newest_packages(pkgdir, name):
+    """The newest build in `pkgdir` of each of the two split packages, `name`
+    and `name`-terminfo. A run resolves them once, so every variant installs
+    the same build."""
+    pkgs = sorted(glob.glob(os.path.join(pkgdir, name + "-*.pkg.tar.zst")),
                   key=os.path.getmtime)
-    if not pkgs:
-        raise SystemExit("no package in %s; run `make pkg`" % rel(PKGOUT))
     newest = {}
     for p in pkgs:
-        name = "terminfo" if "-terminfo-" in os.path.basename(p) else "main"
-        newest[name] = p
+        rest = os.path.basename(p)[len(name) + 1:]
+        kind = "terminfo" if rest.startswith("terminfo-") else "main"
+        newest[kind] = p
+    if "main" not in newest:
+        raise SystemExit("no %s package in %s; run its package target" % (name, rel(pkgdir)))
     return sorted(newest.values())
+
+
+def package_name(path):
+    """The package name in a package file's name, NAME-VERSION-REL-ARCH.pkg.tar.zst."""
+    return os.path.basename(path).rsplit("-", 3)[0]
+
+
+def check_install(line, pkgs):
+    """The packages and libtsm commit the guest reported installing
+    (guest/setup's TIER3-INSTALL-OK line), as metadata. Raises when the
+    guest holds a kmscon or libtsm package that is not on the disc, or the
+    package was built from another libtsm than the run names, an unknown one,
+    or one with changes the run does not declare: each would let one build's
+    results stand for another's."""
+    m = re.search(r"TIER3-INSTALL-OK packages: (.*?); libtsm: (\S+)", line)
+    if not m:
+        raise RuntimeError("cannot read the installed packages from %r" % line)
+    installed = m.group(1).split()
+    names = installed[::2]
+    if sorted(names) != sorted(package_name(p) for p in pkgs):
+        raise RuntimeError("the guest has %s installed, not only the run's packages %s"
+                           % (" ".join(names), " ".join(map(os.path.basename, pkgs))))
+    libtsm, want = m.group(2), os.environ.get("T3_LIBTSM_REV") or ""
+    if not want:
+        raise RuntimeError("the run names no libtsm commit (T3_LIBTSM_REV), so the package's "
+                           "cannot be checked; `make build` fetches subprojects/libtsm")
+    got_rev, _, got_dirty = libtsm.partition("+")
+    want_rev, _, want_dirty = want.partition("+")
+    if not re.fullmatch(r"[0-9a-f]{40}", got_rev) or not got_rev.startswith(want_rev) \
+            or got_dirty != want_dirty:
+        raise RuntimeError("the package was built with libtsm %s, the run names %s" % (libtsm, want))
+    return {"packages": [" ".join(installed[i:i + 2]) for i in range(0, len(installed), 2)],
+            "libtsm": libtsm}
 
 
 def build_pkg_disc(variant, work, pkgs):
@@ -130,9 +165,11 @@ def run_variant(variant, timing, pkgs, log):
     vm = Qemu(work, [(disk, "qcow2", False), (iso, "raw", True)],
               v["device"], log, display=v["display"],
               capture=v.get("capture", "screendump"))
-    caps, errors, error = {}, {}, None
+    caps, errors, error, installed = {}, {}, None, None
     try:
-        log(vm.wait_serial("TIER3-INSTALL-OK", timeout=180))
+        line = vm.wait_serial("TIER3-INSTALL-OK", timeout=180)
+        log(line)
+        installed = check_install(line, pkgs)
         phase("install")
         # The VT switch spawns kmscon only once logind is up and the boot
         # has reached its login prompts; systemd reports both on the console.
@@ -206,8 +243,8 @@ def run_variant(variant, timing, pkgs, log):
     displays = kmscon_displays(vm.serial)
     with open(os.path.join(GUEST, v["conf"])) as f:
         conf = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-    meta = {"packages": [os.path.basename(p) for p in pkgs], "kmscon": displays,
-            "errors": errors, "device": v["device"], "config": conf,
+    meta = {"packages": [os.path.basename(p) for p in pkgs], "installed": installed,
+            "kmscon": displays, "errors": errors, "device": v["device"], "config": conf,
             "cell": kmscon_cell(vm.serial)}
     want = "text renderer [%s]" % v["renderer"]
     if not displays or not all(want in d for d in displays):

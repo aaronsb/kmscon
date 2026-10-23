@@ -152,6 +152,13 @@ class CompareTest(unittest.TestCase):
     def test_header_and_footer(self):
         page = self.page()
         self.assertIn("| kmscon commit | [`1111111`](https://github.com/aaronsb/kmscon/commit/1111111) |", page)
+        # A report that names its repository links there.
+        write_run("up", {"v/same": screen()}, tools=dict(TOOLS, kmscon_repo="https://github.com/kmscon/kmscon",
+                                                          libtsm_repo="https://github.com/kmscon/libtsm"))
+        up = self.page("out", "--a", "up")
+        self.assertIn("| kmscon commit | [`1111111`](https://github.com/kmscon/kmscon/commit/1111111) | "
+                      "[`1111111`](https://github.com/aaronsb/kmscon/commit/1111111) |", up)
+        self.assertIn("| libtsm commit | [`2222222`](https://github.com/kmscon/libtsm/commit/2222222) |", up)
         self.assertIn("| Text renderer | bbulk | bbulk |", page)
         self.assertIn("`cloudimg.qcow2` (SHA-256 `abc123`)", page)
         self.assertIn("QEMU device `virtio-vga,xres=200`. kmscon configuration: `font-size=16`. "
@@ -202,6 +209,23 @@ class CompareTest(unittest.TestCase):
         run = compare.Run("saved")
         self.assertEqual(run.image((3, "v/x")).data, screen().data)
         self.assertIsNone(run.image((3, "v/lost")))
+
+    def test_save_refuses_tier2_beside_another_build(self):
+        # Tier 2 is always the fork's renderer, so it is never saved with
+        # upstream's tier 3 run, where it would read as upstream's.
+        Path("build").mkdir()
+        rep = json.loads(Path("a/tier3-report.json").read_text())
+        rep["tools"] = dict(TOOLS, kmscon_repo="https://github.com/kmscon/kmscon")
+        Path("build/tier3-report.json").write_text(json.dumps(rep))
+        Path("build/tier2-report.json").write_text(json.dumps({"tier": 2, "cases": []}))
+        with self.assertRaises(SystemExit) as e:
+            compare.main(["save", "--out", "saved", "build/tier2-report.json", "build/tier3-report.json"])
+        self.assertIn("save tier 3 alone", str(e.exception))
+        self.assertFalse(Path("saved").exists())
+        with contextlib.redirect_stdout(io.StringIO()):
+            compare.main(["save", "--out", "saved", "build/tier3-report.json"])
+        self.assertEqual(json.loads(Path("saved/tier3-report.json").read_text())["tools"]["kmscon_repo"],
+                         "https://github.com/kmscon/kmscon")
 
     def test_refuses_foreign_output_dir(self):
         # Each refusal deletes nothing: not the checkout (out "."), not a

@@ -213,7 +213,8 @@ def run_lock():
 
 
 # What a run was built from and ran on, passed by fork/tier3.mk.
-TOOL_ENV = {"kmscon": "T3_KMSCON_REV", "libtsm": "T3_LIBTSM_REV", "image_base": "DEV_IMAGE_BASE",
+TOOL_ENV = {"kmscon": "T3_KMSCON_REV", "libtsm": "T3_LIBTSM_REV",
+            "kmscon_repo": "T3_KMSCON_REPO", "libtsm_repo": "T3_LIBTSM_REPO", "image_base": "DEV_IMAGE_BASE",
             "archive_date": "DEV_ARCHIVE_DATE", "guest_image": "T3_IMAGE",
             "guest_image_sha256": "T3_IMAGE_SHA256", "guest_archive": "T3_ARCHIVE"}
 

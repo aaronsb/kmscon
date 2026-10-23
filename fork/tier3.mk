@@ -26,13 +26,20 @@ T3_DEADLINE ?= 1800
 # tier3 and tier3-gl name the package target for t3.py, which builds it under
 # the run lock, so a second run cannot rebuild the package under a running
 # one. The recipes hold no $(MAKE), so `make -n` runs nothing.
-# The commits and pins a report records, so a saved run says what it measured.
-T3_DIRTY = $(if $(shell git -C $(1) status --porcelain --untracked-files=no 2>/dev/null),+dirty)
-T3_ENV = T3_KMSCON_REV=$(shell git rev-parse --short HEAD)$(call T3_DIRTY,.) \
-	T3_LIBTSM_REV=$(shell git -C $(or $(LIBTSM),subprojects/libtsm) rev-parse --short HEAD 2>/dev/null)$(call T3_DIRTY,$(or $(LIBTSM),subprojects/libtsm)) \
+# The commits and pins a report records, so a saved run says what it measured:
+# $(call T3_ENV,kmscon tree,libtsm tree,kmscon repository,libtsm repository).
+# fork/upstream.mk runs the same scenario on upstream's trees. libtsm's tree
+# counts as dirty with untracked files too, as fork/pkg/PKGBUILD records it in
+# the package, apart from the hash file meson writes into a wrap's checkout.
+T3_DIRTY = $(if $(shell git -C $(1) status --porcelain --untracked-files=$(or $(2),no) -- . \
+	':(exclude).meson-subproject-wrap-hash.txt' 2>/dev/null),+dirty)
+T3_REV = $(shell git -C $(1) rev-parse --short HEAD 2>/dev/null)$(call T3_DIRTY,$(1),$(2))
+T3_ENV = T3_KMSCON_REV=$(call T3_REV,$(1)) T3_LIBTSM_REV=$(call T3_REV,$(2),all) \
+	T3_KMSCON_REPO=$(3) T3_LIBTSM_REPO=$(4) \
 	DEV_IMAGE_BASE=$(DEV_BASE) DEV_ARCHIVE_DATE=$(DEV_ARCHIVE) \
 	T3_IMAGE=$(T3_IMAGE) T3_IMAGE_SHA256=$(T3_IMAGE_SHA256) T3_ARCHIVE=$(T3_ARCHIVE)
-T3_RUN = $(T3_ENV) $(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) --deadline $(T3_DEADLINE)
+T3_RUN = $(call T3_ENV,.,$(or $(LIBTSM),subprojects/libtsm),https://github.com/aaronsb/kmscon,https://github.com/aaronsb/libtsm) \
+	$(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) --deadline $(T3_DEADLINE)
 
 # Pinned guest: the official Arch Linux cloud image, verified against the
 # arch-boxes signing key, and the Arch Linux Archive snapshot its packages

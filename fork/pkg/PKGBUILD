@@ -10,6 +10,13 @@
 # The options match Arch's arch-meson wrapper except --wrap-mode: arch-meson
 # forbids downloads, and the libtsm subproject is fetched from its wrap when
 # the checkout has no local clone in subprojects/.
+#
+# The libtsm commit compiled in is installed as /usr/share/doc/<pkgname>/libtsm-commit,
+# so tier 3's guest log names the libtsm each run drew with (#38).
+#
+# fork/pkg/upstream/PKGBUILD sources this recipe to package upstream kmscon
+# under other names for tier 3's comparison; the package functions take the
+# names they install so both recipes share them.
 
 pkgbase=kmscon-aaronsb
 pkgname=(
@@ -78,7 +85,26 @@ build() {
     -D python.bytecompile=1 \
     --force-fallback-for=libtsm \
     -D libtsm:default_library=static
+  _libtsm_commit > libtsm-commit
   meson compile -C build
+}
+
+# The commit of the libtsm tree meson configured: the copy of the checkout's
+# subprojects/libtsm, which meson uses as it is, or the clone meson made from
+# the wrap. The copy may have left its .git behind, so the checkout's own is
+# read for it. "+dirty" marks a tree with changes or untracked files, other
+# than the hash file meson writes into a wrap's checkout.
+_libtsm_commit() {
+  local d dirty
+  for d in kmscon/subprojects/libtsm "$_src/subprojects/libtsm"; do
+    if [ -e "$d/.git" ]; then
+      dirty=$(git -C "$d" status --porcelain --untracked-files=all -- . \
+        ':(exclude).meson-subproject-wrap-hash.txt')
+      echo "$(git -C "$d" rev-parse HEAD)${dirty:++dirty}"
+      return
+    fi
+  done
+  echo unknown
 }
 
 check() {
@@ -86,16 +112,27 @@ check() {
 }
 
 package_kmscon-aaronsb() {
-  depends+=(kmscon-aaronsb-terminfo)
+  _package_kmscon kmscon-aaronsb-terminfo
+}
+
+package_kmscon-aaronsb-terminfo() {
+  _package_terminfo 'Terminfo for kmscon (aaronsb fork)'
+}
+
+# $1: the terminfo package the console depends on.
+_package_kmscon() {
+  depends+=("$1")
   provides=(kmscon)
   conflicts=(kmscon)
   meson install -C build --destdir="$pkgdir" --skip-subprojects
   install -Dm644 kmscon/COPYING "$pkgdir/usr/share/licenses/$pkgname/COPYING"
+  install -Dm644 libtsm-commit "$pkgdir/usr/share/doc/$pkgname/libtsm-commit"
   rm -r "$pkgdir"/usr/share/terminfo
 }
 
-package_kmscon-aaronsb-terminfo() {
-  pkgdesc='Terminfo for kmscon (aaronsb fork)'
+# $1: the package description.
+_package_terminfo() {
+  pkgdesc=$1
   depends=()
   optdepends=()
   provides=(kmscon-terminfo)

@@ -566,9 +566,10 @@ static void images_rotated(struct tsm_screen *con, struct tsm_vte *vte, unsigned
 }
 
 /*
- * Frame 0: a kitty picture, a sixel and text. Frame 2: the kitty placement
- * moved by replacing it, the sixel erased with its rows' text, and a new
- * picture.
+ * Frame 0: two kitty pictures, a sixel and text. Frame 2: the first kitty
+ * placement moved by replacing it, the second removed by sending its image
+ * again, which deletes its placements and leaves the text under it as it was,
+ * the sixel erased with its rows' text, and a new picture.
  */
 static void images_moves(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
 			 unsigned int cw, unsigned int ch)
@@ -580,8 +581,11 @@ static void images_moves(struct tsm_screen *con, struct tsm_vte *vte, unsigned i
 		place(con, kitty, 1, 2, 1, 0, 0, 0);
 		place(con, add_image(con, PIC_DISC, 8 * cw, 2 * ch, 2, TSM_IMAGE_SIXEL, 0), 0, 20, 1, 0,
 		      0, 0);
+		place(con, add_image(con, PIC_GRADIENT, 4 * cw, 2 * ch, 4, TSM_IMAGE_KITTY, 3), 0, 40,
+		      3, 0, 0, 0);
 	} else if (frame == 2) {
 		place(con, kitty, 1, 6, 5, 0, 0, 0);
+		add_image(con, PIC_GRADIENT, 4 * cw, 2 * ch, 5, TSM_IMAGE_KITTY, 3);
 		input(vte, ESC "[2;21H" ESC "[K" ESC "[3;21H" ESC "[K");
 		place(con, add_image(con, PIC_GRADIENT, 6 * cw, 2 * ch, 3, TSM_IMAGE_KITTY, 2), 0, 30,
 		      6, 0, 0, Z_BELOW_TEXT);
@@ -880,11 +884,12 @@ static const struct screen screens[] = {
 	 .rows = 6,
 	 .orientation = OR_RIGHT},
 	{.name = "img-moves",
-	 .desc = "Four frames into the double-buffered display: a kitty picture and a sixel, then "
-		 "the kitty placement moved by replacing it, the sixel erased with the text of its "
-		 "rows, and a new picture added under the text. Both buffers must then hold what a "
-		 "fresh draw of the last screen draws. Correct: no trace of the picture's old place "
-		 "or of the sixel.",
+	 .desc = "Four frames into the double-buffered display: two kitty pictures and a sixel, "
+		 "then the first kitty placement moved by replacing it, the second removed by "
+		 "sending its image again with the text under it unchanged, the sixel erased with "
+		 "the text of its rows, and a new picture added under the text. Both buffers must "
+		 "then hold what a fresh draw of the last screen draws. Correct: no trace of the "
+		 "picture's old place, of the removed picture at the right or of the sixel.",
 	 .bytes = MOVES_BYTES,
 	 .next = "",
 	 .images = images_moves},

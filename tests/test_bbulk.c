@@ -606,9 +606,10 @@ static void test_below_bg(struct kmscon_text *txt)
 	cell_at(1, 0)->bg = (struct tsm_screen_color){.r = 10, .g = 20, .b = 30};
 	run_frame(txt, false);
 	/* cell 0 starts a run; cell 1 is composed and takes its background */
-	assert(blended_at(0, 0)->buf == bb->strip);
+	assert(blended_at(0, 0) && blended_at(0, 0)->buf == bb->strip);
 	set_coordinate(txt, &x, &y, 1, 0);
-	assert(blended_at(x, y)->buf == bb->scratch && blended_at(x, y)->first == 0xff0a141e);
+	assert(blended_at(x, y) && blended_at(x, y)->buf == bb->scratch);
+	assert(blended_at(x, y)->first == 0xff0a141e);
 	settle(txt, 0);
 }
 

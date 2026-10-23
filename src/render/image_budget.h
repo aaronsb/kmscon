@@ -41,10 +41,10 @@
  * placement and transient, no placement, placed only in scrollback) and least
  * recently used first. An image placed on a screen's own lines is never
  * evicted; a reservation that still does not fit is refused. A renderer's own
- * picture, made within its frame, frees in the same order but spares the
- * renderer's own pictures, which it trims itself, and every image its frame
- * draws (image_budget_picture_room). One that still does not fit is left out
- * until the room in the budget grows (image_budget_gen).
+ * picture, made within its frame, frees in the same order but spares every
+ * image its frame draws, and frees nothing unless that makes it fit
+ * (image_budget_picture_room). One that does not fit is left out until the
+ * room in the budget grows (image_budget_gen).
  */
 
 #ifndef KMSCON_IMAGE_BUDGET_H
@@ -84,12 +84,15 @@ uint64_t image_budget_displays_px(void);
 /*
  * A renderer's cache of pictures. @trim frees pictures its last frame did not
  * draw, least recently used first, until @want bytes are freed or none such is
- * left. It is called between frames only, from a libtsm reservation or a
- * limit that shrank.
+ * left; @trimmable is the bytes it would free at most. Both are called between
+ * the renderer's frames, from a libtsm reservation, a limit that shrank, or
+ * another renderer's picture; a renderer's own picture calls them within its
+ * frame, after it trimmed its cache itself, when they find nothing more.
  */
 struct image_budget_cache {
 	struct image_budget_cache *next;
 	void (*trim)(struct image_budget_cache *cache, size_t want);
+	size_t (*trimmable)(struct image_budget_cache *cache);
 };
 
 void image_budget_add_cache(struct image_budget_cache *cache);
@@ -99,15 +102,14 @@ void image_budget_remove_cache(struct image_budget_cache *cache);
 typedef bool (*image_budget_drawn_cb)(struct tsm_screen *con, uint64_t key, void *data);
 
 /*
- * Room for a picture of @bytes that renderer @self makes within a frame, once
- * its own pictures gave what they can: the other renderers' pictures their last
- * frame did not draw, then libtsm's images in ADR-103's order, as far as the
- * first that @drawn says the frame draws. An image placed on a screen's own
- * lines is never evicted. Returns 0, or -ENOSPC when it still does not fit;
- * what was freed on the way stays freed.
+ * Room for a picture of @bytes that a renderer makes within a frame, once its
+ * own pictures gave what they can: the renderers' pictures their last frame
+ * did not draw, then libtsm's images in ADR-103's order, each screen's as far
+ * as the first that @drawn says the frame draws. An image placed on a screen's
+ * own lines is never evicted. Nothing is freed unless what can be makes the
+ * picture fit. Returns 0, or -ENOSPC when it does not fit.
  */
-int image_budget_picture_room(struct image_budget_cache *self, size_t bytes,
-			      image_budget_drawn_cb drawn, void *data);
+int image_budget_picture_room(size_t bytes, image_budget_drawn_cb drawn, void *data);
 
 /* a renderer's picture of @bytes, made or freed; made only once it fits */
 void image_budget_add_picture(size_t bytes);

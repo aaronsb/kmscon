@@ -1186,14 +1186,26 @@ static void test_budget_history(void)
 	       screen_holds(con, onscreen));
 	settle(&a, 2);
 
-	/* a second takes the scrolled one's, needs the viewed one's too, and is left out */
+	/*
+	 * a second would need the viewed one's room as well as the scrolled
+	 * one's: it is left out, and the scrolled one is not evicted for nothing,
+	 * on that frame or the idle ones after
+	 */
 	set_scaled(2, 91, 2);
 	assert(draw_placements(&a, 3) == 0);
-	assert(ba->starving && picture_drawn(&a, 20) && !screen_holds(con, scrolled));
-	assert(screen_holds(con, viewed) && screen_holds(con, onscreen));
+	assert(ba->starving && picture_drawn(&a, 20));
+	assert(screen_holds(con, scrolled) && screen_holds(con, viewed) &&
+	       screen_holds(con, onscreen));
 	assert(draw_placements(&a, 3) == 0);
 	assert(draw_placements(&a, 3) == KMSCON_TEXT_UNCHANGED);
-	assert(ba->starving && screen_holds(con, viewed));
+	assert(ba->starving && screen_holds(con, scrolled) && screen_holds(con, viewed));
+
+	/* a limit that lets the scrolled one's room make it fit: it goes, and the second draws */
+	image_budget_set_limit(2 * pic + 2 * img);
+	assert(draw_placements(&a, 3) == 0);
+	assert(!ba->starving);
+	assert(!screen_holds(con, scrolled));
+	assert(screen_holds(con, viewed) && screen_holds(con, onscreen));
 
 	a.screen = NULL;
 	close_txt(&b);
@@ -1201,6 +1213,77 @@ static void test_budget_history(void)
 	image_budget_remove_screen(con);
 	tsm_screen_unref(con);
 	drop_images(src, 2);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+
+/*
+ * The room a picture takes from history comes from every terminal's screen,
+ * main and alternate, each screen's as far as the first image the frame draws
+ * and no further: another session's images go even when they are newer than
+ * the image this frame draws from scrollback, while the images placed on
+ * either screen's lines stay.
+ */
+static void test_budget_history_screens(void)
+{
+	struct kmscon_text a;
+	struct bbulk *ba = open_txt(&a, 0x48, 640, 480);
+	uint32_t *src = half_images(640, 480, 1);
+	size_t pic = (size_t)640 * 480 * 4, img = (size_t)320 * 240 * 4 + TSM_SCREEN_IMAGE_OVERHEAD;
+	const struct tsm_frame *lf;
+	struct tsm_frame_age age = {0};
+	struct tsm_screen *con, *other;
+	uint64_t viewed, onscreen, scrolled, alt_unplaced, alt_onscreen;
+	unsigned int i;
+
+	image_budget_set_limit(16 * pic);
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, a.cols, a.rows) == 0);
+	tsm_screen_set_max_sb(con, 200);
+	assert(image_budget_add_screen(con) == 0);
+	/* the cursor reaches the bottom, then the image's rows scroll off */
+	viewed = screen_image(con, 1, false);
+	for (i = 0; i < 2 * a.rows - 1; i++)
+		tsm_screen_newline(con);
+	onscreen = screen_image(con, 2, false);
+	tsm_screen_sb_up(con, a.rows);
+	lf = tsm_screen_frame_since(con, &age);
+	assert(lf->placement_count == 1);
+	placements[0] = *tsm_frame_placement_at(lf, 0);
+	assert(placements[0].image_key == viewed);
+	a.screen = con;
+
+	/*
+	 * another session, made after that frame: an image scrolled off its main
+	 * screen, then on its alternate screen one placed and one unplaced
+	 */
+	assert(tsm_screen_new(&other, NULL, NULL) == 0);
+	assert(tsm_screen_resize(other, a.cols, a.rows) == 0);
+	tsm_screen_set_max_sb(other, 200);
+	assert(image_budget_add_screen(other) == 0);
+	scrolled = screen_image(other, 1, false);
+	for (i = 0; i < 100; i++)
+		tsm_screen_newline(other);
+	tsm_screen_set_flags(other, TSM_SCREEN_ALTERNATE);
+	alt_onscreen = screen_image(other, 2, false);
+	alt_unplaced = screen_image(other, 3, true);
+	assert(image_budget_used() == 5 * img);
+
+	/* the picture takes both of the other session's images that are off its lines */
+	image_budget_set_limit(pic + 3 * img);
+	set_scaled(1, 92, 1);
+	assert(draw_placements(&a, 2) == 0);
+	assert(!ba->starving && picture_drawn(&a, 20));
+	assert(!screen_holds(other, scrolled) && !screen_holds(other, alt_unplaced));
+	assert(screen_holds(other, alt_onscreen) && screen_holds(con, viewed) &&
+	       screen_holds(con, onscreen));
+
+	a.screen = NULL;
+	close_txt(&a);
+	image_budget_remove_screen(other);
+	tsm_screen_unref(other);
+	image_budget_remove_screen(con);
+	tsm_screen_unref(con);
+	drop_images(src, 1);
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 }
 
@@ -1332,6 +1415,7 @@ int main(void)
 	test_budget_trim();
 	test_budget_images();
 	test_budget_history();
+	test_budget_history_screens();
 	test_budget_huge();
 	test_picture_cache(&txt);
 

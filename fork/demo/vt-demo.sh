@@ -15,8 +15,8 @@
 #
 # VT_DEMO_SHOWCASE names a video and runs the Bad Apple!! showcase
 # (fork/showcase/bad-apple.sh) in place of the demo, as make showcase does;
-# VT_DEMO_SHOWCASE_FROM starts it at an act and VT_DEMO_SHOWCASE_AUDIO=1 plays
-# the soundtrack. The showcase records no answers, so its run ends with the
+# VT_DEMO_SHOWCASE_FROM starts it at an act and VT_DEMO_SHOWCASE_AUDIO (yes or
+# 1; no, 0 or empty for none) plays the soundtrack. The showcase records no answers, so its run ends with the
 # health check alone.
 #
 # VT_DEMO_DRY_RUN=1 picks the VT and prints the run-vt.sh command without
@@ -43,7 +43,11 @@ if [ -n "${VT_DEMO_SHOWCASE:-}" ]; then
 		die "BAD_APPLE=$VT_DEMO_SHOWCASE is not a readable file"
 	session=(--showcase="$video")
 	[ -z "${VT_DEMO_SHOWCASE_FROM:-}" ] || session+=(--showcase-from="$VT_DEMO_SHOWCASE_FROM")
-	[ -z "${VT_DEMO_SHOWCASE_AUDIO:-}" ] || [ "$VT_DEMO_SHOWCASE_AUDIO" = 0 ] || session+=(--showcase-audio)
+	case ${VT_DEMO_SHOWCASE_AUDIO:-} in
+	yes | 1) session+=(--showcase-audio) ;;
+	no | 0 | '') ;;
+	*) die "AUDIO=$VT_DEMO_SHOWCASE_AUDIO: yes or 1 plays the soundtrack, no or 0 does not" ;;
+	esac
 fi
 if [ -n "${VT_DEMO_ARGS:-}" ]; then
 	printf '%s' "$VT_DEMO_ARGS" | xargs -r printf '%s\0' >/dev/null ||

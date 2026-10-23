@@ -61,7 +61,7 @@ It renders the video's frame caches as you (so a missing video or tool fails bef
 
 `VT_DEMO_DRY_RUN=1 make showcase BAD_APPLE=...` builds, stages and prints the `run-vt.sh` command without running it. By hand: `sudo fork/demo/run-vt.sh --showcase=/abs/path [--showcase-from=N] [--showcase-audio] [N] [-- kmscon-option...]`.
 
-`run-vt.sh` starts the session with a cleared environment, so the pacing variables below do not reach a VT run from your shell: tune them by editing their defaults at the top of `bad-apple.sh`.
+`run-vt.sh` starts the session with a cleared environment, so the pacing variables below and `SHOWCASE_CACHE` do not reach a VT run from your shell: tune them by editing their defaults at the top of `bad-apple.sh`. `make showcase` renders the caches with the environment cleared too, so they are the ones the VT run reads. `AUDIO=` takes `yes` or `1` for the soundtrack and `no`, `0` or nothing for none.
 
 ## Options
 

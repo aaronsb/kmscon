@@ -12,7 +12,7 @@ import math
 import random
 
 from letters import TextMask
-from screen import (DEFAULT, BraillePainter, Dots, Painter, Stats, clear, cup, frames, geom,
+from screen import (BraillePainter, Dots, Painter, Stats, clear, cup, frames, geom,
                     gradient, hsv, out, resized, scale, ESC)
 
 

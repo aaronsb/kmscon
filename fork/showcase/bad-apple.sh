@@ -371,6 +371,7 @@ audio_stop() {
 
 saved_tty=
 screen_taken=
+resized_from=  # "rows cols" while act 3 holds the terminal at 80x25
 have_sixel=
 have_kitty=
 
@@ -381,6 +382,7 @@ restore() {
 	trap '' INT TERM HUP
 	stop_bg
 	if [ -n "$screen_taken" ]; then
+		[ -z "$resized_from" ] || printf '%s[8;%d;%dt' "$E" "${resized_from% *}" "${resized_from#* }"
 		[ -z "$have_kitty" ] || printf '%s_Ga=d,d=A%s' "$E" "$ST"
 		printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l' "$E" "$E" "$E" "$E" "$E"
 	fi
@@ -521,9 +523,12 @@ act_3() {
 	if [ "$cols" = 80 ] && [ "$rows" = 25 ]; then
 		real=same
 	elif [ "$ACT3_RESIZE" != no ]; then
+		resized_from="$rows $cols"
 		printf '%s[8;25;80t' "$E"
 		if wait_for_size 80 25; then
 			real=resized
+		else
+			resized_from=  # it did not take; there is nothing to put back
 		fi
 	fi
 	audio_start "$ACT3_START" "$ACT3_SECONDS"
@@ -538,6 +543,7 @@ act_3() {
 		pause 0.8
 		printf '%s[8;%d;%dt' "$E" "$rows" "$cols"
 		wait_for_size "$cols" "$rows" || true
+		resized_from=
 		read_geometry
 		clear_screen
 		fx play "$(act3_cache)" --box "$title" --still
@@ -747,11 +753,16 @@ main() {
 
 	[ -t 0 ] && [ -t 1 ] || die "the show needs a terminal on stdin and stdout"
 	read_geometry
-	if [ "$video" = 1 ]; then
+	# Acts 1, 3 and 5 play from caches; act 7 reads the video itself.
+	local cached=
+	for n in 1 3 5; do
+		((n < first || n > last)) || cached=1
+	done
+	if [ -n "$cached" ]; then
 		cache=$(cache_dir)
 		mkdir -p "$cache"
-		for ((n = first; n <= last; n++)); do
-			[ "${ACT_VIDEO[n]}" = 0 ] || prepare_act "$n"
+		for n in 1 3 5; do
+			((n < first || n > last)) || prepare_act "$n"
 		done
 	fi
 

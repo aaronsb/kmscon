@@ -13,7 +13,8 @@
 # --showcase=VIDEO runs the Bad Apple!! showcase (fork/showcase/bad-apple.sh)
 # on VIDEO, an absolute path, in place of the demo; --showcase-from=N starts it
 # at act N and --showcase-audio plays the soundtrack.
-# --dry-run prints every command and runs none; it needs no root.
+# --dry-run prints every command and runs none; it needs no root. A dry run
+# takes the module directory from RUN_VT_MODULEDIR when set, for the tests.
 #
 # kmscon loads its backend modules from a path compiled in (/usr/lib/kmscon)
 # with no option to change it, and would otherwise load the stock package's
@@ -23,7 +24,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,14s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,17s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -41,7 +42,7 @@ audio=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
-	--showcase=*) video=${1#*=} ;;
+	--showcase=*) video=${1#*=}; [ -n "$video" ] || die "--showcase needs the video's path: --showcase=/path/to/video" ;;
 	--showcase-from=*) from=${1#*=} ;;
 	--showcase-audio) audio=1 ;;
 	-h | --help) usage ;;
@@ -59,6 +60,8 @@ stage=$(readlink -m "$here/../build/demo-root")
 kmscon=$stage/usr/bin/kmscon
 modules=$stage/usr/lib/kmscon
 moduledir=/usr/lib/kmscon
+# Only a dry run, which mounts nothing, lets the tests point it elsewhere.
+[ -z "$dry" ] || moduledir=${RUN_VT_MODULEDIR:-$moduledir}
 showcase=$(readlink -m "$here/../showcase/bad-apple.sh")
 unit=kmsconvt@tty$vt.service
 

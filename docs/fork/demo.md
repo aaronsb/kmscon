@@ -119,11 +119,11 @@ What each page should and should not look like is in its section file's `# look-
 | cjk | CJK beside Latin |
 | wide-margin | double-width characters placed and typed at the right margin |
 | combining | letters built from a base and combining marks beside the precomposed ones, including `ã̀` (a, U+0303, U+0300) and e + U+0301 |
-| emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji |
+| emoji | a ZWJ family, a flag, a keycap, a skin tone, a VS16 heart and a single emoji, each between bars; the text heart alone and with VS15; emoji in a line, underlined and reversed |
 
-Every section but emoji is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin and combining are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. emoji is not a tier 3 screen until colour emoji land (ADR-102 step 4c). The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
+Every section is also a tier 3 screen, so the demo shows what tier 3 captures and judges. The screen script in `fork/tier3/guest/screens/` is the one source: colour-forms, underline-styles, underline-colour, strike, blocks, wide-margin, combining and emoji are symlinks to their screen scripts, which carry the guidance lines; sgr, boxdraw and cjk are wrappers that hold the guidance and run the screen script. The `sgr` screen is 96 columns wide; on a screen narrower than that its first two rows wrap.
 
-The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws. The fork draws every one of them that way except emoji, which stay clipped or monochrome until colour emoji land (ADR-102 step 4c).
+The step 2 sections (colour-forms, underline-styles, underline-colour, strike, combining, emoji) can only be judged on the fork. Upstream libtsm discards a whole SGR sequence that holds a colon and reads `58;5;n` with the 5 as blink, so stock kmscon draws those pages wrong by design. The sections name what a finished fork draws, and the fork draws every one of them that way. Emoji need a colour emoji font installed (Noto Color Emoji is the common one); without one they draw as the text font's missing-glyph box, fitted to their cells.
 
 ## Compare with stock kmscon
 
@@ -148,7 +148,7 @@ What stock kmscon is expected to get wrong, page by page. The list comes from up
 | strike | No strike anywhere: upstream has no SGR 9. `9;4` is underlined only, and the line with `4:3` is plain. |
 | wide-margin | A wide character placed or typed at the last column is cut at the edge instead of moving to the next line, so case 2, case 3 and the emoji in case 5 show half a character or none. |
 | combining | The decomposed column is blank: kmscon draws a cell of more than one code point as nothing. The precomposed column is right except its last row, which is a precomposed letter plus a mark. |
-| emoji | Every cluster (family, flag, keycap, skin tone, VS16 heart) is drawn blank or as separate pieces, so its bars do not line up. The single emoji is monochrome at best: kmscon has no colour glyphs. |
+| emoji | Every cluster (family, flag, keycap, skin tone, VS16 heart) is drawn blank or as separate pieces, so its bars do not line up. Each emoji is the grey top-left corner of the colour font's large bitmap, cut at its cells: kmscon has no colour glyphs and does not scale them. |
 
 ## Seen on hardware
 
@@ -156,7 +156,7 @@ The first real run, on 2026-10-22: Arch Linux, one output (DP-8) at 7680x2160, t
 
 - The handoff, the staged modules, the demo running as the user, and the stock unit's return after `q` all worked.
 - The operator found these pages correct: sgr, colour forms, underline styles and colours, strike, wide characters at the margin, combining marks and CJK.
-- Emoji draw as a clipped corner. The fallback emoji font's bitmaps are larger than the cell, and nothing scales them until colour emoji land (ADR-102 step 4c).
+- Emoji draw as a clipped corner. The fallback emoji font's bitmaps are larger than the cell, and nothing scales them. ADR-102 step 4c draws them in colour, fitted to their cells, on both font engines; that is not yet checked on this machine.
 - Stacked block elements show a one-pixel gap between rows (#46).
 - Stock kmscon 10.0.4 on that machine never repaints after a switch from the desktop. Its journal repeats `drm_shared: test-only atomic commit failed, -22`, then `vt_timeout: failed to wake up after 20 retries`. The dev build, on newer code, takes the display. The comparison with stock could not be made there, so the table above is still a prediction.
 - `run-vt.sh` refuses a VT that has a login on it, and a login on a stock kmscon VT counts as one. Pick a VT nobody is logged into.
@@ -171,4 +171,4 @@ A capability that adds something visible adds its section in the same PR. A sect
 
 Check it outside a VT with `DEMO_NOPAGE=1 fork/demo/demo.sh name`, which runs without waiting for keys and leaves the page and its guidance on the screen, then on a VT with `run-vt.sh`.
 
-Each section is a tier 3 screen as well (#36): tier 3 runs it in its guest and compares the capture with a golden, so every demonstration is also a check. A new section adds its name to `SCREENS` in `fork/tier3/t3_evaluate.py`, before `cjk`, which stays last because `vt-restore` is compared with its golden (`test_t3.py` fails otherwise), and its goldens with `make tier3-bless`, in a commit of their own. Its `# look-for:` and `# wrong-looks-like:` lines are also its case's caption on the run page. Tier 3 does not judge emoji yet (ADR-102 step 4c).
+Each section is a tier 3 screen as well (#36): tier 3 runs it in its guest and compares the capture with a golden, so every demonstration is also a check. A new section adds its name to `SCREENS` in `fork/tier3/t3_evaluate.py`, before `cjk`, which stays last because `vt-restore` is compared with its golden (`test_t3.py` fails otherwise), and its goldens with `make tier3-bless`, in a commit of their own. Its `# look-for:` and `# wrong-looks-like:` lines are also its case's caption on the run page.

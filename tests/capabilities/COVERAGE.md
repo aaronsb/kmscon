@@ -39,7 +39,7 @@ Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex);
 | COLR glyphs | #72 | `test_font_freetype.c` `test_colour_table_text_face` | FT (shared `font_colour.c`) | no pixel screen; pango: #117 |
 | Combining marks shaped by HarfBuzz | #33 | `test_font_freetype.c` cluster tests; tier 2 `combining`; tier 3 `combining` | FT/BB, PG/BB | gltex: #116 |
 | Blink: both phases, both buffers | #66 | `test_blink.c` `test_phases`, `test_buffers`; `test_gltex.c` `test_blink`; `test_conf.c` | FT/BB/D2 fake, GT stub | terminal.c's timer: #120 |
-| Two-frame damage rule, damage expiry, quiet frames | #33, #80 | `test_bbulk.c` `test_two_frame_rule`; `test_blink.c` `test_damage_extent`, `test_buffers` | BB on a fake display | DRM submission: #119 |
+| Two-frame damage rule, damage expiry, quiet frames | #33, #80 | `test_bbulk.c` `test_two_frame_rule`; `test_blink.c` `test_damage_extent`, `test_buffers`; `test_present.c` (frames presented between 16 KB reads equal a fresh draw) | BB on a fake display | DRM submission: #119 |
 | Hardware cursor commit | #80 | `test_blink.c` `test_hw_cursor` | text.c + fake cursor | `drm_shared.c`: #119 |
 | Glyph draw failure retried | #33, #80 | `test_bbulk.c` | BB | guarded |
 | Frame age per display | #33, #41 | `test_text.c` `test_two_displays`; `test_blink.c` | any renderer | guarded |

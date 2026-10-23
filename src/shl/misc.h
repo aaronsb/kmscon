@@ -171,6 +171,15 @@ static inline int shl_split_string(const char *arg, char ***out, unsigned int *o
 	return 0;
 }
 
+static inline const char *shl_strip_prefix(const char *prefix, const char *str)
+{
+	size_t prefix_len = strlen(prefix);
+
+	if (!strncmp(str, prefix, prefix_len))
+		return str + prefix_len;
+	return str;
+}
+
 /* This parses \arg and splits the string into a new allocated array. The array
  * is stored in \out and is NULL terminated. \out_num is the number of entries
  * in the array. You can set it to NULL to not retrieve this value.  */

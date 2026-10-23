@@ -313,7 +313,8 @@ static int display_activate_force(struct display *disp, bool force)
 	disp->width = dfb->xres;
 	disp->height = dfb->yres;
 
-	disp->flags |= DISPLAY_ONLINE;
+	/* The framebuffer was cleared above, so the whole frame must be redrawn. */
+	disp->flags |= DISPLAY_ONLINE | DISPLAY_NEED_REDRAW;
 	return 0;
 }
 
@@ -375,8 +376,10 @@ static int fb_display_swap(struct display *disp)
 	struct fb_var_screeninfo *vinfo;
 	int ret;
 
-	if (!(disp->flags & DISPLAY_DBUF))
+	if (!(disp->flags & DISPLAY_DBUF)) {
+		disp->flags &= ~DISPLAY_NEED_REDRAW;
 		return display_schedule_vblank_timer(dfb);
+	}
 
 	vinfo = &dfb->vinfo;
 	vinfo->activate = FB_ACTIVATE_VBL;
@@ -393,6 +396,7 @@ static int fb_display_swap(struct display *disp)
 	}
 
 	dfb->bufid ^= 1;
+	disp->flags &= ~DISPLAY_NEED_REDRAW;
 	return display_schedule_vblank_timer(dfb);
 }
 
@@ -449,6 +453,15 @@ static void intro_idle_event(struct ev_eloop *eloop, void *unused, void *data)
 		ev_eloop_rm_timer(dfb->vblank_timer);
 		return;
 	}
+
+	/* The display is created after video_wake_up() already ran, so activate
+	 * it now if the video device is awake. */
+	if (video->flags & VIDEO_AWAKE) {
+		ret = display_activate_force(disp, false);
+		if (ret)
+			log_warning("cannot activate fbdev display: %d", ret);
+	}
+
 	display_ready(disp);
 	display_unref(disp);
 }

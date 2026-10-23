@@ -39,7 +39,7 @@ make clean
 make test
 ```
 
-The `docker run` line is the Makefile's `RUN` with the default image. `git -C subprojects/libtsm log --oneline -1` then shows the pinned commit. In a fresh worktree there is no checkout yet: the update reports `Not used` and exits non-zero, and the first `make test` fetches the pin. Run `make clean` as well whenever `LIBTSM=` points at a different tree than the last build did.
+The `docker run` line is the Makefile's `RUN` with the default image. `git -C subprojects/libtsm log --oneline -1` then shows the pinned commit. In a fresh worktree there is no checkout yet: the update reports `Not used` and exits non-zero, and the first `make test` fetches the pin. Run `make clean` as well whenever `LIBTSM=` points at a different tree than the last build did. In a fresh worktree, a `LIBTSM=` run leaves `subprojects/libtsm` behind as an empty directory owned by root (docker's mount point), and the next plain build then fails with "Subproject exists but has no meson.build file"; remove it with `rmdir subprojects/libtsm` first.
 
 ## One increment, start to finish
 
@@ -139,7 +139,7 @@ git fetch --prune
 
 ### 10. Close the session
 
-Increments merge one by one; when the session's last one has merged and `main` is green (the bring-home point), the session closes with one ledger run, landed as its own PR, then the handoff. See [The conformance record](#the-conformance-record).
+Increments merge one by one; when the session's last one has merged and `main` is green (the bring-home point), the session closes with the upstream sync, when upstream has moved, then one ledger run, each landed as its own PR, then the handoff. See [The conformance record](#the-conformance-record).
 
 ## Verification before merge
 
@@ -235,9 +235,31 @@ A change that adds something visible adds its demo section in the same PR. [demo
 
 ## The conformance record
 
-A committed ledger run (`make sheet NOTE=...` and its entry in [LEDGER.md](../conformance/LEDGER.md)) happens once per working session, at its bring-home point: when the session's workstreams have merged and `main` is green, measured from the head of `main` at that point. Never per PR, and never during the work.
+A committed ledger run (`make sheet NOTE=...` and its entry in [LEDGER.md](../conformance/LEDGER.md)) happens once per working session, at its bring-home point: when the session's workstreams and the upstream sync have merged and `main` is green, measured from the head of `main` at that point. Never per PR, and never during the work.
 
-A working session runs as a loop: increments merge one by one, then the bring-home point, then the ledger run, then the handoff to the next session. The ledger run is its own small PR, separate from any feature PR: a branch from that head of `main` (for example `docs/ledger-<date>`) carrying only the run page and its LEDGER.md entry, opened with `--repo aaronsb/kmscon --base main`, and merged once its contents are checked (the measured commits match `main`'s head and the page renders). It changes no code, so it needs no code review.
+A working session runs as a loop: increments merge one by one, then the bring-home point, then the upstream sync, then the ledger run, then the handoff to the next session.
+
+### The upstream sync
+
+Every bring-home pulls upstream in just before the ledger run, so each ledger row measures the fork with upstream's latest work in it (operator's decision, 2026-10-22). Fetch both upstreams and see what is new:
+
+```sh
+git -C ../libtsm fetch upstream && git -C ../libtsm log --oneline origin/main..upstream/main
+git fetch upstream && git log --oneline origin/main..upstream/main
+```
+
+When either has new commits, it lands as a sync PR before the ledger run, libtsm first:
+
+1. libtsm: a branch `sync/upstream-<date>` in its own worktree, `git merge --no-ff upstream/main` (a real merge, never cherry-picks, so `git log` keeps upstream's commits and authors), and a PR with `--repo aaronsb/libtsm --base main`. Where an upstream commit fixes behaviour, a unit or tier 1 case for it is written first and seen red on the fork before the merge and green after it. A tier 1 golden that the merge moves cannot be regenerated from v4.8.0, which still has the old behaviour, so its case moves into `fork-goldens.list` with the upstream commit named, and its golden comes from the merge commit, in a commit of its own after the merge (libtsm #15 did this for `prog-vim`).
+2. kmscon: a branch `sync/upstream-<date>` merging `upstream/main` the same way, carrying the libtsm pin bump when step 1 merged (with the reset in [Stale and mixed libtsm builds](#stale-and-mixed-libtsm-builds-38-open)). PR with `--repo aaronsb/kmscon --base main`.
+
+Conflicts are resolved to keep the fork's behaviour and upstream's intent. Where upstream solves a problem the fork already solved another way (upstream's `src/font/blocks.c` against the fork's `font_box.c`), the fork's code stays, upstream's is deleted in the merge commit if nothing calls it, and the merge message says so. An upstream change the fork has no equivalent for is taken on its merits. A sync that moves tier 2 or tier 3 goldens re-blesses them in a separate commit after the merge commit, with every changed image read beside its old golden and described, as in [Goldens are the judge](#goldens-are-the-judge); tier 3 is re-blessed for the 2D variants only. When a sync removes a difference that `fork/conformance/upstream-verdicts.txt` explains, that line is updated in the same PR.
+
+The sync PR runs `make test`, `make tier2`, `make tier3 JOBS=2` and `make sheet-preview`, is reviewed and merged like any other, and the ledger run then measures the merged `main`.
+
+### The ledger run
+
+The ledger run is its own small PR, separate from any feature PR: a branch from that head of `main` (for example `docs/ledger-<date>`) carrying only the run page and its LEDGER.md entry, opened with `--repo aaronsb/kmscon --base main`, and merged once its contents are checked (the measured commits match `main`'s head and the page renders). It changes no code, so it needs no code review.
 
 ```sh
 git fetch origin

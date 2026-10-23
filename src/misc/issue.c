@@ -421,7 +421,6 @@ static char *expand_issue(const char *raw, size_t raw_len, char *pty_name, size_
 	const char *pos, *end, *esc;
 	char timebuf[64];
 	char datebuf[64];
-	const char *tty_short;
 	char code;
 	struct addr_book *book = NULL;
 
@@ -441,11 +440,6 @@ static char *expand_issue(const char *raw, size_t raw_len, char *pty_name, size_
 		timebuf[0] = '\0';
 		datebuf[0] = '\0';
 	}
-
-	if (!strncmp(pty_name, "/dev/", 5))
-		tty_short = pty_name + 5;
-	else
-		tty_short = pty_name;
 
 	pos = raw;
 	end = raw + raw_len;
@@ -491,7 +485,7 @@ static char *expand_issue(const char *raw, size_t raw_len, char *pty_name, size_
 			fputs(timebuf, out);
 			break;
 		case 'l':
-			fputs(tty_short, out);
+			fputs(pty_name, out);
 			break;
 		case 'S':
 			expand_os_release(&pos, end, out);

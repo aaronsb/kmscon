@@ -220,6 +220,10 @@ considered:
     said: "Install over system kmscon: pacman -U the built package over Arch's kmscon and kmscon-terminfo, log in on a normal kmscon VT, run demo.sh kitty-files, then reinstall Arch's package to undo"
     via: Claude Code session, 2026-10-24, AskUserQuestion after a harness login mode was found to need kmscon started outside the desktop session as a transient systemd unit; the operator picked this over make vt-login
     paraphrase: true
+  - operator: aaronsb
+    said: "Install over system kmscon: pacman -U the built package over Arch's kmscon and kmscon-terminfo, log in on a normal kmscon VT, run demo.sh kitty-files, then reinstall Arch's package to undo"
+    via: "Claude Code session, 2026-10-24, AskUserQuestion after a harness login mode was found to need kmscon started outside the desktop session as a transient systemd unit; the operator picked this over make vt-login, then added: \"I think our package is actually reliable enough to try\""
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"

@@ -124,6 +124,15 @@ if harfbuzz_raster_deps.found()
     )
 endif
 dbus_deps = dependency('dbus-1', disabler: true, required: get_option('dbus'))
+# The image helper's user through logind (ADR-103): libsystemd's sd-login, or
+# libelogind's, which provides the same <systemd/sd-login.h>.
+sd_login_deps = dependency('', required: false)
+if not get_option('sd_login').disabled()
+    sd_login_deps = dependency('libsystemd', required: false)
+    if not sd_login_deps.found()
+        sd_login_deps = dependency('libelogind', required: false)
+    endif
+endif
 xsltproc = find_program(
     'xsltproc',
     native: true,
@@ -157,6 +166,7 @@ foreach name, reqs : {
     'font_freetype': [freetype_deps, fontconfig_deps, harfbuzz_deps],
     'font_pango': [pango_deps, freetype_deps, fontconfig_deps, harfbuzz_deps],
     'dbus': [dbus_deps],
+    'sd_login': [sd_login_deps],
 }
     found = true
     foreach req : reqs

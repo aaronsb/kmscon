@@ -184,6 +184,31 @@ test(
     timeout: 60,
 )
 
+# the helper's user, built without sd-login and with it, its calls stood in for
+test_image_identity = executable(
+    'test_image_identity',
+    'test_image_identity.c',
+    '../src/image_identity.c',
+    c_args: '-DIMAGE_IDENTITY_SD_LOGIN=0',
+    include_directories: src_inc,
+    dependencies: [shl_deps],
+)
+test('test_image_identity', test_image_identity)
+if sd_login_deps.found()
+    test_image_identity_sd_login = executable(
+        'test_image_identity_sd_login',
+        'test_image_identity.c',
+        '../src/image_identity.c',
+        c_args: '-DIMAGE_IDENTITY_SD_LOGIN=1',
+        include_directories: src_inc,
+        dependencies: [
+            shl_deps,
+            sd_login_deps.partial_dependency(compile_args: true, includes: true),
+        ],
+    )
+    test('test_image_identity_sd_login', test_image_identity_sd_login)
+endif
+
 test_issue = executable(
     'test_issue',
     'test_issue.c',

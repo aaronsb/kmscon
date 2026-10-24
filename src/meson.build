@@ -52,6 +52,7 @@ kmscon_srcs = [
     'seat.c',
     'config.c',
     'image_host.c',
+    'image_identity.c',
     'main.c',
     'render_timer.c',
     'terminal.c',
@@ -69,6 +70,9 @@ kmscon_dep = [
     font_deps,
     misc_deps,
 ]
+if enable_sd_login
+    kmscon_dep += sd_login_deps
+endif
 
 # Reads kitty graphics files and decodes PNG and zlib as the session's user,
 # started by kmscon per terminal (ADR-103); it links nothing of kmscon's.

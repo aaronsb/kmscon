@@ -37,6 +37,9 @@ For font handling the following is required:
 - [libseat](https://sr.ht/~kennylevinsen/seatd/): Kmscon can take a seat with libseat . In this case you must have either systemd-logind, elogind, or seatd configured. It allows to run kmscon as a regular user, and configure which GPU/input device are allowed for kmscon. The drawback is that kmscon-launch-gui won't work to launch another GUI that uses libseat, as the seat is already in use.
 - If libseat is not present, kmscon will use its own VT handling, or a fake backend if VT is disabled in the kernel.
 
+#### Session user
+- sd-login, from libsystemd or libelogind: kmscon-image-helper, which reads the files a kitty graphics command names, runs as the user of the logind session kmscon's login started. Without sd-login, or outside a logind session, it runs as the owner of the session's pty.
+
 #### Terminfo
  - [ncurses](https://invisible-island.net/ncurses/) You need the `tic` executable from ncurses, to build kmscon.ti into a binary terminfo definition.
 
@@ -79,6 +82,7 @@ explicitly enable it via command line:
 |:------|:-------:|:-----------|
 |`extra_debug`| `false` | Additional debug outputs |
 |`libseat`| `false` | Use libseat to get access to device (DRM and inputs) |
+|`sd_login`| `auto` | Find the image helper's user through sd-login (libsystemd, then libelogind) |
 |`video_fbdev`| `auto` | Linux fbdev video backend |
 |`video_drm2d`| `auto` | Linux DRM software-rendering backend |
 |`video_drm3d`| `auto` | Linux DRM hardware-rendering backend |

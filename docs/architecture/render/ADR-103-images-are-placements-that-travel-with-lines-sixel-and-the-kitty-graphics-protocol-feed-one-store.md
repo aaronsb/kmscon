@@ -106,6 +106,14 @@ considered:
     said: "Carry A2 at the two 7680x2160 variants as a known failure naming #139, in the capability-probe style: green while it fails, red once it passes with the entry still there"
     via: "steering session, 2026-10-23, relayed by the team lead as the answer to kmscon #145's question 2"
     paraphrase: true
+  - operator: aaronsb
+    said: "Change now (Recommended): 85 plays a centred 1920x1080 window with dithering off; 86 and 87 say what tmux and mpv deliver; all three show mpv's shown and dropped counts on screen"
+    via: Claude Code session, 2026-10-24, answering how pages 85-87 change
+    paraphrase: true
+  - operator: aaronsb
+    said: "Same, plus dither off in panes: A4 passes when every pane animates, tmux's pictures reach the screen, nothing is left after exit, and kmscon keeps up with what tmux sends; the frame rate is reported, not judged, and the page says tmux and mpv set it; the panes' mpv runs with --vo-sixel-dither=none"
+    via: "Claude Code session, 2026-10-24, after the second VT review of #145"
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -388,6 +396,7 @@ Step 3, sixel:
 - **A2.** `mpv --vo=sixel` playing an animation full screen, Bad Apple!! for the showcase.
 - **A3.** The showcase's act 5: a small sixel video, then a deliberate glitch and a halt. Clearing the screen afterwards leaves no stale pixels.
 - **A4,** step 3's final scenario: tmux, which supports sixel from 3.4 when built with `--enable-sixel` (Arch builds it so), in a 2x2 and then a 3x3 grid of panes, each running `mpv --vo=sixel`. tmux sends every pane's pictures on to kmscon, so many sixel streams and placements change at once.
+  - Criterion, set 2026-10-24 (kmscon #145): A4 passes when every pane animates, tmux's pictures reach the screen, nothing is left after tmux exits, and kmscon keeps up with what tmux sends. The frame rate is reported, not judged: tmux and mpv set it. Each pane's mpv runs with `--vo-sixel-dither=none`. Until then the record named no criterion of A4's own; its observable read "tmux in a 3x3 grid of panes, each running mpv --vo=sixel, plays all nine and leaves no stale pixels when the panes close", and the demo pages asked for each pane's "counter rising by 30 a second". The operator's second VT review rated the grids wrong only for running under 30 frames a second ("30 fps would be passing. we can decide if that's an unattainable criteria"). With nothing reading the terminal, tmux and mpv bring 41-44% of the panes' frames through at 7680x2160, mpv alone reaches about 16 frames a second at the 2x2 pane's size, and at 3x3 tmux itself is the ceiling (ADR-104's A4 note). Shown that, the operator chose "Same, plus dither off in panes" (the considered entry of this date). Tier 3 judges what it can: a grid fails when tmux sent kmscon no picture, when kmscon's CPU time per picture tmux sent passes the clip's 33.3 ms frame interval, or when the screen after it differs from its golden; that every pane animates is judged on the VT.
 
 Step 4, kitty:
 

@@ -499,7 +499,7 @@ class BenchTest(unittest.TestCase):
         got = t3_bench.summarize(quiet, 20000, 100.0, 102.0)
         self.assertEqual((got["skipped"], got["skipped_per_s"]), (0, 0.0))
 
-    FLOOD ="T3-BENCH flood lines=20 start=100.00 end=104.00"
+    FLOOD = "T3-BENCH flood lines=20 start=100.00 end=104.00"
 
     def flood(self, *lines):
         return t3_bench.measure("\n".join(lines), self.FLOOD, self.CONF)

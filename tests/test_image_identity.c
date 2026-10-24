@@ -4,7 +4,7 @@
  * without. It stands in for getpwnam_r too, to choose which pre-login users
  * exist.
  *
- * - In a logind session of the child's own, of class "user": logind's uid,
+ * - In a logind session of the child's own, of a login class: logind's uid,
  *   root included, with its groups, and a pty owner that disagrees is logged.
  *   A session shared with kmscon, inherited, or of another class is none.
  * - logind running or its state unknown, and no session uid: before login.
@@ -292,9 +292,39 @@ int main(void)
 	own_error = -EIO;
 	expect_prelogin(77, 0, 4242, 990, 991);
 	own_error = 0;
-	/* only class "user" is a login: a greeter's, or a class not found, is not */
-	session_class = "greeter";
-	expect_prelogin(77, 0, 4242, 990, 991);
+	/*
+	 * The login classes count: root's console login is user-early since
+	 * systemd 256, and keeps its root helper and file media
+	 */
+	session_uid = 0;
+	session_class = "user-early";
+	expect_user(77, 0, 0, true, 0);
+	session_class = "user-early-light";
+	expect_user(77, 0, 0, true, 0);
+	session_uid = 4242;
+	session_class = "user-light";
+	expect_user(77, 0, 4242, true, 4242);
+	/* any other class is no login: before login, root's included */
+	{
+		static const char *const others[] = {"user-incomplete",
+						     "greeter",
+						     "lock-screen",
+						     "background",
+						     "background-light",
+						     "manager",
+						     "manager-early",
+						     "user-",
+						     "users"};
+		unsigned int i;
+
+		for (i = 0; i < sizeof(others) / sizeof(others[0]); i++) {
+			session_class = others[i];
+			expect_prelogin(77, 0, 4242, 990, 991);
+			session_uid = 0;
+			expect_prelogin(77, 0, 0, 990, 991);
+			session_uid = 4242;
+		}
+	}
 	session_class = "user";
 	class_error = -EIO;
 	expect_prelogin(77, 0, 4242, 990, 991);

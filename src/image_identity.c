@@ -55,11 +55,31 @@ static bool no_session(int ret)
 }
 
 /*
+ * The session classes pam_systemd(8) gives a fully logged-in interactive
+ * user: "user"; "user-early", the default for root's sessions since systemd
+ * 256, "similar to user" but not ordered after systemd-user-sessions; and
+ * their "-light" forms, "similar to" those but without the user's service
+ * manager. user-incomplete (not fully set up), greeter, lock-screen,
+ * background and manager are not logins, nor is any class not named here.
+ */
+static bool login_class(const char *class)
+{
+	static const char *const classes[] = {"user", "user-early", "user-light",
+					      "user-early-light"};
+	size_t i;
+
+	for (i = 0; i < sizeof(classes) / sizeof(classes[0]); i++)
+		if (!strcmp(class, classes[i]))
+			return true;
+	return false;
+}
+
+/*
  * logind's uid for @child's session, when that session is a login of the
  * child's own: pam_systemd registered it at login. A session the child
  * shares with kmscon is one it inherited, as from a kmscon started inside
  * someone's session or kmscon's own greeter session, where a later login
- * on the pty creates none of its own; and only class "user" is a login.
+ * on the pty creates none of its own; and only a login class counts.
  * Anything else, an error in finding kmscon's own session included, is no
  * session uid, and the request is handled as before login.
  */
@@ -78,7 +98,7 @@ static int logind_uid(pid_t child, uid_t *uid)
 		ret = -EPERM;
 	else if (ret >= 0 || no_session(ret))
 		ret = sd_session_get_class(session, &class);
-	if (ret >= 0 && strcmp(class, "user"))
+	if (ret >= 0 && !login_class(class))
 		ret = -EPERM;
 	if (ret >= 0)
 		ret = sd_session_get_uid(session, uid);

@@ -29,7 +29,8 @@
  * modes:
  *
  * - Built with sd-login (the sd_login option) and the process kmscon started
- *   in a logind session of its own, of class "user": that session's uid,
+ *   in a logind session of its own, of a login class ("user", "user-early",
+ *   "user-light" or "user-early-light"): that session's uid,
  *   the identity PAM authenticated, root included. A session it shares with
  *   kmscon is one it inherited (kmscon started inside someone's session, or
  *   kmscon's greeter session), where a login on the pty creates none of its

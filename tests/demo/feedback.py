@@ -154,7 +154,9 @@ def main():
                                 "83-sixel-evict", "84-photo-scroll", "85-mpv-sixel", "86-tmux-2x2",
                                 "87-tmux-3x3"],
           "the sixel kit holds the sixel pages and the acceptance pages", repr(kits.get("sixel")))
-    check(kits.get("kitty") == ["90-kitty"], "the kitty kit holds the kitty page",
+    check(kits.get("kitty") == ["90-kitty", "91-kitty-photo", "92-kitty-files", "93-kitty-shm",
+                                "94-kitty-layers", "95-kitty-refusal"],
+          "the kitty kit holds the kitty pages",
           repr(kits.get("kitty")))
     check("10-sgr" in kits.get("text", []) and "70-emoji" in kits.get("text", []),
           "the text kit holds the text pages", repr(kits.get("text")))
@@ -177,8 +179,8 @@ def main():
     check(status == 0 and names == [n[3:] for n in kits["sixel"]],
           "DEMO_KIT=sixel lists the sixel kit", out)
     status, names, out = listed({"DEMO_KIT": "kitty"})
-    check(status == 0 and names == ["kitty"] and "kitty graphics query" in out,
-          "DEMO_KIT=kitty lists the kitty page, which says when nothing answers its query",
+    check(status == 0 and names == [n[3:] for n in kits["kitty"]] and "kitty graphics query" in out,
+          "DEMO_KIT=kitty lists the kitty pages, which say when nothing answers their query",
           out)
     status, names, out = listed({"DEMO_KIT": "all"})
     check(status == 0 and sorted(names) == every, "DEMO_KIT=all lists every page", out)

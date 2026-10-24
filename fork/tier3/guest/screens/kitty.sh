@@ -30,28 +30,9 @@
 # program (docs/image-helper.md), and inline PNG and zlib decode as the
 # pre-login user. The page asks first, with the spec's query of one pixel
 # followed by DA1, and says so when the terminal does not answer it.
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sixel-common.inc"
-
-reply=$(ask "${esc}_Gi=31,s=1,v=1,a=q,f=24;AAAA${esc}\\${esc}[c" c)
-if [[ $reply != *"_Gi=31;OK"* ]]; then
-	printf 'This terminal does not answer the kitty graphics query (an a=q of\n'
-	printf 'one pixel before DA1), so no picture is sent.\n'
-	exit 0
-fi
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/kitty-common.inc"
+kitty_offered
 top_row
-
-# one kitty command: keys, then the payload in chunks of 4096
-kitty() {
-	local keys=$1 data=$2 i more
-	for ((i = 0; i < ${#data}; i += 4096)); do
-		more=$((i + 4096 < ${#data}))
-		if ((i == 0)); then
-			printf '%s_G%s,m=%d;%s%s\\' "$esc" "$keys" "$more" "${data:i:4096}" "$esc"
-		else
-			printf '%s_Gm=%d;%s%s\\' "$esc" "$more" "${data:i:4096}" "$esc"
-		fi
-	done
-}
 
 # 32x16 RGBA, red across, green down, blue 64; the right half at alpha 128
 rgba=
@@ -80,11 +61,11 @@ for col in 1 28 55; do
 	printf '%s[%d;%dH%s' "$esc" $((row + 3)) "$col" "$words"
 done
 printf '%s[%d;1H' "$esc" "$row"
-kitty "a=T,i=1,q=2,C=1,f=32,s=32,v=16,c=20,r=5,z=-1073741825" "$rgba"
+kitty_send "a=T,i=1,q=2,C=1,f=32,s=32,v=16,c=20,r=5,z=-1073741825" "$rgba"
 printf '%s[%d;28H' "$esc" "$row"
-kitty "a=T,i=2,q=2,C=1,f=100,c=20,r=5,z=-1" "$png"
+kitty_send "a=T,i=2,q=2,C=1,f=100,c=20,r=5,z=-1" "$png"
 printf '%s[%d;55H' "$esc" "$row"
-kitty "a=T,i=3,q=2,C=1,f=24,s=32,v=16,o=z,c=20,r=5,z=0" "$stripes"
+kitty_send "a=T,i=3,q=2,C=1,f=24,s=32,v=16,o=z,c=20,r=5,z=0" "$stripes"
 printf '%s[%d;1H%-27s%-27s%s' "$esc" $((row + 5)) "RGBA, below backgrounds" \
 	"PNG (helper), below text" "zlib f=24, above text"
 printf '%s[%d;1Ha=p of image 1, 4x2, moves the cursor: ' "$esc" $((row + 7))

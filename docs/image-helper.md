@@ -19,7 +19,7 @@ The helper runs as the session's user, never as the program in the foreground, s
 
 | Situation | Files, temporary files, shared memory | Inline PNG and zlib images |
 |---|---|---|
-| kmscon built with sd-login, and the terminal's login in a logind session of its own, of class `user` | read as the session's user, root included when root logged in through PAM | decoded as the session's user |
+| kmscon built with sd-login, and the terminal's login in a logind session of its own, of a login class (`user`, `user-early`, which root's console logins get, or their `-light` forms) | read as the session's user, root included when root logged in through PAM | decoded as the session's user |
 | logind running, and the terminal's child in no logind session of its own (the login prompt, or a session it shares with kmscon), or its session's class or user not found | refused, without starting the helper | decoded as `kmscon-image`, else `nobody`, else refused |
 | kmscon built without sd-login, or no logind running | read as the owner of the session's pty, as `login` sets it; refused when that owner is root | decoded as the pty's owner; when that owner is root, as `kmscon-image`, else `nobody`, else refused |
 

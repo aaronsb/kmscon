@@ -3,15 +3,16 @@ scenarios that play video): kmscon's render-timer lines on the guest's
 console, and the figures of one scenario's window.
 
 A benchmark screen script reports its window on the event port as
-"T3-BENCH NAME start=S end=E KEY=N...", S and E on the guest's monotonic
-clock (/proc/uptime), the clock that also stamps kmscon's console lines.
-The other keys are the screen's own counts: "lines" for text it printed, or
-for a screen that plays video through mpv "mpv_frames" and "mpv_dropped"
-(mpv-stats.lua) and "kmscon_cpu_ms", kmscon's CPU time over the window from
-/proc, and for the tmux grids "tmux_sixels", the sixel pictures tmux sent
-to kmscon while it played. kmscon, run with render-timer=log, writes one line per display per
-second, each covering the second before its stamp; the scenario's figures
-come from the lines whose seconds overlap the window.
+"T3-BENCH NAME start=S end=E KEY=N...", the keys in any order, S and E on
+the guest's monotonic clock (/proc/uptime), the clock that also stamps
+kmscon's console lines. The other keys are the screen's own counts: "lines"
+for text it printed, or for a screen that plays video through mpv
+"mpv_frames" and "mpv_dropped" (mpv-stats.lua) and "kmscon_cpu_ms",
+kmscon's CPU time over the window from /proc, and for the tmux grids
+"tmux_sixels", the sixel pictures tmux sent to kmscon while it played.
+kmscon, run with render-timer=log, writes one line per display per second,
+each covering the second before its stamp; the scenario's figures come from
+the lines whose seconds overlap the window.
 """
 
 import re

@@ -413,7 +413,9 @@ def main():
               and words[-2:] == [os.path.join(copy, "fork/showcase/bad-apple.sh"), "--audio"],
               p.stdout + p.stderr)
 
-        # The demo's kit is one word of env's, after setpriv, like the label.
+        # The demo's kit is one word of env's, after setpriv, like the label,
+        # and so is the user's runtime directory, where mpv finds the user's
+        # sound server.
         p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
                             "--kit=sixel", "4"],
                            capture_output=True, text=True, timeout=30,
@@ -422,8 +424,10 @@ def main():
         unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
         words = shlex.split(unshare[2:]) if unshare else []
         env_at = words.index("/usr/bin/env") if "/usr/bin/env" in words else -1
-        check("run-vt.sh hands the demo its kit in env's words",
+        check("run-vt.sh hands the demo its kit and the user's runtime directory in env's words",
               p.returncode == 0 and env_at > 0 and "DEMO_KIT=sixel" in words[env_at:]
+              and f"XDG_RUNTIME_DIR=/run/user/{nobody.pw_uid}" in words[env_at:]
+              and not any(w.startswith("XDG_RUNTIME_DIR=") for w in words[:env_at])
               and words[-2:] == ["/bin/bash", os.path.join(copy, "fork/demo/demo.sh")],
               p.stdout + p.stderr)
 

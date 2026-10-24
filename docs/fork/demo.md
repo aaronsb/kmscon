@@ -64,7 +64,7 @@ The extracted binary runs on the host as it is: libtsm is linked statically, and
 | Backend modules (pango, freetype, gltex, drm3d, ...) | `/usr/lib/kmscon`, compiled in (`BUILD_MODULE_DIR`); no option or environment variable changes it | kmscon runs in a private mount namespace (`unshare --mount`) in which `fork/build/demo-root/usr/lib/kmscon` is bind-mounted over `/usr/lib/kmscon`. The rest of the system never sees the mount, and it ends with kmscon. Without it the fork's binary would load the stock package's modules, which are built against a different tree. |
 | Config | `--configdir`, default `/etc/kmscon` | `--configdir fork/demo`, so `fork/demo/kmscon.conf` is read and `/etc/kmscon` is not. |
 | Fonts | fontconfig, through the pango module | the host's fonts. `kmscon.conf` asks for DejaVu Sans Mono at size 24; pango falls back to other installed fonts for CJK and emoji. |
-| The session | `--login -- argv`, started with `execve` | `/usr/bin/setpriv` drops to the invoking user (`$SUDO_USER`), then `env` sets `DEMO_LABEL="dev build <git describe>"` and runs `/bin/bash fork/demo/demo.sh`; the demonstration never runs as root. |
+| The session | `--login -- argv`, started with `execve` | `/usr/bin/setpriv` drops to the invoking user (`$SUDO_USER`), then `env` sets `DEMO_LABEL="dev build <git describe>"` and the user's `XDG_RUNTIME_DIR` (`/run/user/UID`, where mpv finds the user's sound server) and runs `/bin/bash fork/demo/demo.sh`; the demonstration never runs as root. |
 
 Display settings belong to one machine, so they are not in `fork/demo/kmscon.conf`. Pass them after `--` (for example the `mode=` and `use-original-mode` lines of `/etc/kmscon/kmscon.conf`, as `--mode=...` and `--no-use-original-mode`), together with `--font-size=N` for a different size.
 
@@ -85,7 +85,7 @@ The script is `fork/demo/vt-demo.sh [N] [-- KMSCON-OPTION...]`; `tests/demo/vt_d
 2. Refuses the VT on screen (`fgconsole`) and any VT a logind session is on, the desktop's included: stopping the unit there would end that session.
 3. Records whether `kmsconvt@ttyN.service` is active and stops it. A trap on exit, Ctrl-C, SIGTERM and SIGHUP stops kmscon with SIGTERM if it still runs, waits for it (SIGKILL after 5 seconds), and starts the unit again if it was active, so the stock console comes back after a normal end, an interrupt or a kmscon failure. While it restores, it ignores Ctrl-C, SIGTERM, SIGHUP and SIGPIPE, so a second Ctrl-C or a closed terminal cannot cut it short before the unit is started.
 4. Prints the steps and the manual restore command.
-5. Runs the staged kmscon on VT N with `--no-switchvt --oneshot`, the demo config and the demonstration (or the showcase, which `env` also hands `BAD_APPLE` and the user's `XDG_RUNTIME_DIR`) as its session, in the background so that only the script's trap stops it, and waits for it.
+5. Runs the staged kmscon on VT N with `--no-switchvt --oneshot`, the demo config and the demonstration (or the showcase, which `env` also hands `BAD_APPLE`), with the user's `XDG_RUNTIME_DIR`, as its session, in the background so that only the script's trap stops it, and waits for it.
 
 `--dry-run` prints each of these commands (and the checks it would make) without running any, and needs no root.
 

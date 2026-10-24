@@ -43,8 +43,9 @@ import time
 
 # The sections of the sixel kit that draw only through the stand-ins. The
 # others draw with mpv's video output or tmux, which the stand-ins do not
-# model, and are judged by tier 3's mpv-sixel and tmux cases.
-UNMODELLED = {"85-mpv-sixel", "86-tmux-2x2", "87-tmux-3x3"}
+# model, and are judged by tier 3's mpv-sixel and tmux cases; the audio page
+# draws no picture.
+UNMODELLED = {"85-audio", "85-mpv-sixel", "86-tmux-2x2", "87-tmux-3x3"}
 
 # The sections whose pictures stand apart from their text. The others lay
 # pictures over text on purpose (sixel's ring and lettered bars, the ramps'

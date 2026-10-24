@@ -4,7 +4,9 @@
 # look-for: the middle of the screen: colour bars, a moving rainbow band and
 # look-for: squares, a counter rising by 30 a second. Then this page comes back
 # look-for: clean, mpv's counts in bold. With --render-timer=osd kmscon's show.
-# look-for: mpv's full-screen sixel at 8K is limited by its encoder.
+# look-for: mpv's full-screen sixel at 8K is limited by its encoder. With an
+# look-for: output chosen on the audio page, a short beep each time the
+# look-for: counter passes a multiple of 30.
 # wrong-looks-like: A frozen, torn or flickering picture, the counter jumping
 # wrong-looks-like: in large steps (frames lost), pieces of the video left on
 # wrong-looks-like: this page afterwards, or the page not coming back.
@@ -35,8 +37,10 @@ if ((w > cols * cw || h > rows * ch)); then
 fi
 left=$(((cols - w / cw) / 2 + 1)) top=$(((rows - h / ch) / 2 + 1))
 stats=$(mktemp)
+player=(mpv_plain)
+! audio_choice || player=(mpv_heard "$audio_dev" --audio-file="$(beeps 5)")
 play() {
-	mpv_plain --vo=sixel --vo-sixel-width="$w" --vo-sixel-height="$h" \
+	"${player[@]}" --vo=sixel --vo-sixel-width="$w" --vo-sixel-height="$h" \
 		--vo-sixel-left="$left" --vo-sixel-top="$top" --vo-sixel-dither=none \
 		--script="$here/mpv-stats.lua" --script-opts=t3-stats="$stats" "$(clip 640x360 5)"
 }
@@ -45,4 +49,5 @@ read -r frames dropped < <(mpv_counts "$stats")
 rm -f "$stats"
 printf 'mpv --vo=sixel played a 5-second test pattern, 30 frames a second, in a\n'
 printf '%dx%d window, and returned to this page.\n' "$w" "$h"
+[ -z "$audio_dev" ] || printf 'Its sound, a beep at the start of each second, went to %s.\n' "$audio_desc"
 report mpv-sixel "mpv_frames=$frames mpv_dropped=$dropped kmscon_cpu_ms=$kmscon_ms"

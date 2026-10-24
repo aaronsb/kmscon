@@ -1,7 +1,8 @@
 # Shared by ADR-103's sixel acceptance screens (photos.sh, photo-scroll.sh,
-# mpv-sixel.sh, tmux-grid.inc), which source it: the
-# programs they need, the photograph, the clip, and the figures a measured
-# screen reports. It draws nothing itself, and sources sixel-common.inc.
+# mpv-sixel.sh, tmux-grid.inc) and the demo's audio page (audio.sh), which
+# source it: the programs they need, the photograph, the clip and its sound,
+# and the figures a measured screen reports. It draws nothing itself, and
+# sources sixel-common.inc.
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 . "$here/sixel-common.inc"
 
@@ -31,6 +32,13 @@ photo_cols() {
 # audio, no status line.
 mpv_plain() {
 	mpv --no-config --really-quiet --no-input-terminal --ao=null --no-audio "$@"
+}
+
+# mpv_plain with sound, through mpv's audio output $1.
+mpv_heard() {
+	local dev=$1
+	shift
+	mpv --no-config --really-quiet --no-input-terminal --audio-device="$dev" "$@"
 }
 
 # Photograph $1 drawn by chafa, the operator's everyday sixel tool, at
@@ -69,6 +77,33 @@ img2sixel_bytes() {
 # seconds; 30 frames per second.
 clip() {
 	printf 'av://lavfi:testsrc2=size=%s:rate=30:duration=%s' "$1" "$2"
+}
+
+# The clip's sound track, $1 seconds long: a tenth of a second of 1 kHz at
+# the start of each second, as testsrc2's counter passes a multiple of 30.
+beeps() {
+	printf 'av://lavfi:aevalsrc=0.3*sin(2*PI*1000*t)*lt(mod(t\\,1)\\,0.1):s=48000:d=%s' "$1"
+}
+
+# The file holding the sound output that the audio page chose for this pass
+# of the VT demo: the output's mpv name on its first line, its description
+# on the second. demo.sh runs each page as its own child, so $PPID names the
+# pass. It lives in the user's runtime directory, and fails when there is
+# none, as in tier 3's guest and in the tests.
+audio_file() {
+	local d=${XDG_RUNTIME_DIR:-}
+	[[ $d == /* ]] && [ -d "$d" ] && [ -O "$d" ] || return 1
+	printf '%s/kmscon-demo-audio.%s' "$d" "$PPID"
+}
+
+# The chosen output, as audio_dev (mpv's name for it) and audio_desc; fails
+# when none was chosen, so the page plays without sound.
+audio_choice() {
+	local f
+	audio_dev= audio_desc=
+	f=$(audio_file) && [ -f "$f" ] || return 1
+	{ IFS= read -r audio_dev; IFS= read -r audio_desc; } <"$f"
+	[ -n "$audio_dev" ]
 }
 
 # The kmscon process this terminal belongs to: the nearest ancestor named

@@ -151,7 +151,7 @@ def main():
               f"{name} names one known kit, or none", repr(found))
         kits.setdefault(found[0] if found else "text", []).append(name[:-3])
     check(kits.get("sixel") == ["80-sixel", "81-sixel-ramps", "82-sixel-article", "83-photos",
-                                "83-sixel-evict", "84-photo-scroll", "85-mpv-sixel", "86-tmux-2x2",
+                                "83-sixel-evict", "84-photo-scroll", "85-audio", "85-mpv-sixel", "86-tmux-2x2",
                                 "87-tmux-3x3"],
           "the sixel kit holds the sixel pages and the acceptance pages", repr(kits.get("sixel")))
     check(kits.get("kitty") == ["90-kitty"], "the kitty kit holds its placeholder page",

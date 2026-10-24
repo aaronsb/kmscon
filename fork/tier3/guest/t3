@@ -1,8 +1,12 @@
 #!/bin/sh
-# Draws one scenario screen: clears, then runs the named screen script, so the
-# captured screen holds the script's output and the next prompt only. Then
-# tells the driver, over the event port (see setup), that the script finished.
-# A measured screen reports its figures on the same port, named in T3_EVENTS.
+# Draws one scenario screen: clears the screen and the scrollback, then runs
+# the named screen script, so the captured screen holds the script's output
+# and the next prompt only, and scrollback holds only what the script
+# scrolled. kmscon's terminfo has no E3, so clear leaves the scrollback; ED 3
+# empties it. Then tells the driver, over the event port (see setup), that
+# the script finished. A measured screen reports its figures on the same
+# port, named in T3_EVENTS.
 clear
+printf '\033[3J'
 T3_EVENTS=/dev/ttyS1 bash /usr/local/share/tier3/"$1".sh
 echo "T3-DONE $1" > /dev/ttyS1

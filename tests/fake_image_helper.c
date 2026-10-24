@@ -184,6 +184,12 @@ int main(void)
 			r.status = -EINVAL;
 			r.reason_len = sizeof(reason);
 			send_fds(&r, sizeof(r), reason, sizeof(reason), NULL, 0, 0);
+		} else if (!strcmp(name, "huge")) {
+			/* 2^31 x 2^31 x 4 is 2^64, 0 in 64 bits; an empty memfd to match */
+			r.width = r.height = 0x80000000u;
+			fds[0] = memfd(0, seals);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			close(fds[0]);
 		} else if (!strncmp(name, "race:", 5)) {
 			/*
 			 * an unsealed memfd of the right size; when kmscon asks

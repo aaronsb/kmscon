@@ -173,7 +173,6 @@ fake_image_helper = executable(
 test_image_host = executable(
     'test_image_host',
     'test_image_host.c',
-    '../src/image_host.c',
     include_directories: src_inc,
     dependencies: [shl_deps, eloop_deps],
 )

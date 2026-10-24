@@ -10,20 +10,31 @@
  * reply carried is closed. A packet with no request out stops the helper. The
  * helper's memory limit is three times the budget plus 64 MiB, and a larger
  * budget, or another user, restarts it.
+ *
+ * The helper starts with descriptors 0 to 2 on /dev/null and its socket as 3
+ * and nothing else, TMPDIR its only environment variable, / as its working
+ * directory, no signal blocked, no_new_privs set and no ambient capability,
+ * whatever kmscon had. Run as root (in the dev container), it also takes the
+ * user's uid, gid and groups, and loses an ambient capability kmscon raised.
+ * The helper's reason reaches the log as printable ASCII only.
  */
 
 #include <assert.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <limits.h>
+#include <linux/capability.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <unistd.h>
-#include "image_host.h"
-#include "shl/eloop.h"
+#include "../src/image_host.c"
 
 static struct ev_eloop *loop;
 static char dir[PATH_MAX];
@@ -217,6 +228,8 @@ static void bad(struct image_host *h, const char *name, const char *why, uint64_
 	}
 	if (!strcmp(name, "budget"))
 		r.max_bytes = 64 * 64 * 4 - 1;
+	if (!strcmp(name, "huge"))
+		r.max_width = r.max_height = 0xffffffffu;
 	assert(image_host_send(h, getuid(), &r) == 0);
 	pid = image_host_pid(h);
 	wait_reply(h, 5000);
@@ -251,6 +264,7 @@ static void test_checks(const char *fake)
 		{"wide", "outside max-graphic-size"},
 		{"zero", "outside max-graphic-size"},
 		{"budget", "larger than the budget"},
+		{"huge", "larger than the budget"},
 		{"sv", "differs from s and v"},
 		{"id", "another request"},
 		{"version", "another version"},
@@ -322,6 +336,176 @@ static void test_checks(const char *fake)
 	image_host_free(h);
 }
 
+/* the value of @key in the helper's /proc status, or "" */
+static const char *status_of(pid_t pid, const char *key)
+{
+	static char value[256];
+	char path[64], line[512];
+	size_t n = strlen(key);
+	FILE *f;
+
+	value[0] = 0;
+	snprintf(path, sizeof(path), "/proc/%d/status", pid);
+	f = fopen(path, "r");
+	assert(f);
+	while (fgets(line, sizeof(line), f)) {
+		if (!strncmp(line, key, n) && line[n] == ':') {
+			snprintf(value, sizeof(value), "%s",
+				 line + n + 1 + strspn(line + n + 1, " \t"));
+			value[strcspn(value, "\n")] = 0;
+			/* the kernel ends Groups with a space */
+			for (n = strlen(value); n && value[n - 1] == ' '; n--)
+				value[n - 1] = 0;
+			n = strlen(key);
+		}
+	}
+	fclose(f);
+	return value;
+}
+
+/* raises CAP_NET_RAW as an ambient capability of this process (root only) */
+static bool raise_ambient(void)
+{
+	struct __user_cap_header_struct hdr = {.version = _LINUX_CAPABILITY_VERSION_3};
+	struct __user_cap_data_struct caps[2];
+
+	if (syscall(SYS_capget, &hdr, caps))
+		return false;
+	caps[0].inheritable |= 1u << CAP_NET_RAW;
+	return !syscall(SYS_capset, &hdr, caps) &&
+	       !prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_RAW, 0, 0);
+}
+
+/*
+ * The helper as started, read from /proc: what kmscon leaked to it (a
+ * descriptor, a blocked signal, an environment variable, an ambient
+ * capability) does not reach it
+ */
+static void test_hardening(const char *helper)
+{
+	struct image_host_request r = request(400, 'f', "/nonexistent");
+	char path[PATH_MAX + 64], link[PATH_MAX], want[64];
+	char env[4096];
+	unsigned int fds = 0;
+	bool ambient = false;
+	struct dirent *e;
+	struct image_host *h;
+	uid_t uid = getuid();
+	sigset_t usr1, old;
+	ssize_t n;
+	pid_t pid;
+	FILE *f;
+	DIR *d;
+	int leak, i;
+
+	leak = open("/dev/zero", O_RDONLY); /* no O_CLOEXEC */
+	assert(leak >= 0);
+	sigemptyset(&usr1);
+	sigaddset(&usr1, SIGUSR1);
+	assert(!sigprocmask(SIG_BLOCK, &usr1, &old));
+	assert(!setenv("KMSCON_TEST_SECRET", "x", 1) && !setenv("TMPDIR", "/tmp", 1));
+	if (!geteuid()) {
+		ambient = raise_ambient();
+		assert(ambient);
+	}
+
+	/* as root, the helper's own uid 0, so an ambient capability would survive */
+	assert(image_host_new(&h, loop, helper, reply, NULL) == 0);
+	assert(image_host_send(h, uid, &r) == 0);
+	wait_reply(h, 5000);
+	pid = image_host_pid(h);
+	assert(got.error == -EBADF && pid > 0);
+
+	snprintf(path, sizeof(path), "/proc/%d/fd", pid);
+	d = opendir(path);
+	assert(d);
+	while ((e = readdir(d))) {
+		if (e->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "/proc/%d/fd/%s", pid, e->d_name);
+		n = readlink(path, link, sizeof(link) - 1);
+		assert(n > 0);
+		link[n] = 0;
+		i = atoi(e->d_name);
+		if (i < 3)
+			assert(!strcmp(link, "/dev/null"));
+		else
+			assert(i == 3 && !strncmp(link, "socket:", 7));
+		fds++;
+	}
+	closedir(d);
+	assert(fds == 4);
+
+	snprintf(path, sizeof(path), "/proc/%d/environ", pid);
+	f = fopen(path, "r");
+	assert(f);
+	n = fread(env, 1, sizeof(env), f);
+	fclose(f);
+	assert(n == (ssize_t)sizeof("TMPDIR=/tmp") && !memcmp(env, "TMPDIR=/tmp", n));
+
+	snprintf(path, sizeof(path), "/proc/%d/cwd", pid);
+	n = readlink(path, link, sizeof(link) - 1);
+	assert(n == 1 && link[0] == '/');
+
+	assert(!strcmp(status_of(pid, "SigBlk"), "0000000000000000"));
+	assert(!strcmp(status_of(pid, "NoNewPrivs"), "1"));
+	assert(!strcmp(status_of(pid, "CapAmb"), "0000000000000000"));
+	image_host_free(h);
+
+	/* as root, the session user's uid, gid and groups */
+	if (!geteuid()) {
+		struct passwd *pw = getpwnam("nobody");
+		gid_t groups[64];
+		int ng = 64, k;
+		char line[256];
+		size_t off = 0;
+
+		assert(pw);
+		assert(getgrouplist(pw->pw_name, pw->pw_gid, groups, &ng) >= 0);
+		assert(image_host_new(&h, loop, helper, reply, NULL) == 0);
+		r.id = 401;
+		assert(image_host_send(h, pw->pw_uid, &r) == 0);
+		wait_reply(h, 5000);
+		pid = image_host_pid(h);
+		assert(pid > 0);
+		snprintf(want, sizeof(want), "%u\t%u\t%u\t%u", pw->pw_uid, pw->pw_uid, pw->pw_uid,
+			 pw->pw_uid);
+		assert(!strcmp(status_of(pid, "Uid"), want));
+		snprintf(want, sizeof(want), "%u\t%u\t%u\t%u", pw->pw_gid, pw->pw_gid, pw->pw_gid,
+			 pw->pw_gid);
+		assert(!strcmp(status_of(pid, "Gid"), want));
+		line[0] = 0;
+		for (k = 0; k < ng; k++)
+			off += snprintf(line + off, sizeof(line) - off, "%u ", groups[k]);
+		if (off)
+			line[off - 1] = 0;
+		assert(!strcmp(status_of(pid, "Groups"), line));
+		assert(!strcmp(status_of(pid, "CapAmb"), "0000000000000000"));
+		image_host_free(h);
+		printf("test_image_host: root: uid, gid, groups and ambient capabilities "
+		       "checked\n");
+	}
+
+	if (ambient)
+		prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+	unsetenv("KMSCON_TEST_SECRET");
+	unsetenv("TMPDIR");
+	sigprocmask(SIG_SETMASK, &old, NULL);
+	close(leak);
+}
+
+/* the reason a helper gives reaches the log as printable ASCII */
+static void test_sanitize(void)
+{
+	char buf[KMSCON_IMAGE_REASON_MAX + 1];
+	static const char reason[] = "bad\x01\x7f\n data!\x1b[2J\xff";
+
+	sanitize_reason(buf, reason, sizeof(reason) - 1);
+	assert(!strcmp(buf, "bad??? data!?[2J?"));
+	sanitize_reason(buf, "", 0);
+	assert(!buf[0]);
+}
+
 int main(int argc, char **argv)
 {
 	char helper[PATH_MAX], fake[PATH_MAX];
@@ -338,8 +522,10 @@ int main(int argc, char **argv)
 
 		assert(image_host_new(&h, loop, "kmscon-image-helper", reply, NULL) == -EINVAL);
 	}
+	test_sanitize();
 	test_real(helper);
 	test_checks(fake);
+	test_hardening(helper);
 
 	ev_eloop_unref(loop);
 	assert(rmdir(dir) == 0);

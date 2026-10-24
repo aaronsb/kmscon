@@ -152,7 +152,9 @@ static int resolve_creds(uid_t uid, struct creds *c)
 /*
  * The forked child: only async-signal-safe calls, then the helper with a
  * clean environment, descriptors 0 to 2 on /dev/null, its socket as 3 and
- * nothing else open.
+ * nothing else open. Ambient capabilities are cleared: they would survive the
+ * exec of a helper that keeps kmscon's uid, as one started by a kmscon that
+ * systemd gave AmbientCapabilities would.
  */
 static void __attribute__((noreturn)) exec_helper(const char *path, char *const argv[],
 						  char *const envp[], const struct creds *c,
@@ -170,7 +172,8 @@ static void __attribute__((noreturn)) exec_helper(const char *path, char *const 
 	if (c->change && (setgroups(c->n_groups, c->groups) || setresgid(c->gid, c->gid, c->gid) ||
 			  setresuid(c->uid, c->uid, c->uid)))
 		_exit(127);
-	if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) || chdir("/"))
+	if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) ||
+	    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) || chdir("/"))
 		_exit(127);
 	execve(path, argv, envp);
 	_exit(127);
@@ -300,20 +303,28 @@ static void close_fds(const int *fds, unsigned int n)
 }
 
 /* the helper's reason, as printable ASCII, for the log */
-static void log_reason(const struct image_host *h, int status, const char *reason, size_t len)
+/* @len bytes of @reason into @buf, every byte outside printable ASCII as '?' */
+static void sanitize_reason(char *buf, const char *reason, size_t len)
 {
-	char buf[KMSCON_IMAGE_REASON_MAX + 1];
 	size_t i;
 
-	if (!len)
-		return;
 	for (i = 0; i < len; i++)
 		buf[i] = reason[i] >= 0x20 && reason[i] <= 0x7e ? reason[i] : '?';
 	buf[len] = 0;
-	if (status)
-		log_info("image request %llu: %d: %s", (unsigned long long)h->req.id, status, buf);
-	else
-		log_debug("image request %llu: %s", (unsigned long long)h->req.id, buf);
+}
+
+/*
+ * The helper's reason, for the debug log: a client can make a failure on
+ * every command, so a failure's reason is not worth more than that
+ */
+static void log_reason(const struct image_host *h, int status, const char *reason, size_t len)
+{
+	char buf[KMSCON_IMAGE_REASON_MAX + 1];
+
+	if (!len)
+		return;
+	sanitize_reason(buf, reason, len);
+	log_debug("image request %llu: %d: %s", (unsigned long long)h->req.id, status, buf);
 }
 
 /*
@@ -335,8 +346,9 @@ static const uint8_t *map_pixels(const struct image_host *h, const struct kmscon
 		*why = "a reply's size is outside max-graphic-size";
 		return NULL;
 	}
-	bytes = (uint64_t)r->width * r->height * 4;
-	if (bytes > req->max_bytes || bytes > SIZE_MAX) {
+	if (__builtin_mul_overflow((uint64_t)r->width, r->height, &bytes) ||
+	    __builtin_mul_overflow(bytes, 4, &bytes) || bytes > req->max_bytes ||
+	    bytes > SIZE_MAX) {
 		*why = "a reply larger than the budget";
 		return NULL;
 	}
@@ -603,8 +615,14 @@ int image_host_send(struct image_host *host, uid_t uid, const struct image_host_
 	host->req = *req;
 	host->req.name = NULL;
 	host->req.data = NULL;
+	/* a request with no timer could hold the pty paused for good */
+	ret = ev_timer_update(host->timer, &spec);
+	if (ret) {
+		log_warning("cannot arm the image request timer: %d", ret);
+		stop_helper(host);
+		return -EBADF;
+	}
 	host->busy = true;
-	ev_timer_update(host->timer, &spec);
 	return 0;
 }
 

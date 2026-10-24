@@ -1364,6 +1364,48 @@ static void test_protocol(void)
 	close(fd);
 }
 
+/*
+ * As root: a temporary file or shared memory object another user owns is
+ * read but not deleted, as the sticky bit keeps any other user from deleting
+ * it; root's own is deleted. A discard is held to the same rule.
+ */
+static void test_foreign(void)
+{
+	char *file = path_in(tmp, "tty-graphics-protocol-foreign");
+	char name[64];
+	struct helper h;
+	struct reply rep;
+
+	if (geteuid()) {
+		printf("test_image_helper: not root, foreign owners not checked\n");
+		return;
+	}
+	snprintf(name, sizeof(name), "/kmscon-foreign-%d", getpid());
+	start(&h);
+	write_file(file, px1, 4);
+	assert(chown(file, 65534, 65534) == 0);
+	assert(ask_file(&h, 't', file, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px1, 4);
+	assert(exists(file));
+	assert(ask(&h, req_of('t', KMSCON_IMAGE_DISCARD, 0), file, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(exists(file));
+	assert(chown(file, 0, 0) == 0);
+	assert(ask_file(&h, 't', file, &rep) == KMSCON_IMAGE_OK);
+	close(rep.fd);
+	assert(!exists(file));
+
+	shm_write(name, px1, 4);
+	assert(chown(path_in("/dev/shm", name + 1), 65534, 65534) == 0);
+	assert(ask_file(&h, 's', name, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px1, 4);
+	assert(shm_exists(name));
+	assert(ask(&h, req_of('s', KMSCON_IMAGE_DISCARD, 0), name, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(shm_exists(name));
+	unlink(path_in("/dev/shm", name + 1));
+	assert(stop(&h) == 0);
+	printf("test_image_helper: root: other users' objects left in place\n");
+}
+
 /* @argv: the helper, its test build, and a directory outside the temporary ones */
 int main(int argc, char **argv)
 {
@@ -1387,6 +1429,7 @@ int main(int argc, char **argv)
 	test_swaps();
 	test_shm();
 	test_discard();
+	test_foreign();
 	test_png_zlib();
 	test_ignored();
 	test_png_limits();

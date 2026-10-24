@@ -272,7 +272,9 @@ refuse:
 /*
  * Deletes the checked file @path, which descriptor @st describes: only the
  * entry with its device and inode, in a parent reached with no symlink, so a
- * directory component swapped for a symlink after the check deletes nothing.
+ * directory component swapped for a symlink after the check deletes nothing,
+ * and only when the helper's own uid owns it, which gives a root helper the
+ * sticky bit's rule in /tmp and /dev/shm.
  * A failure leaves the file and only adds to the reason.
  *
  * Between fstatat and unlinkat the entry can still be renamed away and
@@ -314,6 +316,8 @@ static void delete_checked(struct job *j, const char *path, const struct stat *s
 	if (fstatat(dfd, base, &entry, AT_SYMLINK_NOFOLLOW) || entry.st_dev != st->st_dev ||
 	    entry.st_ino != st->st_ino)
 		fail(j, 0, "not deleted: %s is no longer the file read", path);
+	else if (entry.st_uid != geteuid())
+		fail(j, 0, "not deleted: %s belongs to uid %u", path, entry.st_uid);
 	else if (unlinkat(dfd, base, 0))
 		fail(j, 0, "not deleted: %s: %s", path, strerror(errno));
 	close(dfd);
@@ -323,8 +327,8 @@ static void delete_checked(struct job *j, const char *path, const struct stat *s
  * Opens shared memory object @name read-only into @fd: a leading '/', no other
  * '/', at most SHM_NAME_MAX bytes, and a regular object, opened under /dev/shm
  * as shm_open does, but through open_regular, so a FIFO or a symlink there is
- * never opened. It is then unlinked, by its device and inode as
- * delete_checked does, whatever happens next; the same rename race as
+ * never opened. It is then unlinked, by its device and inode and only when
+ * the helper's uid owns it, as delete_checked does, whatever happens next; the same rename race as
  * delete_checked's applies, bounded by /dev/shm's sticky bit to objects the
  * user could unlink anyway.
  */
@@ -353,7 +357,7 @@ static int open_shm(struct job *j, int *fd, struct stat *st)
 		goto out;
 	}
 	if (fstatat(dfd, name + 1, &entry, AT_SYMLINK_NOFOLLOW) || entry.st_dev != st->st_dev ||
-	    entry.st_ino != st->st_ino || unlinkat(dfd, name + 1, 0))
+	    entry.st_ino != st->st_ino || entry.st_uid != geteuid() || unlinkat(dfd, name + 1, 0))
 		fail(j, 0, "shared memory %s not unlinked", name);
 out:
 	close(dfd);

@@ -84,7 +84,7 @@ static void log_disagreement(uid_t owner, uid_t logind)
 }
 #endif
 
-int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid)
+int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid, bool *files)
 {
 #if IMAGE_IDENTITY_SD_LOGIN
 	uid_t logind;
@@ -93,10 +93,18 @@ int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid)
 		if (!owner_ret && owner != logind)
 			log_disagreement(owner, logind);
 		*uid = logind;
+		*files = true;
 		return 0;
 	}
+	/*
+	 * logind runs (it lists its seats) and the process is in none of its
+	 * sessions, or logind could not say which: no session user yet, so the
+	 * file media are refused, failing closed
+	 */
+	*files = sd_get_seats(NULL) < 0;
 #else
 	(void)child;
+	*files = true;
 #endif
 	if (owner_ret)
 		return owner_ret;

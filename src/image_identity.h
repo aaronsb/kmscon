@@ -32,18 +32,27 @@
  * pty's owner is file metadata a root process in the session can change, so
  * when the two disagree logind's answer stands and the disagreement is
  * logged.
+ *
+ * Before login, when logind runs but the process is in no session yet (the
+ * login prompt), there is no session user, and the pty is still root's. The
+ * file media are then refused (the operator's choice, "Refuse before
+ * login"); inline images, which name no file, still go to the helper as the
+ * pty's owner. Without sd-login, or with no logind running, the pty's owner
+ * stands as before.
  */
 
 #ifndef KMSCON_IMAGE_IDENTITY_H
 #define KMSCON_IMAGE_IDENTITY_H
 
+#include <stdbool.h>
 #include <sys/types.h>
 
 /*
  * The user for @child, the process kmscon started on the pty; @owner_ret is
  * 0 when @owner is the pty's owner, else a negative error. Returns 0 with
- * @uid set, or a negative error when neither source answers.
+ * @uid set, and @files false when the file media (t=f, t=t, t=s) are refused
+ * before login, or a negative error when neither source answers.
  */
-int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid);
+int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid, bool *files);
 
 #endif /* KMSCON_IMAGE_IDENTITY_H */

@@ -634,13 +634,17 @@ static int image_event(struct tsm_vte *vte, const struct tsm_vte_image_request *
 		.max_bytes = image_budget_limit(),
 	};
 	uid_t owner = 0, uid;
+	bool files;
 	int ret;
 
 	ret = kmscon_pty_get_slave_owner(term->pty, &owner);
-	if (image_identity_uid(kmscon_pty_get_child(term->pty), ret, owner, &uid)) {
+	if (image_identity_uid(kmscon_pty_get_child(term->pty), ret, owner, &uid, &files)) {
 		log_warning("no session user for image request %llu", (unsigned long long)req->id);
 		return -EBADF;
 	}
+	/* before login no file, temporary file or shared memory is read */
+	if (!files && req->medium != TSM_VTE_IMAGE_DIRECT)
+		return -EBADF;
 	if (image_host_send(term->image_host, uid, &r))
 		return -EBADF;
 	kmscon_pty_pause(term->pty);

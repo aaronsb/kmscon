@@ -8,6 +8,7 @@ Nothing reaches the helper yet: kmscon turns the kitty graphics protocol on in a
 
 - kmscon starts one helper per terminal session at the session's first image request, and stops it when the session ends, when the session's user changes (a logout and a new login), or when it fails a request.
 - The helper reads only what a request bounds, decodes PNG and zlib, and answers each request with an outcome or the image. It knows nothing of the kitty protocol's keys: libtsm, kmscon's terminal library, turns them into plain bounds (where to start, the most to read, the fewest bytes the image needs).
+- Bytes a program sends past what the image needs are skipped, as kitty skips them. The helper counts what it skipped (from the file's size, without reading it), and kmscon logs the count under `kmscon --debug`, never the file's name.
 - It refuses to open anything but a regular file, refuses files in `/proc`, `/sys`, `/dev` other than `/dev/shm`, and on kernel pseudo-filesystems wherever they are mounted, and deletes a temporary file only when its path lies in `/tmp`, `/dev/shm` or kmscon's `TMPDIR` and contains `tty-graphics-protocol`.
 - It starts stripped down: `no_new_privs` set, ambient capabilities cleared, working directory `/`, no descriptor open but its socket, an environment holding only `TMPDIR`, and a memory limit of three times `image-storage-limit` plus 64 MiB.
 - A request it does not answer within 2 seconds, or a reply that fails one of kmscon's checks, costs the program that sent it an error reply and the helper a restart.

@@ -293,6 +293,8 @@ static void bad(struct image_host *h, const char *name, const char *why, char ki
 		r.max_bytes = 64 * 64 * 4 - 1;
 	if (!strcmp(name, "huge"))
 		r.max_width = r.max_height = 0xffffffffu;
+	if (!strcmp(name, "ignoredmax"))
+		r.read_max = 4;
 	assert(image_host_send(h, &me, &r) == 0);
 	pid = image_host_pid(h);
 	wait_reply(h, 5000);
@@ -308,6 +310,58 @@ static void bad(struct image_host *h, const char *name, const char *why, char ki
 		fprintf(stderr, "%s: %u descriptors open, %u before\n", name, open_fds(), fds);
 		abort();
 	}
+}
+
+/* kmscon's stderr, where its log goes, while @fn runs, into @buf */
+static void capture_log(char *buf, size_t size, void (*fn)(void *), void *arg)
+{
+	int pipefd[2], saved;
+	ssize_t n;
+
+	fflush(stderr);
+	assert(pipe(pipefd) == 0);
+	saved = dup(2);
+	assert(saved >= 0 && dup2(pipefd[1], 2) == 2);
+	close(pipefd[1]);
+	fn(arg);
+	fflush(stderr);
+	assert(dup2(saved, 2) == 2);
+	close(saved);
+	n = read(pipefd[0], buf, size - 1);
+	buf[n > 0 ? n : 0] = 0;
+	close(pipefd[0]);
+}
+
+static struct image_host *log_host;
+
+static void ask_ignored(void *name)
+{
+	struct image_user me = user_of(getuid());
+	struct image_host_request r = request(110, 'f', name);
+
+	r.read_max = 9;
+	assert(image_host_send(log_host, &me, &r) == 0);
+	wait_reply(log_host, 5000);
+}
+
+/*
+ * An OK reply with ignored above 0, at most read_max, passes and is logged at
+ * debug level, with the request, its medium and the count but not the name;
+ * with ignored 0 nothing is logged
+ */
+static void test_ignored_log(struct image_host *h, pid_t pid)
+{
+	char out[4096];
+
+	log_host = h;
+	log_set_level(LOG_DEBUG);
+	capture_log(out, sizeof(out), ask_ignored, "ignoredok");
+	assert(got.status == KMSCON_IMAGE_OK && got.len == 4 && image_host_pid(h) == pid);
+	assert(strstr(out, "image request 110, t=f: 9 bytes past what was used ignored"));
+	assert(!strstr(out, "ignoredok"));
+	capture_log(out, sizeof(out), ask_ignored, "good");
+	assert(got.status == KMSCON_IMAGE_OK && !strstr(out, "ignored"));
+	log_set_level(LOG_NOTICE);
 }
 
 static void test_checks(const char *fake)
@@ -343,7 +397,9 @@ static void test_checks(const char *fake)
 		{"sized", "a size for bytes", 'r'},
 		{"id", "another request", 'p'},
 		{"version", "another version", 'r'},
-		{"reserved", "reserved field", 'p'},
+		{"ignorederr", "ignored count", 'p'},
+		{"ignoredmax", "ignored count", 'r'},
+		{"discardignored", "ignored count", 'x'},
 		{"status", "unknown status", 'r'},
 		{"truncated", "not its header and reason", 'p'},
 		{"reasonlen", "not its header and reason", 'r'},
@@ -377,6 +433,7 @@ static void test_checks(const char *fake)
 	assert(image_host_send(h, &me, &r) == 0);
 	wait_reply(h, 5000);
 	assert(got.status == KMSCON_IMAGE_CORRUPT && image_host_pid(h) == pid);
+	test_ignored_log(h, pid);
 
 	/* each case starts with no helper, so the descriptors open compare */
 	image_host_cancel(h);

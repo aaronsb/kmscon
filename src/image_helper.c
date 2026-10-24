@@ -79,6 +79,7 @@ struct job {
 	uint32_t width;
 	uint32_t height;
 	int out_fd;
+	uint64_t ignored; /* step 7: the bytes left past what was used */
 };
 
 /* @status, with the reason for kmscon's log; KMSCON_IMAGE_OK only adds a note */
@@ -397,6 +398,8 @@ static int read_bounded(struct job *j, int fd, const struct stat *st, uint8_t **
 		if (avail < req->min_bytes)
 			return fail(j, KMSCON_IMAGE_TOO_SHORT, "%llu bytes to read, %llu needed",
 				    (unsigned long long)avail, (unsigned long long)req->min_bytes);
+		/* step 7: counted from the bounds and fstat, never read */
+		j->ignored = avail - req->min_bytes;
 		avail = req->min_bytes;
 	} else if (avail > req->max_bytes || avail > SIZE_MAX) {
 		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "%llu bytes to read, past the budget",
@@ -497,9 +500,11 @@ static int inflate_failed(struct job *j, z_stream *zs, int zret)
  * is CORRUPT, found before the max_bytes bound. Otherwise a byte past
  * max_bytes is OVER_BUDGET. A stream that does not inflate, or ends before
  * its end is reached, is CORRUPT; fewer than min_bytes out is TOO_SHORT.
+ * @rest is how many bytes of @in follow the stream's end, its trailer counted
+ * in the stream, or 0 when inflating stopped before the end showed.
  */
 static int inflate_bounded(struct job *j, const uint8_t *in, size_t in_len, uint8_t **out,
-			   size_t *out_len)
+			   size_t *out_len, size_t *rest)
 {
 	const struct kmscon_image_request *req = j->req;
 	bool exact = req->flags & KMSCON_IMAGE_EXACT;
@@ -523,6 +528,7 @@ static int inflate_bounded(struct job *j, const uint8_t *in, size_t in_len, uint
 		free(buf);
 		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot start zlib");
 	}
+	*rest = 0;
 	zs.next_in = (Bytef *)in;
 	zs.next_out = buf;
 
@@ -549,16 +555,24 @@ static int inflate_bounded(struct job *j, const uint8_t *in, size_t in_len, uint
 		}
 		zret = inflate(&zs, Z_NO_FLUSH);
 		if (zret == Z_STREAM_END)
-			goto done;
+			goto end;
 		if (zret != Z_OK && (zret != Z_BUF_ERROR || (!zs.avail_in && zs.avail_out))) {
 			ret = inflate_failed(j, &zs, zret);
 			goto err;
 		}
 	}
 
-	/* limit bytes out and the stream not ended: past them it is ignored, or one more counts */
-	if (stop)
+	/*
+	 * limit bytes out and the stream not ended: past them it is ignored,
+	 * though the stream's end may follow with no more output, which one
+	 * call with no room finds; or one byte more counts
+	 */
+	if (stop) {
+		inflate_feed(&zs, in_len);
+		if (inflate(&zs, Z_NO_FLUSH) == Z_STREAM_END)
+			*rest = in_len - zs.total_in;
 		goto done;
+	}
 	zs.next_out = &probe;
 	zs.avail_out = 1;
 	for (;;) {
@@ -575,13 +589,15 @@ static int inflate_bounded(struct job *j, const uint8_t *in, size_t in_len, uint
 			goto err;
 		}
 		if (zret == Z_STREAM_END)
-			goto done;
+			goto end;
 		if (zret != Z_OK && (zret != Z_BUF_ERROR || !zs.avail_in)) {
 			ret = inflate_failed(j, &zs, zret);
 			goto err;
 		}
 	}
 
+end:
+	*rest = in_len - zs.total_in;
 done:
 	if (zs.total_out < req->min_bytes) {
 		ret = fail(j, KMSCON_IMAGE_TOO_SHORT,
@@ -701,9 +717,10 @@ static void png_warn(png_structp png, png_const_charp msg)
  * checked before any pixel is allocated: past max_width or max_height is
  * TOO_LARGE, and width x height x 4 past max_bytes OVER_BUDGET. libpng's own
  * size limits are set to the format's, so that this check decides. The rows
- * are decoded straight into the reply's memfd.
+ * are decoded straight into the reply's memfd. @rest is how many bytes follow
+ * the IEND chunk, or 0 when the stream ends without one.
  */
-static int decode_png(struct job *j, const uint8_t *data, size_t len)
+static int decode_png(struct job *j, const uint8_t *data, size_t len, size_t *rest)
 {
 	const struct kmscon_image_request *req = j->req;
 	struct png_src src = {.job = j, .data = data, .len = len};
@@ -714,6 +731,7 @@ static int decode_png(struct job *j, const uint8_t *data, size_t len)
 	int depth, type, ret;
 	uint8_t *m, *volatile map = NULL;
 	png_bytep *volatile rows = NULL;
+	volatile bool decoded = false;
 
 	png = png_create_read_struct(PNG_LIBPNG_VER_STRING, &src, png_err, png_warn);
 	if (!png)
@@ -723,8 +741,13 @@ static int decode_png(struct job *j, const uint8_t *data, size_t len)
 		png_destroy_read_struct(&png, NULL, NULL);
 		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot start libpng");
 	}
+	*rest = 0;
 	if (setjmp(png_jmpbuf(png))) {
-		ret = KMSCON_IMAGE_CORRUPT;
+		/* a stream that ends without IEND after its image costs the image nothing */
+		if (decoded)
+			ret = fail(j, KMSCON_IMAGE_OK, "PNG without IEND after its image");
+		else
+			ret = KMSCON_IMAGE_CORRUPT;
 		goto out;
 	}
 	png_set_read_fn(png, &src, png_read);
@@ -776,6 +799,12 @@ static int decode_png(struct job *j, const uint8_t *data, size_t len)
 	munmap(map, (size_t)w * h * 4);
 	map = NULL;
 	ret = out_seal(j);
+	if (ret)
+		goto out;
+	/* step 7: the image is done; what follows IEND is counted */
+	decoded = true;
+	png_read_end(png, NULL);
+	*rest = src.len - src.off;
 
 out:
 	if (ret && map) {
@@ -795,7 +824,7 @@ static int handle(struct job *j)
 {
 	const struct kmscon_image_request *req = j->req;
 	uint8_t *data = NULL, *inflated = NULL;
-	size_t len = 0, inflated_len = 0;
+	size_t len = 0, inflated_len = 0, rest = 0, png_rest = 0;
 	struct stat st;
 	int fd, ret;
 
@@ -810,15 +839,19 @@ static int handle(struct job *j)
 	if (ret)
 		return ret;
 	if (req->flags & KMSCON_IMAGE_INFLATE) {
-		ret = inflate_bounded(j, data, len, &inflated, &inflated_len);
+		ret = inflate_bounded(j, data, len, &inflated, &inflated_len, &rest);
 		free(data);
 		if (ret)
 			return ret;
 		data = inflated;
 		len = inflated_len;
 	}
-	ret = req->flags & KMSCON_IMAGE_PNG ? decode_png(j, data, len) : out_bytes(j, data);
+	ret = req->flags & KMSCON_IMAGE_PNG ? decode_png(j, data, len, &png_rest)
+					    : out_bytes(j, data);
 	free(data);
+	/* step 7: past IEND, and past the end of the zlib stream that held it */
+	if (req->flags & (KMSCON_IMAGE_INFLATE | KMSCON_IMAGE_PNG))
+		j->ignored = (uint64_t)rest + png_rest;
 	return ret;
 }
 
@@ -832,6 +865,7 @@ static void reply(const struct job *j, uint32_t status)
 		.width = fd ? j->width : 0,
 		.height = fd ? j->height : 0,
 		.reason_len = strlen(j->reason),
+		.ignored = fd ? (j->ignored > UINT32_MAX ? UINT32_MAX : j->ignored) : 0,
 	};
 	struct iovec iov[2] = {
 		{.iov_base = &r, .iov_len = sizeof(r)},

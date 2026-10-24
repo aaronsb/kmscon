@@ -93,7 +93,10 @@ struct kmscon_image_request {
  * KMSCON_IMAGE_OK, except for a discard, the packet carries a sealed memfd:
  * for a PNG request width x height x 4 bytes of straight-alpha RGBA, else
  * exactly min_bytes bytes with width and height 0. Any other reply carries
- * none.
+ * none. ignored counts the bytes the helper left past what it used, which
+ * kmscon logs at debug level: without INFLATE or PNG, those past min_bytes
+ * within the bounds, from fstat; with PNG, those read past the IEND chunk;
+ * with INFLATE, those read past the end of the zlib stream.
  */
 struct kmscon_image_reply {
 	uint32_t version; /* KMSCON_IMAGE_VERSION */
@@ -102,7 +105,8 @@ struct kmscon_image_reply {
 	uint32_t width;	  /* KMSCON_IMAGE_OK with KMSCON_IMAGE_PNG; else 0 */
 	uint32_t height;
 	uint32_t reason_len; /* 0 to KMSCON_IMAGE_REASON_MAX */
-	uint32_t reserved;   /* 0 */
+	uint32_t ignored;    /* bytes past what was used, at most UINT32_MAX; 0 for an error
+				or discard */
 };
 
 /* ADR-103's layout, with no padding */
@@ -125,6 +129,6 @@ _Static_assert(offsetof(struct kmscon_image_reply, id) == 8, "id at 8");
 _Static_assert(offsetof(struct kmscon_image_reply, width) == 16, "width at 16");
 _Static_assert(offsetof(struct kmscon_image_reply, height) == 20, "height at 20");
 _Static_assert(offsetof(struct kmscon_image_reply, reason_len) == 24, "reason_len at 24");
-_Static_assert(offsetof(struct kmscon_image_reply, reserved) == 28, "reserved at 28");
+_Static_assert(offsetof(struct kmscon_image_reply, ignored) == 28, "ignored at 28");
 
 #endif /* KMSCON_IMAGE_HELPER_PROTO_H */

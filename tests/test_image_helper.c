@@ -175,7 +175,7 @@ static ssize_t recv_reply(struct helper *h, struct reply *out)
 	if (!n)
 		return 0;
 	assert(!(msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)));
-	assert((size_t)n == sizeof(in.r) + in.r.reason_len && !in.r.reserved);
+	assert((size_t)n == sizeof(in.r) + in.r.reason_len);
 	assert(in.r.version == KMSCON_IMAGE_VERSION);
 	out->r = in.r;
 	memcpy(out->reason, in.buf + sizeof(in.r), in.r.reason_len);
@@ -199,7 +199,7 @@ static int ask(struct helper *h, struct kmscon_image_request r, const char *name
 	if (out->r.status == KMSCON_IMAGE_OK && !(r.flags & KMSCON_IMAGE_DISCARD))
 		assert(out->fd >= 0);
 	else
-		assert(out->fd < 0 && !out->r.width && !out->r.height);
+		assert(out->fd < 0 && !out->r.width && !out->r.height && !out->r.ignored);
 	return out->r.status;
 }
 
@@ -302,21 +302,30 @@ static void test_files(void)
 	start(&h);
 	write_file(f, px, sizeof(px));
 
-	/* read_max 0 reads to the end; exactly min_bytes come back */
+	/*
+	 * read_max 0 reads to the end; exactly min_bytes come back, and
+	 * ignored counts the bytes within the bounds past them
+	 */
 	assert(ask(&h, bounds('f', 0, 0, 16), f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
 	expect_bytes(&rep, px, 16);
 	assert(ask(&h, bounds('f', 12, 0, 4), f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
 	expect_bytes(&rep, px + 12, 4);
 	/* read_max non-zero bounds the read */
 	assert(ask(&h, bounds('f', 4, 4, 4), f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
 	expect_bytes(&rep, px + 4, 4);
 	/* min_bytes exceeded: the bytes past it are ignored, with read_max 0 or larger */
 	assert(ask(&h, bounds('f', 4, 0, 4), f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 8);
 	expect_bytes(&rep, px + 4, 4);
 	assert(ask(&h, bounds('f', 4, 8, 4), f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 4);
 	expect_bytes(&rep, px + 4, 4);
 	/* read_max past the end reads to the end */
 	assert(ask(&h, bounds('f', 8, 100, 8), f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
 	expect_bytes(&rep, px + 8, 8);
 
 	/* min_bytes missed: to the end, and within read_max */
@@ -338,6 +347,8 @@ static void test_files(void)
 	r = bounds('f', 0, 0, 4);
 	r.max_bytes = 1024;
 	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_OK);
+	/* counted from fstat, though the bytes were never read nor fit the budget */
+	assert(rep.r.ignored == sizeof(big) - 4);
 	expect_bytes(&rep, big, 4);
 	r.flags = KMSCON_IMAGE_INFLATE;
 	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_OVER_BUDGET);
@@ -1093,6 +1104,120 @@ static void test_png_zlib(void)
 	assert(stop(&h) == 0);
 }
 
+/* @len bytes of @data, then @extra bytes of junk, in a new buffer */
+static uint8_t *with_junk(const void *data, size_t len, size_t extra)
+{
+	uint8_t *buf = malloc(len + extra);
+
+	assert(buf);
+	memcpy(buf, data, len);
+	memset(buf + len, 0xa5, extra);
+	return buf;
+}
+
+/*
+ * Step 7: ignored. A well-formed PNG or zlib payload reports 0, inline, from
+ * a file and under every flag; bytes past IEND, or past the end of the zlib
+ * stream, are counted; bytes inflated past min_bytes and never used are not,
+ * and neither is a stream that stopped before its end showed. A PNG that
+ * ends without IEND after its image still decodes, with 0.
+ */
+static void test_ignored(void)
+{
+	const unsigned int pz = KMSCON_IMAGE_PNG | KMSCON_IMAGE_INFLATE;
+	uint8_t rgba[3 * 2 * 4], *png, *z, *junk;
+	char *f = path_in(other, "ignored.png");
+	struct kmscon_image_request r;
+	struct helper h;
+	struct reply rep;
+	uLongf zlen;
+	size_t len, i;
+
+	for (i = 0; i < sizeof(rgba); i++)
+		rgba[i] = (uint8_t)(i * 7 + 3);
+	start(&h);
+
+	/* PNG: well-formed is 0, inline and from a file; 5 bytes past IEND are 5 */
+	len = make_png(&png, 3, 2, PNG_COLOR_TYPE_RGBA, 8, PNG_INTERLACE_NONE, rgba);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), png, len, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
+	expect_pixels(&rep, 3, 2, rgba);
+	write_file(f, png, len);
+	assert(ask(&h, req_of('f', KMSCON_IMAGE_PNG, 0), f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
+	expect_pixels(&rep, 3, 2, rgba);
+	junk = with_junk(png, len, 5);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), junk, len + 5, &rep) ==
+	       KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 5);
+	expect_pixels(&rep, 3, 2, rgba);
+	free(junk);
+	/* no IEND after the image (its last 12 bytes): decoded, 0 */
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), png, len - 12, &rep) ==
+	       KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
+	expect_pixels(&rep, 3, 2, rgba);
+
+	/* zlib over PNG: well-formed is 0 with and without EXACT; 3 bytes past the stream are 3 */
+	z = zip(png, len, &zlen);
+	r = req_of('d', pz | KMSCON_IMAGE_EXACT, len);
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
+	expect_pixels(&rep, 3, 2, rgba);
+	assert(ask_inline(&h, req_of('d', pz, 0), z, zlen, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
+	expect_pixels(&rep, 3, 2, rgba);
+	junk = with_junk(z, zlen, 3);
+	assert(ask_inline(&h, req_of('d', pz, 0), junk, zlen + 3, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 3);
+	expect_pixels(&rep, 3, 2, rgba);
+	free(junk);
+	free(z);
+	free(png);
+
+	/*
+	 * INFLATE alone: well-formed is 0, exactly min_bytes long or under EXACT;
+	 * bytes inflated past min_bytes are not counted; 3 bytes past the end of
+	 * a stream exactly min_bytes long are 3; from a file within read_max too
+	 */
+	z = zip(rgba, sizeof(rgba), &zlen);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 24), z, zlen, &rep) ==
+	       KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
+	expect_bytes(&rep, rgba, 24);
+	r = req_of('d', KMSCON_IMAGE_INFLATE | KMSCON_IMAGE_EXACT, 24);
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
+	expect_bytes(&rep, rgba, 24);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 16), z, zlen, &rep) ==
+	       KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
+	expect_bytes(&rep, rgba, 16);
+	junk = with_junk(z, zlen, 3);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 24), junk, zlen + 3, &rep) ==
+	       KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 3);
+	expect_bytes(&rep, rgba, 24);
+	assert(ask_inline(&h, r, junk, zlen + 3, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 3);
+	expect_bytes(&rep, rgba, 24);
+	write_file(f, junk, zlen + 3);
+	r = req_of('f', KMSCON_IMAGE_INFLATE, 24);
+	r.read_max = zlen + 1;
+	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 1);
+	expect_bytes(&rep, rgba, 24);
+	free(junk);
+	free(z);
+
+	/* an error reports 0 (ask checks it) */
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 25), rgba, 4, &rep) ==
+	       KMSCON_IMAGE_CORRUPT);
+
+	unlink(f);
+	assert(stop(&h) == 0);
+}
+
 /* a PNG signature, an IHDR claiming @w x @h, and two bytes of image data: nothing to decode */
 static size_t png_header(uint8_t *buf, uint32_t w, uint32_t h)
 {
@@ -1231,6 +1356,7 @@ int main(int argc, char **argv)
 	test_shm();
 	test_discard();
 	test_png_zlib();
+	test_ignored();
 	test_png_limits();
 	test_protocol();
 

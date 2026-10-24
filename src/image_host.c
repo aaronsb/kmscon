@@ -339,6 +339,19 @@ static void log_reason(const struct image_host *h, unsigned int status, const ch
 }
 
 /*
+ * The bytes the helper left past what it used, at debug level, which shows
+ * under --debug in a normal build (log_debug compiles out of one): the
+ * request, its medium and the count, never the name
+ */
+static void log_ignored(const struct image_host *h, uint32_t ignored)
+{
+	if (ignored)
+		log_printf(LOG_DEBUG,
+			   "image request %llu, t=%c: %u bytes past what was used ignored",
+			   (unsigned long long)h->req.id, h->req.medium, ignored);
+}
+
+/*
  * The bytes of a KMSCON_IMAGE_OK reply in @fd, checked before any is read:
  * for a PNG request, width and height within max-graphic-size and their
  * width x height x 4 bytes within the budget, else width and height 0 and
@@ -411,10 +424,11 @@ static const uint8_t *map_reply(const struct image_host *h, const struct kmscon_
 
 /*
  * One packet from the helper, checked before any byte of an image is read: a
- * request out, a length of exactly the header and its reason, the reserved
- * field 0, the version, the id, a status among the six, and exactly one
- * descriptor with KMSCON_IMAGE_OK, except for a discard, and none otherwise.
- * Every descriptor received is closed whatever the outcome.
+ * request out, a length of exactly the header and its reason, ignored 0 on
+ * an error or discard reply and otherwise within read_max when that is not
+ * 0, the version, the id, a status among the six, and exactly one descriptor
+ * with KMSCON_IMAGE_OK, except for a discard, and none otherwise. Every
+ * descriptor received is closed whatever the outcome.
  */
 static void receive(struct image_host *h)
 {
@@ -466,8 +480,10 @@ static void receive(struct image_host *h)
 	else if ((size_t)got < sizeof(*r) || r->reason_len > KMSCON_IMAGE_REASON_MAX ||
 		 (size_t)got != sizeof(*r) + r->reason_len)
 		why = "a reply whose length is not its header and reason";
-	else if (r->reserved)
-		why = "a reply whose reserved field is not 0";
+	else if (r->ignored &&
+		 (r->status != KMSCON_IMAGE_OK || (h->req.flags & KMSCON_IMAGE_DISCARD) ||
+		  (h->req.read_max && r->ignored > h->req.read_max)))
+		why = "a reply whose ignored count is out of bounds";
 	else if (r->version != KMSCON_IMAGE_VERSION)
 		why = "a reply of another version";
 	else if (r->id != h->req.id)
@@ -507,6 +523,7 @@ static void receive(struct image_host *h)
 		fail(h, why);
 		return;
 	}
+	log_ignored(h, r->ignored);
 	end_request(h);
 	h->cb(h, id, KMSCON_IMAGE_OK, r->width, r->height, bytes, len, h->data);
 	munmap((void *)bytes, len);

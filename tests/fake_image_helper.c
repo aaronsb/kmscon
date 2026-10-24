@@ -106,7 +106,15 @@ int main(void)
 		};
 
 		if (discard && strcmp(name, "discardfd")) {
+			if (!strcmp(name, "discardignored"))
+				r.ignored = 1;
 			send_fds(&r, sizeof(r), NULL, 0, NULL, 0, 0);
+		} else if (!strcmp(name, "ignoredok") || !strcmp(name, "ignoredmax")) {
+			/* read_max bytes ignored, the most a reply may report, or one more */
+			r.ignored = q->read_max + !strcmp(name, "ignoredmax");
+			fds[0] = memfd(len, seals);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			close(fds[0]);
 		} else if (!strcmp(name, "good") || !strcmp(name, "extra")) {
 			fds[0] = memfd(len, seals);
 			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
@@ -171,15 +179,15 @@ int main(void)
 			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
 			close(fds[0]);
 		} else if (!strcmp(name, "id") || !strcmp(name, "version") ||
-			   !strcmp(name, "reserved") || !strcmp(name, "status")) {
+			   !strcmp(name, "ignorederr") || !strcmp(name, "status")) {
 			r.status = KMSCON_IMAGE_CORRUPT;
 			r.width = r.height = 0;
 			if (!strcmp(name, "id"))
 				r.id++;
 			else if (!strcmp(name, "version"))
 				r.version = 1;
-			else if (!strcmp(name, "reserved"))
-				r.reserved = 1;
+			else if (!strcmp(name, "ignorederr"))
+				r.ignored = 1;
 			else
 				r.status = KMSCON_IMAGE_OVER_BUDGET + 1;
 			send_fds(&r, sizeof(r), NULL, 0, NULL, 0, 0);

@@ -25,6 +25,7 @@ _Glyphs, images and cells to pixels - fonts, text renderers, video backends_
 | [ADR-104](./render/ADR-104-first-measurement-of-bbulk-image-composition-s1-to-s6-at-three-sizes.md) | First measurement of bbulk image composition, S1 to S6 at three sizes | accepted |
 | [ADR-105](./render/ADR-105-black-box-probe-of-mpv-0-41-0-s-kitty-and-sixel-output-and-kitty-0-49-2-s-handling-of-it.md) | Black-box probe of mpv 0.41.0's kitty and sixel output, and kitty 0.49.2's handling of it | accepted |
 | [ADR-106](./render/ADR-106-black-box-survey-of-five-more-kitty-graphics-clients-timg-ncplayer-kitten-icat-chafa-and-viu.md) | Black-box survey of five more kitty graphics clients: timg, ncplayer, kitten icat, chafa and viu | accepted |
+| [ADR-107](./render/ADR-107-s-and-data-length-in-kitty-0-49-2-black-box-and-in-ghostty-wezterm-and-rio.md) | S and data length in kitty 0.49.2, black-box, and in Ghostty, WezTerm and Rio | accepted |
 
 ## Terminal
 _Escape protocols and the screen model - libtsm parsing, cells, scrollback_

@@ -23,10 +23,11 @@ needs chafa chafa
 needs_photos
 cell_size
 term_size
+top_row
 r=6 w=$(((2 * r * ch + cw / 2) / cw))
 printf 'The day photograph, %d by %d cells, then %d lines that scroll it away.\n' "$w" "$r" "$rows"
-chafa_photo earth.jpg 1 2 "$w" "$r"
-printf '%s[%d;1H' "$esc" $((2 + r))
+chafa_photo earth.jpg 1 $((top + 1)) "$w" "$r"
+printf '%s[%d;1H' "$esc" $((top + 1 + r))
 for ((i = 1; i <= rows; i++)); do
 	printf 'line %d of %d\n' "$i" "$rows"
 done

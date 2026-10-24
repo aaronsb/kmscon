@@ -21,17 +21,20 @@
 # libsixel shows here by itself. Each picture is five rows tall and as wide
 # as keeps the 2:1 shape, from the cell size the terminal reports (XTWINOPS
 # 16), placed at its cell with CUP; the text after them is placed with CUP
-# too. The page is 16 rows.
+# too. Every row is counted from the row the page starts on (top_row), so the
+# pictures stay under the page's first line below the VT demo's header. The
+# page is 16 rows.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/acceptance.inc"
 sixel_offered
 needs chafa chafa
 needs mpv mpv
 needs_photos
 cell_size
+top_row
 # Five rows tall, as many columns as keep the photographs' 2:1 shape.
 r=5 w=$(((2 * r * ch + cw / 2) / cw))
 printf 'NASA Visible Earth photographs, %d by %d cells: chafa left, libsixel right.\n' "$w" "$r"
-row=3
+row=$((top + 2))
 for pair in day:earth night:night; do
 	name=${pair%%:*} file=${pair#*:}.jpg
 	chafa_photo "$file" 1 "$row" "$w" "$r"

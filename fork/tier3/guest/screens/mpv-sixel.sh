@@ -4,7 +4,7 @@
 # look-for: the middle of the screen: colour bars, a moving rainbow band and
 # look-for: squares, a counter rising by 30 a second. Then this page comes back
 # look-for: clean, mpv's counts in bold. With --render-timer=osd kmscon's show.
-# look-for: Full-screen sixel at 8K is limited by mpv's encoder, not kmscon.
+# look-for: mpv's full-screen sixel at 8K is limited by its encoder.
 # wrong-looks-like: A frozen, torn or flickering picture, the counter jumping
 # wrong-looks-like: in large steps (frames lost), pieces of the video left on
 # wrong-looks-like: this page afterwards, or the page not coming back.

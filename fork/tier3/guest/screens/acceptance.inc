@@ -45,7 +45,9 @@ chafa_photo() {
 
 # Photograph $1 drawn through libsixel's encoder (mpv's sixel output) at
 # column $2 and row $3, counted from 1, stretched to fill $4 by $5 cells
-# exactly (photo_cols keeps the photograph's shape to within half a cell). The
+# (photo_cols keeps the photograph's shape to within half a cell); mpv rounds
+# its height down to sixel's 6-pixel bands, so it can end a few pixels short
+# of the last row. The
 # picture stays on the screen as ordinary sixel content: mpv draws it on the
 # main screen, clears nothing and exits after the one frame.
 photo() {

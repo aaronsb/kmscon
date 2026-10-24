@@ -38,6 +38,8 @@ basis:
   - standard: "foot.ini(5): render-timer=none|osd|log|both, a frame rendering timer shown on screen, logged, or both"
   - evidence: "tmux CHANGES: basic SIXEL support from 3.4 when built with --enable-sixel, at most 20 SIXEL images since 3.7; Arch's tmux PKGBUILD configures --enable-sixel. WezTerm attaches sixel images to cells (term/src/terminalstate/sixel.rs, assign_image_to_cells)"
   - evidence: "aaronsb/kmscon issues #17 (gltex upload failures under virgl), #67 (bbulk damage carry-over, being fixed), #68 (gltex has no RGBA path until ADR-102 step 6), #75 (the showcase asks this record for performance targets and a frame counter), #77 (OSC 50 font paths named by programs)"
+  - evidence: ADR-105
+  - evidence: ADR-106
 agent:
   name: claude
   model: claude-opus-5-5
@@ -47,7 +49,7 @@ deciders:
   - aaronsb
 related: []
 extends: ADR-101
-amends: "ADR-101#parsing"
+amends: [ADR-101#parsing, ADR-101#image-layer]
 considered:
   - operator: aaronsb
     said: "on 5, I would think the tty owner would be the right move, but I'd defer to other systems that use this"
@@ -99,11 +101,54 @@ considered:
   - operator: aaronsb
     said: "yes"
     via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to Q1: on a display that needs a scaled copy of a picture (rotation, zoom, or a cell size other than the font's), may bbulk's scaled copy for an on-screen placement evict images in scrollback or unplaced, so that viewing a new picture can push older pictures out of scrollback and leave blank cells there when scrolled back, the way old lines drop off"
+  - operator: aaronsb
+    said: "As ADR-103 says"
+    via: "Claude Code session, 2026-10-24, relayed by the team lead; an option label the team lead wrote, chosen by the operator, on the image helper's hardening: ADR-103's uid, gid and initgroups, PR_SET_NO_NEW_PRIVS, closed descriptors and memory limit, with a seccomp or landlock filter left to aaronsb/kmscon#153"
+  - operator: aaronsb
+    said: "auto. this way we have first class support for systemd, elongind and friends, and bare"
+    via: "Claude Code session, 2026-10-24, relayed verbatim by the team lead, answering how the build finds the session's user: a meson feature for sd-login, default auto, using libsystemd's or libelogind's sd-login when present and the pty's owner otherwise"
+  - operator: aaronsb
+    said: "Build step 4 with two agents in parallel, libtsm's 4a with the host hook and kmscon's helper in 4b, once this interface is fixed"
+    via: Claude Code session, 2026-10-24, relayed by the team lead as a summary, on how step 4 is built
+    paraphrase: true
+  - operator: aaronsb
+    said: "The showcase improvements #85 to #87 are done with 4d"
+    via: "Claude Code session, 2026-10-24, relayed by the team lead as a summary, on when the showcase issues aaronsb/kmscon#85, #86 and #87 are taken up"
+    paraphrase: true
+  - operator: aaronsb
+    said: "a poor player implementation isn't a spec we write against. each of these has various interpetations of using the kitty protocol and I suspect each of them were largely written at one point against the kitty spec then the spec changed and they remained relatively static"
+    via: Claude Code session, 2026-10-24, on the client probe results, relayed verbatim by the team lead
+  - operator: aaronsb
+    said: "thats a claim not backed by evidence though"
+    via: "Claude Code session, 2026-10-24, on the client probe results, relayed by the team lead: the operator's correction of their own suspicion, in the entry above, that the clients were written against an older spec; the principle stands without it"
+  - operator: aaronsb
+    said: "Question 1, the copies a load holds outside the budget: (a), they stay outside the budget, as bbulk's working memory does"
+    via: "Claude Code session, 2026-10-24, answering PR #155's open questions; the operator picked the recommended option in a structured question, relayed by the team lead"
+    paraphrase: true
+  - operator: aaronsb
+    said: "Question 2, the build option's name: (a), sd_login, following meson.options"
+    via: "Claude Code session, 2026-10-24, answering PR #155's open questions; the operator picked the recommended option in a structured question, relayed by the team lead"
+    paraphrase: true
+  - operator: aaronsb
+    said: "Question 3, images past the budget: (a), the spec's storage quota rule: evict unplaced images, then images placed only in scrollback, then kitty images placed on screen, least recently used first; on-screen sixel keeps the never-evict rule; covered-placement removal is not adopted and can be proposed later only on 4d evidence"
+    via: "Claude Code session, 2026-10-24, answering PR #155's open questions; the operator picked the recommended option in a structured question, relayed by the team lead"
+    paraphrase: true
+  - operator: aaronsb
+    said: "I don't like append only. I thought it made sense but we need to be able to edit where it makes sense too"
+    via: Claude Code session, 2026-10-24, relayed verbatim by the team lead, overruling the append-only convention for accepted records; it governs this PR's in-place edits to the Summary's store and budget bullet and the Image store section
+  - operator: aaronsb
+    said: "Rank 3's order: on-screen kitty images are evicted oldest transmission first; unplaced and scrollback images stay least recently used"
+    via: Claude Code session, 2026-10-24, answering the rank-3 order question; the operator picked the option in a structured question, relayed by the team lead
+    paraphrase: true
+  - operator: aaronsb
+    said: "Keep it as a gate"
+    via: Claude Code session, 2026-10-24, answering whether mpv inline stays an A5 gate; the operator picked the option in a structured question, relayed by the team lead
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
   - "A kitty client run by the logged-in user that names a root-only file with t=f gets EBADF:Failed to read image file, the same reply as for a missing file"
-  - "mpv --vo=sixel and mpv --vo=kitty (inline and with --vo-kitty-use-shm=yes) play an animation full screen on drm2d with bbulk at 1366x768, 1920x1080 and 7680x2160, and the render timer's presented rate matches mpv's output rate"
+  - "mpv --vo=sixel and mpv --vo=kitty (inline) play an animation full screen on drm2d with bbulk at 1366x768, 1920x1080 and 7680x2160, and the render timer's presented rate matches mpv's output rate; the spec-written client, inline and over shared memory, and kitten icat --transfer-mode=memory do the same; mpv --vo=kitty --vo-kitty-use-shm=yes is measured for compatibility only (changed 2026-10-24: under the operator's principle that the spec is the target, \"a poor player implementation isn't a spec we write against\", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep mpv --vo=kitty inline as a gate, an option they picked; this said: \"mpv --vo=sixel and mpv --vo=kitty (inline and with --vo-kitty-use-shm=yes) play an animation full screen on drm2d with bbulk at 1366x768, 1920x1080 and 7680x2160, and the render timer's presented rate matches mpv's output rate\")"
   - "The 2d-1366x768-hamster tier 3 variant (1 vCPU, 512 MB) runs the image screens and S1 to S6 on every tier 3 run"
   - "tmux in a 3x3 grid of panes, each running mpv --vo=sixel, plays all nine and leaves no stale pixels when the panes close"
   - "The tier 2 screens for each composition band, and the render timer's figures for acceptance scenarios A1 to A7 recorded as an evidence record"
@@ -114,12 +159,12 @@ observable:
 ## Summary
 
 - **Decided:** Steps 3 and 4 of ADR-101, made concrete.
-  - **Store and budget:** one image store per screen buffer. Every store and the renderer's scaled pictures draw on one budget per kmscon process, `image-storage-limit`. By default it is four frames of the process's displays in ARGB, at least 16 MiB and at most 192 MiB: 16 MiB at 1024x768 and 1366x768, 31.6 MiB at 1920x1080, 192 MiB at 7680x2160. Over budget, scaled pictures not on screen go first, then images with no placement, then images placed only in scrollback. An image placed on the screen is never evicted; a new image that still does not fit is refused.
+  - **Store and budget:** one image store per screen buffer. Every store and the renderer's scaled pictures draw on one budget per kmscon process, `image-storage-limit`. By default it is four frames of the process's displays in ARGB, at least 16 MiB and at most 192 MiB: 16 MiB at 1024x768 and 1366x768, 31.6 MiB at 1920x1080, 192 MiB at 7680x2160. Over budget, scaled pictures not on screen go first, then images with no placement, then images placed only in scrollback, then kitty images placed on the screen, oldest first. A sixel placed on the screen is never evicted; a new image that still does not fit is refused. (Changed 2026-10-24: the operator chose the spec's storage-quota rule. This bullet said: "Over budget, scaled pictures not on screen go first, then images with no placement, then images placed only in scrollback. An image placed on the screen is never evicted; a new image that still does not fit is refused." The Image store section says which parts of the order are this record's choices.)
   - **Placements:** each is anchored to the line holding its top row, so it travels into scrollback and back with the text. A sixel behaves as cell content: text written or erased over it removes that part, as foot does and as terminals that keep image tiles in cells behave. A kitty placement follows the kitty spec: of the erase commands only ED 2 touches it.
   - **Parsing:** sixel and kitty payloads are decoded as they stream in, never buffered whole.
   - **Files:** all four kitty media are supported. Opening files and shared memory, and decoding PNG and zlib, happen in a per-session helper process running as the session's user, never as the foreground process, as a desktop terminal reads as its desktop user. It follows the kitty spec's file rules and Ghostty's checks. kmscon, which runs as root, decodes only sixel and base64 itself.
   - **Drawing:** bbulk composes the three placement bands per covered cell, sends cells nothing draws over an opaque picture as row strips, and damages placement rectangles on both buffers. gltex follows with a texture per image, after ADR-102 step 6.
-  - **Acceptance:** full-motion video through mpv (`--vo=sixel`, and `--vo=kitty` inline and over shared memory) on drm2d with bbulk, the showcase's text banner over a full-screen video, and tmux grids of sixel videos. 1366x768 and 1920x1080 are the common case and carry targets, judged on a small tier 3 machine (1 vCPU, 512 MB); 7680x2160 is the stress case, with no target until the first measurement, an early step. A `render-timer` overlay (foot's option) shows frames presented, CPU time and damaged area per frame, drawn as a top-band placement.
+  - **Acceptance:** full-motion video through mpv (`--vo=sixel`, and `--vo=kitty` inline), through the spec-written client inline and over shared memory, and through kitten icat over shared memory, on drm2d with bbulk; mpv over shared memory is measured for compatibility only (changed 2026-10-24: under the operator's principle that the spec is the target, "a poor player implementation isn't a spec we write against", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep `mpv --vo=kitty` inline as an A5 gate, an option they picked; this began: "full-motion video through mpv (`--vo=sixel`, and `--vo=kitty` inline and over shared memory) on drm2d with bbulk,"), the showcase's text banner over a full-screen video, and tmux grids of sixel videos. 1366x768 and 1920x1080 are the common case and carry targets, judged on a small tier 3 machine (1 vCPU, 512 MB); 7680x2160 is the stress case, with no target until the first measurement, an early step. A `render-timer` overlay (foot's option) shows frames presented, CPU time and damaged area per frame, drawn as a top-band placement.
   - **Settings:** `image-storage-limit` (Ghostty), `max-graphic-size`, `num-color-registers` and `private-color-registers` (xterm), and `render-timer` (foot).
 - **Trades away:**
   - A program run under `sudo` cannot show root-only files through the file media, because the helper reads as the session's user, as a desktop terminal does under `sudo mpv`.
@@ -167,8 +212,12 @@ Upstream's sixel request (kmscon/kmscon#138) carries a proposal to route sixel D
 - When a reservation would pass the budget, kmscon frees, in order, across every screen it runs:
   1. its own scaled pictures and textures that the current frame does not draw;
   2. images with no placement, transient ones first, least recently used first;
-  3. images whose placements all sit on lines in scrollback, least recently used first, together with those placements.
-- An image with a placement on a screen's own lines is never evicted. If the new image still does not fit, it is refused: kitty replies ENOSPC, and a sixel is dropped.
+  3. images whose placements all sit on lines in scrollback, least recently used first, together with those placements;
+  4. kitty images with a placement on a screen's own lines, oldest first by when each was transmitted, together with all their placements.
+- A sixel image with a placement on a screen's own lines is never evicted. If the new image still does not fit, it is refused: kitty replies ENOSPC, and a sixel is dropped.
+- The spec asks only that "the terminal emulator should delete older images to make space for the new one", and that "existing images without placements will be preferentially deleted". Three parts of the order are this record's choices: "older" is read as least recently used for unplaced images and those in scrollback, as this record had it, and as oldest transmission for images on a screen's own lines, since every placement a frame draws has its last use renewed in draw order each frame, so least recently used among them would follow draw order rather than age; images placed only in scrollback go before images on a screen's own lines, since they are out of view; and sixel pictures are exempt, since the quota text is the kitty protocol's and a sixel is cell content.
+- This order, step 4 included, applies when libtsm reserves room for a new image in its stores. bbulk's scaled copies keep the rule of the Notes of 2026-10-23 (Q1): they never evict an image placed on a screen's own lines, whether or not their frame draws it (the view scrolled back, or the main screen behind the alternate one). In the interface (Notes of 2026-10-24), libtsm reports step 4 as victim rank `TSM_IMAGE_PLACED_KITTY` (3), with the image's transmission time in the victim's `last_use`, so kmscon's order across screens (rank, then `last_use`) gives oldest transmission first without a change; kmscon's scaled-copy room counting stops at rank 3.
+- (Changed 2026-10-24: the operator chose the spec's storage-quota rule. Before, this list ended at step 3, and the sentence above read: "An image with a placement on a screen's own lines is never evicted.")
 - Sixel images are anonymous. No kitty command addresses them, and one is freed when its last placement goes. A kitty image without placements stays until it is deleted or evicted, so a lowercase delete keeps its data, as the spec says.
 - Transmitting an id again replaces the image and deletes all its placements (spec).
 - With `image-storage-limit=0`, both protocols are parsed only to find where they end, DA1 omits attribute 4, and kitty commands get no reply, so the spec's detection (a query followed by DA1) reports no support.
@@ -240,8 +289,8 @@ This replaces ADR-101's Parsing bullet on DCS and APC: payloads are decoded as t
 - **DCS** with final byte `q` and no intermediate is sixel. Its bytes go to the decoder as they arrive. Every other DCS stays ignored, as now.
 - **APC** whose first byte is `G` is a kitty command.
   - Its control keys are buffered up to 1 KiB. A longer key section makes the whole APC ignored.
-  - The payload is base64-decoded as it arrives into the pending image. Raw data may not pass the declared `s` x `v` x bytes per pixel, and PNG or compressed data may not pass `image-storage-limit`. Past either bound, the upload fails with EINVAL and the rest is ignored until ST.
-  - Chunks follow the spec: `m=1` until the last chunk, and later chunks carry only `m` and `q`. Any delete command aborts a pending upload (spec), and so does any other graphics command that is not its continuation.
+  - The payload is base64-decoded as it arrives into the pending image. Raw data may not pass the declared `s` x `v` x bytes per pixel; past it, the upload fails with EINVAL and the rest is ignored until ST. PNG or compressed data is buffered for the host, each growth reserved from the image budget before it is allocated; a refused reservation fails the upload with ENOSPC, and the rest is ignored until ST. (Changed 2026-10-24 with the host interface of that date's Notes, which give inline PNG and zlib data to the host: this said "Raw data may not pass the declared `s` x `v` x bytes per pixel, and PNG or compressed data may not pass `image-storage-limit`. Past either bound, the upload fails with EINVAL and the rest is ignored until ST.")
+  - Chunks follow the spec: `m=1` until the last chunk, and later chunks carry only `m` and `q`. `m` applies to direct transmission only: a `t=f`, `t=t` or `t=s` command is complete at its own ST, whatever its `m`, and a following APC is a new command (Notes of 2026-10-24). Any delete command aborts a pending upload (spec), and so does any other graphics command that is not its continuation. (Changed 2026-10-24 with the host interface of that date's Notes, which read the spec's chunking as defined only for pixel data sent directly: this said "Chunks follow the spec: `m=1` until the last chunk, and later chunks carry only `m` and `q`." for every medium.)
   - Every other APC stays ignored, as now.
 - libtsm decodes base64 and raw `f=24` and `f=32` data itself. Files, shared memory, PNG and zlib go to the host (next section).
 - **DA1** adds attribute 4 while images are enabled.
@@ -252,7 +301,7 @@ This replaces ADR-101's Parsing bullet on DCS and APC: payloads are decoded as t
 
 - The vte gains a host hook for what libtsm does not do: reading `t=f`, `t=t` and `t=s` media, and decoding PNG (`f=100`) and zlib (`o=z`). A request carries the medium, the path or shared memory name, `O`, `S`, the format, the compression and the declared size, or the received bytes for inline PNG and zlib.
 - **Input pauses while a request is out.** A new input call returns how many bytes it consumed. kmscon keeps the rest and stops reading that pty until the reply arrives, or until 2 seconds pass, when the request fails with EBADF and the helper is restarted. Commands therefore keep their order (a client may send a put right after a file transmission without waiting for the reply), and kmscon's event loop keeps running, so drawing and VT switching are never blocked.
-- The existing input call stays for hosts without the hook. Without it, `t=f`, `t=t` and `t=s` answer EBADF, and PNG and zlib answer EINVAL. `tsm-replay` installs a fixture host that serves files from the test's own directory.
+- The existing input call stays for hosts without the hook. Without it, `t=f`, `t=t` and `t=s` answer EBADF, and PNG and zlib answer EINVAL. `tsm-replay` installs a fixture host that serves files from `cases/<case>.files/` beside the test's stream (Notes of 2026-10-24, tsm-replay's fixture host).
 
 ### The image helper (kmscon)
 
@@ -262,7 +311,7 @@ This replaces ADR-101's Parsing bullet on DCS and APC: payloads are decoded as t
   - Otherwise (built without sd-login, no logind running, or a command kmscon started without login), the owner of the session's pty, as `/bin/login` sets it, read with `fstat` on the pty's slave.
   - logind's answer comes first because it is the identity PAM authenticated, held by logind for the session's life. The pty's owner is file metadata: any root process in the session, a `sudo chown` among them, can hand the pty to another user, root included, and every program in the session would then have files read as that user. When the two disagree, kmscon logs it and uses logind's.
   - kmscon uses systemd today only to find its unit directory (meson.build). sd-login becomes an optional dependency, and a build without it uses the pty's owner.
-  - The helper takes that uid, its primary gid and the user's supplementary groups (`initgroups`), then `PR_SET_NO_NEW_PRIVS`, working directory `/`, every descriptor closed but its socket, and a memory limit derived from the image limits.
+  - The helper takes that uid, its primary gid and the user's supplementary groups, then `PR_SET_NO_NEW_PRIVS`, working directory `/`, every descriptor closed but its socket, and a memory limit derived from the image limits. kmscon resolves the gid and the group list in its own process before forking (`getpwuid_r`, `getgrouplist`), since a library kmscon loads may start threads, and a child forked from a threaded process may call only async-signal-safe functions. The child calls only `setgroups`, `setresgid`, `setresuid`, `prctl`, `setrlimit`, `chdir`, `dup2` and `close_range`, resets its signal mask, and `execve`s the helper with a clean environment. (Changed 2026-10-24, from the code review: this said the helper takes the groups with `initgroups`, which is not safe after a fork in a threaded process.)
   - When the session's user is root (root logged in, or no login and the pty still root's), the helper runs as root, which is then the session's identity.
 - **User changes.** Before each request kmscon finds the session's user again. When it differs from the helper's (a logout and a new login), the helper is stopped and a new one started.
 - **Precedent.** Desktop terminals (kitty, Ghostty, WezTerm, foot, Konsole) run as the desktop user, so `sudo mpv --vo=kitty` inside one still has the terminal open files as that user, and root-only files fail to load. sudoedit opens files as the invoking user, and OpenSSH's privilege separation parses untrusted input in an unprivileged process. kmscon matches the desktop terminals and introduces no convention of its own.
@@ -272,9 +321,10 @@ This replaces ADR-101's Parsing bullet on DCS and APC: payloads are decoded as t
   - After opening (`O_RDONLY`, `O_NOCTTY`, `O_NONBLOCK`), `fstat` must show a regular file again, and the path of the opened descriptor must pass the same check. This is Ghostty's check: it catches a symlink swapped between the first check and the open.
   - `O` is the offset and `S` the exact number of bytes to read; a shorter file fails.
   - `t=t` is read only when the resolved path lies in `/tmp`, `/dev/shm` or kmscon's `TMPDIR` and contains `tty-graphics-protocol`, and the file is deleted after reading. Any other temporary file is refused, as Ghostty refuses it. The spec only forbids deleting such a file; refusing it keeps a command from reading a file it asked to have deleted.
+  - **Deleting** removes the resolved path, never the path as given, and only the file that was checked. The helper opens the resolved path's parent with `openat2` and `RESOLVE_NO_SYMLINKS` (`O_PATH | O_DIRECTORY`), checks with `fstatat(dirfd, base, AT_SYMLINK_NOFOLLOW)` that the entry has the device and inode of the descriptor it read, and only then calls `unlinkat(dirfd, base, 0)`. Deleting by path would let another local user swap a directory component for a symlink after the check and have the helper, running as the session's user, delete one of that user's files elsewhere. A failure leaves the file and is logged; the client's reply is unchanged. (Added 2026-10-24, from the code review of this record's Notes.)
 - **Shared memory** (`t=s`): the name must start with `/`, contain no other `/`, and be at most 255 bytes. It is opened read-only as the user, must be at least `O` + `S` bytes, and is unlinked and closed once opened, whether the read succeeds or not.
 - **One failure reply.** Every failure to read (missing, unreadable, not a regular file, a refused location, too short) answers the same bytes, `EBADF:Failed to read image file`, the reply the spec gives as kitty's. The reason goes to kmscon's log.
-- **Decoding.** PNG through libpng, and zlib through zlib, in the helper. FreeType already links both, so kmscon gains no dependency. A PNG's header is read and its size checked against `max-graphic-size` before any pixels are allocated.
+- **Decoding.** PNG through libpng, and zlib through zlib, in the helper, which declares both as its own build dependencies. zlib is already a direct dependency of kmscon (meson.build); libpng reaches kmscon today only through FreeType's private requirements, and FreeType is an optional backend, so the helper adds libpng to kmscon's build. (Corrected 2026-10-24: this said "FreeType already links both, so kmscon gains no dependency".) A PNG's header is read and its size checked against `max-graphic-size` before any pixels are allocated.
 - **Result.** The pixels come back in a sealed memfd over the helper's socket. kmscon maps it read-only, checks that its size is exactly width x height x 4 and the size within the limits, and stores it. One request per session is out at a time.
 
 ### Sixel (libtsm)
@@ -384,7 +434,7 @@ Step 3, sixel:
 
 Step 4, kitty:
 
-- **A5.** `mpv --vo=kitty`, inline (its default, chunked through the pty) and with `--vo-kitty-use-shm=yes` (shared memory, `t=s`, through the helper).
+- **A5.** Full-motion video through the kitty protocol. The conformance runs are `mpv --vo=kitty` inline (its default, chunked through the pty), the spec-written client inline and over shared memory (`t=s`, through the helper), and `kitten icat --transfer-mode=memory`. `mpv --vo=kitty --vo-kitty-use-shm=yes` is a compatibility measurement that gates nothing (Notes of 2026-10-24, Acceptance: conformance and compatibility). (Changed 2026-10-24: under the operator's principle that the spec is the target, "a poor player implementation isn't a spec we write against", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep `mpv --vo=kitty` inline as an A5 gate, an option they picked. This said: "`mpv --vo=kitty`, inline (its default, chunked through the pty) and with `--vo-kitty-use-shm=yes` (shared memory, `t=s`, through the helper).")
 - **A6,** the showcase's finale: a video full screen through the kitty protocol with a scrolling banner of text and colour emoji over its bottom rows, the text moving every frame while the picture changes every frame. It runs twice: the picture below cell backgrounds (z < -1,073,741,824), where the banner's coloured backgrounds cover it, and below text only (-1,073,741,824 <= z < 0), where only glyphs cover it. mpv's manual documents no z-index option for `vo=kitty`, so the case uses the spec-written client to place the picture; the showcase may use either that or mpv sized to leave the banner's rows free (`--vo-kitty-rows`).
 - **A7.** Several videos at once as separate kitty placements from one client, with no multiplexer.
 - The same grid of kitty videos inside tmux needs mpv's multiplexer passthrough (`--vo-kitty-auto-multiplexer-passthrough`) and Unicode placeholders to keep each picture in its pane, so it is step 5's final scenario.
@@ -398,9 +448,9 @@ The public post's footage is captured with ffmpeg's `kmsgrab` device. Runs with 
   - S4: kmscon's CPU time per frame at most 10 ms at 1366x768 and 16 ms at 1920x1080. At 30 frames per second that is 30% and 48% of the one vCPU, leaving the rest to the program sending the video.
   - S5: at most one and a half times S4's figure at the same size.
   - S3: at least 30 lines per second.
-  - A2 and A5 at 1366x768 and 1920x1080: the render timer's presented rate matches mpv's output rate, on the small machine and on the operator's.
+  - A2 and A5 at 1366x768 and 1920x1080: the render timer's presented rate matches the sending program's output rate, mpv's in A2 and each conformance client's in A5 (mpv inline, the spec-written client, kitten icat), on the small machine and on the operator's. (Changed 2026-10-24 with A5's clients: under the operator's principle that the spec is the target, "a poor player implementation isn't a spec we write against", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep `mpv --vo=kitty` inline as an A5 gate, an option they picked. This said "the render timer's presented rate matches mpv's output rate, on the small machine and on the operator's.")
 - **Basis.** A frame is 4.0 MiB at 1366x768 and 7.9 MiB at 1920x1080; at 30 frames per second bbulk writes about 120 and 240 MiB per second, which one core should sustain; that is an estimate, not a measurement. The figures are first estimates. 3b's measurement confirms or replaces them in its evidence record, and the scenarios are judged against what that record states.
-- **The stress size,** 7680x2160: no number can be justified before measuring. Each frame writes 66 MB to the scanout buffer, and that hardware's write bandwidth has not been measured. The criterion that holds now: kmscon is not the bottleneck. In A2, A5 and A6 the presented rate matches mpv's output rate (or the client's send rate in A6), and kmscon's CPU time per frame stays below the frame interval. 3b's measurement sets the number.
+- **The stress size,** 7680x2160: no number can be justified before measuring. Each frame writes 66 MB to the scanout buffer, and that hardware's write bandwidth has not been measured. The criterion that holds now: kmscon is not the bottleneck. In A2 the presented rate matches mpv's output rate. In A5 it matches each conformance client's rate: mpv inline, the spec-written client inline and over shared memory, and kitten icat in memory mode. At this size mpv inline is bound by the pty at about 4 frames per second (ADR-105: 4.1), so for it the gate is that kmscon presents what mpv sends, at the rate it sends it; mpv over shared memory is a compatibility measurement that gates nothing. In A6 it matches the client's send rate. kmscon's CPU time per frame stays below the frame interval. 3b's measurement sets the number. (Changed 2026-10-24: under the operator's principle that the spec is the target, "a poor player implementation isn't a spec we write against", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep `mpv --vo=kitty` inline as an A5 gate, an option they picked. This said "In A2, A5 and A6 the presented rate matches mpv's output rate (or the client's send rate in A6), and kmscon's CPU time per frame stays below the frame interval.")
 - **If a target is missed,** the remedies in order: splitting composition across threads by rows, SIMD scaling and blending, and gltex for video where GL is available. On a one-CPU machine only the last two help. The remedy chosen is a decision that cites the evidence record.
 
 ### Damage for moving text over a changing picture
@@ -450,10 +500,12 @@ Step 3, the image layer and sixel:
 
 Step 4, the kitty graphics protocol:
 
-1. **4a, libtsm kitty.** APC framing, control keys, inline `f=24` and `f=32`, chunking, the actions, ids, numbers and placement ids, bands, cursor movement, deletes, replies, and eviction with ENOSPC. A fuzz target. Tier 1 through the spec-written client. Without a host, the other media answer EBADF and PNG and zlib EINVAL.
-2. **4b, the host and the helper.** The vte's host hook and the input call that reports what it consumed; `kmscon-image-helper` with its identity, file and shared memory rules, PNG and zlib, and memfd results. Unit tests for every rule, and the fixture host in `tsm-replay`.
+1. **4a, libtsm kitty and the host hook.** APC framing, control keys, inline `f=24` and `f=32`, chunking, the actions, ids, numbers and placement ids, bands, cursor movement, deletes, replies, and eviction with ENOSPC. The vte's host hook and the input call that reports what it consumed, the pause, and the fixture host in `tsm-replay`. A fuzz target. Tier 1 through the spec-written client. Without a host, the other media answer EBADF and PNG and zlib EINVAL. The Notes of 2026-10-24 (Order of work) list the rest.
+2. **4b, the helper,** built in parallel with 4a against the interface in the Notes of 2026-10-24. `kmscon-image-helper` with its identity, file and shared memory rules, PNG and zlib, and memfd results; the pty's pause and the hook's wiring in kmscon. Unit tests for every rule.
+
+(Changed 2026-10-24: the operator chose to build step 4 with two agents in parallel, relayed as a summary (a paraphrase in the considered entry): build step 4 with two agents in parallel, libtsm's 4a with the host hook and kmscon's helper in 4b, once this interface is fixed. So the host hook and the fixture host move from 4b to 4a. 4a's heading was "4a, libtsm kitty.", and 4b read: "**4b, the host and the helper.** The vte's host hook and the input call that reports what it consumed; `kmscon-image-helper` with its identity, file and shared memory rules, PNG and zlib, and memfd results. Unit tests for every rule, and the fixture host in `tsm-replay`.")
 3. **4c, kmscon.** Tier 2 screens for the lower two bands, text over pictures, and A6's banner over a changing picture.
-4. **4d, acceptance.** Tier 3 with viu and the spec-written client through each medium, the root-file refusal, and the demo; A5 through both media, A6 in both bands, and A7.
+4. **4d, acceptance.** Tier 3 with viu and the spec-written client through each medium, the root-file refusal, and the demo; A5 through both media (inline with mpv and the spec-written client, shared memory with the spec-written client and kitten icat), A6 in both bands, and A7. (Changed 2026-10-24 with A5's clients: under the operator's principle that the spec is the target, "a poor player implementation isn't a spec we write against", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep `mpv --vo=kitty` inline as an A5 gate, an option they picked. This said "A5 through both media".)
 5. **4e, gltex** for the lower two bands, with 3f.
 
 Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` in each pane.
@@ -478,7 +530,8 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 - ICH and DCH remove part of a sixel instead of shifting it.
 - CPU composition at 7680x2160 is unmeasured, and the acceptance scenarios have no frame-rate target until 3b measures one. Video on bbulk may fall short at that size.
 - A program can still fill the budget, up to 192 MiB at the default on the largest displays; a small default also means a gallery of large pictures evicts sooner, until the user raises `image-storage-limit`.
-- The budget is shared, so a program on one screen can evict another screen's unplaced or scrollback images.
+- Any program that writes to the pty, `cat` of an untrusted file included, can have the helper unlink any POSIX shared memory object the session's user owns (for example `/pulse-shm-*`), through `t=s` and through a discard. The spec requires the unlink after reading; kitty was seen unlinking objects it read (ADR-105), its handling of a failed read was not observed, and the discard of a refused command is this record's own choice. A filter on names is a question for aaronsb/kmscon#153. (Added 2026-10-24, from the code review.)
+- The budget is shared, so a program on one screen can evict another screen's unplaced and scrollback images, and kitty images that screen shows; only sixel pictures on a screen's own lines are safe from it. (Changed 2026-10-24 with the storage-quota rule the operator chose; this said "another screen's unplaced or scrollback images".)
 
 ### Neutral
 
@@ -502,7 +555,7 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 - **Refuse the file media,** as some terminals do. Rejected by the operator: all four media are supported.
 - **Call the helper synchronously.** Simpler, but it blocks kmscon's event loop, and with it drawing and VT switching, for up to the timeout.
 - **libtsm reports removed placements to each caller.** Rejected: libtsm does not know its callers, and keeping removals until every caller has seen them needs that knowledge.
-- **A vendored PNG decoder** (stb_image, spng). Rejected: libpng and zlib are already loaded through FreeType, and a vendored decoder is code the fork would maintain.
+- **A vendored PNG decoder** (stb_image, spng). Rejected: libpng is a common system library, zlib is already a dependency of kmscon, and a vendored decoder is code the fork would maintain. (Corrected 2026-10-24: this said libpng and zlib were already loaded through FreeType, which holds only where FreeType is built in.)
 - **Ghostty's default: 320 MB per screen.** Rejected by the operator's answer: on a small machine one VT could hold 640 MB, more than the machine has.
 - **A fixed small default, the same on every machine.** Simple and predictable, but a number that suits 1366x768 starves a 4K or 8K console's full-screen video, and one that suits 8K is too large for a small machine. Scaling with the displays gives each the video case's peak.
 - **A separate setting for the scaled-picture cache.** Rejected: two limits give two ceilings to reason about, and the operator asked for one predictable one.
@@ -549,5 +602,231 @@ Recorded as considered entries above; what they change:
 
 Recorded as a considered entry above; what it changes:
 
-- **A picture on screen may evict the history** ("yes"). On a display that needs a scaled copy of a picture (a rotated display, a zoom, or placements made in a cell size other than the font's), bbulk makes that copy within the frame, and until now it evicted nothing outside its own renderer: while scrollback images held the budget, the picture on screen was left out. The scaled copy for an on-screen placement now takes its room in ADR-103's order after bbulk's own pictures the frame does not place: other displays' pictures their last frame did not draw, then libtsm's images unplaced, then those placed only in scrollback, least recently used first. It never evicts an image placed on a screen's own lines, nor one the frame draws, such as a scrollback image in view while the view is scrolled back; a picture that would need one is still left out, and retried only when the budget changes. Viewing a new picture on such a display can therefore push older pictures out of scrollback, which then show blank cells when scrolled back to, as old lines drop off the end of scrollback. A display that draws pictures at their own size makes no scaled copy and is unchanged.
+- **A picture on screen may evict the history** ("yes"). On a display that needs a scaled copy of a picture (a rotated display, a zoom, or placements made in a cell size other than the font's), bbulk makes that copy within the frame, and until now it evicted nothing outside its own renderer: while scrollback images held the budget, the picture on screen was left out. The scaled copy for an on-screen placement now takes its room in ADR-103's order after bbulk's own pictures the frame does not place: other displays' pictures their last frame did not draw, then libtsm's images unplaced, then those placed only in scrollback, least recently used first. It never evicts an image placed on a screen's own lines, nor one the frame draws, such as a scrollback image in view while the view is scrolled back; a picture that would need one is still left out, and retried only when the budget changes. Viewing a new picture on such a display can therefore push older pictures out of scrollback, which then show blank cells when scrolled back to, as old lines drop off the end of scrollback. A display that draws pictures at their own size makes no scaled copy and is unchanged. (2026-10-24: unchanged by the storage-quota rule the operator chose that day, which evicts kitty images on a screen's own lines only for a new image's reservation in libtsm's stores; see the Image store section.)
 - History is evicted only when the eviction lets the picture fit. Before anything is freed, bbulk counts what can be: the pictures other displays' last frames did not draw, and each screen's victims (libtsm's `tsm_screen_image_victims`, which evicts nothing) up to the first image the frame draws. When that falls short, nothing is evicted and the picture is left out until the budget changes, as libtsm's own reservation evicts nothing for an image it cannot fit. Every terminal's screens give room, main and alternate, each as far as its own first drawn image.
+
+## Notes (2026-10-24, the host hook, the helper protocol and step 4's order)
+
+The interface between libtsm and kmscon for files, shared memory, PNG and zlib, fixed so that libtsm's half and kmscon's half of step 4 can be built at once. It refines the Parsing, Host interface, The image helper, Kitty graphics protocol, Memory, Acceptance scenarios, Testing and Order of work sections; what they decide stands except where a bullet here says what it replaces. Every rule here rests on the kitty graphics protocol spec's text, or, where the spec leaves a point open, on a choice this record makes and says it makes. ADR-105, a black-box probe of mpv and kitty, and ADR-106, of five more clients (timg, ncplayer, kitten icat, chafa and viu), are compatibility evidence: they say which clients a rule affects, and no rule rests on them.
+
+### Operator answers
+
+Recorded as considered entries above; what they change:
+
+- **The helper's hardening is as this record states** ("As ADR-103 says", an option the team lead wrote): the session user's uid, primary gid and supplementary groups, `PR_SET_NO_NEW_PRIVS`, working directory `/`, every descriptor closed but its socket, and a memory limit. The option named `initgroups`; the groups are now resolved before the fork with `getgrouplist` and set with `setgroups` in the child (The image helper, Identity), since `initgroups` is not safe in a child forked from a threaded process. A seccomp or landlock filter is a follow-up, aaronsb/kmscon#153, outside step 4.
+- **sd-login is found at build time** ("auto. this way we have first class support for systemd, elongind and friends, and bare"): the build option below defaults to auto, so a systemd or elogind system gets logind's answer and a system with neither gets the pty's owner, with no configuration.
+- **Step 4 is built by two agents in parallel** once this section lands: libtsm's 4a, which now takes the host hook, and kmscon's 4b, the helper and its wiring. Order of work, below, says what moves.
+- **The showcase's acts 6 and 7** (#85, #86, #87) are done with 4d.
+- **The spec is the target** ("a poor player implementation isn't a spec we write against"). A rule exists because the spec says so, or because the spec leaves the point open and this record chooses; never because a client does something. Where a client departs from the spec, kmscon does what the spec says, and the record names the clients that affects. The probes are evidence about clients, not requirements, and acceptance judges conformance with spec-conformant clients (Acceptance, below). The operator's further suspicion, that the clients were written against an older spec that later changed, is in their own words "a claim not backed by evidence": no rule here rests on it, and Spec version annotations, below, says what the spec's own marks can show.
+
+### libtsm: the host hook
+
+Declared in `libtsm.h` behind a feature macro, as sixel's calls are:
+
+```c
+#define TSM_VTE_IMAGE_HOST 1
+
+enum tsm_vte_image_medium {
+	TSM_VTE_IMAGE_DIRECT = 'd',	/* t=d: PNG or zlib data sent inline */
+	TSM_VTE_IMAGE_FILE = 'f',	/* t=f */
+	TSM_VTE_IMAGE_TEMP = 't',	/* t=t */
+	TSM_VTE_IMAGE_SHM = 's',	/* t=s */
+};
+
+struct tsm_vte_image_request {
+	uint64_t id;		/* names the request in tsm_vte_image_reply; from 1, per vte */
+	unsigned int medium;	/* enum tsm_vte_image_medium */
+	unsigned int format;	/* f: 24, 32 or 100 */
+	bool zlib;		/* o=z */
+	bool discard;		/* refused: remove a TEMP or SHM object, read nothing */
+	unsigned int width;	/* s, 0 when not given */
+	unsigned int height;	/* v, 0 when not given */
+	uint64_t offset;	/* O */
+	uint64_t size;		/* S, 0 when not given */
+	const char *name;	/* FILE, TEMP, SHM: the path or name, NUL-terminated; else NULL */
+	const uint8_t *data;	/* DIRECT: the payload, base64-decoded; else NULL */
+	size_t data_len;
+};
+
+typedef int (*tsm_vte_image_cb)(struct tsm_vte *vte,
+				const struct tsm_vte_image_request *req,
+				void *data);
+
+void tsm_vte_set_image_cb(struct tsm_vte *vte, tsm_vte_image_cb image_cb,
+			  void *image_data);
+
+int tsm_vte_image_reply(struct tsm_vte *vte, uint64_t id, int error,
+			unsigned int width, unsigned int height,
+			const uint8_t *rgba);
+
+#define TSM_VTE_KITTY_GRAPHICS 1
+/* kitty-graphics: off until the host turns it on, as tsm_vte_set_sixel */
+void tsm_vte_set_kitty_graphics(struct tsm_vte *vte, bool enable);
+
+/* the eviction rank step 4 adds (Image store); an enum value cannot be
+ * tested with #ifdef, so a host tests this macro before naming it */
+#define TSM_SCREEN_IMAGE_PLACED_KITTY 1
+enum tsm_image_rank { /* ... */ TSM_IMAGE_PLACED_KITTY = 3, };
+
+struct tsm_image_victim {
+	/* ... */
+	/* the order within its rank, on the clock all screens in the process
+	 * share: for ranks 0 to 2, when it was last created, placed or drawn;
+	 * for TSM_IMAGE_PLACED_KITTY, when it was transmitted */
+	uint64_t last_use;
+	/* ... */
+};
+```
+
+- **What reaches the hook.** A transmission (`a=t`, `a=T` or `a=q`) with `t=f`, `t=t` or `t=s`, and one with `t=d` whose format is `f=100` or that carries `o=z`. libtsm calls the hook once, when the command's last chunk ends, after checking its keys. The string ends at the byte that ends it: the ESC of `ESC \`, or a C1 ST; the `\` may arrive in a later read and is parsed after the reply. CAN and SUB abort the command without calling the hook. A command libtsm refuses itself (`i` with `I`, a raw format without `s` and `v`, an action left to step 5) reaches the host only as a discard (next bullet), and inline `f=24` or `f=32` without `o=z` stays in libtsm.
+- **A refused `t=t` or `t=s` command is still discarded.** The spec gives the removal of these objects to the terminal (`t=t`: "the terminal emulator will delete the file after reading"; `t=s`: it "must read the data from the memory object and then unlink and close it") and says nothing of a command the terminal refuses. This record chooses that a refusal does not hand the removal back to the client, since nothing in the spec tells the client to remove the object. A client this affects is kitten icat, whose GIFs send their frames as `a=f` with `t=s`, an action left to step 5 (ADR-106). In a harness run that read and removed none of its objects, its 20 frame objects were still in `/dev/shm` at a later check (ADR-106): icat leaves its frame objects to the terminal, so without the discard each refused frame would leave its object behind. The rule rests on the spec; this run shows which client it serves. libtsm therefore hands such a command to the hook with `discard` set; the host removes the object under the helper's rules, reads nothing, and replies. libtsm waits for that reply as for any other, so order holds, and then answers the client with its own refusal, whatever the reply says. A refused `t=f` or `t=d` command does not reach the hook.
+- **The name.** The payload of `t=f`, `t=t` and `t=s` is the path or name in base64. libtsm decodes it into at most 4095 bytes. An empty name, a longer one, or one holding a NUL byte answers EBADF without a request, the same reply as an unreadable file.
+- **All integers are 32-bit,** as the spec's control-data table says: libtsm refuses `O` or `S` above `UINT32_MAX` with EINVAL, so the request's 64-bit `offset` and `size` never exceed it.
+- **`m` applies to direct transmission only.** A `t=f`, `t=t` or `t=s` command is complete at its own ST, whatever its `m`, and a following APC is a new command. The spec defines chunking only under remote clients, "those that are unable to use the filesystem/shared memory to transmit data", which "must send the pixel data directly using escape codes. Since escape codes are of limited maximum length, the data will need to be chunked up for transfer. This is done using the m key"; a name is not pixel data and needs no chunking, and the spec says nothing of `m` for the other media, so this record reads `m` as a direct-transmission key. The rule rests on that text alone. It also keeps mpv 0.41.0 working, which sends every shared memory frame as one whole command with `m=1` and never an `m=0`, and kitty 0.49.2 shows such frames (ADR-105); but mpv's shared memory frames are refused for their name in any case (Clients that depart from the spec, below). This replaces the Parsing section's chunk rule for the other media, and that section is edited to match, with a dated note.
+- **Inline PNG and zlib data** are base64-decoded into a buffer as they arrive, each growth reserved from the screen's image budget before it is allocated. A refused reservation fails the upload with ENOSPC, and the rest is ignored until ST. This replaces the Parsing section's EINVAL for PNG or compressed data past `image-storage-limit`, and that section is edited to match, with a dated note: the budget is that bound, and its refusal is the storage-limit error. Raw data without `o=z` keeps its EINVAL past `s` x `v` x bytes per pixel.
+- **Ownership.** The request and everything it points to are libtsm's and valid only during the hook call; a host copies what it keeps. When the hook returns, libtsm frees the inline buffer and releases its reservation.
+- **The hook's answer.** 0 means the host took the request. libtsm keeps the command's keys and stops: the input call returns the bytes up to and including the byte that ended the string, and every input call after it returns 0 and consumes nothing until the reply. A negative errno answers the request at once (-EBADF, -EINVAL and -ENOSPC answer their code, any other value EBADF) and parsing continues in the same call.
+- **The reply.** `tsm_vte_image_reply` names the request's `id` and gives either `error` 0 with `width`, `height` and `rgba`, or `error` -EBADF, -EINVAL or -ENOSPC (any other negative value answers EBADF), the rest then ignored. `rgba` is `width` x `height` pixels of straight-alpha 8-bit R, G, B, A, rows top to bottom with no padding, the `f=32` layout; libtsm reads it only during the call. With `error` 0, libtsm checks the size against `max-graphic-size`, and against `s` and `v` when the format is raw and they were given (EINVAL otherwise). Unless the action is `a=q`, it then reserves width x height x 4 plus `TSM_SCREEN_IMAGE_OVERHEAD` from the budget (which may evict, or refuse with ENOSPC), allocates, converts to premultiplied ARGB with the opaque flag, stores, places the image for `a=T`, and replies to the client as the Kitty graphics section says. `a=q` reserves and stores nothing and replies as a transmission would. The client's reply text is libtsm's: the host passes a code, never a message.
+- **Its return value:** 0 when the request is answered; -ENOENT when `id` is not the request outstanding, a stale reply after a cancel, and nothing happens; -EINVAL for a NULL `rgba` or a zero size with `error` 0, which also ends the request with EBADF to the client, so a host's mistake cannot leave the vte paused; -EBUSY when called from inside the hook, leaving the request out. The conversion runs inside this call, outside `tsm_vte_input_bounded`'s work bound: at most one image per request, at most `max-graphic-size` and the budget, in its own turn of the host's loop.
+- **The placement's cursor** is the cursor when the reply arrives. Input is paused, so that is the cursor at the command's ST unless the host resized the screen meanwhile, which clamps it as resize clamps any cursor.
+- **Cancelling.** `tsm_vte_reset`, `tsm_vte_hard_reset`, turning `kitty-graphics` off, and freeing the vte drop an outstanding request without a reply to the client. Installing or removing the hook while a request is out answers it EBADF.
+- **Without a hook,** as the Host interface section says, `t=f`, `t=t` and `t=s` answer EBADF and `f=100` or `o=z` answer EINVAL, at the command's ST; libtsm buffers no inline data for them.
+- **`tsm_vte_input`** never hands out a request: commands that need the host answer there as they do without a hook. A host that installs the hook feeds input through `tsm_vte_input_bounded`. Bytes passed to `tsm_vte_input` while a request is out are a host error, dropped with a warning. `tsm_vte_input_bounded`'s comment changes from "at least one when @len is not 0" to "at least one when @len is not 0 and no request is out".
+- **One request per vte** follows from the pause: while one is out nothing is parsed, so no second command reaches the hook, and commands keep their order.
+- **Replies keep that order too.** A query that follows a host request in the input is parsed, and answered, only after the request's reply, so its answer follows the request's. The spec asks for this: its detection method is a query followed by DA1, and "terminal emulators that support the graphics protocol, must reply to query actions immediately without processing other input". Clients that rely on it (ADR-106): kitten icat, which sends `a=q` direct, `a=q,t=t` and `a=q,t=s`, then DA1, the spec's detection sequence (no run shows what icat does when the order is broken); viu, which sends DSR after each frame; and ncplayer, which closes its queries with DA1.
+
+### kmscon: the pause and the helper's lifetime
+
+- `kmscon_pty` gains `kmscon_pty_pause` and `kmscon_pty_resume`. While paused, the pty neither reads nor hands its held bytes to the input callback; resuming hands them over from the next turn, as the held buffer does now, and then reads again. The terminal pauses its pty from inside the hook, taking effect when the input callback returns, and the bytes after the command's ST stay held. Other ptys, drawing, input and VT switching carry on. Every path that feeds the input callback honours the pause, including `feed()`'s fallback in `src/misc/pty.c`, which today loops `while (off < len)` calling the callback when the idle source cannot be registered: with a request out the callback consumes nothing, so that loop would spin forever in the root process, and the idle source would re-register and spin as well. So pausing calls `feeding_stop`, `feed` and `read_buf` check the pause after each call of the callback and leave the rest held, and resuming calls `rearm()`, since the pty's descriptor is edge-triggered, then feeds what is held. `terminal_close` and `terminal_open` clear the pause (a restart after the child exits goes through both, with `tsm_vte_hard_reset`).
+- In the hook, kmscon finds the session's user (The image helper, Identity), starts the helper when none runs or its user differs, sends the request, arms a 2-second timer and watches the helper's socket. A helper that cannot be started, or a send that fails, returns -EBADF from the hook, which answers the command at once and lets input continue.
+- A reply that passes kmscon's checks (below) ends the request: kmscon calls `tsm_vte_image_reply`, sets `redraw_owed` (as `pty_input` does today), disarms the timer and resumes the pty. If libtsm answers -ENOENT, because the request was cancelled meanwhile, kmscon resumes all the same.
+- **A failure ends the request with EBADF:** the timer firing, the helper's socket closing or failing, or a reply that fails a check. kmscon kills the helper with `SIGKILL` through a pidfd taken when it started, lets the loop's child callback reap it (`ev_eloop_register_child_cb`; the loop reaps every child with `waitpid(-1)`, so kmscon never signals a pid it has seen reaped), closes the socket, replies -EBADF to libtsm and resumes the pty. The next request starts a new helper, so a decoder fault on a hostile PNG costs the client an EBADF and the helper a restart.
+- **The helper is also restarted** when the session's user changes (this record), or when a request's `max_bytes` is larger than the one the running helper's memory limit was set from.
+- Closing the terminal (its child exits) or destroying it kills the helper and drops the request without a reply; closing also cancels libtsm's request with `tsm_vte_reset`, so the next session starts with none out.
+- **kmscon's own `tsm_vte_input` callers.** Asciicast playback (`asciinema_write` in `src/terminal.c`) is paused with the pty while a request is out (`kmscon_asciinema_pause`, and `kmscon_asciinema_resume` after the reply when the terminal is still active), so it feeds nothing during a request and loses no byte. `terminal_activate`, which today resumes playback whenever an opened terminal returns to the foreground, resumes it only when no request is out; otherwise the reply resumes it. The issue text (`/etc/issue`, fed when the terminal opens) is fed only when no request is out, since a request never survives a close. Both stay on `tsm_vte_input`, so file and PNG commands in a recording or an issue file are answered as without a hook: their paths name another machine's or another time's files.
+
+### The helper protocol
+
+- **Transport.** `socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC)`. The helper's end is descriptor 3 across `exec`; descriptors 0, 1 and 2 are open on `/dev/null`, so a library's write to stderr cannot land in a file the helper opened; every other descriptor is closed. A message is one packet: a fixed header in host byte order, both ends being built from one tree for one machine, then its variable part, with at most one descriptor (`SCM_RIGHTS`). kmscon receives with `MSG_CMSG_CLOEXEC`, and a packet that is short, truncated (`MSG_TRUNC`, `MSG_CTRUNC`) or carries a descriptor it should not is a failed reply.
+- **The request,** kmscon to helper, 64 bytes with no padding:
+
+```c
+struct kmscon_image_request {
+	uint32_t version;	/* 1 */
+	uint32_t type;		/* 1, a kitty image; other values reserved, #77's fonts among them */
+	uint64_t id;		/* libtsm's request id */
+	uint8_t medium;		/* 'd', 'f', 't' or 's' */
+	uint8_t flags;		/* KMSCON_IMAGE_ZLIB 0x01 (o=z), KMSCON_IMAGE_DISCARD 0x02; other bits make the helper exit */
+	uint16_t format;	/* 24, 32 or 100 */
+	uint32_t width;		/* s, or 0 */
+	uint32_t height;	/* v, or 0 */
+	uint32_t name_len;	/* 1 to 4095 for 'f', 't' and 's'; 0 for 'd' */
+	uint64_t offset;	/* O */
+	uint64_t size;		/* S, or 0 */
+	uint32_t max_width;	/* max-graphic-size */
+	uint32_t max_height;
+	uint64_t max_bytes;	/* image-storage-limit, the whole budget */
+	/* name_len bytes of name follow, without a NUL */
+};
+```
+
+- For `'d'`, the packet carries a memfd holding the inline data, which kmscon writes and seals (`F_SEAL_SHRINK`, `F_SEAL_GROW`, `F_SEAL_WRITE`, `F_SEAL_SEAL`) before sending and closes once sent.
+- **Limits travel with each request,** so a changed `max-graphic-size`, or a budget `auto` recomputes, applies from the next request with no other message. The helper's memory limit (`RLIMIT_AS`) is set when it starts: three times `max_bytes`, for the data read, an inflated copy and the output, plus 64 MiB for code and libraries. That holds because the PNG decoder writes its rows straight into the output memfd's mapping, and the helper reads or maps only the bytes from `O` to `O` + `S` of a file or shared memory object, never the whole object.
+- **A discard** (`KMSCON_IMAGE_DISCARD`) removes the object as the helper's rules allow and reads nothing from it. For `'s'`, the helper opens the name read-only, requires a regular object, and calls `shm_unlink`. For `'t'`, it resolves and opens the path as the Files bullets do, following symlinks as the spec asks, and requires a regular file; it deletes only when the resolved path passes the temporary-file rule, and then deletes the resolved file through the Deleting bullet's `openat2` and `unlinkat` check, never a symlink that led to it. A FIFO, or a symlink whose target is not a regular file or fails the temporary-file rule, is refused and nothing is deleted. Following the final symlink keeps a discard to the rule a `t=t` read follows; refusing it with `O_NOFOLLOW` would go beyond the spec, which asks for symlinks to be followed. Whether or not it deleted, the helper answers status -EINVAL with no descriptor, as an error reply does; libtsm answers the client with its own refusal and ignores the code.
+- **What the helper does,** in order:
+  1. Reads the data: a file or shared memory under this record's rules, which stand, or the memfd for `'d'`. `size` 0, the spec's default, reads from `offset` to the end of the file or object; a non-zero `size` is the exact count, and a shorter file fails, as the Files section says.
+  2. Inflates it when `zlib` is set. For `'d'` with format 100, a non-zero `size` is the PNG data's size (the spec: "If you use both PNG and compression, then you must provide the S key with the size of the PNG data"), and the inflated data must be exactly that. For the file media with `o=z` and format 100, `size` keeps the spec's file meaning, the bytes to read, and the inflated PNG is bounded by `max_bytes` only; reading the sentence as applying to direct data alone, where `S` has no other meaning, is this record's choice.
+  3. For format 100, reads the PNG header, refuses a size past `max_width` or `max_height` before allocating any pixels, and decodes with libpng to 8-bit RGBA, palette, grey, 16-bit and interlaced images expanded, with no gamma or colour-profile correction.
+  4. For formats 24 and 32, requires exactly `width` x `height` x 3 or 4 bytes after inflation, and expands 24 to RGBA with alpha 255.
+- **The helper's error codes:** EBADF for every read failure, the one reply this record fixes; EINVAL for data that is not what its keys say (a corrupt or truncated PNG or zlib stream, raw data of the wrong size, a size past `max-graphic-size`); ENOSPC for data read, inflated or decoded past `max_bytes`, checked before the memory is allocated. A `version` or `type` the helper does not know makes it exit, which kmscon reads as a failure.
+- **The reply,** helper to kmscon, 32 bytes:
+
+```c
+struct kmscon_image_reply {
+	uint32_t version;	/* 1 */
+	int32_t status;		/* 0, -EBADF, -EINVAL or -ENOSPC */
+	uint64_t id;		/* the request's */
+	uint32_t width;		/* with status 0 */
+	uint32_t height;
+	uint32_t reason_len;	/* 0 to 255 */
+	uint32_t reserved;	/* 0 */
+	/* reason_len bytes follow: why it failed, for kmscon's log */
+};
+```
+
+- With status 0 the packet carries a memfd of exactly width x height x 4 bytes of RGBA in the layout `tsm_vte_image_reply` takes, made with `MFD_ALLOW_SEALING` and sealed with `F_SEAL_SHRINK`, `F_SEAL_GROW` and `F_SEAL_WRITE` after the helper unmaps its writable mapping. An error reply carries no descriptor. kmscon logs the reason; the client gets only the one reply for its code.
+- **kmscon's checks,** before it reads a pixel; any failure is a failed reply: a request outstanding at all (a packet with none is a failure); the received length exactly 32 plus `reason_len`, with `reason_len` at most 255 and `reserved` 0, so root never reads past the packet; the version; the outstanding `id`; a status among the four; for status 0, exactly one descriptor, `fstat` showing a regular file of exactly width x height x 4 bytes computed in 64 bits, `F_GET_SEALS` holding at least `F_SEAL_SHRINK`, `F_SEAL_GROW` and `F_SEAL_WRITE`, seals only a memfd made with `MFD_ALLOW_SEALING` can carry, with any further seal accepted beside them (`F_SEAL_FUTURE_WRITE` does not count in place of `F_SEAL_WRITE`, since a writable shared mapping made before it was set can still write; beside `F_SEAL_WRITE` it is accepted and adds nothing), width and height from 1 to `max_width` and `max_height`, width x height x 4 at most `max_bytes`, and, for a raw format with `s` and `v` given, width and height equal to them. It then maps the memfd `PROT_READ` and `MAP_PRIVATE`, passes it to `tsm_vte_image_reply`, and unmaps and closes it. Every descriptor received, across every `SCM_RIGHTS` control message, is closed on every failure path. The reason is reduced to printable ASCII before kmscon logs it.
+- kmscon trusts the helper no more than the client: the helper runs as the user, who can trace it. The shrink seal keeps it from truncating the object under kmscon's read, which would fault the root process. For the same reason, the helper copies a client's `t=s` object into its own sealed memfd instead of passing the client's descriptor on.
+
+### Memory
+
+- The two copies kmscon holds while a request is out, the inline memfd it sends and the reply it maps, sit outside the budget, as bbulk's working memory does: at most one request per session, each copy at most `max_bytes`, and both gone when the request ends. The inline buffer in libtsm is reserved (above), and so is the stored image.
+
+### The `sd_login` build option
+
+```meson
+option('sd_login', type: 'feature', value: 'auto',
+  description: 'Find the image helper\'s user through sd-login (libsystemd or libelogind)')
+```
+
+- `auto` and `enabled` look for `libsystemd`, then `libelogind`; both provide `<systemd/sd-login.h>`, libelogind's pkg-config file adding its include directory. `enabled` with neither fails the configure, `auto` builds without, and `disabled` looks for neither. The result is `BUILD_ENABLE_SD_LOGIN` in `config.h` and a line in the build summary, as the other features have.
+- Only kmscon links it, for `sd_pid_get_session` on the pty's child and `sd_session_get_uid`; the helper never does. Built without it, or with the child in no logind session, the identity is the pty's owner, as this record says.
+- The name follows `meson.options`, where every option is snake case (`video_drm2d`, `font_freetype`).
+
+### tsm-replay's fixture host
+
+- Against a libtsm that declares `TSM_VTE_IMAGE_HOST`, tsm-replay installs a hook that records the request and returns 0. Its input loop then answers with `tsm_vte_image_reply` and feeds the rest, the path kmscon takes, pause and resume included.
+- Answers come from `cases/<case>.files/` beside the stream. A request names a fixture: the last component of its path or name for `t=f`, `t=t` and `t=s`, and `direct-<n>` for the case's nth inline request, counting from 1. tsm-replay answers, taking the first that applies:
+  1. from `<fixture>.error`, whose first word, `EBADF`, `EINVAL` or `ENOSPC`, is the error;
+  2. from `<fixture>.rgba`, a decoded image (width and height as little-endian 32-bit integers, then RGBA), which stands in for a PNG or compressed fixture, since tsm-replay links no decoder;
+  3. for a raw format without `o=z`, from `<fixture>` itself, honouring `O` and `S` and expanding `f=24`;
+  4. otherwise EBADF for the file media and EINVAL for inline data.
+- It deletes nothing and applies none of the helper's path rules, which kmscon's unit tests cover.
+- Each request is printed among the replies, as `host: <id> t=<medium> f=<format> o=<z or -> discard=<0 or 1> s=<width> v=<height> O=<offset> S=<size> name=<the name as received> len=<data_len>`, the name with every byte outside 0x21 to 0x7e, and the backslash, written as `\xNN` in lower-case hex (a space as `\x20`, a newline as `\x0a`), so each request stays one line of space-separated fields and the goldens judge what libtsm hands out as well as what it answers the client. `gen-synthetic.py` writes the fixtures beside the streams.
+
+### Testing
+
+- **Tier 1 and libtsm's unit tests:** each medium reaching the hook and inline raw data staying in libtsm; a name too long or holding NUL; a `t=s` command with `m=1` followed by more commands, each taken whole, from mpv's recorded stream; icat's detection sequence (three `a=q` and DA1), with the three OK replies before the DA1 answer; an `a=f` with `t=s` from icat's GIF stream, refused with the object discarded; the pause, with bytes after the command's ST parsed only after the reply and in order, a put right after a file transmission among them; each error from the hook's return and from the reply; ENOSPC from the inline buffer's reservation and from the image's; `a=q` storing nothing; a reply past `max-graphic-size` or differing from `s` and `v`; and every case again with no hook. The unit tests also cover a stale `id`, -EBUSY from inside the hook, and each way of cancelling.
+- **kmscon's unit tests,** beside this record's refusal tests: each reply check (no descriptor, two descriptors, a memfd unsealed or missing one seal or sealed with `F_SEAL_FUTURE_WRITE` in place of `F_SEAL_WRITE`, a size one byte off, dimensions past the limits, a wrong `id` or version, a truncated packet, a length that disagrees with `reason_len`, a non-zero `reserved`, a reply with no request out) ends the request with EBADF and a new helper, with every received descriptor closed; a `t=t` directory component swapped for a symlink after the check, leaving the file elsewhere in place; a discard aimed at a FIFO, or at a symlink whose target fails the temporary-file rule, refused with nothing deleted; a discard aimed at a symlink whose target passes it, deleting the target and leaving the symlink; the timeout, with a helper that never answers; PNG and zlib decoding, a PNG whose header claims a size past the limits refused before allocation among them; `S` 0 and non-zero; the memory limit; and the identity, logind's uid when built with sd-login and the pty's owner otherwise.
+
+### Order of work
+
+This details the step 4 list's 4a and 4b, which are edited to match, with a dated note; 4c, 4d and 4e stand.
+
+1. **4a, libtsm kitty and the host hook,** in parallel with 4b once this section lands: what 4a listed, plus the calls above, the pause, the fixture host in `tsm-replay`, and their tier 1 cases and unit tests. It also adds victim rank `TSM_IMAGE_PLACED_KITTY` (3), declared with the feature macro `TSM_SCREEN_IMAGE_PLACED_KITTY`:
+   - kitty images placed outside scrollback stop being pinned (`images_mark_pinned` in `tsm-image.c`); sixel stays pinned;
+   - each image keeps the time it was transmitted, a stamp from the shared `image_clock` taken when it is stored; a retransmission of an id is a new image and takes a new stamp;
+   - for a rank 3 image, `tsm_screen_image_victim` and `tsm_screen_image_victims` report that stamp in `last_use`, and `image_victim` orders rank 3 by it, so a screen's own order and its host's order across screens agree; ranks 0 to 2 keep the last time the image was created, placed or drawn; every value stays unique within its rank, so `victim_cmp` needs no change;
+   - it rewrites the never-evict statements, in `libtsm.h` above `tsm_screen_image_reserve_cb`, at the top of `tsm-image.c` and above `images_mark_pinned`, and the comments on `enum tsm_image_rank`, `last_use`, `image_victim` and `victim_cmp`, to say this.
+2. **4b, the helper,** in kmscon: `kmscon-image-helper` with this protocol and this record's identity, file and shared memory rules, PNG and zlib, declaring `libpng` and `zlib` as its own meson dependencies; `kmscon_pty_pause` and `kmscon_pty_resume`; the hook's wiring in the terminal; the `sd_login` option; and the unit tests. In `src/render/image_budget.c`, `image_budget_picture_room` stops at rank 3 (`give_victim` ends the walk at the first rank 3 victim), inside `#ifdef TSM_SCREEN_IMAGE_PLACED_KITTY`. `next_victim` and `make_room` need no code change: they order by rank, then `last_use`, which now means oldest transmission at rank 3. Their comments, and `image_budget.h`'s on the order and on never evicting, are rewritten. Until the pin carries 4a, it builds against the 4a branch with `LIBTSM=`, and its unit tests drive the helper over its socket without libtsm.
+3. 4c follows both, after the pin moves. 4d also takes the showcase's acts 6 and 7 (#85, #86, #87).
+
+### Clients that depart from the spec
+
+What kmscon does where a surveyed client departs from the spec, and the clients each affects (ADR-105, ADR-106):
+
+- **Shared memory names without a leading `/`.** The spec says POSIX names "must start with a / and have no other / characters", and the Shared memory bullet of The image helper already refuses any other name, with the one EBADF reply. That stands. mpv 0.41.0's shared memory mode names its object `mpv-kitty-0x<hex>`, so under kmscon it shows nothing, as under kitty 0.49.2. Two alternatives were set out and are rejected under the operator's principle, since each accepts a name the spec forbids: reading the name as `/<name>` and unlinking (mpv then loses frames to its own reuse of the name: 29% to 49% in kitty with the name rewritten, 50% in the probe's harness), and reading it as `/<name>` but leaving those objects unlinked.
+- **Unlinking.** The spec's unlink after reading stands for every `t=s` object. mpv reuses one name for every frame, so even with a spec name its frames would race that unlink; that is mpv's to fix. kitten icat, the only other surveyed client using `t=s`, names its objects by the spec; the spec leaves their removal to the terminal, and icat leaves its frame objects for the terminal to remove (ADR-106). Its query objects were gone at the same later check of `/dev/shm`; the harness records which objects appeared, not who removed them.
+- **mpv's `m=1` on whole `t=s` commands** is harmless under the `m` rule above.
+- **icat's `a=a` commands** carry `I` and no `q`, so until step 5 icat receives an EINVAL reply for each, as the spec's reply rules require.
+- **Anonymous frames piled at one cell** (mpv, chafa, viu) send nothing the spec forbids; past the budget, the spec's storage quota rule evicts their oldest frames (Operator answers to the open questions, below). mpv enters the alternate screen (mode 1049) before its first frame, so its pile sits in the alternate store and is emptied when mpv leaves it; chafa's and viu's piles sit in the main store and stay until evicted or deleted.
+
+### Spec version annotations
+
+- The spec marks some features with the kitty version that added them: placement ids, `q` and image numbers (`I`) in 0.19.3; `C=1` and animation in 0.20.0; frame composition in 0.22.0; Unicode placeholders in 0.28.0; relative placements in 0.31.0; `d=r` in 0.33.0. The shared memory name rule, the unlink, chunking and the storage quota carry no mark.
+- The surveyed clients use marked features: mpv sends `C=1` and `q`; chafa and timg send `q`; ncplayer sends `p`, `q` and `C=1`; icat sends `I`, `q` and animation. None of the observed departures (mpv's name, its reuse of it, `m=1` on whole `t=s` commands) involves a marked feature, so the marks cannot say when the rules those departures break entered the spec. Whether any client was written against an older form of the spec is an unverified hypothesis.
+
+### Acceptance: conformance and compatibility
+
+- **Conformance** is judged with spec-conformant clients: the fork's spec-written client (ADR-300); kitten icat for what it does within the spec (detection, stills through `t=f`, `t=t`, `t=s` and direct transmission, deletes); and mpv's inline output, which follows the spec and which the operator chose to keep as an A5 gate. These are 4d's pass and fail gates.
+- **A5 changes.** Its conformance runs are `mpv --vo=kitty` inline, the spec-written client inline and over shared memory, and `kitten icat --transfer-mode=memory`; `mpv --vo=kitty --vo-kitty-use-shm=yes` moves to the compatibility measurements. The operator chose to keep mpv inline as a gate (considered entry above, an option they picked). The Targets section's A5 criteria are read against each conformance client's rate; at 7680x2160 mpv inline is bound by the pty at about 4 frames per second (ADR-105), so for it the gate is that kmscon presents what mpv sends. The frontmatter's observable, the Summary's Acceptance bullet, the Acceptance scenarios' A5, both Targets criteria and 4d are edited to match, each with a dated note. A6 and A7 place their pictures with the spec-written client.
+- **Compatibility measurements,** reported beside conformance and gating nothing: mpv over shared memory, expected to show nothing; timg (PNG frames) and ncplayer (zlib frames) on the 30 fps clip at 1920x1080 and 7680x2160; chafa and viu on a GIF. Each records whether the client displays and its presented rate beside its own. timg and ncplayer put the helper on every frame, so their rates measure the helper's round trip at video rate, which no conformance run does. This replaces A8.
+- **icat on a GIF** shows its first frame only until step 5: its first frame is an `a=T`, and the rest are `a=a` and `a=f`, answered EINVAL, with each `a=f` object discarded. Its GIFs join step 5's scenarios.
+
+### Operator answers to the open questions
+
+The operator chose the recommended option of each, recorded as considered entries above:
+
+1. **The copies a load holds stay outside the budget,** as bbulk's working memory does (Memory, above). The budget bounds what is kept; a load briefly needs up to two more copies, each at most the budget, one request per session.
+2. **The build option is `sd_login`,** snake case as every option in `meson.options` is.
+3. **Images past the budget follow the spec's storage quota rule.** The spec says that when a new image passes the quota, "the terminal emulator should delete older images to make space for the new one". kmscon evicts, across every screen it runs: its scaled pictures the current frame does not draw, then images with no placement, then images placed only in scrollback, then kitty images placed on a screen's own lines, oldest first by transmission, with their placements; libtsm reports the transmission time in each such victim's `last_use`, so kmscon's order across screens holds without a change (Order of work, above). A sixel placed on a screen's own lines is never evicted. The spec asks only for older images to be deleted, unplaced ones first; reading "older" as least recently used off the screen and as oldest transmission on it, putting scrollback ahead of the screen, and exempting sixel are this record's choices, with the reasons the Image store section gives. ENOSPC remains for an image larger than everything that can be freed. Passages of this record are edited in place to say this, each with a dated note quoting what it said before and naming the operator's choice: the Summary's store and budget bullet, whose "An image placed on the screen is never evicted" now holds for sixel only; the Image store section's eviction list, which gains step 4, kitty images with a placement on a screen's own lines, and its sentence "An image with a placement on a screen's own lines is never evicted.", now for sixel images only; and Consequences' shared-budget line. ADR-101's Image layer bullet on eviction is edited the same way, and this record's `amends` names that section beside Parsing. The operator set the editing rule: "I don't like append only. I thought it made sense but we need to be able to edit where it makes sense too" (docs/fork/development.md). Covered-placement removal (dropping a kitty placement wholly covered by a newer opaque one) is not adopted: it is outside the spec, and it can be proposed later only on 4d's evidence that video in practice pushes scrollback pictures out. The clients this serves (ADR-105, ADR-106): mpv's video and chafa's and viu's GIFs, which place every frame as a new anonymous image at one cell, keep playing past the budget instead of freezing. bbulk's scaled copies keep the rule of the 2026-10-23 Notes (Q1): the quota rule applies to a new image's reservation in libtsm's stores. 4a builds the order with tier 1 cases: unplaced, then scrollback, then placed kitty images oldest first, and a placed sixel never.

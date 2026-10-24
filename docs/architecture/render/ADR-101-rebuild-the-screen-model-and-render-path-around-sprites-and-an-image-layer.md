@@ -85,7 +85,7 @@ The parser is not rewritten until the harness shows a reason to. Replacing it wo
 
 ### Image layer
 
-- Images are stored by id, with a total storage limit and eviction of the least recently used image that has no visible placement.
+- Images are stored by id, with a total storage limit and eviction of the least recently used image that has no visible placement; past that, kitty images with a placement on screen are evicted too, oldest first, and sixel pictures on screen never are. (Changed 2026-10-24: the operator chose the kitty spec's storage-quota rule, ADR-103's Notes of that date. This bullet said: "Images are stored by id, with a total storage limit and eviction of the least recently used image that has no visible placement.")
 - A placement anchors an image to a cell (line and column) with a pixel offset, a size in cells and a z-index.
 - The screen reports every scroll, erase, line insert or delete, resize, alternate-screen switch and reset to the image layer, which moves, clips or drops placements. Placements on lines that enter scrollback travel with those lines.
 - Sixel creates an anonymous image and places it at the cursor, advancing the cursor as DEC terminals do. The kitty protocol creates images by id and places them by command. Unicode placeholder cells that reference placements follow later.

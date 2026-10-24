@@ -58,7 +58,9 @@ docs/scripts/adr lint
 
 `docs/scripts/adr domains` lists the domains (render, terminal, fork) and `docs/architecture/adr.yaml` the capabilities. A record lands through its own PR, like code.
 
-An accepted record is corrected only by appending: a dated section at the end, such as ADR-102's "Corrections from the prototype (2026-10-22)" or ADR-301's "Amendment, 2026-10-20". What was decided stays as written; git keeps every earlier version.
+An accepted record is edited in place, so it reads as what is decided now. What is accepted is the record read from top to bottom, and a passage the record marks as superseded is history. Where an edit changes a decision, the edited passage carries a dated note giving the operator's words, or the option they chose, and quoting what the text said before, as ADR-103's store rule does after its 2026-10-24 change. Appended dated sections remain the place for evidence, corrections and amendments that add to a record rather than replace part of it, such as ADR-102's "Corrections from the prototype (2026-10-22)" or ADR-301's "Amendment, 2026-10-20". Git keeps every earlier version.
+
+A decision that is reversed, replaced or rejected on substantially the same topic is changed in its own record, with dated notes at the passages that change. A different direction or concept, or a change that overlaps the record by less than about half, gets a new record that names what it replaces through `supersedes` or `amends`. Where that line falls is a judgement call. The operator set this rule in the agent-ways session, relayed from there: "the total read of a concept in the adr is what is 'accepted'", and "a blanket 'new append' policy would create a bueacratic [sic] mess". It follows agent-ways ADR-313 (aaronsb/agent-ways#1171), which records the same rule for the ADR tool's convention. <!-- adr-cite-ignore: ADR-313 is agent-ways' record, not this repository's -->
 
 A fix or a step already covered by an accepted record needs no new record; its PR cites the record and step it implements, such as "ADR-102 step 4b".
 
@@ -255,7 +257,7 @@ The operator asked to discuss two kinds of change before they merge, whatever th
 How the steering session applies that, its own process rather than the operator's words:
 - A security change includes anything that changes what runs as root, what a program in the session can make kmscon read, write or execute, a trust boundary, a privilege, or a resource limit that guards against abuse.
 - A change in approach includes a departure from an accepted ADR, or from the plan the PR set out with where no ADR covers it, made because of a limitation found on the way, an opportunity, or the architecture. A choice an ADR leaves open is raised when it changes behaviour other terminals or users would notice.
-- Each is raised with the operator as a numbered question before the merge, not left as a note in a PR body. Where the answer changes an accepted ADR, the ADR gets an appended note recording it.
+- Each is raised with the operator as a numbered question before the merge, not left as a note in a PR body. Where the answer changes an accepted ADR on substantially the same topic, the ADR is edited to say what is now decided, with a dated note giving the operator's words, or the option they chose, and quoting what it said before. A different direction gets a new record, as [Decide](#1-decide) says.
 
 ## The conformance record
 

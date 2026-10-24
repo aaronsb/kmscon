@@ -30,13 +30,16 @@
 #include <grp.h>
 #include <limits.h>
 #include <linux/capability.h>
+#include <poll.h>
 #include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "../src/image_host.c"
 
@@ -169,7 +172,8 @@ static void test_real(const char *helper)
 	r.id = 3;
 	assert(image_host_send(h, &me, &r) == 0);
 	wait_reply(h, 5000);
-	assert(image_host_pid(h) == pid && got.id == 3 && got.status == KMSCON_IMAGE_OK);
+	assert(image_host_pid(h) == pid && got.id == 3 && got.status == KMSCON_IMAGE_OK &&
+	       got.len == 4 && !memcmp(got.first, px, 4));
 
 	/* the helper's outcomes pass through, and keep it */
 	r = request(4, 'f', "/proc/self/status");
@@ -198,7 +202,8 @@ static void test_real(const char *helper)
 	r = request(8, 'f', path);
 	assert(image_host_send(h, &me, &r) == 0);
 	wait_reply(h, 5000);
-	assert(got.status == KMSCON_IMAGE_OK && image_host_pid(h) == pid);
+	assert(got.id == 8 && got.status == KMSCON_IMAGE_OK && image_host_pid(h) == pid &&
+	       got.len == 4 && !memcmp(got.first, px, 4));
 
 	/* inline data travels in a memfd */
 	r = request(9, 'd', NULL);
@@ -214,14 +219,16 @@ static void test_real(const char *helper)
 	r.max_bytes = 1 << 19;
 	assert(image_host_send(h, &me, &r) == 0);
 	wait_reply(h, 5000);
-	assert(image_host_pid(h) == pid);
+	assert(image_host_pid(h) == pid && got.id == 10 && got.status == KMSCON_IMAGE_OK &&
+	       got.len == 4 && !memcmp(got.first, px, 4));
 	r.id = 11;
 	r.max_bytes = 4 << 20;
 	assert(image_host_send(h, &me, &r) == 0);
 	assert(image_host_pid(h) != pid);
 	pid = image_host_pid(h);
 	wait_reply(h, 5000);
-	assert(got.status == KMSCON_IMAGE_OK);
+	assert(got.id == 11 && got.status == KMSCON_IMAGE_OK && got.len == 4 &&
+	       !memcmp(got.first, px, 4));
 	assert(helper_as(pid) == 3ull * (4 << 20) + (64ull << 20));
 
 	/*
@@ -237,9 +244,15 @@ static void test_real(const char *helper)
 		assert(image_host_pid(h) != pid);
 		pid = image_host_pid(h);
 		wait_reply(h, 5000);
+		assert(got.id == 12 && got.status == KMSCON_IMAGE_OK && got.len == 4 &&
+		       !memcmp(got.first, px, 4));
+		memset(&got, 0, sizeof(got));
 		r.id = 13;
 		assert(image_host_send(h, &other, &r) == -EBADF);
 		assert(!image_host_pid(h) && !image_host_busy(h));
+		/* refused before anything was sent: no reply comes */
+		ev_eloop_dispatch(loop, 50);
+		assert(!got.calls);
 	}
 
 	/* cancelled: no reply, and the helper goes */
@@ -664,6 +677,106 @@ static void test_sanitize(void)
 	assert(!buf[0]);
 }
 
+/* @pid's session and controlling terminal, from its /proc stat */
+static void stat_of(pid_t pid, int *session, int *tty)
+{
+	char path[64], line[512], *p;
+	FILE *f;
+
+	snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+	f = fopen(path, "r");
+	assert(f && fgets(line, sizeof(line), f));
+	fclose(f);
+	p = strrchr(line, ')');
+	assert(p && sscanf(p + 2, "%*c %*d %*d %d %d", session, tty) == 2);
+}
+
+/*
+ * The helper has no controlling terminal, though kmscon has one: it starts a
+ * session of its own. A child of this test takes a pty as its controlling
+ * terminal first, and starts the helper from there.
+ */
+static void test_no_ctty(const char *helper)
+{
+	int status;
+	pid_t pid;
+
+	pid = fork();
+	assert(pid >= 0);
+	if (!pid) {
+		struct image_user me = user_of(getuid());
+		struct image_host_request r = request(600, 'f', "/nonexistent");
+		struct ev_eloop *l;
+		struct image_host *h;
+		int master, slave, session, tty, i;
+		char name[64];
+		pid_t hp;
+
+		master = posix_openpt(O_RDWR | O_NOCTTY);
+		if (setsid() < 0 || master < 0 || grantpt(master) || unlockpt(master) ||
+		    ptsname_r(master, name, sizeof(name)))
+			_exit(10);
+		slave = open(name, O_RDWR);
+		if (slave < 0 || ioctl(slave, TIOCSCTTY, 0))
+			_exit(11);
+		/* the control: this process has the pty as its terminal */
+		stat_of(getpid(), &session, &tty);
+		if (!tty || session != getpid())
+			_exit(12);
+		if (ev_eloop_new(&l) || image_host_new(&h, l, helper, reply, NULL) ||
+		    image_host_send(h, &me, &r))
+			_exit(13);
+		for (i = 0; i < 500 && image_host_busy(h); i++)
+			ev_eloop_dispatch(l, 10);
+		hp = image_host_pid(h);
+		if (image_host_busy(h) || !hp)
+			_exit(14);
+		stat_of(hp, &session, &tty);
+		_exit(tty == 0 && session == hp ? 0 : 15);
+	}
+	assert(waitpid(pid, &status, 0) == pid && WIFEXITED(status));
+	if (WEXITSTATUS(status)) {
+		fprintf(stderr, "test_no_ctty: child exited %d\n", WEXITSTATUS(status));
+		abort();
+	}
+}
+
+/*
+ * As root: a kmscon running with effective uid and gid nobody's but real and
+ * saved ids 0, as a setuid install or a wrapper that sets only the effective
+ * ids leaves it, starts the helper with every id nobody's, so no 0 survives
+ * for a user who traces it to take back
+ */
+static void test_effective_only(const char *helper)
+{
+	struct passwd *pw = getpwnam("nobody");
+	struct image_host_request r = request(700, 'f', "/nonexistent");
+	struct image_user me;
+	struct image_host *h;
+	char want[64];
+	pid_t pid;
+
+	if (geteuid())
+		return;
+	assert(pw);
+	assert(!setresgid(0, pw->pw_gid, 0) && !setresuid(0, pw->pw_uid, 0));
+	me = user_of(geteuid());
+	assert(image_host_new(&h, loop, helper, reply, NULL) == 0);
+	assert(image_host_send(h, &me, &r) == 0);
+	wait_reply(h, 5000);
+	pid = image_host_pid(h);
+	assert(pid > 0 && got.status == KMSCON_IMAGE_UNREADABLE);
+	snprintf(want, sizeof(want), "%u\t%u\t%u\t%u", pw->pw_uid, pw->pw_uid, pw->pw_uid,
+		 pw->pw_uid);
+	assert(!strcmp(status_of(pid, "Uid"), want));
+	snprintf(want, sizeof(want), "%u\t%u\t%u\t%u", pw->pw_gid, pw->pw_gid, pw->pw_gid,
+		 pw->pw_gid);
+	assert(!strcmp(status_of(pid, "Gid"), want));
+	image_host_free(h);
+	assert(!setresuid(0, 0, 0) && !setresgid(0, 0, 0));
+	printf("test_image_host: root: real and saved ids 0 dropped with effective ids\n");
+}
+
 int main(int argc, char **argv)
 {
 	char helper[PATH_MAX], fake[PATH_MAX];
@@ -684,6 +797,8 @@ int main(int argc, char **argv)
 	test_real(helper);
 	test_checks(fake);
 	test_hardening(helper);
+	test_no_ctty(helper);
+	test_effective_only(helper);
 
 	ev_eloop_unref(loop);
 	assert(rmdir(dir) == 0);

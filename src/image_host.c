@@ -79,10 +79,10 @@ struct image_host {
 
 /* the identity the child takes, resolved before the fork */
 struct creds {
-	bool change;
 	uid_t uid;
 	gid_t gid;
-	gid_t *groups;
+	bool groups; /* set the supplementary groups: root only */
+	gid_t *list;
 	int n_groups;
 };
 
@@ -93,8 +93,10 @@ static void helper_event(struct ev_fd *fd, int mask, void *data);
  * a threaded process may call only async-signal-safe functions, and
  * getpwuid_r and getgrouplist are not. A session user takes its primary gid
  * and supplementary groups; the pre-login user its gid alone, with none. Not
- * running as root, kmscon can start a helper only as its own user, and
- * changes nothing.
+ * running as root, kmscon starts a helper only when the user is its own
+ * effective uid, and the child still sets every uid and gid to the effective
+ * ones, so no real or saved uid 0 of a setuid install survives; it keeps
+ * kmscon's supplementary groups, which only root can change.
  */
 static int resolve_creds(const struct image_user *user, struct creds *c)
 {
@@ -111,10 +113,11 @@ static int resolve_creds(const struct image_user *user, struct creds *c)
 			log_warning("not root: cannot start the image helper as uid %u", uid);
 			return -EPERM;
 		}
+		c->gid = getegid();
 		return 0;
 	}
+	c->groups = true;
 	if (user->gid_only) {
-		c->change = true;
 		c->gid = user->gid;
 		return 0;
 	}
@@ -135,16 +138,15 @@ static int resolve_creds(const struct image_user *user, struct creds *c)
 		return ret ? -ret : -ENOENT;
 	}
 
-	c->change = true;
 	c->gid = pw.pw_gid;
 	for (;;) {
-		groups = realloc(c->groups, n * sizeof(*groups));
+		groups = realloc(c->list, n * sizeof(*groups));
 		if (!groups) {
 			ret = -ENOMEM;
 			break;
 		}
-		c->groups = groups;
-		if (getgrouplist(pw.pw_name, pw.pw_gid, c->groups, &n) >= 0) {
+		c->list = groups;
+		if (getgrouplist(pw.pw_name, pw.pw_gid, c->list, &n) >= 0) {
 			c->n_groups = n;
 			ret = 0;
 			break;
@@ -161,25 +163,34 @@ static int resolve_creds(const struct image_user *user, struct creds *c)
 /*
  * The forked child: only async-signal-safe calls, then the helper with a
  * clean environment, descriptors 0 to 2 on /dev/null, its socket as 3 and
- * nothing else open. Ambient capabilities are cleared: they would survive the
- * exec of a helper that keeps kmscon's uid, as one started by a kmscon that
- * systemd gave AmbientCapabilities would.
+ * nothing else open. It starts a session of its own, so it has no controlling
+ * terminal: the user can trace their helper, and kmscon's terminal, when it
+ * was started from one, would otherwise take TIOCSTI and the VT ioctls from
+ * it. Every uid and gid is set and then read back, so none of kmscon's
+ * survives. Ambient capabilities are cleared: they would survive the exec of
+ * a helper that keeps kmscon's uid, as one started by a kmscon that systemd
+ * gave AmbientCapabilities would.
  */
 static void __attribute__((noreturn)) exec_helper(const char *path, char *const argv[],
 						  char *const envp[], const struct creds *c,
 						  const struct rlimit *as, int null, int sock)
 {
+	uid_t ru, eu, su;
+	gid_t rg, eg, sg;
 	sigset_t none;
 
 	sigemptyset(&none);
-	if (sigprocmask(SIG_SETMASK, &none, NULL) || dup2(null, 0) < 0 || dup2(null, 1) < 0 ||
-	    dup2(null, 2) < 0 || dup2(sock, KMSCON_IMAGE_FD) < 0 ||
+	if (setsid() < 0 || sigprocmask(SIG_SETMASK, &none, NULL) || dup2(null, 0) < 0 ||
+	    dup2(null, 1) < 0 || dup2(null, 2) < 0 || dup2(sock, KMSCON_IMAGE_FD) < 0 ||
 	    close_range(KMSCON_IMAGE_FD + 1, ~0U, 0))
 		_exit(127);
 	if (setrlimit(RLIMIT_AS, as))
 		_exit(127);
-	if (c->change && (setgroups(c->n_groups, c->groups) || setresgid(c->gid, c->gid, c->gid) ||
-			  setresuid(c->uid, c->uid, c->uid)))
+	if ((c->groups && setgroups(c->n_groups, c->list)) || setresgid(c->gid, c->gid, c->gid) ||
+	    setresuid(c->uid, c->uid, c->uid))
+		_exit(127);
+	if (getresuid(&ru, &eu, &su) || getresgid(&rg, &eg, &sg) || ru != c->uid || eu != c->uid ||
+	    su != c->uid || rg != c->gid || eg != c->gid || sg != c->gid)
 		_exit(127);
 	if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) ||
 	    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) || chdir("/"))
@@ -254,7 +265,7 @@ static int start_helper(struct image_host *h, const struct image_user *user, uin
 	h->user = *user;
 	h->max_bytes = max_bytes;
 	log_debug("image helper %d started as uid %u", pid, user->uid);
-	free(c.groups);
+	free(c.list);
 	return 0;
 
 err_sock:
@@ -264,7 +275,7 @@ err_sock:
 		close(null);
 	close(sv[0]);
 out:
-	free(c.groups);
+	free(c.list);
 	log_warning("cannot start the image helper %s: %d", h->helper, ret);
 	return ret;
 }

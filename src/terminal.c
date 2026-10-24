@@ -41,6 +41,8 @@
 #include "conf.h"
 #include "config.h"
 #include "font/font.h"
+#include "image_host.h"
+#include "image_identity.h"
 #include "input/input.h"
 #include "issue.h"
 #include "pty.h"
@@ -57,6 +59,8 @@
 #include "video/video.h"
 
 #define LOG_SUBSYSTEM "terminal"
+
+#define IMAGE_HELPER BUILD_MODULE_DIR "/kmscon-image-helper"
 
 struct screen {
 	struct dlist list;
@@ -109,6 +113,12 @@ struct kmscon_terminal {
 	/* the cell size libtsm and TIOCSWINSZ were last given */
 	unsigned int cell_w;
 	unsigned int cell_h;
+	/*
+	 * Reads kitty graphics files and shared memory and decodes PNG and zlib
+	 * as the session's user; while it has a request out, the pty and
+	 * asciicast playback are paused (ADR-103, Notes of 2026-10-24).
+	 */
+	struct image_host *image_host;
 
 	struct kmscon_font *font;
 	/* Automatically adjust font size to fit terminal size
@@ -595,6 +605,62 @@ static void asciinema_start(struct kmscon_terminal *term)
 		return;
 	kmscon_asciinema_start(term->asciinema);
 }
+
+#ifdef TSM_VTE_IMAGE_HOST
+/*
+ * libtsm's host hook: a t=f, t=t or t=s command, or inline PNG or zlib data,
+ * goes to the session's helper, found again for each request, and the pty
+ * pauses with the bytes after the command held until the reply, so commands
+ * keep their order. -EBADF answers the command at once and input goes on.
+ */
+static int image_event(struct tsm_vte *vte, const struct tsm_vte_image_request *req, void *data)
+{
+	struct kmscon_terminal *term = data;
+	struct image_host_request r = {
+		.id = req->id,
+		.medium = req->medium,
+		.format = req->format,
+		.zlib = req->zlib,
+		.discard = req->discard,
+		.width = req->width,
+		.height = req->height,
+		.offset = req->offset,
+		.size = req->size,
+		.name = req->name,
+		.data = req->data,
+		.data_len = req->data_len,
+		.max_width = term->conf->max_graphic_size.width,
+		.max_height = term->conf->max_graphic_size.height,
+		.max_bytes = image_budget_limit(),
+	};
+	uid_t owner = 0, uid;
+	int ret;
+
+	ret = kmscon_pty_get_slave_owner(term->pty, &owner);
+	if (image_identity_uid(kmscon_pty_get_child(term->pty), ret, owner, &uid)) {
+		log_warning("no session user for image request %llu", (unsigned long long)req->id);
+		return -EBADF;
+	}
+	if (image_host_send(term->image_host, uid, &r))
+		return -EBADF;
+	kmscon_pty_pause(term->pty);
+	kmscon_asciinema_pause(term->asciinema);
+	return 0;
+}
+
+/* -ENOENT from libtsm, a request it cancelled meanwhile, resumes all the same */
+static void image_reply(struct image_host *host, uint64_t id, int error, unsigned int width,
+			unsigned int height, const uint8_t *rgba, void *data)
+{
+	struct kmscon_terminal *term = data;
+
+	tsm_vte_image_reply(term->vte, id, error, width, height, rgba);
+	term->redraw_owed = true;
+	kmscon_pty_resume(term->pty);
+	if (term->awake)
+		kmscon_asciinema_resume(term->asciinema);
+}
+#endif
 
 static void osc_event(struct tsm_vte *vte, const char *osc_string, size_t osc_len, void *data)
 {
@@ -1451,7 +1517,8 @@ static int terminal_open(struct kmscon_terminal *term)
 		return ret;
 
 	term->opened = true;
-	if (term->conf->issue)
+	/* fed only with no request out; none survives a close */
+	if (term->conf->issue && !image_host_busy(term->image_host))
 		kmscon_issue_write(term);
 	asciinema_start(term);
 
@@ -1460,9 +1527,13 @@ static int terminal_open(struct kmscon_terminal *term)
 	return 0;
 }
 
+/* the helper goes with the session; libtsm's request out, if any, is cancelled */
 static void terminal_close(struct kmscon_terminal *term)
 {
 	kmscon_asciinema_pause(term->asciinema);
+	if (image_host_busy(term->image_host))
+		tsm_vte_reset(term->vte);
+	image_host_cancel(term->image_host);
 	kmscon_pty_close(term->pty);
 	term->opened = false;
 }
@@ -1490,7 +1561,7 @@ void terminal_activate(struct kmscon_terminal *term)
 	}
 	if (!term->opened)
 		terminal_open(term);
-	else
+	else if (!image_host_busy(term->image_host))
 		kmscon_asciinema_resume(term->asciinema);
 
 	terminal_refresh_displays(term);
@@ -1516,6 +1587,10 @@ void terminal_destroy(struct kmscon_terminal *term)
 	log_debug("free terminal object %p", term);
 
 	terminal_close(term);
+#ifdef TSM_VTE_IMAGE_HOST
+	tsm_vte_set_image_cb(term->vte, NULL, NULL);
+#endif
+	image_host_free(term->image_host);
 	rm_all_screens(term);
 	ev_eloop_rm_timer(term->blink_timer);
 	ev_eloop_rm_timer(term->blink_cursor);
@@ -1641,10 +1716,19 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 	if (ret)
 		goto err_pty;
 
+#ifdef TSM_VTE_IMAGE_HOST
+	/* on the pty's loop, which reaps its children */
+	ret = image_host_new(&term->image_host, kmscon_pty_get_eloop(term->pty), IMAGE_HELPER,
+			     image_reply, term);
+	if (ret)
+		goto err_pty;
+	tsm_vte_set_image_cb(term->vte, image_event, term);
+#endif
+
 	ret = ev_eloop_new_fd(term->eloop, &term->ptyfd, kmscon_pty_get_fd(term->pty), EV_READABLE,
 			      pty_event, term);
 	if (ret)
-		goto err_pty;
+		goto err_image;
 
 	ret = ev_eloop_register_post_cb(term->eloop, terminal_turn_end, term);
 	if (ret)
@@ -1699,6 +1783,11 @@ err_turn:
 	ev_eloop_unregister_post_cb(term->eloop, terminal_turn_end, term);
 err_ptyfd:
 	ev_eloop_rm_fd(term->ptyfd);
+err_image:
+#ifdef TSM_VTE_IMAGE_HOST
+	tsm_vte_set_image_cb(term->vte, NULL, NULL);
+#endif
+	image_host_free(term->image_host);
 err_pty:
 	kmscon_pty_unref(term->pty);
 err_font:

@@ -65,7 +65,7 @@ struct image_host {
 	int pidfd;
 	int sock;
 	struct ev_fd *efd;
-	uid_t uid;
+	struct image_user user;
 	uint64_t max_bytes; /* its memory limit was set from this */
 
 	/* why the last helper was stopped, for tests */
@@ -89,14 +89,17 @@ struct creds {
 static void helper_event(struct ev_fd *fd, int mask, void *data);
 
 /*
- * The uid's primary gid and supplementary groups, found in kmscon before it
- * forks: the child of a threaded process may call only async-signal-safe
- * functions, and getpwuid_r and getgrouplist are not. Not running as root,
- * kmscon can start a helper only as its own user, and changes nothing.
+ * The identity the child takes, found in kmscon before it forks: the child of
+ * a threaded process may call only async-signal-safe functions, and
+ * getpwuid_r and getgrouplist are not. A session user takes its primary gid
+ * and supplementary groups; the pre-login user its gid alone, with none. Not
+ * running as root, kmscon can start a helper only as its own user, and
+ * changes nothing.
  */
-static int resolve_creds(uid_t uid, struct creds *c)
+static int resolve_creds(const struct image_user *user, struct creds *c)
 {
 	struct passwd pw, *res = NULL;
+	uid_t uid = user->uid;
 	size_t size = 16384;
 	char *buf = NULL, *tmp;
 	gid_t *groups;
@@ -108,6 +111,11 @@ static int resolve_creds(uid_t uid, struct creds *c)
 			log_warning("not root: cannot start the image helper as uid %u", uid);
 			return -EPERM;
 		}
+		return 0;
+	}
+	if (user->gid_only) {
+		c->change = true;
+		c->gid = user->gid;
 		return 0;
 	}
 
@@ -180,7 +188,7 @@ static void __attribute__((noreturn)) exec_helper(const char *path, char *const 
 	_exit(127);
 }
 
-static int start_helper(struct image_host *h, uid_t uid, uint64_t max_bytes)
+static int start_helper(struct image_host *h, const struct image_user *user, uint64_t max_bytes)
 {
 	char *argv[] = {h->helper, NULL};
 	char *envp[] = {h->tmpdir_env, NULL};
@@ -190,7 +198,7 @@ static int start_helper(struct image_host *h, uid_t uid, uint64_t max_bytes)
 	uint64_t limit;
 	pid_t pid;
 
-	ret = resolve_creds(uid, &c);
+	ret = resolve_creds(user, &c);
 	if (ret)
 		goto out;
 
@@ -243,9 +251,9 @@ static int start_helper(struct image_host *h, uid_t uid, uint64_t max_bytes)
 	}
 	h->pid = pid;
 	h->sock = sv[0];
-	h->uid = uid;
+	h->user = *user;
 	h->max_bytes = max_bytes;
-	log_debug("image helper %d started as uid %u", pid, uid);
+	log_debug("image helper %d started as uid %u", pid, user->uid);
 	free(c.groups);
 	return 0;
 
@@ -605,6 +613,11 @@ static int send_request(struct image_host *h, const struct image_host_request *r
 	return ret;
 }
 
+static bool same_user(const struct image_user *a, const struct image_user *b)
+{
+	return a->uid == b->uid && a->gid_only == b->gid_only && (!a->gid_only || a->gid == b->gid);
+}
+
 /* the request kept as out, without its pointers, which are the caller's */
 static void keep_request(struct image_host *host, const struct image_host_request *req)
 {
@@ -613,14 +626,15 @@ static void keep_request(struct image_host *host, const struct image_host_reques
 	host->req.data = NULL;
 }
 
-int image_host_send(struct image_host *host, uid_t uid, const struct image_host_request *req)
+int image_host_send(struct image_host *host, const struct image_user *user,
+		    const struct image_host_request *req)
 {
 	struct itimerspec spec = {
 		.it_value = {host->timeout_ms / 1000, (host->timeout_ms % 1000) * 1000000L},
 	};
 	int ret;
 
-	if (!host || !req)
+	if (!host || !user || !req)
 		return -EINVAL;
 	if (host->busy)
 		return -EBUSY;
@@ -642,12 +656,12 @@ int image_host_send(struct image_host *host, uid_t uid, const struct image_host_
 		return 0;
 	}
 
-	if (host->pid && (host->uid != uid || req->max_bytes > host->max_bytes)) {
+	if (host->pid && (!same_user(&host->user, user) || req->max_bytes > host->max_bytes)) {
 		log_debug("image helper %d: a new user or a larger budget; restarting it",
 			  host->pid);
 		stop_helper(host);
 	}
-	if (!host->pid && start_helper(host, uid, req->max_bytes))
+	if (!host->pid && start_helper(host, user, req->max_bytes))
 		return -EBADF;
 
 	ret = send_request(host, req);

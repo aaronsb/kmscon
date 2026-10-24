@@ -1,20 +1,69 @@
 /*
  * The image helper's user (src/image_identity.c, ADR-103's Identity), built
- * twice: with sd-login, whose two calls this file stands in for, and without.
- * With it, logind's uid for the pty's child stands, and a pty owner that
- * disagrees is logged. With logind running and the child in no session (the
- * login prompt), the pty's owner is the user for inline images and the file
- * media are refused. Without sd-login, or with no logind running, the pty's
- * owner is the user and the file media are allowed.
+ * twice: with sd-login, whose three calls this file stands in for, and
+ * without. It stands in for getpwnam_r too, to choose which pre-login users
+ * exist.
+ *
+ * - In a logind session: logind's uid, root included, with its groups, and a
+ *   pty owner that disagrees is logged.
+ * - logind running or its state unknown, and no session uid: before login.
+ *   File media are refused; inline media run as kmscon-image, then nobody,
+ *   each passed over when absent, failing or uid or gid 0, then are refused.
+ *   The pre-login user has its gid alone, and is looked up once.
+ * - Without sd-login, or no logind running: the pty's owner, except that a
+ *   root owner is handled as before login (never root by fallback).
+ *
+ * The pre-login lookup is kept for the process's life, so each case that
+ * reaches it runs in a child of its own.
  */
 
 #include <assert.h>
 #include <errno.h>
+#include <pwd.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "image_identity.h"
+
+/* the users getpwnam_r knows; uid 0 marks one absent, ERANGE one whose lookup fails */
+static struct {
+	const char *name;
+	uid_t uid;
+	gid_t gid;
+	int error;
+	bool present;
+} users[2] = {
+	{"kmscon-image", 990, 991, 0, true},
+	{"nobody", 65534, 65534, 0, true},
+};
+static unsigned int lookups;
+
+int getpwnam_r(const char *name, struct passwd *pw, char *buf, size_t size, struct passwd **res)
+{
+	unsigned int i;
+
+	(void)buf;
+	(void)size;
+	lookups++;
+	*res = NULL;
+	for (i = 0; i < 2; i++) {
+		if (strcmp(name, users[i].name))
+			continue;
+		if (users[i].error)
+			return users[i].error;
+		if (!users[i].present)
+			return 0;
+		*pw = (struct passwd){.pw_name = (char *)users[i].name,
+				      .pw_uid = users[i].uid,
+				      .pw_gid = users[i].gid};
+		*res = pw;
+		return 0;
+	}
+	return 0;
+}
 
 #if IMAGE_IDENTITY_SD_LOGIN
 #include <systemd/sd-login.h>
@@ -22,6 +71,8 @@
 /* logind's answer: a session for @session_pid, whose user is session_uid */
 static pid_t session_pid;
 static uid_t session_uid;
+static int session_error; /* sd_pid_get_session's, for every other pid */
+static int uid_error;	  /* sd_session_get_uid's */
 static unsigned int asked;
 /* libsystemd's answer: seats counted, 0 when logind is not running, or an error */
 static int seats;
@@ -36,7 +87,7 @@ int sd_pid_get_session(pid_t pid, char **session)
 {
 	asked++;
 	if (pid != session_pid)
-		return -ENODATA;
+		return session_error;
 	*session = strdup("c1");
 	return 0;
 }
@@ -44,48 +95,158 @@ int sd_pid_get_session(pid_t pid, char **session)
 int sd_session_get_uid(const char *session, uid_t *uid)
 {
 	assert(!strcmp(session, "c1"));
+	if (uid_error)
+		return uid_error;
 	*uid = session_uid;
 	return 0;
 }
 #endif
 
+static int find(pid_t child, int owner_ret, uid_t owner, bool file, struct image_user *user)
+{
+	*user = (struct image_user){.uid = 12345, .gid = 12345};
+	return image_identity_find(child, owner_ret, owner, file, user);
+}
+
+/* a session user: @uid with its own groups */
+static void expect_user(pid_t child, int owner_ret, uid_t owner, bool file, uid_t uid)
+{
+	struct image_user user;
+
+	assert(find(child, owner_ret, owner, file, &user) == 0);
+	assert(user.uid == uid && !user.gid_only);
+}
+
+/*
+ * Before login, in a child of its own: file media refused with no lookup,
+ * inline media as the pre-login user @uid and @gid with no other group, or
+ * refused when @uid is 0, the lookup made once
+ */
+static void expect_prelogin(pid_t child, int owner_ret, uid_t owner, uid_t uid, gid_t gid)
+{
+	struct image_user user;
+	unsigned int n;
+	int status;
+	pid_t pid;
+
+	fflush(stdout);
+	pid = fork();
+	assert(pid >= 0);
+	if (!pid) {
+		lookups = 0;
+		assert(find(child, owner_ret, owner, true, &user) == -EACCES && !lookups);
+		if (!uid) {
+			assert(find(child, owner_ret, owner, false, &user) == -ENOENT);
+		} else {
+			assert(find(child, owner_ret, owner, false, &user) == 0);
+			assert(user.uid == uid && user.gid == gid && user.gid_only);
+		}
+		n = lookups;
+		assert(n >= 1 && n <= 2);
+		find(child, owner_ret, owner, false, &user);
+		find(child, owner_ret, owner, true, &user);
+		assert(lookups == n);
+		_exit(0);
+	}
+	assert(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && !WEXITSTATUS(status));
+}
+
+/* the candidates for a root owner by fallback, or before login as @child */
+static void test_candidates(pid_t child, uid_t owner)
+{
+	/* kmscon-image */
+	expect_prelogin(child, 0, owner, 990, 991);
+	/* absent, its lookup failing, uid 0, gid 0: nobody */
+	users[0].present = false;
+	expect_prelogin(child, 0, owner, 65534, 65534);
+	users[0].present = true;
+	users[0].error = ERANGE;
+	expect_prelogin(child, 0, owner, 65534, 65534);
+	users[0].error = 0;
+	users[0].uid = 0;
+	expect_prelogin(child, 0, owner, 65534, 65534);
+	users[0].uid = 990;
+	users[0].gid = 0;
+	expect_prelogin(child, 0, owner, 65534, 65534);
+	users[0].gid = 991;
+	/* neither: refused; nobody passed over for the same reasons */
+	users[0].present = false;
+	users[1].present = false;
+	expect_prelogin(child, 0, owner, 0, 0);
+	users[1].present = true;
+	users[1].uid = 0;
+	expect_prelogin(child, 0, owner, 0, 0);
+	users[1].uid = 65534;
+	users[1].gid = 0;
+	expect_prelogin(child, 0, owner, 0, 0);
+	users[1].gid = 65534;
+	users[0].present = true;
+}
+
 int main(void)
 {
-	uid_t uid = 0;
-	bool files;
+	struct image_user user;
 
 #if IMAGE_IDENTITY_SD_LOGIN
 	session_pid = 77;
 	session_uid = 4242;
+	session_error = -ENXIO;
 	seats = 1;
 
 	/* logind's uid, whether the pty's owner agrees, disagrees or is unknown */
-	assert(image_identity_uid(77, 0, 4242, &uid, &files) == 0 && uid == 4242 && files);
-	assert(image_identity_uid(77, 0, 0, &uid, &files) == 0 && uid == 4242 && files);
-	assert(image_identity_uid(77, -EIO, 0, &uid, &files) == 0 && uid == 4242 && files);
-	/*
-	 * logind running and the process in no session (the login prompt): the
-	 * pty's owner for inline images, and the file media refused
-	 */
-	assert(image_identity_uid(78, 0, 0, &uid, &files) == 0 && uid == 0 && !files);
-	assert(image_identity_uid(78, -EIO, 1000, &uid, &files) == -EIO);
-	/* no child: logind is not asked, and with logind running, no file media */
+	expect_user(77, 0, 4242, true, 4242);
+	expect_user(77, 0, 0, true, 4242);
+	expect_user(77, -EIO, 0, false, 4242);
+	/* root that logind authenticated keeps the helper as root */
+	session_uid = 0;
+	expect_user(77, 0, 0, true, 0);
+	expect_user(77, 0, 1000, false, 0);
+	session_uid = 4242;
+
+	/* logind running and the process in no session (the login prompt): before login */
+	expect_prelogin(78, 0, 0, 990, 991);
+	expect_prelogin(78, 0, 1000, 990, 991);
+	expect_prelogin(78, -EIO, 1000, 990, 991);
+	test_candidates(78, 1000);
+	/* no child: logind is not asked, and with logind running, before login */
 	asked = 0;
-	assert(image_identity_uid(0, 0, 1000, &uid, &files) == 0 && uid == 1000 && !asked &&
-	       !files);
-	/* no logind running: the pty's owner, file media allowed, as recorded */
-	seats = 0;
-	assert(image_identity_uid(78, 0, 1000, &uid, &files) == 0 && uid == 1000 && files);
-	assert(image_identity_uid(78, -EIO, 1000, &uid, &files) == -EIO);
-	/* logind's seats unknown: refused, failing closed */
+	expect_prelogin(0, 0, 1000, 990, 991);
+	assert(find(0, 0, 1000, true, &user) == -EACCES && !asked);
+	/* sd-login failing otherwise, with logind running: before login */
+	session_error = -EIO;
+	expect_prelogin(78, 0, 1000, 990, 991);
+	session_error = -ENXIO;
+	uid_error = -EIO;
+	expect_prelogin(77, 0, 1000, 990, 991);
+	uid_error = 0;
+
+	/* logind's seats unknown: counted as running, failing closed */
 	seats = -EIO;
-	assert(image_identity_uid(78, 0, 1000, &uid, &files) == 0 && uid == 1000 && !files);
+	expect_prelogin(78, 0, 1000, 990, 991);
+	uid_error = -ENOENT;
+	expect_prelogin(77, 0, 1000, 990, 991);
+	uid_error = 0;
+
+	/* no logind running: the pty's owner, file media allowed */
+	seats = 0;
+	expect_user(78, 0, 1000, true, 1000);
+	expect_user(78, 0, 1000, false, 1000);
+	assert(find(78, -EIO, 1000, false, &user) == -EIO);
+	/* never root by fallback: a root owner is before login, at the prompt or after a root login
+	 */
+	expect_prelogin(78, 0, 0, 990, 991);
+	test_candidates(78, 0);
 	printf("test_image_identity: ok, with sd-login\n");
 #else
-	/* the pty's owner alone, file media allowed; no session is looked for */
-	assert(image_identity_uid(77, 0, 1000, &uid, &files) == 0 && uid == 1000 && files);
-	assert(image_identity_uid(77, 0, 0, &uid, &files) == 0 && uid == 0 && files);
-	assert(image_identity_uid(77, -EIO, 1000, &uid, &files) == -EIO);
+	/* the pty's owner, file media allowed; no session is looked for */
+	expect_user(77, 0, 1000, true, 1000);
+	expect_user(77, 0, 1000, false, 1000);
+	assert(find(77, -EIO, 1000, false, &user) == -EIO);
+	assert(find(77, -EIO, 1000, true, &user) == -EIO);
+	/* never root by fallback: a root owner is before login, at the prompt or after a root login
+	 */
+	expect_prelogin(77, 0, 0, 990, 991);
+	test_candidates(77, 0);
 	printf("test_image_identity: ok, without sd-login\n");
 #endif
 	return 0;

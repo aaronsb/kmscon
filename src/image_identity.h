@@ -24,21 +24,27 @@
  */
 
 /*
- * The session's user, whom the image helper runs as (ADR-103, The image
- * helper, Identity). Built with sd-login (the sd_login option), it is
- * logind's uid for the session of the process kmscon started, the identity
- * PAM authenticated. Otherwise, or when that process is in no logind
- * session, it is the owner of the session's pty, as /bin/login sets it. The
- * pty's owner is file metadata a root process in the session can change, so
- * when the two disagree logind's answer stands and the disagreement is
- * logged.
+ * The user the image helper runs as (ADR-103, The image helper, Identity),
+ * the session's user and never the foreground process's, in one of three
+ * modes:
  *
- * Before login, when logind runs but the process is in no session yet (the
- * login prompt), there is no session user, and the pty is still root's. The
- * file media are then refused (the operator's choice, "Refuse before
- * login"); inline images, which name no file, still go to the helper as the
- * pty's owner. Without sd-login, or with no logind running, the pty's owner
- * stands as before.
+ * - Built with sd-login (the sd_login option) and the process kmscon started
+ *   in a logind session: that session's uid, the identity PAM authenticated,
+ *   root included. When the pty's owner disagrees, logind's answer stands and
+ *   the disagreement is logged.
+ * - logind running, or its state unknown (sd_get_seats failing), and the
+ *   process in no session, or its session's uid not found: before login. The
+ *   file media (t=f, t=t, t=s) are refused without starting the helper, and
+ *   inline PNG and zlib decode as the system user kmscon-image, else nobody,
+ *   else are refused.
+ * - Built without sd-login, or no logind running (sd_get_seats 0): the owner
+ *   of the session's pty, as /bin/login sets it. Never root by fallback: a
+ *   root owner is treated as before login.
+ *
+ * The pre-login user is looked up once, when first needed, and kept, so a
+ * slow network name service cannot stall the login prompt on every request.
+ * A candidate whose lookup fails, or that resolves to uid 0 or gid 0, is
+ * passed over.
  */
 
 #ifndef KMSCON_IMAGE_IDENTITY_H
@@ -47,12 +53,31 @@
 #include <stdbool.h>
 #include <sys/types.h>
 
+/* the pre-login user, then its fallback */
+#define IMAGE_IDENTITY_PRELOGIN_USER "kmscon-image"
+#define IMAGE_IDENTITY_PRELOGIN_FALLBACK "nobody"
+
+struct image_user {
+	uid_t uid;
+	/*
+	 * false: the uid's primary gid and supplementary groups, looked up
+	 * when the helper starts; true: @gid alone, with no supplementary
+	 * group, as the pre-login user runs
+	 */
+	bool gid_only;
+	gid_t gid;
+};
+
 /*
- * The user for @child, the process kmscon started on the pty; @owner_ret is
- * 0 when @owner is the pty's owner, else a negative error. Returns 0 with
- * @uid set, and @files false when the file media (t=f, t=t, t=s) are refused
- * before login, or a negative error when neither source answers.
+ * The user a request from the pty's @child runs as; @owner_ret is 0 when
+ * @owner is the pty's owner, else a negative error. @file says the request
+ * names a file, temporary file or shared memory object, a discard among
+ * them. Returns 0 with @user set; -EACCES when the file media are refused
+ * (before login, or a root owner by fallback); -ENOENT when an inline request
+ * before login finds neither pre-login user; or @owner_ret when the pty's
+ * owner is needed and unknown.
  */
-int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid, bool *files);
+int image_identity_find(pid_t child, int owner_ret, uid_t owner, bool file,
+			struct image_user *user);
 
 #endif /* KMSCON_IMAGE_IDENTITY_H */

@@ -43,6 +43,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include "image_identity.h"
 #include "shl/eloop.h"
 
 /* ADR-103: a request not answered in 2 seconds fails */
@@ -92,14 +93,15 @@ int image_host_new(struct image_host **out, struct ev_eloop *loop, const char *h
 void image_host_free(struct image_host *host);
 
 /*
- * Sends @req to the helper running as @uid, first starting one when none
+ * Sends @req to the helper running as @user, first starting one when none
  * runs, when the running one has another user, or when its memory limit was
  * set from a smaller max_bytes. A request whose min_bytes passes max_bytes is
  * not sent: it is answered KMSCON_IMAGE_OVER_BUDGET from the loop. Returns 0
  * when the request is out, -EBUSY when one already is, or -EBADF when no
  * helper could take it.
  */
-int image_host_send(struct image_host *host, uid_t uid, const struct image_host_request *req);
+int image_host_send(struct image_host *host, const struct image_user *user,
+		    const struct image_host_request *req);
 /* kills the helper and drops the request out, without a reply */
 void image_host_cancel(struct image_host *host);
 /* a request is out */

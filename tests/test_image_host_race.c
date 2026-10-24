@@ -103,6 +103,7 @@ static void race(struct ev_eloop *loop, const char *fake, const char *name, unsi
 		.max_height = 64,
 		.max_bytes = 1 << 20,
 	};
+	struct image_user me = {.uid = getuid()};
 	struct image_host *h;
 	const char *failure;
 	int i;
@@ -110,7 +111,7 @@ static void race(struct ev_eloop *loop, const char *fake, const char *name, unsi
 	calls = 0;
 	assert(image_host_new(&h, loop, fake, reply, NULL) == 0);
 	racing = true;
-	assert(image_host_send(h, getuid(), &r) == 0);
+	assert(image_host_send(h, &me, &r) == 0);
 	for (i = 0; i < 500 && !calls; i++)
 		ev_eloop_dispatch(loop, 10);
 

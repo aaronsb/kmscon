@@ -24,8 +24,10 @@
  */
 
 #include <errno.h>
+#include <pwd.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 #include "image_identity.h"
 #include "shl/log.h"
 
@@ -60,9 +62,17 @@ static int logind_uid(pid_t child, uid_t *uid)
 	free(session);
 	return ret < 0 ? ret : 0;
 }
-#endif
 
-#if IMAGE_IDENTITY_SD_LOGIN
+/*
+ * sd_get_seats counts the entries of /run/systemd/seats: 0 when logind is
+ * not running, more when it is, below 0 on an error. An error counts as
+ * running, so that it fails closed.
+ */
+static bool logind_running(void)
+{
+	return sd_get_seats(NULL) != 0;
+}
+
 /*
  * Logs a disagreement between the pty's owner and logind once per pair: the
  * identity is found again for every request, and a session left in that
@@ -84,7 +94,54 @@ static void log_disagreement(uid_t owner, uid_t logind)
 }
 #endif
 
-int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid, bool *files)
+/* @name's uid and gid, unless its lookup fails or either is 0 */
+static bool prelogin_candidate(const char *name, uid_t *uid, gid_t *gid)
+{
+	struct passwd pw, *res = NULL;
+	char buf[4096];
+
+	if (getpwnam_r(name, &pw, buf, sizeof(buf), &res) || !res)
+		return false;
+	if (!pw.pw_uid || !pw.pw_gid) {
+		log_warning("user %s is uid %u, gid %u: not used for images before login", name,
+			    pw.pw_uid, pw.pw_gid);
+		return false;
+	}
+	*uid = pw.pw_uid;
+	*gid = pw.pw_gid;
+	return true;
+}
+
+/* kmscon-image, else nobody, looked up the first time and kept, a miss included */
+static int prelogin_user(struct image_user *user)
+{
+	static bool resolved, found;
+	static uid_t uid;
+	static gid_t gid;
+
+	if (!resolved) {
+		resolved = true;
+		found = prelogin_candidate(IMAGE_IDENTITY_PRELOGIN_USER, &uid, &gid) ||
+			prelogin_candidate(IMAGE_IDENTITY_PRELOGIN_FALLBACK, &uid, &gid);
+		if (!found)
+			log_warning("neither %s nor %s can decode images before login",
+				    IMAGE_IDENTITY_PRELOGIN_USER, IMAGE_IDENTITY_PRELOGIN_FALLBACK);
+	}
+	if (!found)
+		return -ENOENT;
+	*user = (struct image_user){.uid = uid, .gid_only = true, .gid = gid};
+	return 0;
+}
+
+/* before login, or a root owner by fallback: no file, and inline media as the pre-login user */
+static int before_login(bool file, struct image_user *user)
+{
+	if (file)
+		return -EACCES;
+	return prelogin_user(user);
+}
+
+int image_identity_find(pid_t child, int owner_ret, uid_t owner, bool file, struct image_user *user)
 {
 #if IMAGE_IDENTITY_SD_LOGIN
 	uid_t logind;
@@ -92,24 +149,20 @@ int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid, bool
 	if (!logind_uid(child, &logind)) {
 		if (!owner_ret && owner != logind)
 			log_disagreement(owner, logind);
-		*uid = logind;
-		*files = true;
+		*user = (struct image_user){.uid = logind};
 		return 0;
 	}
-	/*
-	 * sd_get_seats counts logind's seats: 0 when logind is not running
-	 * (no /run/systemd/seats, or an empty one), more when it is, below 0
-	 * on an error. With logind running and the process in none of its
-	 * sessions there is no session user yet, so the file media are
-	 * refused; an error refuses them too, failing closed.
-	 */
-	*files = sd_get_seats(NULL) == 0;
+	/* logind running and no session uid: no session user yet */
+	if (logind_running())
+		return before_login(file, user);
 #else
 	(void)child;
-	*files = true;
 #endif
 	if (owner_ret)
 		return owner_ret;
-	*uid = owner;
+	/* never root by fallback: a root pty is a login prompt's, or root's unauthenticated */
+	if (!owner)
+		return before_login(file, user);
+	*user = (struct image_user){.uid = owner};
 	return 0;
 }

@@ -628,7 +628,9 @@ _Static_assert(KMSCON_IMAGE_OK == TSM_VTE_IMAGE_OK &&
  * inline PNG or zlib data, goes to the session's helper, its user found again
  * for each request, and the pty pauses with the bytes after the command held
  * until the reply, so commands keep their order. A negative return answers
- * the command at once and input goes on.
+ * the command at once and input goes on: before login, or for a root pty
+ * owner by fallback, that is every file medium, and inline data when neither
+ * pre-login user exists (image_identity.h).
  */
 static int image_event(struct tsm_vte *vte, const struct tsm_vte_image_request *req, void *data)
 {
@@ -647,19 +649,19 @@ static int image_event(struct tsm_vte *vte, const struct tsm_vte_image_request *
 		.max_height = term->conf->max_graphic_size.height,
 		.max_bytes = image_budget_limit(),
 	};
-	uid_t owner = 0, uid;
-	bool files;
+	struct image_user user;
+	uid_t owner = 0;
 	int ret;
 
 	ret = kmscon_pty_get_slave_owner(term->pty, &owner);
-	if (image_identity_uid(kmscon_pty_get_child(term->pty), ret, owner, &uid, &files)) {
-		log_warning("no session user for image request %llu", (unsigned long long)req->id);
+	ret = image_identity_find(kmscon_pty_get_child(term->pty), ret, owner,
+				  req->medium != TSM_VTE_IMAGE_DIRECT, &user);
+	if (ret) {
+		log_debug("image request %llu refused: no user may read it (%d)",
+			  (unsigned long long)req->id, ret);
 		return -EBADF;
 	}
-	/* before login no file, temporary file or shared memory is read */
-	if (!files && req->medium != TSM_VTE_IMAGE_DIRECT)
-		return -EBADF;
-	if (image_host_send(term->image_host, uid, &r))
+	if (image_host_send(term->image_host, &user, &r))
 		return -EBADF;
 	kmscon_pty_pause(term->pty);
 	kmscon_asciinema_pause(term->asciinema);

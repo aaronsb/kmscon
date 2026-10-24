@@ -38,7 +38,7 @@ For font handling the following is required:
 - If libseat is not present, kmscon will use its own VT handling, or a fake backend if VT is disabled in the kernel.
 
 #### Session user
-- sd-login, from libsystemd or libelogind: kmscon-image-helper, which reads the files a kitty graphics command names, runs as the user of the logind session kmscon's login started. Without sd-login, or outside a logind session, it runs as the owner of the session's pty.
+- sd-login, from libsystemd or libelogind: kmscon-image-helper, which reads the files a kitty graphics command names, runs as the user of the logind session kmscon's login started. Before login (logind running and no session yet), files are refused and inline images decode as the system user `kmscon-image`, which kmscon creates through a sysusers.d entry, or `nobody`. Without sd-login, or with no logind running, it runs as the owner of the session's pty, except that a root-owned pty is treated as before login. [docs/image-helper.md](docs/image-helper.md) explains the rules and why the dedicated user exists.
 
 #### Terminfo
  - [ncurses](https://invisible-island.net/ncurses/) You need the `tic` executable from ncurses, to build kmscon.ti into a binary terminfo definition.

@@ -951,6 +951,30 @@
   </refsect1>
 
   <refsect1>
+    <title>Images and the Image Helper</title>
+    <para>Files, temporary files and shared memory that a kitty graphics
+          command names, and its PNG and zlib images, are read and decoded by
+          <command>kmscon-image-helper</command>, a separate process KMSCON
+          starts per terminal session, so that KMSCON, which runs as root,
+          reads and decodes none of them itself. It runs as the
+          session's user: with sd-login, the user of the terminal's logind
+          session; without it, or with no logind running, the owner of the
+          session's pty.</para>
+
+    <para>Before login (logind running and the terminal's child in no
+          session), and whenever the pty's owner is root on a system without
+          logind, files, temporary files and shared memory are refused.
+          Inline PNG and zlib images still decode, as the system user
+          <emphasis>kmscon-image</emphasis>, which KMSCON creates through a
+          sysusers.d entry, or as <emphasis>nobody</emphasis> where that user
+          does not exist; with neither, they are refused too. A session
+          started with a command that does not log in, on a system running
+          logind, is never in a logind session, so it reads no file images
+          at all. The fork's docs/image-helper.md explains the rules and the
+          dedicated user.</para>
+  </refsect1>
+
+  <refsect1>
     <title>See Also</title>
     <para>
       <citerefentry><refentrytitle>console</refentrytitle><manvolnum>4</manvolnum></citerefentry>,

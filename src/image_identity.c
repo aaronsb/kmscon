@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "image_identity.h"
 #include "shl/log.h"
 
@@ -47,10 +48,24 @@
 #define LOG_SUBSYSTEM "image_identity"
 
 #if IMAGE_IDENTITY_SD_LOGIN
-/* logind's uid for @child's session; pam_systemd registered it at login */
+/* sd-login's answers for a process in no session */
+static bool no_session(int ret)
+{
+	return ret == -ENODATA || ret == -ENXIO;
+}
+
+/*
+ * logind's uid for @child's session, when that session is a login of the
+ * child's own: pam_systemd registered it at login. A session the child
+ * shares with kmscon is one it inherited, as from a kmscon started inside
+ * someone's session or kmscon's own greeter session, where a later login
+ * on the pty creates none of its own; and only class "user" is a login.
+ * Anything else, an error in finding kmscon's own session included, is no
+ * session uid, and the request is handled as before login.
+ */
 static int logind_uid(pid_t child, uid_t *uid)
 {
-	char *session = NULL;
+	char *session = NULL, *own = NULL, *class = NULL;
 	int ret;
 
 	if (child <= 0)
@@ -58,7 +73,17 @@ static int logind_uid(pid_t child, uid_t *uid)
 	ret = sd_pid_get_session(child, &session);
 	if (ret < 0)
 		return ret;
-	ret = sd_session_get_uid(session, uid);
+	ret = sd_pid_get_session(getpid(), &own);
+	if (ret >= 0 && !strcmp(own, session))
+		ret = -EPERM;
+	else if (ret >= 0 || no_session(ret))
+		ret = sd_session_get_class(session, &class);
+	if (ret >= 0 && strcmp(class, "user"))
+		ret = -EPERM;
+	if (ret >= 0)
+		ret = sd_session_get_uid(session, uid);
+	free(class);
+	free(own);
 	free(session);
 	return ret < 0 ? ret : 0;
 }

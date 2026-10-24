@@ -29,11 +29,15 @@
  * modes:
  *
  * - Built with sd-login (the sd_login option) and the process kmscon started
- *   in a logind session: that session's uid, the identity PAM authenticated,
- *   root included. When the pty's owner disagrees, logind's answer stands and
- *   the disagreement is logged.
+ *   in a logind session of its own, of class "user": that session's uid,
+ *   the identity PAM authenticated, root included. A session it shares with
+ *   kmscon is one it inherited (kmscon started inside someone's session, or
+ *   kmscon's greeter session), where a login on the pty creates none of its
+ *   own, so it does not count. When the pty's owner disagrees, logind's
+ *   answer stands and the disagreement is logged.
  * - logind running, or its state unknown (sd_get_seats failing), and the
- *   process in no session, or its session's uid not found: before login. The
+ *   process in no session of its own, or its session's class or uid not
+ *   found: before login. The
  *   file media (t=f, t=t, t=s) are refused without starting the helper, and
  *   inline PNG and zlib decode as the system user kmscon-image, else nobody,
  *   else are refused.

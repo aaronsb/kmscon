@@ -4,8 +4,9 @@
  * without. It stands in for getpwnam_r too, to choose which pre-login users
  * exist.
  *
- * - In a logind session: logind's uid, root included, with its groups, and a
- *   pty owner that disagrees is logged.
+ * - In a logind session of the child's own, of class "user": logind's uid,
+ *   root included, with its groups, and a pty owner that disagrees is logged.
+ *   A session shared with kmscon, inherited, or of another class is none.
  * - logind running or its state unknown, and no session uid: before login.
  *   File media are refused; inline media run as kmscon-image, then nobody,
  *   each passed over when absent, failing or uid or gid 0, then are refused.
@@ -71,8 +72,12 @@ int getpwnam_r(const char *name, struct passwd *pw, char *buf, size_t size, stru
 /* logind's answer: a session for @session_pid, whose user is session_uid */
 static pid_t session_pid;
 static uid_t session_uid;
-static int session_error; /* sd_pid_get_session's, for every other pid */
-static int uid_error;	  /* sd_session_get_uid's */
+static int session_error;	/* sd_pid_get_session's, for every other pid */
+static int uid_error;		/* sd_session_get_uid's */
+static const char *own_session; /* kmscon's own, or NULL for none */
+static int own_error;		/* sd_pid_get_session's for kmscon itself */
+static const char *session_class = "user";
+static int class_error; /* sd_session_get_class's */
 static unsigned int asked;
 /* libsystemd's answer: seats counted, 0 when logind is not running, or an error */
 static int seats;
@@ -85,10 +90,27 @@ int sd_get_seats(char ***out)
 
 int sd_pid_get_session(pid_t pid, char **session)
 {
+	if (pid == getpid()) {
+		if (own_error)
+			return own_error;
+		if (!own_session)
+			return -ENODATA;
+		*session = strdup(own_session);
+		return 0;
+	}
 	asked++;
 	if (pid != session_pid)
 		return session_error;
 	*session = strdup("c1");
+	return 0;
+}
+
+int sd_session_get_class(const char *session, char **class)
+{
+	assert(!strcmp(session, "c1"));
+	if (class_error)
+		return class_error;
+	*class = strdup(session_class);
 	return 0;
 }
 
@@ -202,6 +224,32 @@ int main(void)
 	expect_user(77, 0, 0, true, 0);
 	expect_user(77, 0, 1000, false, 0);
 	session_uid = 4242;
+	/* kmscon in a session of its own, another than the child's: still the child's */
+	own_session = "c9";
+	expect_user(77, 0, 4242, true, 4242);
+
+	/*
+	 * A session the child inherited from kmscon (kmscon started inside
+	 * someone's session, or its greeter session) is no login of the
+	 * child's: before login, whoever owns that session
+	 */
+	own_session = "c1";
+	expect_prelogin(77, 0, 4242, 990, 991);
+	session_uid = 0;
+	expect_prelogin(77, 0, 1000, 990, 991);
+	session_uid = 4242;
+	own_session = NULL;
+	/* kmscon's own session unknown for another reason: failing closed */
+	own_error = -EIO;
+	expect_prelogin(77, 0, 4242, 990, 991);
+	own_error = 0;
+	/* only class "user" is a login: a greeter's, or a class not found, is not */
+	session_class = "greeter";
+	expect_prelogin(77, 0, 4242, 990, 991);
+	session_class = "user";
+	class_error = -EIO;
+	expect_prelogin(77, 0, 4242, 990, 991);
+	class_error = 0;
 
 	/* logind running and the process in no session (the login prompt): before login */
 	expect_prelogin(78, 0, 0, 990, 991);

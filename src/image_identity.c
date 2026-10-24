@@ -24,6 +24,7 @@
  */
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include "image_identity.h"
 #include "shl/log.h"
@@ -61,6 +62,28 @@ static int logind_uid(pid_t child, uid_t *uid)
 }
 #endif
 
+#if IMAGE_IDENTITY_SD_LOGIN
+/*
+ * Logs a disagreement between the pty's owner and logind once per pair: the
+ * identity is found again for every request, and a session left in that
+ * state would otherwise log it on every image.
+ */
+static void log_disagreement(uid_t owner, uid_t logind)
+{
+	static bool logged;
+	static uid_t last_owner, last_logind;
+
+	if (logged && owner == last_owner && logind == last_logind)
+		return;
+	logged = true;
+	last_owner = owner;
+	last_logind = logind;
+	log_warning("the pty belongs to uid %u, but logind's session is uid %u's; "
+		    "the image helper runs as %u",
+		    owner, logind, logind);
+}
+#endif
+
 int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid)
 {
 #if IMAGE_IDENTITY_SD_LOGIN
@@ -68,9 +91,7 @@ int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid)
 
 	if (!logind_uid(child, &logind)) {
 		if (!owner_ret && owner != logind)
-			log_warning("the pty belongs to uid %u, but logind's session is uid %u's; "
-				    "the image helper runs as %u",
-				    owner, logind, logind);
+			log_disagreement(owner, logind);
 		*uid = logind;
 		return 0;
 	}

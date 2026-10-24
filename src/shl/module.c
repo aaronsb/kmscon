@@ -208,6 +208,10 @@ void kmscon_load_modules(void)
 			continue;
 		}
 
+		/*
+		 * Only shared objects: kmscon-image-helper is installed in this
+		 * directory too (ADR-103) and must never be dlopened into kmscon
+		 */
 		if (!shl_ends_with(de->d_name, ".so"))
 			continue;
 

@@ -43,8 +43,19 @@ How much a terminal reads for a kitty `t=f`, `t=t` or `t=s` transmission, what i
 
 ## Ghostty, WezTerm and Rio
 
-All three treat `S` as exact.
+Read at the commits above for each point the spec leaves open. Citations are to files under `src/terminal/kitty/` in Ghostty (`graphics_image.zig`, `graphics_exec.zig`), `term/src/terminalstate/kitty.rs` and `wezterm-escape-parser/src/apc.rs` in WezTerm, and `rio-vt/src/ansi/kitty_graphics_protocol.rs` in Rio.
 
-- **Ghostty** reads exactly `S` bytes from a file: "S is the exact number of bytes to read, not a maximum" (`src/terminal/kitty/graphics_image.zig:449-462`). For shared memory, an `S` past the bytes available from `O` is invalid data (`:318-332`). A transmission whose data is not exactly `s` x `v` x bytes per pixel fails; only animation frames may run long, and are cut (`:582-600`).
-- **WezTerm** seeks to `O` and reads exactly `S` bytes with `read_exact`, from a file (`wezterm-escape-parser/src/apc.rs:185-190`) and from shared memory (`:288-293`), so a shorter source fails.
-- **Rio** seeks to `O` and reads exactly `S` bytes with `read_exact` from a file (`rio-vt/src/ansi/kitty_graphics_protocol.rs:1093-1102`). For shared memory it fails when `S` passes the object's size (`:1169-1182`).
+| Point | kitty 0.49.2 | Ghostty | WezTerm | Rio |
+|---|---|---|---|---|
+| `S` | a maximum | exact: "S is the exact number of bytes to read, not a maximum" (`graphics_image.zig:450`), read with `readAlloc(size)` (`:457`) | exact: `read_exact` (`apc.rs:188-191`) | exact: `read_exact` (`:1100-1101`); for shared memory, an `S` past the object's size is an error (`:1169-1182`) |
+| `S` past the end | OK | EINVAL (`graphics_image.zig:457-461` for files, `:330` for shared memory; the reply text from `graphics_exec.zig:1104`) | an error carrying the I/O message (`kitty.rs:191-197`) | EINVAL (`:1101`, `:1169-1182`) |
+| data longer than `s` x `v` x bpp | accepted, the excess ignored, on every medium | EINVAL (`graphics_image.zig:598-603`); only animation frames are cut to length (`:587-597`) | accepted for `f=24` (`kitty.rs:790-797`), refused for `f=32` (`kitty.rs:800-806`) | cut to length (`:1462-1467`) |
+| data shorter than `s` x `v` x bpp | EBADF from files and shared memory, ENODATA inline | EINVAL | an error | EINVAL (`:1453-1460`) |
+| `O` past the end | EBADF | EINVAL (shared memory `graphics_image.zig:320`; files seek at `:439`, then read short) | an error | EINVAL |
+| `a=q` | loads | loads and decodes in full (`graphics_exec.zig:156-195`) | reads only (`kitty.rs:181-198`) | loads in full (`:724-756`) |
+| `t=t` removed after a failed read | yes | yes, once the temporary-file rule has passed (`graphics_image.zig:390`, `:422`) | no (`apc.rs:217-253`) | no (`:1116-1118`) |
+| `t=s` unlinked after a failed read | yes | yes (`graphics_image.zig:248`) | no (`apc.rs:298-305`) | yes (`:1149-1170`) |
+
+- All three treat `S` as exact; none matches kitty on every point.
+- Ghostty and Rio also accept a shared memory name without a leading `/`, which the spec forbids. WezTerm does not require `tty-graphics-protocol` in a temporary file's path, and adds `/var/tmp` to the temporary directories.
+- kitten icat's detection queries hold 3 bytes with `S` set to the length of the name (47 for `t=t`, 19 for `t=s`), so under an exact `S` they fail. Its real transfers carry a correct `S`, and in memory mode it sends no queries.

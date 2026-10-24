@@ -97,11 +97,13 @@ int image_identity_uid(pid_t child, int owner_ret, uid_t owner, uid_t *uid, bool
 		return 0;
 	}
 	/*
-	 * logind runs (it lists its seats) and the process is in none of its
-	 * sessions, or logind could not say which: no session user yet, so the
-	 * file media are refused, failing closed
+	 * sd_get_seats counts logind's seats: 0 when logind is not running
+	 * (no /run/systemd/seats, or an empty one), more when it is, below 0
+	 * on an error. With logind running and the process in none of its
+	 * sessions there is no session user yet, so the file media are
+	 * refused; an error refuses them too, failing closed.
 	 */
-	*files = sd_get_seats(NULL) < 0;
+	*files = sd_get_seats(NULL) == 0;
 #else
 	(void)child;
 	*files = true;

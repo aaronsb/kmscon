@@ -23,12 +23,13 @@
 static pid_t session_pid;
 static uid_t session_uid;
 static unsigned int asked;
-static bool logind_running;
+/* libsystemd's answer: seats counted, 0 when logind is not running, or an error */
+static int seats;
 
-int sd_get_seats(char ***seats)
+int sd_get_seats(char ***out)
 {
-	assert(!seats);
-	return logind_running ? 1 : -ENOENT;
+	assert(!out);
+	return seats;
 }
 
 int sd_pid_get_session(pid_t pid, char **session)
@@ -56,7 +57,7 @@ int main(void)
 #if IMAGE_IDENTITY_SD_LOGIN
 	session_pid = 77;
 	session_uid = 4242;
-	logind_running = true;
+	seats = 1;
 
 	/* logind's uid, whether the pty's owner agrees, disagrees or is unknown */
 	assert(image_identity_uid(77, 0, 4242, &uid, &files) == 0 && uid == 4242 && files);
@@ -73,9 +74,12 @@ int main(void)
 	assert(image_identity_uid(0, 0, 1000, &uid, &files) == 0 && uid == 1000 && !asked &&
 	       !files);
 	/* no logind running: the pty's owner, file media allowed, as recorded */
-	logind_running = false;
+	seats = 0;
 	assert(image_identity_uid(78, 0, 1000, &uid, &files) == 0 && uid == 1000 && files);
 	assert(image_identity_uid(78, -EIO, 1000, &uid, &files) == -EIO);
+	/* logind's seats unknown: refused, failing closed */
+	seats = -EIO;
+	assert(image_identity_uid(78, 0, 1000, &uid, &files) == 0 && uid == 1000 && !files);
 	printf("test_image_identity: ok, with sd-login\n");
 #else
 	/* the pty's owner alone, file media allowed; no session is looked for */

@@ -1,13 +1,13 @@
 #!/bin/bash
 # kit: sixel
-# look-for: One photograph drawn twice side by side, chafa on the left and
-# look-for: libsixel (through mpv) on the right, each named under it, both
-# look-for: below the page's first line: a street at sunset, a smooth sky from
-# look-for: orange to blue over dark buildings. Then what img2sixel wrote.
+# look-for: One photograph twice side by side below the page's first line,
+# look-for: chafa left and libsixel (mpv) right, each named under it: a street
+# look-for: at sunset, the sky orange to blue. libsixel's copy has a fine grain
+# look-for: (mpv sends it in under 100 colours). Then what img2sixel wrote.
 # wrong-looks-like: No pictures, a picture over the text or the names, colours
-# wrong-looks-like: swapped or washed out (the sky has no banding), torn
-# wrong-looks-like: or shifted rows, a picture cut off, or one encoder's copy
-# wrong-looks-like: in colours unlike the other's.
+# wrong-looks-like: swapped or washed out, bands in chafa's sky, torn or
+# wrong-looks-like: shifted rows, a picture cut off, or one copy in colours
+# wrong-looks-like: unlike the other's beyond libsixel's grain.
 # screen-text: none, sixel pictures and cursor moves do not print as rows
 # ADR-103's acceptance scenario A1: a real photograph through two sixel
 # encoders, compared side by side. The photograph is the operator's own, a

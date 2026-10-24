@@ -150,6 +150,8 @@ img2sixel itself writes nothing on current Arch, on the host as in the guest, fo
 
 ffmpeg's testsrc2 pattern, 640x360 at 30 frames per second for 5 seconds, scaled by mpv to the screen.
 
+Note (2026-10-24, kmscon #145): the figures below are full screen. A2 has since played in a 1920x1080 window in the middle of the screen (1280x720 on 1280x800, 1351x760 on the potato) with `--vo-sixel-dither=none`, because full screen at 7680x2160 mpv's encoder alone sends about 4.4 frames a second (ADR-103's note of this date). The verdict, that kmscon is not the bottleneck, is the same test; the windowed run's figures are in kmscon #145.
+
 | Variant | Window | mpv shown / dropped | mpv per second | Presented per second | Render CPU per frame, median / 95th | kmscon's CPU, share of a core | kmscon's CPU per mpv frame | Skipped redraws' share of a core |
 |---|---|---|---|---|---|---|---|---|
 | 2d-1280x800 (4 vCPUs) | 5.12 s | 150 / 0 | 29.3 | 59.2 | 0.70 / 1.34 ms | 19.9% | 6.8 ms | 9.4% |

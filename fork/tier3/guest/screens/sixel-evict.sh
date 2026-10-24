@@ -1,4 +1,5 @@
 #!/bin/bash
+# kit: sixel
 # look-for: The last of N pictures under its caption. Logo+= turns the screen
 # look-for: and the picture shows turned. Logo+- turns it back; then
 # look-for: Shift+PageUp to the top: picture 1's caption over blank cells,

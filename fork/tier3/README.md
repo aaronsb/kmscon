@@ -78,7 +78,7 @@ Three findings shaped this table:
 
 ## Goldens, tolerances and masks
 
-Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 87 come to about 6 MB, the 7680x2160 ones included). A keyed case's golden is named after the case, as `sixel-evict-rotated.png`.
+Goldens are `golden/<variant>/<screen>.png`, full resolution and lossless, written by `t3img.py` through zlib (all 115 come to about 8 MB, the 7680x2160 ones included). A keyed case's golden is named after the case, as `sixel-evict-rotated.png`.
 
 Comparison is exact unless a tolerance sidecar `golden/<variant>/<screen>.tol` sits beside the golden. It holds `key=value` lines; `#` starts a comment:
 

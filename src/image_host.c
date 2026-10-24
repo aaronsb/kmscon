@@ -73,6 +73,7 @@ struct image_host {
 
 	/* the request out */
 	bool busy;
+	bool deferred; /* answered KMSCON_IMAGE_OVER_BUDGET from the loop, never sent */
 	struct image_host_request req; /* its pointers are not kept */
 };
 
@@ -278,10 +279,11 @@ static void stop_helper(struct image_host *h)
 static void end_request(struct image_host *h)
 {
 	h->busy = false;
+	h->deferred = false;
 	ev_timer_update(h->timer, NULL);
 }
 
-/* the request out, if any, ends with EBADF, and the helper with SIGKILL */
+/* the request out, if any, ends as IMAGE_HOST_FAILED, and the helper with SIGKILL */
 static void fail(struct image_host *h, const char *why)
 {
 	uint64_t id = h->req.id;
@@ -293,7 +295,7 @@ static void fail(struct image_host *h, const char *why)
 	if (!busy)
 		return;
 	end_request(h);
-	h->cb(h, id, -EBADF, 0, 0, NULL, h->data);
+	h->cb(h, id, IMAGE_HOST_FAILED, 0, 0, NULL, 0, h->data);
 }
 
 static void close_fds(const int *fds, unsigned int n)
@@ -317,44 +319,57 @@ static void sanitize_reason(char *buf, const char *reason, size_t len)
  * The helper's reason, for the debug log: a client can make a failure on
  * every command, so a failure's reason is not worth more than that
  */
-static void log_reason(const struct image_host *h, int status, const char *reason, size_t len)
+static void log_reason(const struct image_host *h, unsigned int status, const char *reason,
+		       size_t len)
 {
 	char buf[KMSCON_IMAGE_REASON_MAX + 1];
 
 	if (!len)
 		return;
 	sanitize_reason(buf, reason, len);
-	log_debug("image request %llu: %d: %s", (unsigned long long)h->req.id, status, buf);
+	log_debug("image request %llu: %u: %s", (unsigned long long)h->req.id, status, buf);
 }
 
 /*
- * The pixels of a status 0 reply in @fd: a sealed memfd of exactly width x
- * height x 4 bytes, within the request's limits. Returns NULL, with @why set,
- * when any check fails.
+ * The bytes of a KMSCON_IMAGE_OK reply in @fd, checked before any is read:
+ * for a PNG request, width and height within max-graphic-size and their
+ * width x height x 4 bytes within the budget, else width and height 0 and
+ * min_bytes within the budget; then a regular file, sealed, and only once
+ * sealed exactly that size. Returns NULL, with @why set, when a check fails.
  */
-static const uint8_t *map_pixels(const struct image_host *h, const struct kmscon_image_reply *r,
-				 int fd, size_t *len, const char **why)
+static const uint8_t *map_reply(const struct image_host *h, const struct kmscon_image_reply *r,
+				int fd, size_t *len, const char **why)
 {
 	const struct image_host_request *req = &h->req;
-	bool raw = req->format == 24 || req->format == 32;
 	uint64_t bytes;
 	struct stat st;
 	int seals;
 	void *map;
 
-	if (!r->width || !r->height || r->width > req->max_width || r->height > req->max_height) {
-		*why = "a reply's size is outside max-graphic-size";
-		return NULL;
+	if (req->flags & KMSCON_IMAGE_PNG) {
+		if (!r->width || !r->height || r->width > req->max_width ||
+		    r->height > req->max_height) {
+			*why = "a reply's size is outside max-graphic-size";
+			return NULL;
+		}
+		if (__builtin_mul_overflow((uint64_t)r->width, r->height, &bytes) ||
+		    __builtin_mul_overflow(bytes, 4, &bytes) || bytes > req->max_bytes) {
+			*why = "a reply larger than the budget";
+			return NULL;
+		}
+	} else {
+		if (r->width || r->height) {
+			*why = "a reply with a size for bytes";
+			return NULL;
+		}
+		bytes = req->min_bytes;
+		if (!bytes || bytes > req->max_bytes) {
+			*why = "a reply larger than the budget";
+			return NULL;
+		}
 	}
-	if (__builtin_mul_overflow((uint64_t)r->width, r->height, &bytes) ||
-	    __builtin_mul_overflow(bytes, 4, &bytes) || bytes > req->max_bytes ||
-	    bytes > SIZE_MAX) {
+	if (bytes > SIZE_MAX) {
 		*why = "a reply larger than the budget";
-		return NULL;
-	}
-	if (raw && req->width && req->height &&
-	    (r->width != req->width || r->height != req->height)) {
-		*why = "a reply's size differs from s and v";
 		return NULL;
 	}
 	if (fstat(fd, &st) || !S_ISREG(st.st_mode)) {
@@ -374,7 +389,7 @@ static const uint8_t *map_pixels(const struct image_host *h, const struct kmscon
 		return NULL;
 	}
 	if (fstat(fd, &st) || (uint64_t)st.st_size != bytes) {
-		*why = "a reply's memfd is not exactly width x height x 4 bytes";
+		*why = "a reply's memfd is not exactly the size asked for";
 		return NULL;
 	}
 	map = mmap(NULL, bytes, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -387,10 +402,11 @@ static const uint8_t *map_pixels(const struct image_host *h, const struct kmscon
 }
 
 /*
- * One packet from the helper, checked before any pixel is read: a request
- * out, a length of exactly the header and its reason, the version, the id, a
- * known status, and a descriptor only with status 0. Every descriptor
- * received is closed whatever the outcome.
+ * One packet from the helper, checked before any byte of an image is read: a
+ * request out, a length of exactly the header and its reason, the reserved
+ * field 0, the version, the id, a status among the six, and exactly one
+ * descriptor with KMSCON_IMAGE_OK, except for a discard, and none otherwise.
+ * Every descriptor received is closed whatever the outcome.
  */
 static void receive(struct image_host *h)
 {
@@ -407,11 +423,12 @@ static void receive(struct image_host *h)
 		.msg_controllen = sizeof(cbuf),
 	};
 	const struct kmscon_image_reply *r = &in.r;
-	int fds[REPLY_FDS], status;
-	unsigned int n_fds = 0, i, n;
+	unsigned int n_fds = 0, i, n, status;
+	int fds[REPLY_FDS];
 	const char *why = NULL;
-	const uint8_t *pixels;
+	const uint8_t *bytes;
 	struct cmsghdr *cmsg;
+	bool want_fd = false;
 	uint64_t id;
 	size_t len;
 	ssize_t got;
@@ -447,11 +464,13 @@ static void receive(struct image_host *h)
 		why = "a reply of another version";
 	else if (r->id != h->req.id)
 		why = "a reply to another request";
-	else if (r->status && r->status != -EBADF && r->status != -EINVAL && r->status != -ENOSPC)
+	else if (r->status > KMSCON_IMAGE_OVER_BUDGET)
 		why = "a reply with an unknown status";
-	else if (r->status ? n_fds != 0 : n_fds != 1)
-		why = r->status ? "an error reply with a descriptor"
-				: "a reply without exactly one descriptor";
+	else if ((want_fd = r->status == KMSCON_IMAGE_OK && !(h->req.flags & KMSCON_IMAGE_DISCARD))
+			 ? n_fds != 1
+			 : n_fds != 0)
+		why = want_fd ? "a reply without exactly one descriptor"
+			      : "a reply with a descriptor it should not carry";
 
 	if (why) {
 		close_fds(fds, n_fds);
@@ -468,21 +487,21 @@ static void receive(struct image_host *h)
 	log_reason(h, r->status, in.buf + sizeof(*r), r->reason_len);
 	status = r->status;
 	id = h->req.id;
-	if (status) {
+	if (!want_fd) {
 		end_request(h);
-		h->cb(h, id, status, 0, 0, NULL, h->data);
+		h->cb(h, id, status, 0, 0, NULL, 0, h->data);
 		return;
 	}
 
-	pixels = map_pixels(h, r, fds[0], &len, &why);
-	if (!pixels) {
+	bytes = map_reply(h, r, fds[0], &len, &why);
+	if (!bytes) {
 		close(fds[0]);
 		fail(h, why);
 		return;
 	}
 	end_request(h);
-	h->cb(h, id, 0, r->width, r->height, pixels, h->data);
-	munmap((void *)pixels, len);
+	h->cb(h, id, KMSCON_IMAGE_OK, r->width, r->height, bytes, len, h->data);
+	munmap((void *)bytes, len);
 	close(fds[0]);
 }
 
@@ -494,9 +513,14 @@ static void helper_event(struct ev_fd *fd, int mask, void *data)
 static void timer_event(struct ev_timer *timer, uint64_t num, void *data)
 {
 	struct image_host *h = data;
+	uint64_t id = h->req.id;
 
-	if (h->busy)
+	if (h->deferred) {
+		end_request(h);
+		h->cb(h, id, KMSCON_IMAGE_OVER_BUDGET, 0, 0, NULL, 0, h->data);
+	} else if (h->busy) {
 		fail(h, "no reply in time");
+	}
 }
 
 static void child_event(struct ev_eloop *loop, struct ev_child_data *chld, void *data)
@@ -538,16 +562,13 @@ static int send_request(struct image_host *h, const struct image_host_request *r
 {
 	struct kmscon_image_request r = {
 		.version = KMSCON_IMAGE_VERSION,
-		.type = KMSCON_IMAGE_TYPE_KITTY,
+		.type = KMSCON_IMAGE_TYPE_IMAGE,
 		.id = req->id,
 		.medium = req->medium,
-		.flags = (req->zlib ? KMSCON_IMAGE_ZLIB : 0) |
-			 (req->discard ? KMSCON_IMAGE_DISCARD : 0),
-		.format = req->format,
-		.width = req->width,
-		.height = req->height,
+		.flags = req->flags,
 		.offset = req->offset,
-		.size = req->size,
+		.read_max = req->read_max,
+		.min_bytes = req->min_bytes,
 		.max_width = req->max_width,
 		.max_height = req->max_height,
 		.max_bytes = req->max_bytes,
@@ -584,6 +605,14 @@ static int send_request(struct image_host *h, const struct image_host_request *r
 	return ret;
 }
 
+/* the request kept as out, without its pointers, which are the caller's */
+static void keep_request(struct image_host *host, const struct image_host_request *req)
+{
+	host->req = *req;
+	host->req.name = NULL;
+	host->req.data = NULL;
+}
+
 int image_host_send(struct image_host *host, uid_t uid, const struct image_host_request *req)
 {
 	struct itimerspec spec = {
@@ -597,6 +626,21 @@ int image_host_send(struct image_host *host, uid_t uid, const struct image_host_
 		return -EBUSY;
 	if (req->medium != 'd' && req->medium != 'f' && req->medium != 't' && req->medium != 's')
 		return -EBADF;
+
+	/*
+	 * min_bytes past the budget is answered without the helper, which
+	 * would exit on it; from the loop, since libtsm takes no reply from
+	 * inside its hook
+	 */
+	if (req->min_bytes > req->max_bytes) {
+		spec = (struct itimerspec){.it_value = {0, 1}};
+		if (ev_timer_update(host->timer, &spec))
+			return -EBADF;
+		keep_request(host, req);
+		host->busy = true;
+		host->deferred = true;
+		return 0;
+	}
 
 	if (host->pid && (host->uid != uid || req->max_bytes > host->max_bytes)) {
 		log_debug("image helper %d: a new user or a larger budget; restarting it",
@@ -612,9 +656,7 @@ int image_host_send(struct image_host *host, uid_t uid, const struct image_host_
 		stop_helper(host);
 		return -EBADF;
 	}
-	host->req = *req;
-	host->req.name = NULL;
-	host->req.data = NULL;
+	keep_request(host, req);
 	/* a request with no timer could hold the pty paused for good */
 	ret = ev_timer_update(host->timer, &spec);
 	if (ret) {

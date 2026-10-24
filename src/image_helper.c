@@ -30,10 +30,12 @@
  * files and shared memory a kitty graphics command names and to decode PNG
  * and zlib data, so that kmscon, which runs as root, does neither. It answers
  * one request at a time on descriptor 3 (image_helper_proto.h) and exits when
- * kmscon closes its end, or on a request it does not understand.
+ * kmscon closes its end, or on a request kmscon would not build.
  *
- * Every failure to read answers EBADF, one reply for all of them; the reason
- * travels to kmscon's log. A file is checked before it is opened, since
+ * It is mechanical: libtsm turns the kitty keys into an offset, the most
+ * bytes to read, the fewest the image needs and flags, and the helper applies
+ * those bounds and answers an outcome, never a kitty reply code. The reason
+ * for a failure travels to kmscon's log. A file is checked before it is opened, since
  * opening can have side effects, and again from the opened descriptor, which
  * catches a symlink swapped between the two. The checks after the open, the
  * refused locations and the temporary-file rule follow Ghostty's file checks
@@ -79,14 +81,15 @@ struct job {
 	int out_fd;
 };
 
-static int fail(struct job *j, int err, const char *fmt, ...)
+/* @status, with the reason for kmscon's log; KMSCON_IMAGE_OK only adds a note */
+static int fail(struct job *j, int status, const char *fmt, ...)
 {
 	va_list args;
 
 	va_start(args, fmt);
 	vsnprintf(j->reason, sizeof(j->reason), fmt, args);
 	va_end(args);
-	return err;
+	return status;
 }
 
 /*
@@ -225,17 +228,18 @@ static int open_file(struct job *j, bool temp, bool *temp_too, char *resolved, i
 	bool t;
 
 	if (!realpath(j->name, resolved))
-		return fail(j, -EBADF, "cannot resolve the path: %s", strerror(errno));
+		return fail(j, KMSCON_IMAGE_UNREADABLE, "cannot resolve the path: %s",
+			    strerror(errno));
 	if (!location_ok(resolved))
-		return fail(j, -EBADF, "refused location %s", resolved);
+		return fail(j, KMSCON_IMAGE_UNREADABLE, "refused location %s", resolved);
 	if (temp && !temp_ok(resolved))
-		return fail(j, -EBADF, "not a temporary file: %s", resolved);
+		return fail(j, KMSCON_IMAGE_UNREADABLE, "not a temporary file: %s", resolved);
 
 	seam("open");
 	*fd = open_regular(AT_FDCWD, resolved, RESOLVE_NO_SYMLINKS, st);
 	if (*fd < 0)
-		return fail(j, -EBADF, "cannot open %s as a regular file: %s", resolved,
-			    strerror(-*fd));
+		return fail(j, KMSCON_IMAGE_UNREADABLE, "cannot open %s as a regular file: %s",
+			    resolved, strerror(-*fd));
 	if (!fd_path(*fd, opened, sizeof(opened)) || !location_ok(opened))
 		goto refuse;
 	t = temp_ok(resolved) && temp_ok(opened);
@@ -248,7 +252,8 @@ static int open_file(struct job *j, bool temp, bool *temp_too, char *resolved, i
 refuse:
 	close(*fd);
 	*fd = -1;
-	return fail(j, -EBADF, "the file opened for %s is not the file checked", resolved);
+	return fail(j, KMSCON_IMAGE_UNREADABLE, "the file opened for %s is not the file checked",
+		    resolved);
 }
 
 /*
@@ -318,17 +323,19 @@ static int open_shm(struct job *j, int *fd, struct stat *st)
 
 	if (name[0] != '/' || strchr(name + 1, '/') || !name[1] || !strcmp(name, "/.") ||
 	    !strcmp(name, "/.."))
-		return fail(j, -EBADF, "refused shared memory name");
+		return fail(j, KMSCON_IMAGE_UNREADABLE, "refused shared memory name");
 	if (strlen(name) > SHM_NAME_MAX)
-		return fail(j, -EBADF, "shared memory name longer than %d bytes", SHM_NAME_MAX);
+		return fail(j, KMSCON_IMAGE_UNREADABLE, "shared memory name longer than %d bytes",
+			    SHM_NAME_MAX);
 
 	dfd = open(SHM_DIR, O_PATH | O_DIRECTORY | O_CLOEXEC);
 	if (dfd < 0)
-		return fail(j, -EBADF, "cannot open " SHM_DIR ": %s", strerror(errno));
+		return fail(j, KMSCON_IMAGE_UNREADABLE, "cannot open " SHM_DIR ": %s",
+			    strerror(errno));
 	*fd = open_regular(dfd, name + 1, RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS, st);
 	if (*fd < 0) {
-		fail(j, -EBADF, "cannot open shared memory %s as a regular object: %s", name,
-		     strerror(-*fd));
+		fail(j, KMSCON_IMAGE_UNREADABLE,
+		     "cannot open shared memory %s as a regular object: %s", name, strerror(-*fd));
 		*fd = -1;
 		goto out;
 	}
@@ -337,32 +344,19 @@ static int open_shm(struct job *j, int *fd, struct stat *st)
 		fail(j, 0, "shared memory %s not unlinked", name);
 out:
 	close(dfd);
-	return *fd < 0 ? -EBADF : 0;
+	return *fd < 0 ? KMSCON_IMAGE_UNREADABLE : KMSCON_IMAGE_OK;
 }
 
-/*
- * Reads @offset to @offset + @size of @fd, @size 0 meaning to the end, into
- * @out, never more than the budget. A file shorter than that fails.
- */
-static int read_range(struct job *j, int fd, const struct stat *st, uint64_t offset, uint64_t size,
-		      uint8_t **out, size_t *len)
+/* the @n bytes at @offset of @fd into a new buffer at @out */
+static int read_bytes(struct job *j, int fd, uint64_t offset, uint64_t n, uint8_t **out)
 {
-	uint64_t file = st->st_size, n, done = 0;
+	uint64_t done = 0;
 	ssize_t r;
 
-	if (offset > file)
-		return fail(j, -EBADF, "offset %llu past the end, %llu bytes",
-			    (unsigned long long)offset, (unsigned long long)file);
-	n = size ? size : file - offset;
-	if (n > file - offset)
-		return fail(j, -EBADF, "%llu bytes asked for, %llu there", (unsigned long long)n,
-			    (unsigned long long)(file - offset));
-	if (n > j->req->max_bytes || n > SIZE_MAX)
-		return fail(j, -ENOSPC, "%llu bytes to read, past the budget",
-			    (unsigned long long)n);
 	*out = malloc(n ? n : 1);
 	if (!*out)
-		return fail(j, -ENOSPC, "cannot allocate %llu bytes", (unsigned long long)n);
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot allocate %llu bytes",
+			    (unsigned long long)n);
 	while (done < n) {
 		r = pread(fd, *out + done, n - done, offset + done);
 		if (r < 0 && errno == EINTR)
@@ -370,47 +364,80 @@ static int read_range(struct job *j, int fd, const struct stat *st, uint64_t off
 		if (r <= 0) {
 			free(*out);
 			*out = NULL;
-			return fail(j, -EBADF, "short read: %s",
+			return fail(j, KMSCON_IMAGE_UNREADABLE, "short read: %s",
 				    r ? strerror(errno) : "end of file");
 		}
 		done += r;
 	}
-	*len = n;
-	return 0;
+	return KMSCON_IMAGE_OK;
 }
 
-/* the data the request names, read under the medium's rules */
-static int read_data(struct job *j, uint8_t **data, size_t *len)
+/*
+ * Step 3: from offset, up to read_max bytes or to the end when it is 0. An
+ * offset at or past the end of a file or shared memory object is UNREADABLE.
+ * Without INFLATE or PNG only min_bytes are read, and fewer available is
+ * TOO_SHORT before anything is read, so a large file costs nothing past
+ * them. With either, all the bounds allow is read, and more than max_bytes is
+ * OVER_BUDGET before it is read.
+ */
+static int read_bounded(struct job *j, int fd, const struct stat *st, uint8_t **out, size_t *len)
 {
 	const struct kmscon_image_request *req = j->req;
-	char resolved[PATH_MAX];
-	struct stat st;
-	int fd = -1, ret;
+	uint64_t size = st->st_size, avail;
+	int ret;
 
-	switch (req->medium) {
+	if (req->medium != 'd' && req->offset >= size)
+		return fail(j, KMSCON_IMAGE_UNREADABLE,
+			    "offset %llu at or past the end, %llu bytes",
+			    (unsigned long long)req->offset, (unsigned long long)size);
+	avail = req->offset < size ? size - req->offset : 0;
+	if (req->read_max && req->read_max < avail)
+		avail = req->read_max;
+	if (!(req->flags & (KMSCON_IMAGE_INFLATE | KMSCON_IMAGE_PNG))) {
+		if (avail < req->min_bytes)
+			return fail(j, KMSCON_IMAGE_TOO_SHORT, "%llu bytes to read, %llu needed",
+				    (unsigned long long)avail, (unsigned long long)req->min_bytes);
+		avail = req->min_bytes;
+	} else if (avail > req->max_bytes || avail > SIZE_MAX) {
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "%llu bytes to read, past the budget",
+			    (unsigned long long)avail);
+	}
+	ret = read_bytes(j, fd, req->offset, avail, out);
+	if (!ret)
+		*len = avail;
+	return ret;
+}
+
+/*
+ * Steps 1 and 2: the source opened into @fd. A 't' file that passed the
+ * temporary-file rule is deleted once opened, and a 's' object unlinked, so
+ * both go whatever the steps after this make of them.
+ */
+static int open_source(struct job *j, int *fd, struct stat *st)
+{
+	char resolved[PATH_MAX];
+	int ret;
+
+	switch (j->req->medium) {
 	case 'd':
-		if (fstat(j->data_fd, &st))
-			return fail(j, -EBADF, "cannot stat the inline data");
-		return read_range(j, j->data_fd, &st, 0, 0, data, len);
+		*fd = fcntl(j->data_fd, F_DUPFD_CLOEXEC, 0);
+		if (*fd < 0 || fstat(*fd, st)) {
+			if (*fd >= 0)
+				close(*fd);
+			*fd = -1;
+			return fail(j, KMSCON_IMAGE_UNREADABLE, "cannot read the inline data");
+		}
+		return KMSCON_IMAGE_OK;
 	case 'f':
 	case 't':
-		ret = open_file(j, req->medium == 't', NULL, resolved, &fd, &st);
-		if (ret)
-			return ret;
-		ret = read_range(j, fd, &st, req->offset, req->size, data, len);
-		if (!ret && req->medium == 't')
-			delete_checked(j, resolved, &st);
-		close(fd);
+		ret = open_file(j, j->req->medium == 't', NULL, resolved, fd, st);
+		if (!ret && j->req->medium == 't')
+			delete_checked(j, resolved, st);
 		return ret;
 	case 's':
-		ret = open_shm(j, &fd, &st);
-		if (ret)
-			return ret;
-		ret = read_range(j, fd, &st, req->offset, req->size, data, len);
-		close(fd);
-		return ret;
+		return open_shm(j, fd, st);
 	}
-	return fail(j, -EBADF, "unknown medium");
+	return fail(j, KMSCON_IMAGE_UNREADABLE, "unknown medium");
 }
 
 /* a refused t=t or t=s command's object, removed as the rules allow; nothing is read */
@@ -428,9 +455,9 @@ static int discard(struct job *j)
 		if (temp) {
 			delete_checked(j, resolved, &st);
 			if (!j->reason[0])
-				fail(j, 0, "discarded %s", resolved);
+				fail(j, KMSCON_IMAGE_OK, "discarded %s", resolved);
 		} else {
-			fail(j, 0, "not deleted, not a temporary file: %s", resolved);
+			fail(j, KMSCON_IMAGE_OK, "not deleted, not a temporary file: %s", resolved);
 		}
 		close(fd);
 		break;
@@ -438,99 +465,134 @@ static int discard(struct job *j)
 		if (!open_shm(j, &fd, &st)) {
 			close(fd);
 			if (!j->reason[0])
-				fail(j, 0, "discarded %s", j->name);
+				fail(j, KMSCON_IMAGE_OK, "discarded %s", j->name);
 		}
 		break;
-	default:
-		fail(j, 0, "nothing to discard");
-		break;
 	}
-	return -EINVAL;
+	return KMSCON_IMAGE_OK;
 }
 
-/* zlib data inflated into @out: exactly @exact bytes when not 0, else at most the budget */
-static int inflate_data(struct job *j, const uint8_t *in, size_t in_len, uint64_t exact,
-			uint8_t **out, size_t *out_len)
+/* the next of @in's @in_len bytes into @zs once it has used those it had */
+static void inflate_feed(z_stream *zs, size_t in_len)
 {
-	uint64_t limit = exact ? exact : j->req->max_bytes;
+	size_t left = in_len - zs->total_in;
+
+	if (!zs->avail_in && left)
+		zs->avail_in = left > UINT_MAX ? UINT_MAX : left;
+}
+
+/* a zlib return that ends inflating: the stream does not decode */
+static int inflate_failed(struct job *j, z_stream *zs, int zret)
+{
+	if (zret == Z_MEM_ERROR)
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "zlib: out of memory");
+	if (zret == Z_BUF_ERROR)
+		return fail(j, KMSCON_IMAGE_CORRUPT, "truncated zlib data");
+	return fail(j, KMSCON_IMAGE_CORRUPT, "corrupt zlib data: %s", zs->msg ? zs->msg : "error");
+}
+
+/*
+ * Step 4: @in inflated into @out. Without PNG or EXACT it stops once
+ * min_bytes are out and ignores the rest. Under EXACT a byte past min_bytes
+ * is CORRUPT, found before the max_bytes bound. Otherwise a byte past
+ * max_bytes is OVER_BUDGET. A stream that does not inflate, or ends before
+ * its end is reached, is CORRUPT; fewer than min_bytes out is TOO_SHORT.
+ */
+static int inflate_bounded(struct job *j, const uint8_t *in, size_t in_len, uint8_t **out,
+			   size_t *out_len)
+{
+	const struct kmscon_image_request *req = j->req;
+	bool exact = req->flags & KMSCON_IMAGE_EXACT;
+	bool stop = !exact && !(req->flags & KMSCON_IMAGE_PNG);
+	uint64_t limit = exact || stop ? req->min_bytes : req->max_bytes;
 	size_t size, grown;
-	uint8_t *buf, *tmp;
+	uint8_t *buf, *tmp, probe;
 	z_stream zs = {0};
 	int zret, ret;
 
-	if (limit > j->req->max_bytes || limit > SIZE_MAX)
-		return fail(j, -ENOSPC, "%llu bytes to inflate, past the budget",
+	if (limit > SIZE_MAX)
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "%llu bytes to inflate, past memory",
 			    (unsigned long long)limit);
-	size = exact ? exact : (in_len < limit / 4 ? in_len * 4 : limit);
-	if (size < 4096 && size < limit)
+	size = in_len < limit / 4 ? in_len * 4 : limit;
+	if (size < 4096)
 		size = limit < 4096 ? limit : 4096;
 	buf = malloc(size ? size : 1);
 	if (!buf)
-		return fail(j, -ENOSPC, "cannot allocate %zu bytes", size);
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot allocate %zu bytes", size);
 	if (inflateInit(&zs) != Z_OK) {
 		free(buf);
-		return fail(j, -ENOSPC, "cannot start zlib");
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot start zlib");
 	}
 	zs.next_in = (Bytef *)in;
-	zs.avail_in = in_len > UINT_MAX ? UINT_MAX : in_len;
 	zs.next_out = buf;
-	zs.avail_out = size > UINT_MAX ? UINT_MAX : size;
+
+	/* until the stream ends or limit bytes are out */
 	for (;;) {
+		inflate_feed(&zs, in_len);
+		if (!zs.avail_out) {
+			if (zs.total_out == limit)
+				break;
+			if (zs.total_out == size) {
+				grown = size > limit / 2 ? limit : size * 2;
+				tmp = realloc(buf, grown);
+				if (!tmp) {
+					ret = fail(j, KMSCON_IMAGE_OVER_BUDGET,
+						   "cannot allocate %zu bytes", grown);
+					goto err;
+				}
+				buf = tmp;
+				size = grown;
+			}
+			zs.next_out = buf + zs.total_out;
+			zs.avail_out =
+				size - zs.total_out > UINT_MAX ? UINT_MAX : size - zs.total_out;
+		}
 		zret = inflate(&zs, Z_NO_FLUSH);
 		if (zret == Z_STREAM_END)
-			break;
-		if (zret != Z_OK && zret != Z_BUF_ERROR) {
-			ret = fail(j, -EINVAL, "corrupt zlib data: %s", zs.msg ? zs.msg : "error");
+			goto done;
+		if (zret != Z_OK && (zret != Z_BUF_ERROR || (!zs.avail_in && zs.avail_out))) {
+			ret = inflate_failed(j, &zs, zret);
 			goto err;
 		}
-		if (!zs.avail_in) {
-			if (in_len > zs.total_in) {
-				size_t left = in_len - zs.total_in;
-
-				zs.avail_in = left > UINT_MAX ? UINT_MAX : left;
-				continue;
-			}
-			if (zs.avail_out) {
-				ret = fail(j, -EINVAL, "truncated zlib data");
-				goto err;
-			}
-		}
-		if (zs.avail_out)
-			continue;
-		if (zs.total_out < size) {
-			size_t left = size - zs.total_out;
-
-			zs.avail_out = left > UINT_MAX ? UINT_MAX : left;
-			continue;
-		}
-		if (size >= limit) {
-			if (exact)
-				ret = fail(j, -EINVAL, "zlib data inflates past %llu bytes",
-					   (unsigned long long)exact);
-			else
-				ret = fail(j, -ENOSPC, "zlib data inflates past the budget");
-			goto err;
-		}
-		grown = size > limit / 2 ? limit : size * 2;
-		tmp = realloc(buf, grown);
-		if (!tmp) {
-			ret = fail(j, -ENOSPC, "cannot allocate %zu bytes", grown);
-			goto err;
-		}
-		buf = tmp;
-		zs.next_out = buf + size;
-		zs.avail_out = grown - size > UINT_MAX ? UINT_MAX : grown - size;
-		size = grown;
 	}
-	if (exact && zs.total_out != exact) {
-		ret = fail(j, -EINVAL, "zlib data inflates to %lu bytes, not %llu", zs.total_out,
-			   (unsigned long long)exact);
+
+	/* limit bytes out and the stream not ended: past them it is ignored, or one more counts */
+	if (stop)
+		goto done;
+	zs.next_out = &probe;
+	zs.avail_out = 1;
+	for (;;) {
+		inflate_feed(&zs, in_len);
+		zret = inflate(&zs, Z_NO_FLUSH);
+		if (!zs.avail_out) {
+			if (exact)
+				ret = fail(j, KMSCON_IMAGE_CORRUPT,
+					   "zlib data inflates past %llu bytes",
+					   (unsigned long long)limit);
+			else
+				ret = fail(j, KMSCON_IMAGE_OVER_BUDGET,
+					   "zlib data inflates past the budget");
+			goto err;
+		}
+		if (zret == Z_STREAM_END)
+			goto done;
+		if (zret != Z_OK && (zret != Z_BUF_ERROR || !zs.avail_in)) {
+			ret = inflate_failed(j, &zs, zret);
+			goto err;
+		}
+	}
+
+done:
+	if (zs.total_out < req->min_bytes) {
+		ret = fail(j, KMSCON_IMAGE_TOO_SHORT,
+			   "zlib data inflates to %lu bytes, %llu needed", zs.total_out,
+			   (unsigned long long)req->min_bytes);
 		goto err;
 	}
-	inflateEnd(&zs);
-	*out = buf;
 	*out_len = zs.total_out;
-	return 0;
+	*out = buf;
+	inflateEnd(&zs);
+	return KMSCON_IMAGE_OK;
 
 err:
 	inflateEnd(&zs);
@@ -545,7 +607,8 @@ static int out_create(struct job *j, uint32_t w, uint32_t h, uint8_t **map)
 
 	j->out_fd = memfd_create("kmscon-image", MFD_CLOEXEC | MFD_ALLOW_SEALING);
 	if (j->out_fd < 0)
-		return fail(j, -ENOSPC, "cannot create a memfd: %s", strerror(errno));
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot create a memfd: %s",
+			    strerror(errno));
 	if (ftruncate(j->out_fd, len))
 		goto err;
 	*map = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, j->out_fd, 0);
@@ -553,70 +616,52 @@ static int out_create(struct job *j, uint32_t w, uint32_t h, uint8_t **map)
 		goto err;
 	j->width = w;
 	j->height = h;
-	return 0;
+	return KMSCON_IMAGE_OK;
 
 err:
-	fail(j, -ENOSPC, "cannot size the memfd to %zu bytes: %s", len, strerror(errno));
+	fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot size the memfd to %zu bytes: %s", len,
+	     strerror(errno));
 	close(j->out_fd);
 	j->out_fd = -1;
-	return -ENOSPC;
+	return KMSCON_IMAGE_OVER_BUDGET;
 }
 
-/* unmapped first: F_SEAL_WRITE refuses while a writable shared mapping exists */
-static int out_seal(struct job *j, uint8_t *map)
+/* sealed once nothing maps it writable: F_SEAL_WRITE refuses while a writable shared mapping exists
+ */
+static int out_seal(struct job *j)
 {
-	munmap(map, (size_t)j->width * j->height * 4);
 	if (fcntl(j->out_fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE) < 0) {
 		close(j->out_fd);
 		j->out_fd = -1;
-		return fail(j, -ENOSPC, "cannot seal the memfd: %s", strerror(errno));
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot seal the memfd: %s",
+			    strerror(errno));
 	}
-	return 0;
+	return KMSCON_IMAGE_OK;
 }
 
-/* @w x @h within max-graphic-size, and its pixels within the budget */
-static int check_size(struct job *j, uint64_t w, uint64_t h)
+/* step 6: exactly the first min_bytes bytes, in a memfd of that length */
+static int out_bytes(struct job *j, const uint8_t *data)
 {
-	uint64_t bytes;
+	uint64_t n = j->req->min_bytes, done = 0;
+	ssize_t r;
 
-	if (!w || !h)
-		return fail(j, -EINVAL, "no size");
-	if (w > j->req->max_width || h > j->req->max_height)
-		return fail(j, -EINVAL, "%llux%llu past max-graphic-size", (unsigned long long)w,
-			    (unsigned long long)h);
-	if (__builtin_mul_overflow(w, h, &bytes) || __builtin_mul_overflow(bytes, 4, &bytes) ||
-	    bytes > j->req->max_bytes)
-		return fail(j, -ENOSPC, "%llux%llu past the budget", (unsigned long long)w,
-			    (unsigned long long)h);
-	return 0;
-}
-
-/* f=24 or f=32: exactly s x v pixels, 24 expanded with alpha 255 */
-static int decode_raw(struct job *j, const uint8_t *data, size_t len)
-{
-	const struct kmscon_image_request *req = j->req;
-	unsigned int bpp = req->format == 24 ? 3 : 4;
-	uint64_t i, n = (uint64_t)req->width * req->height;
-	uint8_t *map;
-	int ret;
-
-	if (len != n * bpp)
-		return fail(j, -EINVAL, "%zu bytes of data for %ux%u pixels of f=%u", len,
-			    req->width, req->height, req->format);
-	ret = out_create(j, req->width, req->height, &map);
-	if (ret)
-		return ret;
-	if (bpp == 4) {
-		memcpy(map, data, len);
-	} else {
-		for (i = 0; i < n; i++) {
-			map[i * 4] = data[i * 3];
-			map[i * 4 + 1] = data[i * 3 + 1];
-			map[i * 4 + 2] = data[i * 3 + 2];
-			map[i * 4 + 3] = 255;
+	j->out_fd = memfd_create("kmscon-image", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	if (j->out_fd < 0)
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot create a memfd: %s",
+			    strerror(errno));
+	while (done < n) {
+		r = write(j->out_fd, data + done, n - done);
+		if (r < 0 && errno == EINTR)
+			continue;
+		if (r <= 0) {
+			close(j->out_fd);
+			j->out_fd = -1;
+			return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot write the memfd: %s",
+				    r ? strerror(errno) : "no space");
 		}
+		done += r;
 	}
-	return out_seal(j, map);
+	return out_seal(j);
 }
 
 struct png_src {
@@ -640,7 +685,7 @@ static void png_err(png_structp png, png_const_charp msg)
 {
 	struct png_src *src = png_get_error_ptr(png);
 
-	fail(src->job, -EINVAL, "corrupt PNG: %s", msg);
+	fail(src->job, KMSCON_IMAGE_CORRUPT, "corrupt PNG: %s", msg);
 	png_longjmp(png, 1);
 }
 
@@ -651,42 +696,51 @@ static void png_warn(png_structp png, png_const_charp msg)
 }
 
 /*
- * PNG to 8-bit RGBA: palette, grey, 16-bit and interlaced images expanded, no
- * gamma or colour-profile correction. The header's size is checked before any
- * pixel is allocated, and the rows are decoded straight into the reply's
- * memfd.
+ * Step 5: PNG to 8-bit RGBA, palette, grey, 16-bit and interlaced images
+ * expanded, no gamma or colour-profile correction. The header's size is
+ * checked before any pixel is allocated: past max_width or max_height is
+ * TOO_LARGE, and width x height x 4 past max_bytes OVER_BUDGET. libpng's own
+ * size limits are set to the format's, so that this check decides. The rows
+ * are decoded straight into the reply's memfd.
  */
 static int decode_png(struct job *j, const uint8_t *data, size_t len)
 {
+	const struct kmscon_image_request *req = j->req;
 	struct png_src src = {.job = j, .data = data, .len = len};
 	png_structp png;
 	png_infop info;
 	png_uint_32 w, h, y;
+	uint64_t bytes;
 	int depth, type, ret;
 	uint8_t *m, *volatile map = NULL;
 	png_bytep *volatile rows = NULL;
 
 	png = png_create_read_struct(PNG_LIBPNG_VER_STRING, &src, png_err, png_warn);
 	if (!png)
-		return fail(j, -ENOSPC, "cannot start libpng");
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot start libpng");
 	info = png_create_info_struct(png);
 	if (!info) {
 		png_destroy_read_struct(&png, NULL, NULL);
-		return fail(j, -ENOSPC, "cannot start libpng");
+		return fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot start libpng");
 	}
 	if (setjmp(png_jmpbuf(png))) {
-		ret = -EINVAL;
+		ret = KMSCON_IMAGE_CORRUPT;
 		goto out;
 	}
 	png_set_read_fn(png, &src, png_read);
-	png_set_user_limits(png, j->req->max_width > 0x7fffffff ? 0x7fffffff : j->req->max_width,
-			    j->req->max_height > 0x7fffffff ? 0x7fffffff : j->req->max_height);
-	png_set_chunk_malloc_max(png, j->req->max_bytes < 8 << 20 ? j->req->max_bytes : 8 << 20);
+	png_set_user_limits(png, PNG_UINT_31_MAX, PNG_UINT_31_MAX);
+	png_set_chunk_malloc_max(png, req->max_bytes < 8 << 20 ? req->max_bytes : 8 << 20);
 	png_read_info(png, info);
 	png_get_IHDR(png, info, &w, &h, &depth, &type, NULL, NULL, NULL);
-	ret = check_size(j, w, h);
-	if (ret)
+	if (w > req->max_width || h > req->max_height) {
+		ret = fail(j, KMSCON_IMAGE_TOO_LARGE, "%ux%u past max-graphic-size", w, h);
 		goto out;
+	}
+	if (__builtin_mul_overflow((uint64_t)w, h, &bytes) ||
+	    __builtin_mul_overflow(bytes, 4, &bytes) || bytes > req->max_bytes) {
+		ret = fail(j, KMSCON_IMAGE_OVER_BUDGET, "%ux%u past the budget", w, h);
+		goto out;
+	}
 
 	if (type == PNG_COLOR_TYPE_PALETTE)
 		png_set_palette_to_rgb(png);
@@ -703,7 +757,7 @@ static int decode_png(struct job *j, const uint8_t *data, size_t len)
 	png_set_interlace_handling(png);
 	png_read_update_info(png, info);
 	if (png_get_rowbytes(png, info) != (size_t)w * 4) {
-		ret = fail(j, -EINVAL, "PNG rows are not RGBA");
+		ret = fail(j, KMSCON_IMAGE_CORRUPT, "PNG rows are not RGBA");
 		goto out;
 	}
 
@@ -713,14 +767,15 @@ static int decode_png(struct job *j, const uint8_t *data, size_t len)
 	map = m;
 	rows = malloc(sizeof(*rows) * h);
 	if (!rows) {
-		ret = fail(j, -ENOSPC, "cannot allocate the rows");
+		ret = fail(j, KMSCON_IMAGE_OVER_BUDGET, "cannot allocate the rows");
 		goto out;
 	}
 	for (y = 0; y < h; y++)
 		rows[y] = map + (size_t)y * w * 4;
 	png_read_image(png, rows);
-	ret = out_seal(j, map);
+	munmap(map, (size_t)w * h * 4);
 	map = NULL;
+	ret = out_seal(j);
 
 out:
 	if (ret && map) {
@@ -728,59 +783,54 @@ out:
 		close(j->out_fd);
 		j->out_fd = -1;
 	}
+	if (ret)
+		j->width = j->height = 0;
 	free(rows);
 	png_destroy_read_struct(&png, &info, NULL);
 	return ret;
 }
 
-/* reads, inflates and decodes, in ADR-103's order */
+/* the steps of ADR-103's "What the helper does", in order, knowing nothing of the kitty keys */
 static int handle(struct job *j)
 {
 	const struct kmscon_image_request *req = j->req;
-	bool raw = req->format == 24 || req->format == 32;
 	uint8_t *data = NULL, *inflated = NULL;
 	size_t len = 0, inflated_len = 0;
-	uint64_t exact = 0;
-	int ret;
+	struct stat st;
+	int fd, ret;
 
 	if (req->flags & KMSCON_IMAGE_DISCARD)
 		return discard(j);
-	if (!raw && req->format != 100)
-		return fail(j, -EINVAL, "unknown format %u", req->format);
-	if (raw) {
-		ret = check_size(j, req->width, req->height);
-		if (ret)
-			return ret;
-	}
 
-	ret = read_data(j, &data, &len);
+	ret = open_source(j, &fd, &st);
 	if (ret)
 		return ret;
-	if (req->flags & KMSCON_IMAGE_ZLIB) {
-		if (raw)
-			exact = (uint64_t)req->width * req->height * (req->format == 24 ? 3 : 4);
-		else if (req->medium == 'd')
-			exact = req->size;
-		ret = inflate_data(j, data, len, exact, &inflated, &inflated_len);
+	ret = read_bounded(j, fd, &st, &data, &len);
+	close(fd);
+	if (ret)
+		return ret;
+	if (req->flags & KMSCON_IMAGE_INFLATE) {
+		ret = inflate_bounded(j, data, len, &inflated, &inflated_len);
 		free(data);
 		if (ret)
 			return ret;
 		data = inflated;
 		len = inflated_len;
 	}
-	ret = raw ? decode_raw(j, data, len) : decode_png(j, data, len);
+	ret = req->flags & KMSCON_IMAGE_PNG ? decode_png(j, data, len) : out_bytes(j, data);
 	free(data);
 	return ret;
 }
 
-static void reply(const struct job *j, int status)
+static void reply(const struct job *j, uint32_t status)
 {
+	bool fd = status == KMSCON_IMAGE_OK && j->out_fd >= 0;
 	struct kmscon_image_reply r = {
 		.version = KMSCON_IMAGE_VERSION,
 		.status = status,
 		.id = j->req->id,
-		.width = status ? 0 : j->width,
-		.height = status ? 0 : j->height,
+		.width = fd ? j->width : 0,
+		.height = fd ? j->height : 0,
 		.reason_len = strlen(j->reason),
 	};
 	struct iovec iov[2] = {
@@ -791,7 +841,7 @@ static void reply(const struct job *j, int status)
 	struct msghdr msg = {.msg_iov = iov, .msg_iovlen = 2};
 	struct cmsghdr *cmsg;
 
-	if (!status) {
+	if (fd) {
 		msg.msg_control = cbuf;
 		msg.msg_controllen = sizeof(cbuf);
 		cmsg = CMSG_FIRSTHDR(&msg);
@@ -803,6 +853,40 @@ static void reply(const struct job *j, int status)
 	while (sendmsg(KMSCON_IMAGE_FD, &msg, MSG_NOSIGNAL) < 0)
 		if (errno != EINTR)
 			_exit(1);
+}
+
+/*
+ * A request kmscon would not build, on which the helper exits (ADR-103, The
+ * outcomes): a length that is not the header and its name, a version, type,
+ * flag bit or reserved value it does not know, a medium with the wrong name
+ * or descriptor, min_bytes 0 without PNG or DISCARD, EXACT without INFLATE, a
+ * DISCARD with another flag, with medium 'f' or 'd' or with a non-zero bound,
+ * or min_bytes past max_bytes.
+ */
+static bool request_valid(const struct kmscon_image_request *req, size_t n, int n_fds)
+{
+	if (n < sizeof(*req) || req->version != KMSCON_IMAGE_VERSION ||
+	    req->type != KMSCON_IMAGE_TYPE_IMAGE || (req->flags & ~KMSCON_IMAGE_FLAGS) ||
+	    req->reserved || n != sizeof(*req) + req->name_len)
+		return false;
+	if (req->medium == 'd') {
+		if (req->name_len || n_fds != 1)
+			return false;
+	} else if (req->medium == 'f' || req->medium == 't' || req->medium == 's') {
+		if (!req->name_len || req->name_len > KMSCON_IMAGE_NAME_MAX || n_fds)
+			return false;
+	} else {
+		return false;
+	}
+	if (!req->min_bytes && !(req->flags & (KMSCON_IMAGE_PNG | KMSCON_IMAGE_DISCARD)))
+		return false;
+	if ((req->flags & KMSCON_IMAGE_EXACT) && !(req->flags & KMSCON_IMAGE_INFLATE))
+		return false;
+	if ((req->flags & KMSCON_IMAGE_DISCARD) &&
+	    (req->flags != KMSCON_IMAGE_DISCARD || req->medium == 'f' || req->medium == 'd' ||
+	     req->offset || req->read_max || req->min_bytes))
+		return false;
+	return req->min_bytes <= req->max_bytes;
 }
 
 int main(void)
@@ -857,22 +941,8 @@ int main(void)
 			}
 		}
 
-		/* a request kmscon would not send ends the helper */
-		if ((size_t)n < sizeof(*req) || req->version != KMSCON_IMAGE_VERSION ||
-		    req->type != KMSCON_IMAGE_TYPE_KITTY ||
-		    (req->flags & ~(KMSCON_IMAGE_ZLIB | KMSCON_IMAGE_DISCARD)))
+		if (!request_valid(req, n, n_fds))
 			return 2;
-		if ((size_t)n != sizeof(*req) + req->name_len)
-			return 2;
-		if (req->medium == 'd') {
-			if (req->name_len || n_fds != 1)
-				return 2;
-		} else if (req->medium == 'f' || req->medium == 't' || req->medium == 's') {
-			if (!req->name_len || req->name_len > KMSCON_IMAGE_NAME_MAX || n_fds)
-				return 2;
-		} else {
-			return 2;
-		}
 		memcpy(name, in.buf + sizeof(*req), req->name_len);
 		name[req->name_len] = 0;
 
@@ -883,7 +953,7 @@ int main(void)
 			.out_fd = -1,
 		};
 		if (strlen(name) != req->name_len)
-			status = fail(&j, -EBADF, "a NUL byte in the name");
+			status = fail(&j, KMSCON_IMAGE_UNREADABLE, "a NUL byte in the name");
 		else
 			status = handle(&j);
 		reply(&j, status);

@@ -41,6 +41,7 @@
 #include "conf.h"
 #include "config.h"
 #include "font/font.h"
+#include "image_helper_proto.h"
 #include "image_host.h"
 #include "image_identity.h"
 #include "input/input.h"
@@ -607,11 +608,27 @@ static void asciinema_start(struct kmscon_terminal *term)
 }
 
 #ifdef TSM_VTE_IMAGE_HOST
+/* kmscon passes libtsm's flags and outcomes through unchanged */
+_Static_assert(KMSCON_IMAGE_INFLATE == TSM_VTE_IMAGE_INFLATE &&
+		       KMSCON_IMAGE_PNG == TSM_VTE_IMAGE_PNG &&
+		       KMSCON_IMAGE_EXACT == TSM_VTE_IMAGE_EXACT &&
+		       KMSCON_IMAGE_DISCARD == TSM_VTE_IMAGE_DISCARD,
+	       "the helper's flags are libtsm's");
+_Static_assert(KMSCON_IMAGE_OK == TSM_VTE_IMAGE_OK &&
+		       KMSCON_IMAGE_UNREADABLE == TSM_VTE_IMAGE_UNREADABLE &&
+		       KMSCON_IMAGE_TOO_SHORT == TSM_VTE_IMAGE_TOO_SHORT &&
+		       KMSCON_IMAGE_CORRUPT == TSM_VTE_IMAGE_CORRUPT &&
+		       KMSCON_IMAGE_TOO_LARGE == TSM_VTE_IMAGE_TOO_LARGE &&
+		       KMSCON_IMAGE_OVER_BUDGET == TSM_VTE_IMAGE_OVER_BUDGET &&
+		       IMAGE_HOST_FAILED == TSM_VTE_IMAGE_FAILED,
+	       "the helper's outcomes are libtsm's");
+
 /*
- * libtsm's host hook: a t=f, t=t or t=s command, or inline PNG or zlib data,
- * goes to the session's helper, found again for each request, and the pty
- * pauses with the bytes after the command held until the reply, so commands
- * keep their order. -EBADF answers the command at once and input goes on.
+ * libtsm's host hook: a t=f, t=t or t=s command, a discard among them, or
+ * inline PNG or zlib data, goes to the session's helper, its user found again
+ * for each request, and the pty pauses with the bytes after the command held
+ * until the reply, so commands keep their order. A negative return answers
+ * the command at once and input goes on.
  */
 static int image_event(struct tsm_vte *vte, const struct tsm_vte_image_request *req, void *data)
 {
@@ -619,13 +636,10 @@ static int image_event(struct tsm_vte *vte, const struct tsm_vte_image_request *
 	struct image_host_request r = {
 		.id = req->id,
 		.medium = req->medium,
-		.format = req->format,
-		.zlib = req->zlib,
-		.discard = req->discard,
-		.width = req->width,
-		.height = req->height,
+		.flags = req->flags,
 		.offset = req->offset,
-		.size = req->size,
+		.read_max = req->read_max,
+		.min_bytes = req->min_bytes,
 		.name = req->name,
 		.data = req->data,
 		.data_len = req->data_len,
@@ -653,12 +667,20 @@ static int image_event(struct tsm_vte *vte, const struct tsm_vte_image_request *
 }
 
 /* -ENOENT from libtsm, a request it cancelled meanwhile, resumes all the same */
-static void image_reply(struct image_host *host, uint64_t id, int error, unsigned int width,
-			unsigned int height, const uint8_t *rgba, void *data)
+static void image_reply(struct image_host *host, uint64_t id, unsigned int status,
+			unsigned int width, unsigned int height, const uint8_t *bytes, size_t len,
+			void *data)
 {
 	struct kmscon_terminal *term = data;
+	struct tsm_vte_image_result res = {
+		.status = status,
+		.width = width,
+		.height = height,
+		.data = bytes,
+		.len = len,
+	};
 
-	tsm_vte_image_reply(term->vte, id, error, width, height, rgba);
+	tsm_vte_image_reply(term->vte, id, &res);
 	term->redraw_owed = true;
 	kmscon_pty_resume(term->pty);
 	if (term->awake)

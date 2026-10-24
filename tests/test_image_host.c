@@ -5,11 +5,14 @@
  * break one check.
  *
  * Every reply that fails a check, a helper that closes its socket, and one
- * that does not answer in time end the request with EBADF and the helper
- * with it; the next request starts a new helper, and every descriptor a bad
- * reply carried is closed. A packet with no request out stops the helper. The
- * helper's memory limit is three times the budget plus 64 MiB, and a larger
- * budget, or another user, restarts it.
+ * that does not answer in time end the request as IMAGE_HOST_FAILED, EBADF
+ * to the client, and the helper with it; the next request starts a new
+ * helper, and every descriptor a bad reply carried is closed. A packet with
+ * no request out stops the helper. The helper's outcomes pass through, a
+ * discard's among them, and keep the helper. A request whose min_bytes
+ * passes the budget is answered KMSCON_IMAGE_OVER_BUDGET without reaching
+ * the helper. The helper's memory limit is three times the budget plus
+ * 64 MiB, and a larger budget, or another user, restarts it.
  *
  * The helper starts with descriptors 0 to 2 on /dev/null and its socket as 3
  * and nothing else, TMPDIR its only environment variable, / as its working
@@ -42,24 +45,27 @@ static char dir[PATH_MAX];
 static struct {
 	unsigned int calls;
 	uint64_t id;
-	int error;
+	unsigned int status;
 	unsigned int width;
 	unsigned int height;
+	size_t len;
 	uint8_t first[4];
 } got;
 
-static void reply(struct image_host *host, uint64_t id, int error, unsigned int width,
-		  unsigned int height, const uint8_t *rgba, void *data)
+/* a discard's KMSCON_IMAGE_OK, like any other outcome, carries no bytes */
+static void reply(struct image_host *host, uint64_t id, unsigned int status, unsigned int width,
+		  unsigned int height, const uint8_t *data, size_t len, void *cb_data)
 {
 	got.calls++;
 	got.id = id;
-	got.error = error;
+	got.status = status;
 	got.width = width;
 	got.height = height;
-	if (!error)
-		memcpy(got.first, rgba, 4);
+	got.len = len;
+	if (data)
+		memcpy(got.first, data, len < 4 ? len : 4);
 	else
-		assert(!rgba && !width && !height);
+		assert(!width && !height && !len);
 }
 
 static unsigned int open_fds(void)
@@ -86,14 +92,13 @@ static void wait_reply(struct image_host *h, unsigned int ms)
 	assert(got.calls == calls + 1 && !image_host_busy(h));
 }
 
+/* four bytes, as they are */
 static struct image_host_request request(uint64_t id, unsigned int medium, const char *name)
 {
 	return (struct image_host_request){
 		.id = id,
 		.medium = medium,
-		.format = 32,
-		.width = 1,
-		.height = 1,
+		.min_bytes = 4,
 		.name = name,
 		.max_width = 64,
 		.max_height = 64,
@@ -134,97 +139,135 @@ static void test_real(const char *helper)
 	assert(image_host_new(&h, loop, helper, reply, NULL) == 0);
 	assert(!image_host_pid(h) && !image_host_busy(h));
 
-	/* started at the first request, as this user, and kept for the next */
+	/* min_bytes past the budget: answered from the loop, no helper started or asked */
 	r = request(1, 'f', path);
+	r.min_bytes = r.max_bytes + 1;
+	assert(image_host_send(h, getuid(), &r) == 0);
+	assert(image_host_busy(h) && !image_host_pid(h) && !got.calls);
+	wait_reply(h, 1000);
+	assert(got.id == 1 && got.status == KMSCON_IMAGE_OVER_BUDGET && !image_host_pid(h));
+
+	/* started at the first request, as this user, and kept for the next */
+	r = request(2, 'f', path);
 	assert(image_host_send(h, getuid(), &r) == 0);
 	assert(image_host_busy(h) && image_host_send(h, getuid(), &r) == -EBUSY);
 	pid = image_host_pid(h);
 	assert(pid > 0);
 	wait_reply(h, 5000);
-	assert(got.id == 1 && !got.error && got.width == 1 && got.height == 1 &&
-	       !memcmp(got.first, px, 4));
+	assert(got.id == 2 && got.status == KMSCON_IMAGE_OK && !got.width && !got.height &&
+	       got.len == 4 && !memcmp(got.first, px, 4));
 	/* three copies of the budget and 64 MiB, read once it answered, so after its exec */
 	assert(helper_as(pid) == 3ull * (1 << 20) + (64ull << 20));
-	r.id = 2;
+	r.id = 3;
 	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
-	assert(image_host_pid(h) == pid && got.id == 2 && !got.error);
+	assert(image_host_pid(h) == pid && got.id == 3 && got.status == KMSCON_IMAGE_OK);
 
-	/* the helper's own errors pass through, and a discard is EINVAL */
-	r = request(3, 'f', "/proc/self/status");
+	/* the helper's outcomes pass through, and keep it */
+	r = request(4, 'f', "/proc/self/status");
 	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
-	assert(got.error == -EBADF && image_host_pid(h) == pid);
-	r = request(4, 's', "/kmscon-no-such-object");
-	r.discard = true;
+	assert(got.status == KMSCON_IMAGE_UNREADABLE && image_host_pid(h) == pid);
+	r = request(5, 'f', path);
+	r.min_bytes = 5;
 	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
-	assert(got.error == -EINVAL && image_host_pid(h) == pid);
+	assert(got.status == KMSCON_IMAGE_TOO_SHORT && image_host_pid(h) == pid);
+	/* again past the budget, with a helper running: answered, nothing sent, the helper kept */
+	r = request(6, 'f', path);
+	r.min_bytes = r.max_bytes + 1;
+	assert(image_host_send(h, getuid(), &r) == 0);
+	wait_reply(h, 1000);
+	assert(got.status == KMSCON_IMAGE_OVER_BUDGET && image_host_pid(h) == pid);
+	assert(!image_host_last_failure(h));
+	/* a discard is answered KMSCON_IMAGE_OK with no bytes, and the helper still runs */
+	r = request(7, 's', "/kmscon-no-such-object");
+	r.flags = KMSCON_IMAGE_DISCARD;
+	r.min_bytes = 0;
+	assert(image_host_send(h, getuid(), &r) == 0);
+	wait_reply(h, 5000);
+	assert(got.status == KMSCON_IMAGE_OK && !got.len && image_host_pid(h) == pid);
+	r = request(8, 'f', path);
+	assert(image_host_send(h, getuid(), &r) == 0);
+	wait_reply(h, 5000);
+	assert(got.status == KMSCON_IMAGE_OK && image_host_pid(h) == pid);
 
 	/* inline data travels in a memfd */
-	r = request(5, 'd', NULL);
+	r = request(9, 'd', NULL);
 	r.data = px;
 	r.data_len = 4;
 	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
-	assert(!got.error && !memcmp(got.first, px, 4) && image_host_pid(h) == pid);
+	assert(got.status == KMSCON_IMAGE_OK && !memcmp(got.first, px, 4) &&
+	       image_host_pid(h) == pid);
 
 	/* a smaller budget keeps the helper; a larger one restarts it with its own limit */
-	r = request(6, 'f', path);
+	r = request(10, 'f', path);
 	r.max_bytes = 1 << 19;
 	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
 	assert(image_host_pid(h) == pid);
-	r.id = 7;
+	r.id = 11;
 	r.max_bytes = 4 << 20;
 	assert(image_host_send(h, getuid(), &r) == 0);
 	assert(image_host_pid(h) != pid);
 	pid = image_host_pid(h);
 	wait_reply(h, 5000);
-	assert(!got.error);
+	assert(got.status == KMSCON_IMAGE_OK);
 	assert(helper_as(pid) == 3ull * (4 << 20) + (64ull << 20));
 
 	/* another user stops it; kmscon, not root here, cannot start one as that user */
 	if (getuid()) {
-		r.id = 8;
+		r.id = 12;
 		assert(image_host_send(h, getuid() + 1, &r) == -EBADF);
 		assert(!image_host_pid(h) && !image_host_busy(h));
 	}
 
 	/* cancelled: no reply, and the helper goes */
-	r = request(9, 'f', path);
+	r = request(14, 'f', path);
 	assert(image_host_send(h, getuid(), &r) == 0);
 	image_host_cancel(h);
 	assert(!image_host_busy(h) && !image_host_pid(h));
 	ev_eloop_dispatch(loop, 50);
-	assert(got.id == 7);
+	assert(got.id != 14);
+	/* and a deferred answer cancelled: none either */
+	r = request(15, 'f', path);
+	r.min_bytes = r.max_bytes + 1;
+	assert(image_host_send(h, getuid(), &r) == 0);
+	image_host_cancel(h);
+	ev_eloop_dispatch(loop, 50);
+	assert(got.id != 15 && !image_host_busy(h));
 
-	/* a helper whose exec fails closes its socket: EBADF */
+	/* a helper whose exec fails closes its socket: a failure */
 	image_host_free(h);
 	assert(image_host_new(&h, loop, "/nonexistent/helper", reply, NULL) == 0);
-	r = request(10, 'f', path);
+	r = request(16, 'f', path);
 	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
-	assert(got.id == 10 && got.error == -EBADF && !image_host_pid(h));
+	assert(got.id == 16 && got.status == IMAGE_HOST_FAILED && !image_host_pid(h));
 	image_host_free(h);
 	unlink(path);
 }
 
 /*
- * @name's reply fails the check @why names: EBADF, the helper gone, every
- * descriptor closed. Raw formats meet the s and v check, so the others ask
- * for PNG.
+ * @name's reply to a PNG request, or with @raw to a request for bytes, or a
+ * discard, fails the check @why names: IMAGE_HOST_FAILED, the helper gone,
+ * every descriptor closed
  */
-static void bad(struct image_host *h, const char *name, const char *why, uint64_t id)
+static void bad(struct image_host *h, const char *name, const char *why, char kind, uint64_t id)
 {
 	struct image_host_request r = request(id, 'f', name);
 	unsigned int fds = open_fds();
 	const char *failure;
 	pid_t pid;
 
-	if (strcmp(name, "sv")) {
-		r.format = 100;
-		r.width = r.height = 0;
+	if (kind == 'p') {
+		r.flags = KMSCON_IMAGE_PNG;
+		r.min_bytes = 0;
+	} else if (kind == 'x') {
+		r.medium = 't';
+		r.flags = KMSCON_IMAGE_DISCARD;
+		r.min_bytes = 0;
 	}
 	if (!strcmp(name, "budget"))
 		r.max_bytes = 64 * 64 * 4 - 1;
@@ -234,9 +277,10 @@ static void bad(struct image_host *h, const char *name, const char *why, uint64_
 	pid = image_host_pid(h);
 	wait_reply(h, 5000);
 	failure = image_host_last_failure(h);
-	if (got.error != -EBADF || image_host_pid(h) || !failure || !strstr(failure, why)) {
-		fprintf(stderr, "%s: error %d, helper %d, failure \"%s\", not \"%s\"\n", name,
-			got.error, image_host_pid(h), failure ? failure : "", why);
+	if (got.status != IMAGE_HOST_FAILED || image_host_pid(h) || !failure ||
+	    !strstr(failure, why)) {
+		fprintf(stderr, "%s: status %u, helper %d, failure \"%s\", not \"%s\"\n", name,
+			got.status, image_host_pid(h), failure ? failure : "", why);
 		abort();
 	}
 	assert(got.id == id && pid > 0);
@@ -248,32 +292,43 @@ static void bad(struct image_host *h, const char *name, const char *why, uint64_
 
 static void test_checks(const char *fake)
 {
-	static const char *const cases[][2] = {
-		{"nofd", "without exactly one descriptor"},
-		{"twofd", "without exactly one descriptor"},
-		{"twocmsg", "without exactly one descriptor"},
-		{"errfd", "an error reply with a descriptor"},
-		{"unsealed", "not sealed"},
-		{"noshrink", "not sealed"},
-		{"nogrow", "not sealed"},
-		{"nowrite", "not sealed"},
-		{"futurewrite", "not sealed"},
-		{"short", "not exactly width x height x 4"},
-		{"long", "not exactly width x height x 4"},
-		{"pipe", "not a regular file"},
-		{"wide", "outside max-graphic-size"},
-		{"zero", "outside max-graphic-size"},
-		{"budget", "larger than the budget"},
-		{"huge", "larger than the budget"},
-		{"sv", "differs from s and v"},
-		{"id", "another request"},
-		{"version", "another version"},
-		{"reserved", "reserved field"},
-		{"status", "unknown status"},
-		{"truncated", "not its header and reason"},
-		{"reasonlen", "not its header and reason"},
-		{"reasonmax", "not its header and reason"},
-		{"close", "closed its socket"},
+	/* the name, what kmscon finds, and the request: p a PNG, r bytes, x a discard */
+	static const struct {
+		const char *name;
+		const char *why;
+		char kind;
+	} cases[] = {
+		{"nofd", "without exactly one descriptor", 'p'},
+		{"nofd", "without exactly one descriptor", 'r'},
+		{"twofd", "without exactly one descriptor", 'p'},
+		{"twocmsg", "without exactly one descriptor", 'r'},
+		{"errfd", "a descriptor it should not carry", 'p'},
+		{"discardfd", "a descriptor it should not carry", 'x'},
+		{"unsealed", "not sealed", 'p'},
+		{"noshrink", "not sealed", 'r'},
+		{"nogrow", "not sealed", 'p'},
+		{"nowrite", "not sealed", 'r'},
+		{"futurewrite", "not sealed", 'p'},
+		{"futurewrite", "not sealed", 'r'},
+		{"short", "not exactly the size", 'p'},
+		{"long", "not exactly the size", 'p'},
+		{"short", "not exactly the size", 'r'},
+		{"long", "not exactly the size", 'r'},
+		{"pipe", "not a regular file", 'p'},
+		{"pipe", "not a regular file", 'r'},
+		{"wide", "outside max-graphic-size", 'p'},
+		{"zero", "outside max-graphic-size", 'p'},
+		{"budget", "larger than the budget", 'p'},
+		{"huge", "larger than the budget", 'p'},
+		{"sized", "a size for bytes", 'r'},
+		{"id", "another request", 'p'},
+		{"version", "another version", 'r'},
+		{"reserved", "reserved field", 'p'},
+		{"status", "unknown status", 'r'},
+		{"truncated", "not its header and reason", 'p'},
+		{"reasonlen", "not its header and reason", 'r'},
+		{"reasonmax", "not its header and reason", 'p'},
+		{"close", "closed its socket", 'r'},
 	};
 	struct image_host_request r;
 	struct image_host *h;
@@ -282,46 +337,55 @@ static void test_checks(const char *fake)
 
 	assert(image_host_new(&h, loop, fake, reply, NULL) == 0);
 
-	/* the stand-in's good reply passes, and so does an error with a reason */
+	/* the stand-in's good replies pass, and so does an outcome with a reason */
 	r = request(100, 'f', "good");
+	r.flags = KMSCON_IMAGE_PNG;
+	r.min_bytes = 0;
 	assert(image_host_send(h, getuid(), &r) == 0);
 	pid = image_host_pid(h);
 	wait_reply(h, 5000);
-	assert(!got.error && got.width == 1 && got.first[0] == 0x55);
-	r = request(101, 'f', "error");
+	assert(got.status == KMSCON_IMAGE_OK && got.width == 1 && got.height == 1 && got.len == 4 &&
+	       got.first[0] == 0x55);
+	r = request(101, 'f', "good");
+	r.min_bytes = 7;
 	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
-	assert(got.error == -EINVAL && image_host_pid(h) == pid);
+	assert(got.status == KMSCON_IMAGE_OK && !got.width && got.len == 7 &&
+	       image_host_pid(h) == pid);
+	r = request(102, 'f', "error");
+	assert(image_host_send(h, getuid(), &r) == 0);
+	wait_reply(h, 5000);
+	assert(got.status == KMSCON_IMAGE_CORRUPT && image_host_pid(h) == pid);
 
 	/* each case starts with no helper, so the descriptors open compare */
 	image_host_cancel(h);
 	for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
-		bad(h, cases[i][0], cases[i][1], 200 + i);
+		bad(h, cases[i].name, cases[i].why, cases[i].kind, 200 + i);
 
 	/* a reply with no request out: the helper is stopped, no callback */
 	r = request(300, 'f', "extra");
 	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
-	assert(!got.error && image_host_pid(h));
+	assert(got.status == KMSCON_IMAGE_OK && image_host_pid(h));
 	for (i = 0; i < 100 && image_host_pid(h); i++)
 		ev_eloop_dispatch(loop, 10);
 	assert(!image_host_pid(h) && got.calls && got.id == 300);
 	assert(strstr(image_host_last_failure(h), "no request out"));
 
-	/* no reply in time: EBADF and a new helper next time */
+	/* no reply in time: a failure, and a new helper next time */
 	image_host_set_timeout(h, 200);
 	r = request(301, 'f', "hang");
 	assert(image_host_send(h, getuid(), &r) == 0);
 	pid = image_host_pid(h);
 	wait_reply(h, 2000);
-	assert(got.id == 301 && got.error == -EBADF && !image_host_pid(h));
+	assert(got.id == 301 && got.status == IMAGE_HOST_FAILED && !image_host_pid(h));
 	assert(strstr(image_host_last_failure(h), "in time"));
 	assert(kill(pid, 0) == 0 || errno == ESRCH);
 	r = request(302, 'f', "good");
 	assert(image_host_send(h, getuid(), &r) == 0);
 	assert(image_host_pid(h) && image_host_pid(h) != pid);
 	wait_reply(h, 5000);
-	assert(!got.error);
+	assert(got.status == KMSCON_IMAGE_OK);
 	image_host_free(h);
 
 	/* the 2 s default */
@@ -332,7 +396,7 @@ static void test_checks(const char *fake)
 	ev_eloop_dispatch(loop, 1500);
 	assert(image_host_busy(h));
 	wait_reply(h, 2000);
-	assert(got.id == 303 && got.error == -EBADF);
+	assert(got.id == 303 && got.status == IMAGE_HOST_FAILED);
 	image_host_free(h);
 }
 
@@ -390,7 +454,6 @@ static void test_hardening(const char *helper)
 	bool ambient = false;
 	struct dirent *e;
 	struct image_host *h;
-	uid_t uid = getuid();
 	sigset_t usr1, old;
 	ssize_t n;
 	pid_t pid;
@@ -411,10 +474,10 @@ static void test_hardening(const char *helper)
 
 	/* as root, the helper's own uid 0, so an ambient capability would survive */
 	assert(image_host_new(&h, loop, helper, reply, NULL) == 0);
-	assert(image_host_send(h, uid, &r) == 0);
+	assert(image_host_send(h, getuid(), &r) == 0);
 	wait_reply(h, 5000);
 	pid = image_host_pid(h);
-	assert(got.error == -EBADF && pid > 0);
+	assert(got.status == KMSCON_IMAGE_UNREADABLE && pid > 0);
 
 	snprintf(path, sizeof(path), "/proc/%d/fd", pid);
 	d = opendir(path);
@@ -481,6 +544,7 @@ static void test_hardening(const char *helper)
 			line[off - 1] = 0;
 		assert(!strcmp(status_of(pid, "Groups"), line));
 		assert(!strcmp(status_of(pid, "CapAmb"), "0000000000000000"));
+
 		image_host_free(h);
 		printf("test_image_host: root: uid, gid, groups and ambient capabilities "
 		       "checked\n");

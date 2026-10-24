@@ -1,12 +1,14 @@
 /*
  * A stand-in for kmscon-image-helper that answers each request the way its
  * name says (test_image_host.c): a well-formed reply, or one that breaks one
- * of the checks kmscon makes before reading a pixel. Inline requests get the
- * well-formed reply.
+ * of the checks kmscon makes before reading a byte of it. A PNG request gets
+ * a 1 x 1 picture, any other min_bytes bytes; an inline request or a discard
+ * gets the well-formed reply.
  */
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,24 +84,30 @@ int main(void)
 				     .msg_control = cbuf,
 				     .msg_controllen = sizeof(cbuf)};
 		const struct kmscon_image_request *q = &in.req;
-		uint32_t w, h;
+		bool png, discard;
 		size_t len;
 
 		n = recvmsg(FD, &msg, MSG_CMSG_CLOEXEC);
 		if (n <= 0)
 			return 0;
-		w = q->width ? q->width : 1;
-		h = q->height ? q->height : 1;
-		len = (size_t)w * h * 4;
+		png = q->flags & KMSCON_IMAGE_PNG;
+		discard = q->flags & KMSCON_IMAGE_DISCARD;
+		len = png ? 4 : q->min_bytes;
 		memcpy(name, in.buf + sizeof(*q), q->name_len);
 		name[q->name_len] = 0;
 		if (q->medium == 'd')
 			strcpy(name, "good");
 
 		r = (struct kmscon_image_reply){
-			.version = KMSCON_IMAGE_VERSION, .id = q->id, .width = w, .height = h};
+			.version = KMSCON_IMAGE_VERSION,
+			.id = q->id,
+			.width = png ? 1 : 0,
+			.height = png ? 1 : 0,
+		};
 
-		if (!strcmp(name, "good") || !strcmp(name, "extra")) {
+		if (discard && strcmp(name, "discardfd")) {
+			send_fds(&r, sizeof(r), NULL, 0, NULL, 0, 0);
+		} else if (!strcmp(name, "good") || !strcmp(name, "extra")) {
 			fds[0] = memfd(len, seals);
 			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
 			close(fds[0]);
@@ -109,7 +117,8 @@ int main(void)
 				close(fds[0]);
 			}
 		} else if (!strcmp(name, "error")) {
-			r.status = -EINVAL;
+			r.status = KMSCON_IMAGE_CORRUPT;
+			r.width = r.height = 0;
 			r.reason_len = 12;
 			send_fds(&r, sizeof(r), "bad\x01\x7f\n data!", 12, NULL, 0, 0);
 		} else if (!strcmp(name, "nofd")) {
@@ -120,8 +129,9 @@ int main(void)
 			send_fds(&r, sizeof(r), NULL, 0, fds, 2, strcmp(name, "twofd") ? 2 : 1);
 			close(fds[0]);
 			close(fds[1]);
-		} else if (!strcmp(name, "errfd")) {
-			r.status = -EBADF;
+		} else if (!strcmp(name, "errfd") || !strcmp(name, "discardfd")) {
+			if (!strcmp(name, "errfd"))
+				r.status = KMSCON_IMAGE_UNREADABLE;
 			fds[0] = memfd(len, seals);
 			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
 			close(fds[0]);
@@ -150,38 +160,40 @@ int main(void)
 			close(fds[0]);
 			close(fds[1]);
 		} else if (!strcmp(name, "wide") || !strcmp(name, "zero") ||
-			   !strcmp(name, "budget") || !strcmp(name, "sv")) {
+			   !strcmp(name, "budget") || !strcmp(name, "sized")) {
 			r.width = !strcmp(name, "wide")	    ? q->max_width + 1
 				  : !strcmp(name, "zero")   ? 0
 				  : !strcmp(name, "budget") ? q->max_width
-							    : w + 1;
-			r.height = !strcmp(name, "budget") ? q->max_height : h;
-			fds[0] = memfd((size_t)(r.width ? r.width : 1) * r.height * 4, seals);
+							    : 1;
+			r.height = !strcmp(name, "budget") ? q->max_height : 1;
+			fds[0] = memfd(png ? (size_t)(r.width ? r.width : 1) * r.height * 4 : len,
+				       seals);
 			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
 			close(fds[0]);
 		} else if (!strcmp(name, "id") || !strcmp(name, "version") ||
 			   !strcmp(name, "reserved") || !strcmp(name, "status")) {
+			r.status = KMSCON_IMAGE_CORRUPT;
+			r.width = r.height = 0;
 			if (!strcmp(name, "id"))
 				r.id++;
 			else if (!strcmp(name, "version"))
-				r.version = 2;
+				r.version = 1;
 			else if (!strcmp(name, "reserved"))
 				r.reserved = 1;
 			else
-				r.status = -EIO;
-			r.status = r.status ? r.status : -EINVAL;
+				r.status = KMSCON_IMAGE_OVER_BUDGET + 1;
 			send_fds(&r, sizeof(r), NULL, 0, NULL, 0, 0);
 		} else if (!strcmp(name, "truncated")) {
 			send_fds(&r, 16, NULL, 0, NULL, 0, 0);
 		} else if (!strcmp(name, "reasonlen")) {
-			r.status = -EINVAL;
+			r.status = KMSCON_IMAGE_CORRUPT;
 			r.reason_len = 10;
 			send_fds(&r, sizeof(r), "short", 5, NULL, 0, 0);
 		} else if (!strcmp(name, "reasonmax")) {
 			static char reason[256];
 
 			memset(reason, 'r', sizeof(reason));
-			r.status = -EINVAL;
+			r.status = KMSCON_IMAGE_CORRUPT;
 			r.reason_len = sizeof(reason);
 			send_fds(&r, sizeof(r), reason, sizeof(reason), NULL, 0, 0);
 		} else if (!strcmp(name, "huge")) {
@@ -201,6 +213,10 @@ int main(void)
 			int go, ack;
 			char b;
 
+			if (png) {
+				r.width = r.height = 64;
+				len = 64 * 64 * 4;
+			}
 			snprintf(go_path, sizeof(go_path), "%s/go.fifo", name + 5);
 			snprintf(ack_path, sizeof(ack_path), "%s/ack.fifo", name + 5);
 			fds[0] = memfd(len, 0);

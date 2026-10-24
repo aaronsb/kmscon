@@ -1,8 +1,8 @@
 /*
  * A helper that truncates its reply's memfd after kmscon's size check and
- * seals it before kmscon reads the seals (src/image_host.c, map_pixels). The
+ * seals it before kmscon reads the seals (src/image_host.c, map_reply). The
  * mapping would then reach past the memfd's end and fault kmscon, which runs
- * as root, on its first read of the pixels. kmscon must read the seals before
+ * as root, on its first read of the bytes. kmscon must read the seals before
  * the size, so the size it checks can no longer change.
  *
  * fcntl is wrapped (-Wl,--wrap) so that the window before F_GET_SEALS stays
@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "image_helper_proto.h"
 #include "image_host.h"
 
 static char dir[PATH_MAX];
@@ -73,38 +74,57 @@ int __wrap_fcntl64(int fd, int cmd, ...)
 	return __real_fcntl64(fd, cmd, arg);
 }
 
-static int calls, error;
+static int calls;
+static unsigned int status;
 static unsigned long sum;
 
-/* reads every pixel, as tsm_vte_image_reply would */
-static void reply(struct image_host *host, uint64_t id, int err, unsigned int width,
-		  unsigned int height, const uint8_t *rgba, void *data)
+/* reads every byte, as tsm_vte_image_reply would */
+static void reply(struct image_host *host, uint64_t id, unsigned int st, unsigned int width,
+		  unsigned int height, const uint8_t *data, size_t len, void *cb_data)
 {
 	size_t i;
 
 	calls++;
-	error = err;
-	for (i = 0; !err && i < (size_t)width * height * 4; i++)
-		sum += rgba[i];
+	status = st;
+	for (i = 0; data && i < len; i++)
+		sum += data[i];
+}
+
+/* one request whose reply's memfd the stand-in shrinks and seals inside the window */
+static void race(struct ev_eloop *loop, const char *fake, const char *name, unsigned int flags)
+{
+	struct image_host_request r = {
+		.id = 1,
+		.medium = 'f',
+		.flags = flags,
+		.min_bytes = flags & KMSCON_IMAGE_PNG ? 0 : 64 * 64 * 4,
+		.name = name,
+		.max_width = 64,
+		.max_height = 64,
+		.max_bytes = 1 << 20,
+	};
+	struct image_host *h;
+	const char *failure;
+	int i;
+
+	calls = 0;
+	assert(image_host_new(&h, loop, fake, reply, NULL) == 0);
+	racing = true;
+	assert(image_host_send(h, getuid(), &r) == 0);
+	for (i = 0; i < 500 && !calls; i++)
+		ev_eloop_dispatch(loop, 10);
+
+	/* refused at the size, read once the seals hold it; no fault */
+	failure = image_host_last_failure(h);
+	assert(calls == 1 && status == IMAGE_HOST_FAILED && !racing);
+	assert(failure && strstr(failure, "not exactly the size"));
+	image_host_free(h);
 }
 
 int main(int argc, char **argv)
 {
 	char fake[PATH_MAX], name[PATH_MAX + 8], path[PATH_MAX + 16];
-	struct image_host_request r = {
-		.id = 1,
-		.medium = 'f',
-		.format = 32,
-		.width = 64,
-		.height = 64,
-		.max_width = 64,
-		.max_height = 64,
-		.max_bytes = 1 << 20,
-	};
 	struct ev_eloop *loop;
-	struct image_host *h;
-	const char *failure;
-	int i;
 
 	assert(argc == 3 && realpath(argv[1], fake));
 	signal(SIGPIPE, SIG_IGN);
@@ -115,21 +135,12 @@ int main(int argc, char **argv)
 	snprintf(path, sizeof(path), "%s/ack.fifo", dir);
 	assert(mkfifo(path, 0600) == 0);
 	snprintf(name, sizeof(name), "race:%s", dir);
-	r.name = name;
 
 	assert(ev_eloop_new(&loop) == 0);
-	assert(image_host_new(&h, loop, fake, reply, NULL) == 0);
-	racing = true;
-	assert(image_host_send(h, getuid(), &r) == 0);
-	for (i = 0; i < 500 && !calls; i++)
-		ev_eloop_dispatch(loop, 10);
+	/* a raw reply of min_bytes, and a PNG reply of 64 x 64 x 4 */
+	race(loop, fake, name, 0);
+	race(loop, fake, name, KMSCON_IMAGE_PNG);
 
-	/* refused at the size, read once the seals hold it; no fault */
-	failure = image_host_last_failure(h);
-	assert(calls == 1 && error == -EBADF && !racing);
-	assert(failure && strstr(failure, "not exactly width x height x 4"));
-
-	image_host_free(h);
 	ev_eloop_unref(loop);
 	snprintf(path, sizeof(path), "%s/go.fifo", dir);
 	unlink(path);

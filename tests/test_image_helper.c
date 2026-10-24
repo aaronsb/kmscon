@@ -4,14 +4,18 @@
  * helper as kmscon does, its end of a SOCK_SEQPACKET pair on descriptor 3,
  * sends it requests and reads its replies.
  *
- * Every refusal to read answers EBADF with no descriptor: /proc, /sys, /dev,
- * a FIFO, a socket, a device, a directory, a symlink loop, a file shorter
- * than S, t=t outside a temporary directory or without the name, and shared
- * memory names that are not one leading '/' and at most 255 bytes. Refused
- * temporary files survive; accepted t=t files and t=s objects are removed. A
- * discard removes only what the temporary-file rule allows. PNG and zlib
- * decode; a PNG header past the limits is refused before its pixels are
- * allocated.
+ * The helper is mechanical: it applies offset, read_max, min_bytes and the
+ * flags, and answers an outcome. Every refusal to read is UNREADABLE with no
+ * descriptor: /proc, /sys, /dev, a FIFO, a socket, a device, a directory, a
+ * symlink loop, an offset at or past the end, t=t outside a temporary
+ * directory or without the name, and shared memory names that are not one
+ * leading '/' and at most 255 bytes. Refused temporary files survive; an
+ * accepted t=t file and a t=s object are removed once opened, whatever comes
+ * of the read. Each step's outcomes (TOO_SHORT, CORRUPT, TOO_LARGE,
+ * OVER_BUDGET) are checked at their bounds, as are the requests it exits on.
+ * A discard removes only what the temporary-file rule allows and answers OK.
+ * PNG and zlib decode; a PNG header past the limits is refused before its
+ * pixels are allocated.
  *
  * The swaps between a check and the step it guards run against the helper's
  * test build (IMAGE_HELPER_TEST), which stops at each such point and waits
@@ -107,19 +111,19 @@ static int stop(struct helper *h)
 	return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-static struct kmscon_image_request req_of(unsigned int medium, unsigned int format, unsigned int w,
-					  unsigned int h)
+/* a request for @min_bytes under @flags, within roomy limits */
+static struct kmscon_image_request req_of(unsigned int medium, unsigned int flags,
+					  uint64_t min_bytes)
 {
 	static uint64_t id;
 
 	return (struct kmscon_image_request){
 		.version = KMSCON_IMAGE_VERSION,
-		.type = KMSCON_IMAGE_TYPE_KITTY,
+		.type = KMSCON_IMAGE_TYPE_IMAGE,
 		.id = ++id,
 		.medium = medium,
-		.format = format,
-		.width = w,
-		.height = h,
+		.flags = flags,
+		.min_bytes = min_bytes,
 		.max_width = 10000,
 		.max_height = 10000,
 		.max_bytes = 16 * MiB,
@@ -191,20 +195,21 @@ static int ask(struct helper *h, struct kmscon_image_request r, const char *name
 	send_req(h, &r, name, fd);
 	assert(recv_reply(h, out) > 0);
 	assert(out->r.id == r.id);
-	/* a descriptor with status 0 alone */
-	assert(out->r.status ? out->fd < 0 : out->fd >= 0);
+	/* a descriptor with KMSCON_IMAGE_OK alone, and never for a discard */
+	if (out->r.status == KMSCON_IMAGE_OK && !(r.flags & KMSCON_IMAGE_DISCARD))
+		assert(out->fd >= 0);
+	else
+		assert(out->fd < 0 && !out->r.width && !out->r.height);
 	return out->r.status;
 }
 
-/* the reply's pixels match @want, and its memfd is sealed as kmscon requires */
-static void expect_pixels(struct reply *rep, unsigned int w, unsigned int h, const uint8_t *want)
+/* the reply's memfd holds exactly @len bytes, @want, sealed as kmscon requires */
+static void expect_memfd(struct reply *rep, const uint8_t *want, size_t len)
 {
-	size_t len = (size_t)w * h * 4;
 	struct stat st;
 	void *map;
 	int seals;
 
-	assert(rep->r.status == 0 && rep->r.width == w && rep->r.height == h);
 	assert(fstat(rep->fd, &st) == 0 && (size_t)st.st_size == len);
 	seals = fcntl(rep->fd, F_GET_SEALS);
 	assert(seals >= 0 && (seals & (F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE)) ==
@@ -216,18 +221,33 @@ static void expect_pixels(struct reply *rep, unsigned int w, unsigned int h, con
 	close(rep->fd);
 }
 
-static int ask_file(struct helper *h, unsigned int medium, const char *path, struct reply *out)
+/* a PNG reply: @w x @h pixels of RGBA, @want */
+static void expect_pixels(struct reply *rep, unsigned int w, unsigned int h, const uint8_t *want)
 {
-	return ask(h, req_of(medium, 32, 1, 1), path, -1, out);
+	assert(rep->r.status == KMSCON_IMAGE_OK && rep->r.width == w && rep->r.height == h);
+	expect_memfd(rep, want, (size_t)w * h * 4);
 }
 
-/* a refusal: EBADF, no descriptor */
+/* any other reply: exactly @len bytes, @want, with no size */
+static void expect_bytes(struct reply *rep, const void *want, size_t len)
+{
+	assert(rep->r.status == KMSCON_IMAGE_OK && !rep->r.width && !rep->r.height);
+	expect_memfd(rep, want, len);
+}
+
+/* four bytes from @path, as they are */
+static int ask_file(struct helper *h, unsigned int medium, const char *path, struct reply *out)
+{
+	return ask(h, req_of(medium, 0, 4), path, -1, out);
+}
+
+/* a refusal: UNREADABLE, no descriptor */
 static void refused(struct helper *h, unsigned int medium, const char *path)
 {
 	struct reply rep;
 
-	if (ask_file(h, medium, path, &rep) != -EBADF) {
-		fprintf(stderr, "%s: %d, not EBADF (%s)\n", path, rep.r.status, rep.reason);
+	if (ask_file(h, medium, path, &rep) != KMSCON_IMAGE_UNREADABLE) {
+		fprintf(stderr, "%s: %u, not UNREADABLE (%s)\n", path, rep.r.status, rep.reason);
 		abort();
 	}
 }
@@ -259,75 +279,87 @@ static char *path_in(const char *dir, const char *name)
 	return p;
 }
 
+/* a request for @min_bytes from @offset, at most @read_max */
+static struct kmscon_image_request bounds(unsigned int medium, uint64_t offset, uint64_t read_max,
+					  uint64_t min_bytes)
+{
+	struct kmscon_image_request r = req_of(medium, 0, min_bytes);
+
+	r.offset = offset;
+	r.read_max = read_max;
+	return r;
+}
+
 static void test_files(void)
 {
 	static const uint8_t px[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-	static const uint8_t rgb[6] = {1, 2, 3, 4, 5, 6};
-	static const uint8_t rgb_out[8] = {1, 2, 3, 255, 4, 5, 6, 255};
 	char *f = path_in(other, "img.rgba");
 	struct kmscon_image_request r;
+	uint8_t big[4096];
 	struct helper h;
 	struct reply rep;
 
 	start(&h);
-
-	/* t=f: S 0 reads from O to the end, a non-zero S exactly */
 	write_file(f, px, sizeof(px));
-	assert(ask(&h, req_of('f', 32, 2, 2), f, -1, &rep) == 0);
-	expect_pixels(&rep, 2, 2, px);
-	r = req_of('f', 32, 1, 1);
-	r.offset = 12;
-	assert(ask(&h, r, f, -1, &rep) == 0);
-	expect_pixels(&rep, 1, 1, px + 12);
-	r = req_of('f', 32, 1, 1);
-	r.offset = 4;
-	r.size = 4;
-	assert(ask(&h, r, f, -1, &rep) == 0);
-	expect_pixels(&rep, 1, 1, px + 4);
-	/* S 0 from an offset leaves 12 bytes, not one pixel */
-	r = req_of('f', 32, 1, 1);
-	r.offset = 4;
-	assert(ask(&h, r, f, -1, &rep) == -EINVAL);
 
-	/* a file shorter than S, or an offset past its end: a read failure */
-	r = req_of('f', 32, 1, 1);
-	r.offset = 14;
-	r.size = 4;
-	assert(ask(&h, r, f, -1, &rep) == -EBADF);
-	r.offset = 17;
-	r.size = 0;
-	assert(ask(&h, r, f, -1, &rep) == -EBADF);
+	/* read_max 0 reads to the end; exactly min_bytes come back */
+	assert(ask(&h, bounds('f', 0, 0, 16), f, -1, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px, 16);
+	assert(ask(&h, bounds('f', 12, 0, 4), f, -1, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px + 12, 4);
+	/* read_max non-zero bounds the read */
+	assert(ask(&h, bounds('f', 4, 4, 4), f, -1, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px + 4, 4);
+	/* min_bytes exceeded: the bytes past it are ignored, with read_max 0 or larger */
+	assert(ask(&h, bounds('f', 4, 0, 4), f, -1, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px + 4, 4);
+	assert(ask(&h, bounds('f', 4, 8, 4), f, -1, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px + 4, 4);
+	/* read_max past the end reads to the end */
+	assert(ask(&h, bounds('f', 8, 100, 8), f, -1, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px + 8, 8);
+
+	/* min_bytes missed: to the end, and within read_max */
+	assert(ask(&h, bounds('f', 12, 0, 8), f, -1, &rep) == KMSCON_IMAGE_TOO_SHORT);
+	assert(ask(&h, bounds('f', 4, 4, 8), f, -1, &rep) == KMSCON_IMAGE_TOO_SHORT);
+	assert(ask(&h, bounds('f', 0, 100, 17), f, -1, &rep) == KMSCON_IMAGE_TOO_SHORT);
+	/* an offset at the end, or past it */
+	assert(ask(&h, bounds('f', 16, 0, 1), f, -1, &rep) == KMSCON_IMAGE_UNREADABLE);
+	assert(ask(&h, bounds('f', 17, 4, 1), f, -1, &rep) == KMSCON_IMAGE_UNREADABLE);
 	assert(exists(f));
 
-	/* f=24 expands with alpha 255; the size must be exactly s x v */
-	write_file(f, rgb, sizeof(rgb));
-	r = req_of('f', 24, 2, 1);
-	assert(ask(&h, r, f, -1, &rep) == 0);
-	expect_pixels(&rep, 2, 1, rgb_out);
-	assert(ask(&h, req_of('f', 24, 1, 1), f, -1, &rep) == -EINVAL);
-
-	/* s x v past max-graphic-size is EINVAL, past the budget ENOSPC, before reading */
-	r = req_of('f', 32, 10001, 1);
-	assert(ask(&h, r, "/nonexistent", -1, &rep) == -EINVAL);
-	r = req_of('f', 32, 4096, 4096);
-	r.max_bytes = 4096 * 4096 * 4 - 1;
-	assert(ask(&h, r, "/nonexistent", -1, &rep) == -ENOSPC);
-	/* 2^31 x 2^31 x 4 bytes is 0 in 64 bits, and still past the budget */
-	r = req_of('f', 32, 0x80000000u, 0x80000000u);
-	r.max_width = r.max_height = 0xffffffffu;
-	assert(ask(&h, r, "/nonexistent", -1, &rep) == -ENOSPC);
+	/*
+	 * Without INFLATE or PNG only min_bytes are read, so a file larger than
+	 * the budget is no matter; with either, what the bounds allow counts
+	 * against it before it is read
+	 */
+	memset(big, 7, sizeof(big));
+	write_file(f, big, sizeof(big));
+	r = bounds('f', 0, 0, 4);
+	r.max_bytes = 1024;
+	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, big, 4);
+	r.flags = KMSCON_IMAGE_INFLATE;
+	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_OVER_BUDGET);
+	r.flags = KMSCON_IMAGE_PNG;
+	r.min_bytes = 0;
+	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_OVER_BUDGET);
+	/* within read_max it fits */
+	r.read_max = 1024;
+	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_CORRUPT);
 
 	/* a missing file, and a NUL in the name */
 	refused(&h, 'f', path_in(other, "missing"));
 	{
-		struct kmscon_image_request n = req_of('f', 32, 1, 1);
+		struct kmscon_image_request n = req_of('f', 0, 4);
 		struct iovec iov[2] = {{.iov_base = &n, .iov_len = sizeof(n)},
 				       {.iov_base = "/tmp/a\0b", .iov_len = 8}};
 		struct msghdr msg = {.msg_iov = iov, .msg_iovlen = 2};
 
 		n.name_len = 8;
 		assert(sendmsg(h.sock, &msg, 0) == sizeof(n) + 8);
-		assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+		assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_UNREADABLE &&
+		       rep.fd < 0);
 	}
 	unlink(f);
 	assert(stop(&h) == 0);
@@ -426,8 +458,8 @@ static void test_refusals(void)
 
 		snprintf(shm, sizeof(shm), "/dev/shm/kmscon-f-%d", getpid());
 		write_file(shm, px1, 4);
-		assert(ask_file(&h, 'f', shm, &rep) == 0);
-		expect_pixels(&rep, 1, 1, px1);
+		assert(ask_file(&h, 'f', shm, &rep) == KMSCON_IMAGE_OK);
+		expect_bytes(&rep, px1, 4);
 		assert(exists(shm));
 		unlink(shm);
 	}
@@ -448,15 +480,14 @@ static void test_temp(void)
 	char *noname = path_in(tmp, "img.rgba");
 	char *outside = path_in(other, "tty-graphics-protocol-2.rgba");
 	char tmpdir[PATH_MAX], *intmp;
-	struct kmscon_image_request r;
 	struct helper h;
 	struct reply rep;
 
 	start(&h);
 	/* accepted, read, then deleted */
 	write_file(ok, px1, 4);
-	assert(ask_file(&h, 't', ok, &rep) == 0);
-	expect_pixels(&rep, 1, 1, px1);
+	assert(ask_file(&h, 't', ok, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px1, 4);
 	assert(!exists(ok));
 	/* refused, and left in place: without the name, outside the temporary directories */
 	write_file(noname, px1, 4);
@@ -465,14 +496,19 @@ static void test_temp(void)
 	write_file(outside, px1, 4);
 	refused(&h, 't', outside);
 	assert(exists(outside));
-	/* a temporary file shorter than S fails and stays */
+	/* deleted once opened, whatever the read: too short, and an offset at the end */
 	write_file(ok, px1, 4);
-	r = req_of('t', 32, 1, 1);
-	r.size = 8;
-	assert(ask(&h, r, ok, -1, &rep) == -EBADF);
-	assert(exists(ok));
+	assert(ask(&h, req_of('t', 0, 8), ok, -1, &rep) == KMSCON_IMAGE_TOO_SHORT);
+	assert(!exists(ok));
+	write_file(ok, px1, 4);
+	assert(ask(&h, bounds('t', 4, 0, 4), ok, -1, &rep) == KMSCON_IMAGE_UNREADABLE);
+	assert(!exists(ok));
+	write_file(ok, px1, 4);
+	assert(ask(&h, req_of('t', KMSCON_IMAGE_INFLATE, 4), ok, -1, &rep) == KMSCON_IMAGE_CORRUPT);
+	assert(!exists(ok));
 	/* a t=f never deletes, whatever its name */
-	assert(ask_file(&h, 'f', ok, &rep) == 0);
+	write_file(ok, px1, 4);
+	assert(ask_file(&h, 'f', ok, &rep) == KMSCON_IMAGE_OK);
 	close(rep.fd);
 	assert(exists(ok));
 	assert(stop(&h) == 0);
@@ -483,7 +519,7 @@ static void test_temp(void)
 	intmp = path_in(tmpdir, "tty-graphics-protocol-3.rgba");
 	write_file(intmp, px1, 4);
 	start_env(&h, real_helper, false, tmpdir);
-	assert(ask_file(&h, 't', intmp, &rep) == 0);
+	assert(ask_file(&h, 't', intmp, &rep) == KMSCON_IMAGE_OK);
 	close(rep.fd);
 	assert(!exists(intmp));
 	refused(&h, 't', outside);
@@ -529,36 +565,36 @@ static void test_swaps(void)
 	/* a symlink swapped in between the check and the open */
 	write_file(f, px1, 4);
 	assert(symlink("/proc/self/status", link) == 0);
-	r = req_of('f', 32, 1, 1);
+	r = req_of('f', 0, 4);
 	send_req(&h, &r, f, -1);
 	at_seam(&h, "open");
 	assert(rename(link, f) == 0);
 	go_on(&h);
-	assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_UNREADABLE && rep.fd < 0);
 
 	/* a FIFO swapped in: refused, and never opened */
 	unlink(f);
 	write_file(f, px1, 4);
-	r = req_of('f', 32, 1, 1);
+	r = req_of('f', 0, 4);
 	send_req(&h, &r, f, -1);
 	at_seam(&h, "open");
 	assert(unlink(f) == 0 && mkfifo(f, 0600) == 0);
 	writer = start_writer(f);
 	go_on(&h);
-	assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_UNREADABLE && rep.fd < 0);
 	still_waiting(writer, f);
 	unlink(f);
 
 	/* a symlink to a FIFO swapped in: the FIFO is never opened either */
 	write_file(f, px1, 4);
 	assert(mkfifo(path_in(other, "swap.fifo"), 0600) == 0);
-	r = req_of('f', 32, 1, 1);
+	r = req_of('f', 0, 4);
 	send_req(&h, &r, f, -1);
 	at_seam(&h, "open");
 	assert(unlink(f) == 0 && symlink(path_in(other, "swap.fifo"), f) == 0);
 	writer = start_writer(path_in(other, "swap.fifo"));
 	go_on(&h);
-	assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_UNREADABLE && rep.fd < 0);
 	still_waiting(writer, path_in(other, "swap.fifo"));
 	unlink(f);
 	unlink(path_in(other, "swap.fifo"));
@@ -569,12 +605,12 @@ static void test_swaps(void)
 	 */
 	write_file(f, px1, 4);
 	write_file(path_in(other, "swap.other"), px1, 4);
-	r = req_of('f', 32, 1, 1);
+	r = req_of('f', 0, 4);
 	send_req(&h, &r, f, -1);
 	at_seam(&h, "open");
 	assert(unlink(f) == 0 && symlink(path_in(other, "swap.other"), f) == 0);
 	go_on(&h);
-	assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_UNREADABLE && rep.fd < 0);
 	unlink(f);
 	unlink(path_in(other, "swap.other"));
 
@@ -589,12 +625,13 @@ static void test_swaps(void)
 		write_file(path_in(d, "img"), px1, 4);
 		write_file(path_in(alt, "img"), px1, 4);
 		snprintf(name, sizeof(name), "%s", path_in(d, "img"));
-		r = req_of('f', 32, 1, 1);
+		r = req_of('f', 0, 4);
 		send_req(&h, &r, name, -1);
 		at_seam(&h, "open");
 		assert(rename(d, real) == 0 && symlink(alt, d) == 0);
 		go_on(&h);
-		assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+		assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_UNREADABLE &&
+		       rep.fd < 0);
 		unlink(d);
 		unlink(path_in(real, "img"));
 		unlink(path_in(alt, "img"));
@@ -614,14 +651,14 @@ static void test_swaps(void)
 	assert(mkdir(dir, 0700) == 0 && mkdir(elsewhere, 0700) == 0);
 	write_file(path_in(dir, "tty-graphics-protocol-s"), px1, 4);
 	write_file(path_in(elsewhere, "tty-graphics-protocol-s"), px1, 4);
-	r = req_of('t', 32, 1, 1);
+	r = req_of('t', 0, 4);
 	send_req(&h, &r, path_in(dir, "tty-graphics-protocol-s"), -1);
 	at_seam(&h, "open");
 	go_on(&h);
 	at_seam(&h, "unlink");
 	assert(rename(dir, moved) == 0 && symlink(elsewhere, dir) == 0);
 	go_on(&h);
-	assert(recv_reply(&h, &rep) > 0 && rep.r.status == 0);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_OK);
 	close(rep.fd);
 	assert(exists(path_in(moved, "tty-graphics-protocol-s")));
 	assert(exists(path_in(elsewhere, "tty-graphics-protocol-s")));
@@ -633,7 +670,7 @@ static void test_swaps(void)
 	 */
 	unlink(dir);
 	assert(symlink(moved, dir) == 0);
-	r = req_of('t', 32, 1, 1);
+	r = req_of('t', 0, 4);
 	send_req(&h, &r, path_in(moved, "tty-graphics-protocol-s"), -1);
 	at_seam(&h, "open");
 	go_on(&h);
@@ -641,15 +678,15 @@ static void test_swaps(void)
 	assert(rename(moved, path_in(tmp, "d.real")) == 0 && unlink(dir) == 0 &&
 	       symlink(path_in(tmp, "d.real"), moved) == 0);
 	go_on(&h);
-	assert(recv_reply(&h, &rep) > 0 && rep.r.status == 0);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_OK);
 	close(rep.fd);
 	assert(exists(path_in(path_in(tmp, "d.real"), "tty-graphics-protocol-s")));
 	unlink(moved);
 	assert(rename(path_in(tmp, "d.real"), moved) == 0);
 
-	/* the file itself replaced after the read: the new one is not deleted */
+	/* the file itself replaced after it was opened: the new one is not deleted */
 	assert(rename(moved, dir) == 0);
-	r = req_of('t', 32, 1, 1);
+	r = req_of('t', 0, 4);
 	send_req(&h, &r, path_in(dir, "tty-graphics-protocol-s"), -1);
 	at_seam(&h, "open");
 	go_on(&h);
@@ -657,7 +694,7 @@ static void test_swaps(void)
 	assert(unlink(path_in(dir, "tty-graphics-protocol-s")) == 0);
 	write_file(path_in(dir, "tty-graphics-protocol-s"), px1, 4);
 	go_on(&h);
-	assert(recv_reply(&h, &rep) > 0 && rep.r.status == 0);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == KMSCON_IMAGE_OK);
 	close(rep.fd);
 	assert(exists(path_in(dir, "tty-graphics-protocol-s")));
 
@@ -687,7 +724,6 @@ static bool shm_exists(const char *name)
 static void test_shm(void)
 {
 	char name[300], longest[300];
-	struct kmscon_image_request r;
 	struct helper h;
 	struct reply rep;
 	pid_t writer;
@@ -697,16 +733,16 @@ static void test_shm(void)
 
 	/* read, then unlinked */
 	shm_write(name, px1, 4);
-	assert(ask_file(&h, 's', name, &rep) == 0);
-	expect_pixels(&rep, 1, 1, px1);
+	assert(ask_file(&h, 's', name, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px1, 4);
 	assert(!shm_exists(name));
 
-	/* shorter than O + S: refused, and unlinked all the same */
+	/* unlinked whatever the read: an offset at the end, too short */
 	shm_write(name, px1, 4);
-	r = req_of('s', 32, 1, 1);
-	r.offset = 4;
-	r.size = 4;
-	assert(ask(&h, r, name, -1, &rep) == -EBADF);
+	assert(ask(&h, bounds('s', 4, 4, 4), name, -1, &rep) == KMSCON_IMAGE_UNREADABLE);
+	assert(!shm_exists(name));
+	shm_write(name, px1, 4);
+	assert(ask(&h, req_of('s', 0, 5), name, -1, &rep) == KMSCON_IMAGE_TOO_SHORT);
 	assert(!shm_exists(name));
 
 	/*
@@ -730,7 +766,7 @@ static void test_shm(void)
 	memset(longest + 1, 'k', 254);
 	longest[255] = 0;
 	shm_write(longest, px1, 4);
-	assert(ask_file(&h, 's', longest, &rep) == 0);
+	assert(ask_file(&h, 's', longest, &rep) == KMSCON_IMAGE_OK);
 	close(rep.fd);
 	assert(!shm_exists(longest));
 	/* 256 bytes is refused, though an object of that name, less its '/', exists */
@@ -751,14 +787,12 @@ static void test_shm(void)
 	assert(stop(&h) == 0);
 }
 
-/* a discard answers EINVAL with no descriptor, whatever it removed */
+/* a discard answers OK with no descriptor, whatever it removed */
 static void ask_discard(struct helper *h, unsigned int medium, const char *name)
 {
-	struct kmscon_image_request r = req_of(medium, 32, 1, 1);
 	struct reply rep;
 
-	r.flags = KMSCON_IMAGE_DISCARD;
-	assert(ask(h, r, name, -1, &rep) == -EINVAL);
+	assert(ask(h, req_of(medium, KMSCON_IMAGE_DISCARD, 0), name, -1, &rep) == KMSCON_IMAGE_OK);
 }
 
 static void test_discard(void)
@@ -769,6 +803,7 @@ static void test_discard(void)
 	char *bad = path_in(other, "tty-graphics-protocol-bad");
 	char name[64];
 	struct helper h;
+	struct reply rep;
 
 	start(&h);
 	/* a temporary file is removed, and nothing is read */
@@ -804,6 +839,11 @@ static void test_discard(void)
 	ask_discard(&h, 's', name + 1);
 	assert(shm_exists(name));
 	unlink(path_in("/dev/shm", name + 1));
+	/* the helper still runs after its discards */
+	write_file(file, px1, 4);
+	assert(ask_file(&h, 'f', file, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, px1, 4);
+	unlink(file);
 	assert(stop(&h) == 0);
 
 	unlink(fifo);
@@ -891,14 +931,26 @@ static int ask_inline(struct helper *h, struct kmscon_image_request r, const voi
 	return ret;
 }
 
+/* @len bytes compressed with zlib into a new buffer */
+static uint8_t *zip(const void *data, size_t len, uLongf *zlen)
+{
+	uint8_t *z;
+
+	*zlen = compressBound(len);
+	z = malloc(*zlen);
+	assert(z && compress(z, zlen, data, len) == Z_OK);
+	return z;
+}
+
 static void test_png_zlib(void)
 {
 	uint8_t rgba[3 * 2 * 4], want[3 * 2 * 4], *png, *z, *zeros;
-	uLongf zlen;
+	const unsigned int pz = KMSCON_IMAGE_PNG | KMSCON_IMAGE_INFLATE;
 	struct kmscon_image_request r;
 	struct helper h;
 	struct reply rep;
 	size_t len, i;
+	uLongf zlen;
 	char *f = path_in(other, "img.png");
 
 	for (i = 0; i < sizeof(rgba); i++)
@@ -907,33 +959,35 @@ static void test_png_zlib(void)
 
 	/* RGBA, inline and from a file */
 	len = make_png(&png, 3, 2, PNG_COLOR_TYPE_RGBA, 8, PNG_INTERLACE_NONE, rgba);
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), png, len, &rep) == 0);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), png, len, &rep) == KMSCON_IMAGE_OK);
 	expect_pixels(&rep, 3, 2, rgba);
 	write_file(f, png, len);
-	assert(ask(&h, req_of('f', 100, 0, 0), f, -1, &rep) == 0);
+	assert(ask(&h, req_of('f', KMSCON_IMAGE_PNG, 0), f, -1, &rep) == KMSCON_IMAGE_OK);
 	expect_pixels(&rep, 3, 2, rgba);
 
-	/* zlib over PNG inline: S is the PNG's size, and the inflated data must be it */
-	zlen = compressBound(len);
-	z = malloc(zlen);
-	assert(z && compress(z, &zlen, png, len) == Z_OK);
-	r = req_of('d', 100, 0, 0);
-	r.flags = KMSCON_IMAGE_ZLIB;
-	r.size = len;
-	assert(ask_inline(&h, r, z, zlen, &rep) == 0);
+	/*
+	 * zlib over PNG inline under EXACT: the inflated length must be min_bytes,
+	 * fewer TOO_SHORT and one byte past it CORRUPT; without EXACT, no length
+	 */
+	z = zip(png, len, &zlen);
+	r = req_of('d', pz | KMSCON_IMAGE_EXACT, len);
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_OK);
 	expect_pixels(&rep, 3, 2, rgba);
-	r.size = len + 1;
-	assert(ask_inline(&h, r, z, zlen, &rep) == -EINVAL);
-	r.size = 0;
-	assert(ask_inline(&h, r, z, zlen, &rep) == 0);
+	r.min_bytes = len + 1;
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_TOO_SHORT);
+	r.min_bytes = len - 1;
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_CORRUPT);
+	assert(ask_inline(&h, req_of('d', pz, 0), z, zlen, &rep) == KMSCON_IMAGE_OK);
 	close(rep.fd);
-	/* from a file, S is the bytes to read */
+	/* from a file, read_max bounds what is read */
 	write_file(f, z, zlen);
-	r = req_of('f', 100, 0, 0);
-	r.flags = KMSCON_IMAGE_ZLIB;
-	r.size = zlen;
-	assert(ask(&h, r, f, -1, &rep) == 0);
+	r = req_of('f', pz, 0);
+	r.read_max = zlen;
+	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_OK);
 	expect_pixels(&rep, 3, 2, rgba);
+	r.read_max = zlen - 1;
+	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_CORRUPT);
+	free(z);
 	free(png);
 
 	/* interlaced and 16-bit RGB: alpha 255, the high bytes kept */
@@ -942,7 +996,7 @@ static void test_png_zlib(void)
 		memcpy(want + i * 4, rgba + i * 4, 3);
 		want[i * 4 + 3] = 255;
 	}
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), png, len, &rep) == 0);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), png, len, &rep) == KMSCON_IMAGE_OK);
 	expect_pixels(&rep, 3, 2, want);
 	free(png);
 	/* grey */
@@ -951,7 +1005,7 @@ static void test_png_zlib(void)
 		memset(want + i * 4, rgba[i * 4], 3);
 		want[i * 4 + 3] = 255;
 	}
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), png, len, &rep) == 0);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), png, len, &rep) == KMSCON_IMAGE_OK);
 	expect_pixels(&rep, 3, 2, want);
 	free(png);
 	/* a palette */
@@ -964,40 +1018,74 @@ static void test_png_zlib(void)
 		want[i * 4 + 2] = 255 - (i % 4) * 60;
 		want[i * 4 + 3] = 255;
 	}
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), png, len, &rep) == 0);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), png, len, &rep) == KMSCON_IMAGE_OK);
 	expect_pixels(&rep, 3, 2, want);
 
 	/* corrupt: truncated, and not a PNG */
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), png, len - 20, &rep) == -EINVAL);
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), "not a png", 9, &rep) == -EINVAL);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), png, len - 20, &rep) ==
+	       KMSCON_IMAGE_CORRUPT);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), "not a png", 9, &rep) ==
+	       KMSCON_IMAGE_CORRUPT);
 	free(png);
 
-	/* raw data compressed: exactly s x v x 4 once inflated */
-	zlen = compressBound(sizeof(rgba));
-	assert(compress(z, &zlen, rgba, sizeof(rgba)) == Z_OK);
-	r = req_of('d', 32, 3, 2);
-	r.flags = KMSCON_IMAGE_ZLIB;
-	assert(ask_inline(&h, r, z, zlen, &rep) == 0);
-	expect_pixels(&rep, 3, 2, rgba);
-	r = req_of('d', 32, 2, 2);
-	r.flags = KMSCON_IMAGE_ZLIB;
-	assert(ask_inline(&h, r, z, zlen, &rep) == -EINVAL);
-	assert(ask_inline(&h, r, "\x78\x9c garbage", 10, &rep) == -EINVAL);
+	/*
+	 * INFLATE without PNG: min_bytes met; exceeded, the rest ignored, even
+	 * where it does not decode; missed, TOO_SHORT; a stream that does not
+	 * inflate, or ends early, CORRUPT
+	 */
+	z = zip(rgba, sizeof(rgba), &zlen);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 24), z, zlen, &rep) ==
+	       KMSCON_IMAGE_OK);
+	expect_bytes(&rep, rgba, 24);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 16), z, zlen, &rep) ==
+	       KMSCON_IMAGE_OK);
+	expect_bytes(&rep, rgba, 16);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 16), z, zlen - 4, &rep) ==
+	       KMSCON_IMAGE_OK);
+	expect_bytes(&rep, rgba, 16);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 25), z, zlen, &rep) ==
+	       KMSCON_IMAGE_TOO_SHORT);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 16), "\x78\x9c garbage", 10,
+			  &rep) == KMSCON_IMAGE_CORRUPT);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 24), z, 4, &rep) ==
+	       KMSCON_IMAGE_CORRUPT);
+	/* INFLATE and EXACT without PNG: met, short, and one byte long */
+	r = req_of('d', KMSCON_IMAGE_INFLATE | KMSCON_IMAGE_EXACT, 24);
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, rgba, 24);
+	r.min_bytes = 25;
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_TOO_SHORT);
+	r.min_bytes = 23;
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_CORRUPT);
+	/* from a file, as raw data compressed */
+	write_file(f, z, zlen);
+	assert(ask(&h, req_of('f', KMSCON_IMAGE_INFLATE, 24), f, -1, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, rgba, 24);
 	free(z);
 
-	/* a zlib stream inflating past the budget: ENOSPC */
+	/*
+	 * Past the budget: inflating to more than max_bytes is OVER_BUDGET, but
+	 * under EXACT the byte past min_bytes is CORRUPT first, even at
+	 * max_bytes
+	 */
 	zeros = calloc(1, 2 * MiB);
-	zlen = compressBound(2 * MiB);
-	z = malloc(zlen);
-	assert(zeros && z && compress(z, &zlen, zeros, 2 * MiB) == Z_OK);
-	r = req_of('d', 100, 0, 0);
-	r.flags = KMSCON_IMAGE_ZLIB;
+	assert(zeros);
+	z = zip(zeros, 2 * MiB, &zlen);
+	r = req_of('d', pz, 0);
 	r.max_bytes = MiB;
-	assert(ask_inline(&h, r, z, zlen, &rep) == -ENOSPC);
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_OVER_BUDGET);
+	r = req_of('d', pz | KMSCON_IMAGE_EXACT, MiB);
+	r.max_bytes = MiB;
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_CORRUPT);
+	/* without PNG or EXACT, it stops at min_bytes, within any budget */
+	r = req_of('d', KMSCON_IMAGE_INFLATE, MiB);
+	r.max_bytes = MiB;
+	assert(ask_inline(&h, r, z, zlen, &rep) == KMSCON_IMAGE_OK);
+	expect_bytes(&rep, zeros, MiB);
 	/* inline data past the budget */
-	r = req_of('d', 100, 0, 0);
+	r = req_of('d', KMSCON_IMAGE_PNG, 0);
 	r.max_bytes = 1024;
-	assert(ask_inline(&h, r, zeros, 2048, &rep) == -ENOSPC);
+	assert(ask_inline(&h, r, zeros, 2048, &rep) == KMSCON_IMAGE_OVER_BUDGET);
 	free(z);
 	free(zeros);
 
@@ -1037,55 +1125,86 @@ static void test_png_limits(void)
 
 	start(&h);
 	/*
-	 * Past max-graphic-size: EINVAL. Within it but past the budget:
-	 * ENOSPC, though the stream ends two bytes into its image data, so the
-	 * answer comes from the header, before any pixel is allocated or
+	 * Past max-graphic-size: TOO_LARGE. Within it but past the budget:
+	 * OVER_BUDGET, though the stream ends two bytes into its image data, so
+	 * the answer comes from the header, before any pixel is allocated or
 	 * decoded.
 	 */
 	len = png_header(hdr, 20000, 10);
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), hdr, len, &rep) == -EINVAL);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), hdr, len, &rep) ==
+	       KMSCON_IMAGE_TOO_LARGE);
 	len = png_header(hdr, 10, 20000);
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), hdr, len, &rep) == -EINVAL);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), hdr, len, &rep) ==
+	       KMSCON_IMAGE_TOO_LARGE);
+	len = png_header(hdr, 10001, 1);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), hdr, len, &rep) ==
+	       KMSCON_IMAGE_TOO_LARGE);
 	len = png_header(hdr, 5000, 5000);
-	r = req_of('d', 100, 0, 0);
+	r = req_of('d', KMSCON_IMAGE_PNG, 0);
 	r.max_bytes = 16 * MiB;
-	assert(ask_inline(&h, r, hdr, len, &rep) == -ENOSPC);
+	assert(ask_inline(&h, r, hdr, len, &rep) == KMSCON_IMAGE_OVER_BUDGET);
 	/* within both, the missing data is what fails */
 	len = png_header(hdr, 100, 100);
-	assert(ask_inline(&h, req_of('d', 100, 0, 0), hdr, len, &rep) == -EINVAL);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_PNG, 0), hdr, len, &rep) ==
+	       KMSCON_IMAGE_CORRUPT);
 	assert(stop(&h) == 0);
 }
 
-/* requests kmscon would not send end the helper */
-static void test_protocol(void)
+/* @r makes the helper exit with status 2, before any reply */
+static void exits(struct kmscon_image_request r, const char *name, int fd)
 {
-	struct kmscon_image_request r;
 	struct helper h;
 	struct reply rep;
 
 	start(&h);
-	r = req_of('f', 32, 1, 1);
-	r.flags = 0x04;
-	send_req(&h, &r, "/tmp/x", -1);
+	send_req(&h, &r, name, fd);
 	assert(recv_reply(&h, &rep) == 0 && stop(&h) == 2);
+}
 
-	start(&h);
-	r = req_of('f', 32, 1, 1);
-	r.version = 2;
-	send_req(&h, &r, "/tmp/x", -1);
-	assert(recv_reply(&h, &rep) == 0 && stop(&h) == 2);
+/* requests kmscon would not build end the helper */
+static void test_protocol(void)
+{
+	struct kmscon_image_request r;
+	int fd = memfd_of("x", 1);
 
-	start(&h);
-	r = req_of('f', 32, 1, 1);
+	/* an unknown flag bit, a non-zero reserved, another version or type */
+	r = req_of('f', 0x10, 4);
+	exits(r, "/tmp/x", -1);
+	r = req_of('f', 0, 4);
+	r.reserved = 1;
+	exits(r, "/tmp/x", -1);
+	r = req_of('f', 0, 4);
+	r.version = 1;
+	exits(r, "/tmp/x", -1);
+	r = req_of('f', 0, 4);
 	r.type = 2;
-	send_req(&h, &r, "/tmp/x", -1);
-	assert(recv_reply(&h, &rep) == 0 && stop(&h) == 2);
-
-	/* inline data without its descriptor */
-	start(&h);
-	r = req_of('d', 100, 0, 0);
-	send_req(&h, &r, NULL, -1);
-	assert(recv_reply(&h, &rep) == 0 && stop(&h) == 2);
+	exits(r, "/tmp/x", -1);
+	/* inline data without its descriptor, a name with it, an unknown medium */
+	exits(req_of('d', KMSCON_IMAGE_PNG, 0), NULL, -1);
+	exits(req_of('d', KMSCON_IMAGE_PNG, 0), "/tmp/x", fd);
+	exits(req_of('x', 0, 4), "/tmp/x", -1);
+	/* min_bytes 0 without PNG or DISCARD, with INFLATE alone among them */
+	exits(req_of('f', 0, 0), "/tmp/x", -1);
+	exits(req_of('f', KMSCON_IMAGE_INFLATE, 0), "/tmp/x", -1);
+	/* EXACT without INFLATE */
+	exits(req_of('d', KMSCON_IMAGE_PNG | KMSCON_IMAGE_EXACT, 4), NULL, fd);
+	/* DISCARD with another flag, with medium 'f' or 'd', or with a bound */
+	exits(req_of('t', KMSCON_IMAGE_DISCARD | KMSCON_IMAGE_INFLATE, 0), "/tmp/x", -1);
+	exits(req_of('t', KMSCON_IMAGE_DISCARD | KMSCON_IMAGE_PNG, 0), "/tmp/x", -1);
+	exits(req_of('f', KMSCON_IMAGE_DISCARD, 0), "/tmp/x", -1);
+	exits(req_of('d', KMSCON_IMAGE_DISCARD, 0), NULL, fd);
+	r = req_of('s', KMSCON_IMAGE_DISCARD, 0);
+	r.offset = 1;
+	exits(r, "/x", -1);
+	r = req_of('s', KMSCON_IMAGE_DISCARD, 0);
+	r.read_max = 1;
+	exits(r, "/x", -1);
+	exits(req_of('t', KMSCON_IMAGE_DISCARD, 1), "/tmp/x", -1);
+	/* min_bytes past max_bytes */
+	r = req_of('f', 0, 1025);
+	r.max_bytes = 1024;
+	exits(r, "/tmp/x", -1);
+	close(fd);
 }
 
 /* @argv: the helper, its test build, and a directory outside the temporary ones */

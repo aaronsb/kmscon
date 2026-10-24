@@ -225,10 +225,11 @@ EOF
 # releasing the VT. unshare and sh exec, so $! is kmscon's own PID. kmscon
 # starts its child with execve, without a PATH search, so its path is absolute.
 # kmscon and setpriv both clear the environment, so DEMO_LABEL, which names the
-# build on the demo's title page, is set last, by env. The showcase also gets
-# its video, and the user's runtime directory, where the soundtrack finds the
-# user's audio server.
-session=(/usr/bin/env DEMO_LABEL="dev build $build" ${kit:+DEMO_KIT="$kit"} /bin/bash "$here/demo.sh")
+# build on the demo's title page, is set last, by env, with the user's runtime
+# directory, where mpv finds the user's sound server and the demo's audio page
+# keeps its choice. The showcase also gets its video.
+session=(/usr/bin/env DEMO_LABEL="dev build $build" ${kit:+DEMO_KIT="$kit"}
+	XDG_RUNTIME_DIR="/run/user/$uid" /bin/bash "$here/demo.sh")
 if [ -n "$video" ]; then
 	session=(/usr/bin/env SHOWCASE_LABEL="dev build $build" BAD_APPLE="$video"
 		XDG_RUNTIME_DIR="/run/user/$uid" /bin/bash "$showcase")

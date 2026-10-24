@@ -212,6 +212,10 @@ considered:
   - operator: aaronsb
     said: "option a"
     via: Claude Code session, 2026-10-24, asked whether a non-root kmscon should start the helper as its own uid when that is the session's user and refuse file media otherwise (option A, recommended), or refuse file media whenever kmscon is not root (option B)
+  - operator: aaronsb
+    said: "Separate login run: vt-demo shows the inline pages, and each file-media page prints the refusal with a note explaining why; to see file media work, the operator runs fork/demo/demo.sh kitty-files from a VT logged into normally (installed kmscon); changing vt-demo to a real login is filed as an issue"
+    via: Claude Code session, 2026-10-24, AskUserQuestion on how to see file-based kitty images on the VT given the refuse-before-login rule; the operator picked the recommended option
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -300,7 +304,7 @@ Upstream's sixel request (kmscon/kmscon#138) carries a proposal to route sixel D
   - a z-index and its kind, sixel or kitty;
   - the cell size in pixels it was made with, the unit of its pixel quantities;
   - an age.
-- **Size.** A kitty placement takes `c` and `r` when given. With both, the picture is letterboxed or pillarboxed inside them; with one, the other follows the source's aspect (spec). Without either, and for every sixel, the box is the picture's pixel size divided by the cell size, rounded up.
+- **Size.** A kitty placement takes `c` and `r` when given. With both, the picture is letterboxed or pillarboxed inside them; with one, the other follows the source's aspect (spec). Without either, and for every sixel, the box is the picture's pixel size divided by the cell size, rounded up. (Note 2026-10-24, from round 7 of the black-box probe, ADR-107: kitty 0.49.2 stretches an image to fill both `c` and `r`, against the spec's "When both are specified the image is letterboxed/pillarboxed to prevent distortion". The spec settles the point, so this bullet stands: the spec is the target, and kmscon letterboxes.)
 - **Scale.** The picture draws at its pixel size in the cell size it was made with. When the cell size changes (zoom, or a second display with another font size), the picture scales with its box, so it stays aligned with the text around it.
 - **Cell size.** kmscon tells libtsm the cell size in pixels, the same size it reports through `TIOCSWINSZ`. libtsm uses it for sixel cursor movement, kitty box sizes and XTWINOPS replies. A display with a different font size scales pictures by its own cell size.
 - **Finding placements.** Each line keeps the keys of the placements anchored on it. The frame walks the visible lines, plus as many lines above the top as the tallest placement has rows, so a placement whose top has left the view still draws its lower rows.

@@ -13,6 +13,9 @@
 # it is not on screen (/sys/class/tty/tty0/active) and no logind session is on
 # it; run-vt.sh refuses the same VTs again before it stops anything.
 #
+# VT_DEMO_KIT picks the demo's review kit (#123): text (run-vt.sh's default),
+# sixel, kitty or all.
+#
 # VT_DEMO_SHOWCASE names a video and runs the Bad Apple!! showcase
 # (fork/showcase/bad-apple.sh) in place of the demo, as make showcase does;
 # VT_DEMO_SHOWCASE_FROM starts it at an act and VT_DEMO_SHOWCASE_AUDIO (yes or
@@ -38,6 +41,14 @@ die() {
 vt=${VT_DEMO_VT:-}
 extra=()
 session=()
+case ${VT_DEMO_KIT:-} in
+'' | text | sixel | kitty | all) ;;
+*) die "KIT=$VT_DEMO_KIT: text, sixel, kitty or all" ;;
+esac
+[ -z "${VT_DEMO_KIT:-}" ] || [ -z "${VT_DEMO_SHOWCASE:-}" ] ||
+	die "KIT goes with the demo, not with the showcase"
+kit=()
+[ -z "${VT_DEMO_KIT:-}" ] || kit=(--kit="$VT_DEMO_KIT")
 if [ -n "${VT_DEMO_SHOWCASE:-}" ]; then
 	video=$(readlink -f -- "$VT_DEMO_SHOWCASE") && [ -f "$video" ] && [ -r "$video" ] ||
 		die "BAD_APPLE=$VT_DEMO_SHOWCASE is not a readable file"
@@ -119,7 +130,7 @@ else
 	back="your desktop's Ctrl-Alt-F key returns to it"
 fi
 
-cmd=("$run_vt" "${session[@]}" "$vt" -- "${extra[@]}")
+cmd=("$run_vt" "${kit[@]}" "${session[@]}" "$vt" -- "${extra[@]}")
 [ -z "$sudo" ] || cmd=("$sudo" "${cmd[@]}")
 dir=${feedback%/*}
 log=$dir/vt-demo-$(date +%Y%m%dT%H%M%S)-tty$vt-XXXXXX.log

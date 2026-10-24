@@ -204,6 +204,23 @@ class RunPageTest(unittest.TestCase):
                       "no render-timer figures: this build has no render timer.", page)
         self.assertEqual(runpage.bench_line("b", {"error": "no line"}),
                          "Benchmark `b`: not measured: no line.")
+        # A screen that plays video names mpv's frames and kmscon's whole CPU
+        # time, and the redraws that presented nothing.
+        mpv = {"seconds": 5.15, "intervals": 6, "flips": 304, "frames": 304,
+               "presented_per_s": 59.0, "skipped": 120, "skipped_cpu_ms": 51.5,
+               "skipped_cpu_pct": 1.0, "cpu_ms_mean": 0.6, "cpu_ms_median": 0.589,
+               "cpu_ms_p95": 1.195, "cpu_ms_max": 1.232, "damage_px_mean": 925000,
+               "damage_pct": 90.4, "mpv_frames": 150, "mpv_dropped": 0, "mpv_per_s": 29.1,
+               "kmscon_cpu_ms": 1010, "kmscon_cpu_pct": 19.6,
+               "kmscon_cpu_ms_per_mpv_frame": 6.733}
+        self.assertEqual(runpage.bench_line("mpv-sixel", mpv),
+                         "Benchmark `mpv-sixel`: mpv showed 150 frames and dropped 0 in 5.15 s, "
+                         "29.1 per second; kmscon used 19.6% of a CPU, 6.733 ms per frame mpv "
+                         "sent, parsing included; 59.0 frames presented per second; kmscon's "
+                         "CPU time per frame 0.600 ms mean, 0.589 ms median, 1.195 ms at the "
+                         "95th percentile, 1.232 ms at most; 925,000 pixels damaged per frame, "
+                         "90.40% of the screen; 120 redraws presented nothing, 51.5 ms of CPU "
+                         "time.")
 
     def test_tier1_text(self):
         page = self.fx.run("ledger/runs/now")

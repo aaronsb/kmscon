@@ -464,6 +464,19 @@ test(
     args: [files('demo/feedback.py'), '--root', meson.project_source_root()],
 )
 
+# The VT demo's sixel pages drawn below demo.sh's header and on tier 3's
+# clear screen, with stand-ins for chafa and mpv: the same placement in both,
+# and no picture over text where the page keeps them apart.
+test(
+    'demo_sixel_placement',
+    python,
+    args: [
+        files('demo/sixel_placement.py'),
+        '--root',
+        meson.project_source_root(),
+    ],
+)
+
 # make vt-demo's script (fork/demo/vt-demo.sh): the VT it picks, its refusals,
 # and the summary of the run it started, against a stand-in run-vt.sh.
 test(

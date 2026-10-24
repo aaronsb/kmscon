@@ -51,7 +51,7 @@ pkg-upstream: image upstream-src ## Build the kmscon-upstream package -> fork/bu
 		sh -c 'cp /recipe/upstream/PKGBUILD . && cp /recipe/PKGBUILD fork.PKGBUILD && makepkg --nodeps --cleanbuild --force'
 
 .PHONY: tier3-upstream
-tier3-upstream: $(T3_BASE) upstream-src ## Tier 3 on upstream kmscon and libtsm (pins in fork/upstream.mk), for sheet-compare
+tier3-upstream: tier3-image upstream-src ## Tier 3 on upstream kmscon and libtsm (pins in fork/upstream.mk), for sheet-compare
 	$(call T3_ENV,$(UP_KMSCON),$(UP_LIBTSM),$(UP_KMSCON_URL),$(UP_LIBTSM_URL)) \
 		$(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) --deadline $(T3_DEADLINE) \
 		--pkg-target pkg-upstream --pkg-dir $(UP_PKGOUT) --pkg-name kmscon-upstream \

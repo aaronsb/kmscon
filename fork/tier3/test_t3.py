@@ -18,6 +18,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3_bench  # noqa: E402
@@ -25,6 +26,7 @@ import t3_evaluate  # noqa: E402
 import t3_qemu  # noqa: E402
 import t3_scenario  # noqa: E402
 import t3img  # noqa: E402
+import t3_common  # noqa: E402
 from t3_common import Logger  # noqa: E402
 
 LOG = Logger()
@@ -55,7 +57,8 @@ class ScreenTextTest(unittest.TestCase):
         # the sixel screens draw pictures, and flood clears what it streamed,
         # so they have no text on purpose; every other screen has its rows.
         textless = ("wide-margin", "s1-scroll", "sixel", "sixel-ramps", "sixel-article",
-                    "sixel-bound", "sixel-evict", "flood")
+                    "sixel-bound", "sixel-evict", "photos", "photo-scroll", "mpv-sixel",
+                    "tmux-2x2", "tmux-3x3", "flood")
         with contextlib.redirect_stderr(io.StringIO()):
             for name in textless:
                 self.assertIsNone(t3_evaluate.screen_text(name, LOG))
@@ -163,6 +166,43 @@ class DescribeTest(unittest.TestCase):
         # A benchmark is drawn and compared like any screen, before cjk.
         for name in t3_evaluate.BENCHMARKS:
             self.assertIn(name, t3_evaluate.SCREENS[:-1])
+
+    def test_kit_not_in_caption(self):
+        # The demo's kit line names the review kit a page belongs to.
+        self.assertEqual(self.describe("# A screen.\n# kit: sixel\n# look-for: Lines.\n"),
+                         ("A screen. Correct: Lines.", None))
+
+
+class AcceptanceTest(unittest.TestCase):
+    """ADR-103's sixel acceptance scenarios as tier 3 cases: A1 (photos,
+    photo-scroll and its two key steps), A2 (mpv-sixel) and A4 (the tmux
+    grids)."""
+
+    def test_screens(self):
+        for name in ("photos", "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3"):
+            self.assertIn(name, t3_evaluate.SCREENS[:-1])
+        for name in ("mpv-sixel", "tmux-2x2", "tmux-3x3"):
+            self.assertIn(name, t3_evaluate.BENCHMARKS)
+
+    def test_key_steps(self):
+        # After photo-scroll, Shift+PageUp shows the picture again from the
+        # scrollback and Shift+PageDown must give back photo-scroll's screen.
+        self.assertEqual([(case, chords) for screen, case, chords in t3_evaluate.KEYED
+                          if screen == "photo-scroll"],
+                         [("photo-scrollback", [("shift", "pgup")]),
+                          ("photo-scrollforward", [("shift", "pgdn")])])
+        i = t3_evaluate.CASES.index("photo-scroll")
+        self.assertEqual(t3_evaluate.CASES[i:i + 3],
+                         ["photo-scroll", "photo-scrollback", "photo-scrollforward"])
+        self.assertEqual(t3_evaluate.CASES[-2:], ["vt-switch", "vt-restore"])
+        self.assertEqual(t3_evaluate.golden_for("v", "photo-scrollforward"),
+                         t3_evaluate.golden_for("v", "photo-scroll"))
+        self.assertTrue(t3_evaluate.golden_for("v", "photo-scrollback")[0]
+                        .endswith(os.path.join("v", "photo-scrollback.png")))
+        for step in ("photo-scrollback", "photo-scrollforward"):
+            self.assertIn(step, t3_evaluate.CHECKS)
+            self.assertEqual(t3_evaluate.describe(step), (t3_evaluate.CHECKS[step], None))
+        self.assertEqual(t3_evaluate.screen_text("photo-scrollforward", LOG), None)
 
 
 LIBTSM = "ef2365d0f9f1a370d721a82470d69c3646fe97f0"
@@ -314,6 +354,38 @@ class PackagesTest(unittest.TestCase):
             t3_scenario.check_install(self.LINE, self.UP)
 
 
+class BaseImageTest(unittest.TestCase):
+    """The provisioned base image is named by what it was built from, in the
+    images directory that worktrees share, so every checkout with the same
+    guest files, pristine image and archive date reuses one build, and a
+    change to any of them builds a new one beside the old."""
+
+    def key(self, guest, image="img.qcow2", archive="2026/10/20"):
+        saved = t3_common.GUEST
+        t3_common.GUEST = guest
+        try:
+            return t3_common.base_image(image, archive)
+        finally:
+            t3_common.GUEST = saved
+
+    def test_keyed_by_inputs(self):
+        with tempfile.TemporaryDirectory() as guest:
+            for name in t3_common.BASE_INPUTS:
+                with open(os.path.join(guest, name), "w") as f:
+                    f.write(name + "\n")
+            first = self.key(guest)
+            self.assertEqual(os.path.dirname(first), os.path.join(t3_common.VM, "images"))
+            self.assertRegex(os.path.basename(first), r"^base-[0-9a-f]{16}\.qcow2$")
+            self.assertEqual(self.key(guest), first)
+            self.assertNotEqual(self.key(guest, archive="2026/10/21"), first)
+            self.assertNotEqual(self.key(guest, image="other.qcow2"), first)
+            for name in t3_common.BASE_INPUTS:
+                with open(os.path.join(guest, name), "a") as f:
+                    f.write("changed\n")
+                self.assertNotEqual(self.key(guest), first, name)
+        self.assertIn("user-data.in", t3_common.BASE_INPUTS)
+
+
 class VariantTest(unittest.TestCase):
     def test_every_variant_sizes_its_machine(self):
         for name, v in t3_scenario.VARIANTS.items():
@@ -355,17 +427,18 @@ class VariantTest(unittest.TestCase):
 
 
 def timer_line(t, flips, frames, interval_ms=1000.0, cpu=(1.0, 1.0, 2.0, 3.0), damage=(500, 1.5),
-               pid=505, before="", skipped=0):
+               pid=505, before="", skipped=(0, 0.0)):
     return ("%s[%12.6f] kmscon[%d]: terminal: render-timer: display=pci-0000:00:01.0[Virtual-1] "
             "interval_ms=%.3f presented_per_s=%.2f flips=%d frames=%d cpu_ms_mean=%.3f "
             "cpu_ms_median=%.3f cpu_ms_p95=%.3f cpu_ms_max=%.3f damage_px_mean=%d "
-            "damage_pct=%.2f skipped=%d skipped_cpu_ms=0.000"
+            "damage_pct=%.2f skipped=%d skipped_cpu_ms=%.3f"
             % (before, t, pid, interval_ms, flips * 1000 / interval_ms, flips, frames, cpu[0],
-               cpu[1], cpu[2], cpu[3], damage[0], damage[1], skipped))
+               cpu[1], cpu[2], cpu[3], damage[0], damage[1], skipped[0], skipped[1]))
 
 
 class BenchTest(unittest.TestCase):
     EVENT = "T3-BENCH s1-scroll lines=20000 start=100.00 end=102.00"
+    MPV = "T3-BENCH mpv-sixel start=100.00 end=102.00 mpv_frames=60 mpv_dropped=2 kmscon_cpu_ms=500"
     CONF = ["font-size=16", "render-timer=log"]
 
     def test_timer_lines(self):
@@ -386,15 +459,21 @@ class BenchTest(unittest.TestCase):
 
     def test_window(self):
         self.assertEqual(t3_bench.bench_window("x " + self.EVENT),
-                         ("s1-scroll", 20000, 100.0, 102.0))
+                         ("s1-scroll", 100.0, 102.0, {"lines": 20000}))
         self.assertIsNone(t3_bench.bench_window("T3-DONE s1-scroll"))
+        # A program's screen reports its own counts after the window.
+        self.assertEqual(t3_bench.bench_window(self.MPV),
+                         ("mpv-sixel", 100.0, 102.0,
+                          {"mpv_frames": 60, "mpv_dropped": 2, "kmscon_cpu_ms": 500}))
+        self.assertIsNone(t3_bench.bench_window("T3-BENCH x start=1.0 end=2.0 frames=many"))
 
     def test_summarize(self):
         lines = t3_bench.timer_lines("\n".join([
             timer_line(99.9, 5, 5),                 # ends before the window: out
             timer_line(100.6, 30, 30, cpu=(2.0, 2.0, 4.0, 5.0), damage=(1000, 10.0)),
             timer_line(101.6, 60, 60, cpu=(1.0, 1.0, 3.0, 9.0), damage=(400, 4.0)),
-            timer_line(102.6, 10, 10, cpu=(4.0, 4.0, 6.0, 6.0), damage=(100, 1.0)),
+            timer_line(102.6, 10, 10, cpu=(4.0, 4.0, 6.0, 6.0), damage=(100, 1.0),
+                       skipped=(400, 500.0)),
             timer_line(103.6, 0, 0),                # starts after the window: out
         ]))
         got = t3_bench.summarize(lines, 20000, 100.0, 102.0)
@@ -407,9 +486,17 @@ class BenchTest(unittest.TestCase):
         self.assertEqual((got["cpu_ms_p95"], got["cpu_ms_max"]), (6.0, 9.0))
         self.assertEqual(got["damage_px_mean"], 550)       # (30000 + 24000 + 1000) / 100
         self.assertEqual(got["damage_pct"], 5.5)
+        # Redraws that found nothing to present still cost CPU time (#139).
+        self.assertEqual((got["skipped"], got["skipped_cpu_ms"]), (400, 500.0))
+        self.assertEqual(got["skipped_cpu_pct"], 25.0)     # 500 ms of the 2 s window
         self.assertEqual(got["displays"], ["pci-0000:00:01.0[Virtual-1]"])
         # only the second from 100.6 to 101.6 lies wholly inside the window
         self.assertEqual((got["intervals_inside"], got["flips_inside"]), (1, 60))
+        self.assertEqual(got["skipped_per_s"], 200.0)      # 400 over the 2 s window
+        # A window with no skipped redraws: a rate of zero.
+        quiet = t3_bench.timer_lines("\n".join(
+            timer_line(t, 0, 0) for t in (101.0, 102.0, 103.0, 104.0)))
+        got = t3_bench.summarize(quiet, 20000, 100.0, 102.0)
         self.assertEqual((got["skipped"], got["skipped_per_s"]), (0, 0.0))
 
     FLOOD = "T3-BENCH flood lines=20 start=100.00 end=104.00"
@@ -420,7 +507,7 @@ class BenchTest(unittest.TestCase):
     def test_flood_verdict(self):
         # Frames in every second of the stream, and a few passes that drew
         # nothing: in bounds.
-        ok = [timer_line(t, 10, 10, skipped=4) for t in (101.0, 102.0, 103.0, 104.0)]
+        ok = [timer_line(t, 10, 10, skipped=(4, 0.0)) for t in (101.0, 102.0, 103.0, 104.0)]
         self.assertNotIn("error", self.flood(*ok))
         # The same screen as s1-scroll is not judged.
         lines = [timer_line(t, 0, 0) for t in (101.0, 102.0, 103.0, 104.0)]
@@ -432,7 +519,7 @@ class BenchTest(unittest.TestCase):
         self.assertIn("no frame was presented while the stream flowed",
                       self.flood(*late)["error"])
         # A pass after every read: 100 a second that drew nothing.
-        busy = [timer_line(t, 10, 10, skipped=100) for t in (101.0, 102.0, 103.0, 104.0)]
+        busy = [timer_line(t, 10, 10, skipped=(100, 0.0)) for t in (101.0, 102.0, 103.0, 104.0)]
         self.assertIn("100.0 passes a second drew nothing, over %d"
                       % t3_bench.FLOOD_MAX_SKIPPED_PER_S, self.flood(*busy)["error"])
         # A window too short to hold a whole second cannot show the stream.
@@ -459,6 +546,48 @@ class BenchTest(unittest.TestCase):
         # A screen that reported no window.
         self.assertIn("no benchmark window", t3_bench.measure(serial, None, self.CONF)["error"])
 
+    def test_measure_tmux_sixel(self):
+        # tmux draws a "SIXEL IMAGE" placeholder for a client whose features
+        # lack sixel, which looks the same to every other figure.
+        serial = timer_line(101.0, 60, 60)
+        # kmscon presents as many frames either way, so the screen counts
+        # the sixel pictures tmux sent to kmscon.
+        line = ("T3-BENCH tmux-2x2 start=100.00 end=102.00 mpv_frames=600 mpv_dropped=0 "
+                "kmscon_cpu_ms=700 panes=4 tmux_sixels=%d")
+        got = t3_bench.measure(serial, line % 412, self.CONF)
+        self.assertNotIn("error", got)
+        self.assertEqual(got["tmux_sixels"], 412)
+        got = t3_bench.measure(serial, line % 0, self.CONF)
+        self.assertIn("placeholder", got["error"])
+
+    def test_measure_tmux_reported(self):
+        # A4 is compatibility through tmux (ADR-103): kmscon's CPU time per
+        # picture tmux sent is reported, and no figure of it fails the grid.
+        serial = timer_line(101.0, 20, 20)
+        line = ("T3-BENCH tmux-3x3 start=100.00 end=102.00 mpv_frames=300 mpv_dropped=900 "
+                "kmscon_cpu_ms=%d panes=9 tmux_sixels=100")
+        got = t3_bench.measure(serial, line % 1400, self.CONF)
+        self.assertNotIn("error", got)
+        self.assertEqual(got["kmscon_cpu_ms_per_tmux_sixel"], 14.0)
+        got = t3_bench.measure(serial, line % 3400, self.CONF)
+        self.assertNotIn("error", got)
+        self.assertEqual(got["kmscon_cpu_ms_per_tmux_sixel"], 34.0)
+
+    def test_measure_program(self):
+        # mpv's counts beside the render timer's: its output rate over the
+        # window, kmscon's CPU time over the window per frame mpv sent (its
+        # parsing included) and its share of one CPU.
+        serial = "\n".join([timer_line(101.0, 30, 30), timer_line(102.0, 30, 30)])
+        got = t3_bench.measure(serial, self.MPV, self.CONF)
+        self.assertNotIn("error", got)
+        self.assertNotIn("lines", got)
+        self.assertEqual((got["mpv_frames"], got["mpv_dropped"]), (60, 2))
+        self.assertEqual(got["mpv_per_s"], 30.0)
+        self.assertEqual(got["presented_per_s"], 30.0)
+        self.assertEqual(got["kmscon_cpu_ms"], 500)
+        self.assertEqual(got["kmscon_cpu_ms_per_mpv_frame"], 8.333)
+        self.assertEqual(got["kmscon_cpu_pct"], 25.0)
+
     def test_bench_error_fails_case(self):
         meta = {"bench": {"s1-scroll": {"error": "no render-timer line"}}}
         with tempfile.TemporaryDirectory() as d:
@@ -477,6 +606,77 @@ class BenchTest(unittest.TestCase):
                 self.assertEqual(entry["status"], "pass")
             finally:
                 t3_evaluate.GOLDEN, t3_evaluate.RUNDIR = saved
+
+
+class BottleneckTest(unittest.TestCase):
+    """ADR-103's criterion for A2: kmscon is not the bottleneck. Its CPU
+    time per frame mpv sent stays under the clip's frame interval, and it
+    presents at least as many frames as mpv sends."""
+    FINE = {"mpv_frames": 150, "mpv_per_s": 29.1, "presented_per_s": 59.0,
+            "kmscon_cpu_ms_per_mpv_frame": 6.733}
+    SLOW = {"mpv_frames": 69, "mpv_per_s": 2.1, "presented_per_s": 4.2,
+            "kmscon_cpu_ms_per_mpv_frame": 375.797}
+
+    def test_bottleneck(self):
+        self.assertEqual(t3_bench.bottleneck(self.FINE), [])
+        self.assertEqual(len(t3_bench.bottleneck(self.SLOW)), 1)
+        self.assertIn("33.3 ms", t3_bench.bottleneck(self.SLOW)[0])
+        few = dict(self.FINE, presented_per_s=20.0)
+        self.assertEqual(len(t3_bench.bottleneck(few)), 1)
+        self.assertIn("fewer frames", t3_bench.bottleneck(few)[0])
+        # No program: nothing to judge. A program that showed no frame
+        # played nothing, which is no pass.
+        self.assertEqual(t3_bench.bottleneck({"lines": 5}), [])
+        self.assertIn("no frame", t3_bench.bottleneck(dict(self.FINE, mpv_frames=0))[0])
+
+    def evaluate(self, variant, figures):
+        meta = {"bench": {"mpv-sixel": figures}}
+        with tempfile.TemporaryDirectory() as d:
+            ppm = os.path.join(d, "a.ppm")
+            t3_qemu.write_ppm(ppm, t3img.Image(2, 1, b"\0" * 6))
+            saved = t3_evaluate.GOLDEN, t3_evaluate.RUNDIR
+            t3_evaluate.GOLDEN, t3_evaluate.RUNDIR = d, d
+            try:
+                os.makedirs(os.path.join(d, variant))
+                t3img.write_png(os.path.join(d, variant, "mpv-sixel.png"),
+                                t3img.Image(2, 1, b"\0" * 6))
+                with contextlib.redirect_stderr(io.StringIO()):
+                    return t3_evaluate.evaluate(variant, "mpv-sixel", ppm, meta, LOG)
+            finally:
+                t3_evaluate.GOLDEN, t3_evaluate.RUNDIR = saved
+
+    def test_case(self):
+        self.assertEqual(self.evaluate("v", self.FINE)["status"], "pass")
+        slow = self.evaluate("v", self.SLOW)
+        self.assertEqual(slow["status"], "fail")
+        self.assertIn("bottleneck", slow["error"])
+
+    def test_known(self):
+        # A known bottleneck, named by its issue, passes with a note, and
+        # fails once it is gone, so its entry is removed with the fix. The
+        # entry is the test's own, since none is known today.
+        variant, issue = "v-known", "aaronsb/kmscon#0"
+        with mock.patch.dict(t3_evaluate.KNOWN_BOTTLENECKS, {"mpv-sixel": {variant: issue}}):
+            self.known(variant, issue)
+        # Without the entry the same variant is judged like any other.
+        self.assertEqual(self.evaluate(variant, self.SLOW)["status"], "fail")
+        # #139 at both 7680x2160 variants was fixed by #152, so A2 is
+        # judged at every variant.
+        self.assertEqual(t3_evaluate.KNOWN_BOTTLENECKS, {})
+        self.assertEqual(t3_evaluate.RATE_CHECKED, ["mpv-sixel"])
+
+    def known(self, variant, issue):
+        known = self.evaluate(variant, self.SLOW)
+        self.assertEqual(known["status"], "pass")
+        self.assertIn(issue, known["note"])
+        gone = self.evaluate(variant, self.FINE)
+        self.assertEqual(gone["status"], "fail")
+        self.assertIn(issue, gone["error"])
+        # Only slowness is known: a variant whose mpv showed no frame at all
+        # (a broken mpv or sixel path) fails like any other.
+        dead = self.evaluate(variant, dict(self.SLOW, mpv_frames=0))
+        self.assertEqual(dead["status"], "fail")
+        self.assertIn("no frame", dead["error"])
 
 
 class SerialTest(unittest.TestCase):

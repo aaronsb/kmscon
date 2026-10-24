@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 
+import t3_bench
 import t3img
 from t3_common import GOLDEN, GUEST, RUNDIR, rel
 
@@ -15,28 +16,54 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 # golden is the cjk one (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
            "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "sixel",
-           "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict", "s1-scroll", "flood",
-           "cjk"]
-# Cases captured after a screen is drawn, by pressing kmscon's grabs: each is
-# (screen, case, the chords pressed before its capture). After the last, the
+           "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict", "photos",
+           "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "s1-scroll", "flood", "cjk"]
+# Cases captured after a screen is drawn, by pressing keys: each is (screen,
+# case, the chords pressed before its capture), captured once the screen has
+# changed, so a key that changes nothing fails its case. After the last, the
 # chords in KEYS_AFTER put the terminal back as the screen left it. The
 # rotate grab is Logo with plus or equal, zoom Ctrl with the same, and both
-# match equal unshifted.
+# match equal unshifted. photo-scroll's photograph has scrolled into
+# kmscon's scrollback, which Shift+PageUp shows and Shift+PageDown leaves
+# (ADR-103's A1).
 KEYED = [
     ("sixel-evict", "sixel-evict-rotated", [("meta_l", "equal")]),
     ("sixel-evict", "sixel-evict-history", [("meta_l", "minus")] + [("shift", "pgup")] * 30),
     ("sixel-evict", "sixel-evict-zoomed", [("shift", "pgdn")] * 30 + [("ctrl", "equal")]),
+    ("photo-scroll", "photo-scrollback", [("shift", "pgup")]),
+    ("photo-scroll", "photo-scrollforward", [("shift", "pgdn")]),
 ]
 KEYS_AFTER = {"sixel-evict": [("ctrl", "minus")]}
 # The screens that are also ADR-103 benchmark scenarios: each reports its
 # window on the event port, and the report carries its figures (t3_bench.py).
-BENCHMARKS = ["s1-scroll", "flood"]
-# Every case of a variant: each screen, then the VT switch (a check without a
-# golden) and the restore after it (compared with the last screen's golden).
-CASES = SCREENS + [case for _, case, _ in KEYED] + ["vt-switch", "vt-restore"]
+BENCHMARKS = ["mpv-sixel", "tmux-2x2", "tmux-3x3", "s1-scroll", "flood"]
+# The benchmark screens judged by ADR-103's criterion for A2, that kmscon is
+# not the bottleneck (t3_bench.bottleneck); the tmux grids report their
+# figures only, since tmux redraws every pane's pictures itself.
+RATE_CHECKED = ["mpv-sixel"]
+# Variants where kmscon is known to be the bottleneck, by screen, each with
+# the issue that tracks it, as {"mpv-sixel": {"2d-7680x2160": "owner/repo#N"}}.
+# Such a case passes with a note while the bottleneck lasts and fails once
+# it is gone, so the entry goes with the fix. None today: both 7680x2160
+# variants carried aaronsb/kmscon#139 until #152 fixed it there.
+KNOWN_BOTTLENECKS = {}
+# A case compared with another case's golden: back from the scrollback, and
+# back from tty3 (vt-restore, with the last screen's).
+SAME_AS = {"photo-scrollforward": "photo-scroll", "vt-restore": SCREENS[-1]}
+# Every case of a variant: each screen and the keyed cases after it, then
+# the VT switch (a check without a golden) and the restore after it.
+CASES = [c for name in SCREENS for c in [name] + [k for s, k, _ in KEYED if s == name]] \
+    + ["vt-switch", "vt-restore"]
 # What each check shows and what correct looks like, for the conformance run
 # page; a screen's comes from the header comment of its script (describe).
 CHECKS = {
+    "photo-scrollback": "After Shift+PageUp on the photo-scroll screen, kmscon's view of its "
+                        "scrollback: the caption and the day photograph above line 1, the "
+                        "picture travelling with its lines. Correct: the photograph whole, "
+                        "at the rows it was drawn on, nothing over the lines below it.",
+    "photo-scrollforward": "After Shift+PageDown, back from the scrollback. Correct: identical "
+                           "to the photo-scroll golden, nothing of the photograph left on "
+                           "the lines.",
     "sixel-evict-rotated": "The sixel-evict screen turned with Logo+=: a scaled copy of the last "
                            "picture, which fits the full image budget only once picture 1 is "
                            "evicted from scrollback (ADR-103's Q1 note). Correct: the last "
@@ -60,9 +87,9 @@ SCREEN_TIMEOUT = 10
 
 def header(case):
     """The leading comment lines of a screen's script, by field: "" for the
-    caption, then the "# look-for:", "# wrong-looks-like:" and
-    "# screen-text:" lines."""
-    fields = {"": [], "look-for": [], "wrong-looks-like": [], "screen-text": []}
+    caption, then the "# look-for:", "# wrong-looks-like:", "# screen-text:"
+    and "# kit:" lines (the local VT demo's review kit)."""
+    fields = {"": [], "look-for": [], "wrong-looks-like": [], "screen-text": [], "kit": []}
     with open(os.path.join(GUEST, "screens", case + ".sh")) as f:
         for line in f:
             if line.startswith("#!"):  # the script's interpreter
@@ -104,7 +131,7 @@ def screen_text(case, log):
     captions a region, and losing it must never cost a case its verdict.
     A script whose "# screen-text:" line begins "none" is not run: its
     printed lines are not its rows, as when it scrolls."""
-    base = SCREENS[-1] if case == "vt-restore" else case
+    base = SAME_AS.get(case, case)
     if base not in SCREENS:
         return None
     reason = " ".join(header(base)["screen-text"])
@@ -131,8 +158,7 @@ def golden_for(variant, case):
     vt-switch, which is a check without a golden."""
     if case == "vt-switch":
         return None, None
-    # vt-restore must reproduce the last screen drawn before the switch.
-    base = SCREENS[-1] if case == "vt-restore" else case
+    base = SAME_AS.get(case, case)
     return (os.path.join(GOLDEN, variant, base + ".png"),
             os.path.join(GOLDEN, variant, base + ".tol"))
 
@@ -186,7 +212,31 @@ def evaluate(variant, case, ppm, meta, log):
         entry["thumb_diff"] = write_thumb(t3img.diff_thumbnail(img, points),
                                           stem + ".diff.thumb.png")
     entry["status"] = t3img.verdict(stats, tol)
-    bench_error = meta.get("bench", {}).get(case, {}).get("error")
-    if bench_error:  # drawn, but not measured
-        entry["status"], entry["error"] = "fail", bench_error
+    figures = meta.get("bench", {}).get(case, {})
+    if figures.get("error"):  # drawn, but not measured
+        entry["status"], entry["error"] = "fail", figures["error"]
+    elif case in RATE_CHECKED and entry["status"] in ("pass", "near"):
+        judge_rate(entry, variant, case, figures)
     return entry
+
+
+def judge_rate(entry, variant, case, figures):
+    """Fails a drawn case whose figures show kmscon as the bottleneck,
+    unless the variant's bottleneck is known (KNOWN_BOTTLENECKS); a known
+    one that is gone fails too, and so does a video that showed no frame,
+    known bottleneck or not."""
+    why = t3_bench.bottleneck(figures)
+    known = KNOWN_BOTTLENECKS.get(case, {}).get(variant)
+    if "mpv_frames" in figures and not figures["mpv_frames"]:
+        # A known bottleneck is slowness; a video with no frame is broken.
+        entry["status"] = "fail"
+        entry["error"] = "; ".join(why)
+    elif why and known:
+        entry["note"] = "known bottleneck, %s: %s" % (known, "; ".join(why))
+    elif why:
+        entry["status"] = "fail"
+        entry["error"] = "kmscon is the bottleneck: " + "; ".join(why)
+    elif known:
+        entry["status"] = "fail"
+        entry["error"] = ("kmscon kept up, so %s is fixed here: remove its entry in "
+                          "KNOWN_BOTTLENECKS" % known)

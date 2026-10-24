@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -183,6 +184,29 @@ int main(void)
 			r.status = -EINVAL;
 			r.reason_len = sizeof(reason);
 			send_fds(&r, sizeof(r), reason, sizeof(reason), NULL, 0, 0);
+		} else if (!strncmp(name, "race:", 5)) {
+			/*
+			 * an unsealed memfd of the right size; when kmscon asks
+			 * for its seals (test_image_host_race.c holds it there),
+			 * shrunk to one page and only then sealed
+			 */
+			char go_path[KMSCON_IMAGE_NAME_MAX + 16],
+				ack_path[KMSCON_IMAGE_NAME_MAX + 16];
+			int go, ack;
+			char b;
+
+			snprintf(go_path, sizeof(go_path), "%s/go.fifo", name + 5);
+			snprintf(ack_path, sizeof(ack_path), "%s/ack.fifo", name + 5);
+			fds[0] = memfd(len, 0);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			go = open(go_path, O_RDONLY);
+			ack = open(ack_path, O_WRONLY);
+			if (go < 0 || ack < 0 || read(go, &b, 1) != 1 || ftruncate(fds[0], 4096) ||
+			    fcntl(fds[0], F_ADD_SEALS, seals) < 0 || write(ack, "k", 1) != 1)
+				_exit(8);
+			close(go);
+			close(ack);
+			close(fds[0]);
 		} else if (!strcmp(name, "close")) {
 			return 0;
 		} else if (!strcmp(name, "hang")) {

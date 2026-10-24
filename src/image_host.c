@@ -349,14 +349,20 @@ static const uint8_t *map_pixels(const struct image_host *h, const struct kmscon
 		*why = "a reply's descriptor is not a regular file";
 		return NULL;
 	}
-	if ((uint64_t)st.st_size != bytes) {
-		*why = "a reply's memfd is not exactly width x height x 4 bytes";
-		return NULL;
-	}
-	/* F_SEAL_FUTURE_WRITE does not stand in for F_SEAL_WRITE */
+	/*
+	 * The seals before the size: until F_SEAL_SHRINK is set, the helper can
+	 * truncate the memfd after any fstat, and a mapping past its new end
+	 * faults the root process on its first read. Once sealed, the size
+	 * read next is the size for good. F_SEAL_FUTURE_WRITE does not stand
+	 * in for F_SEAL_WRITE.
+	 */
 	seals = fcntl(fd, F_GET_SEALS);
 	if (seals < 0 || (seals & SEALS) != SEALS) {
 		*why = "a reply's memfd is not sealed";
+		return NULL;
+	}
+	if (fstat(fd, &st) || (uint64_t)st.st_size != bytes) {
+		*why = "a reply's memfd is not exactly width x height x 4 bytes";
 		return NULL;
 	}
 	map = mmap(NULL, bytes, PROT_READ, MAP_PRIVATE, fd, 0);

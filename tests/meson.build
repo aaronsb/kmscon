@@ -184,6 +184,22 @@ test(
     timeout: 60,
 )
 
+# a reply memfd shrunk between kmscon's checks: fcntl is wrapped to hold the
+# window open while the stand-in shrinks and seals it
+test_image_host_race = executable(
+    'test_image_host_race',
+    'test_image_host_race.c',
+    '../src/image_host.c',
+    include_directories: src_inc,
+    link_args: ['-Wl,--wrap=fcntl', '-Wl,--wrap=fcntl64'],
+    dependencies: [shl_deps, eloop_deps],
+)
+test(
+    'test_image_host_race',
+    test_image_host_race,
+    args: [fake_image_helper, meson.current_build_dir()],
+)
+
 # the helper's user, built without sd-login and with it, its calls stood in for
 test_image_identity = executable(
     'test_image_identity',

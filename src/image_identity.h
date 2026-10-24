@@ -45,6 +45,10 @@
  *   of the session's pty, as /bin/login sets it. Never root by fallback: a
  *   root owner is treated as before login.
  *
+ * A kmscon not running as root whose real, effective or saved gid, or any
+ * supplementary group, is 0 (a setgid-root install) is treated as before
+ * login in every mode: its helper would keep that group.
+ *
  * The pre-login user is looked up once, when first needed, and kept, so a
  * slow network name service cannot stall the login prompt on every request.
  * A candidate whose lookup fails, or that resolves to uid 0 or gid 0, is

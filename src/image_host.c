@@ -98,6 +98,23 @@ static void helper_event(struct ev_fd *fd, int mask, void *data);
  * ones, so no real or saved uid 0 of a setuid install survives; it keeps
  * kmscon's supplementary groups, which only root can change.
  */
+/* any of this process's gids or supplementary groups is 0 */
+static bool gid_zero(void)
+{
+	gid_t r, e, s, groups[256];
+	int i, n;
+
+	if (getresgid(&r, &e, &s) || !r || !e || !s)
+		return true;
+	n = getgroups(sizeof(groups) / sizeof(groups[0]), groups);
+	if (n < 0)
+		return true;
+	for (i = 0; i < n; i++)
+		if (!groups[i])
+			return true;
+	return false;
+}
+
 static int resolve_creds(const struct image_user *user, struct creds *c)
 {
 	struct passwd pw, *res = NULL;
@@ -114,6 +131,11 @@ static int resolve_creds(const struct image_user *user, struct creds *c)
 			return -EPERM;
 		}
 		c->gid = getegid();
+		/* image_identity refuses files for this; nothing starts with gid 0 */
+		if (gid_zero()) {
+			log_warning("not root but holding gid 0: no image helper");
+			return -EPERM;
+		}
 		return 0;
 	}
 	c->groups = true;

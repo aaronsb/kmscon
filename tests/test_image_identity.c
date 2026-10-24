@@ -42,6 +42,31 @@ static struct {
 };
 static unsigned int lookups;
 
+/* kmscon's own ids, stood in for: a non-root kmscon in gid 1000 unless a case says otherwise */
+static uid_t own_euid = 1000;
+static gid_t own_gids[3] = {1000, 1000, 1000};
+static gid_t own_groups[2] = {1000, 1000};
+
+uid_t geteuid(void)
+{
+	return own_euid;
+}
+
+int getresgid(gid_t *r, gid_t *e, gid_t *s)
+{
+	*r = own_gids[0];
+	*e = own_gids[1];
+	*s = own_gids[2];
+	return 0;
+}
+
+int getgroups(int size, gid_t list[])
+{
+	assert(size >= 2);
+	memcpy(list, own_groups, sizeof(own_groups));
+	return 2;
+}
+
 int getpwnam_r(const char *name, struct passwd *pw, char *buf, size_t size, struct passwd **res)
 {
 	unsigned int i;
@@ -205,6 +230,28 @@ static void test_candidates(pid_t child, uid_t owner)
 	users[0].present = true;
 }
 
+/*
+ * A non-root kmscon holding gid 0, real, effective, saved or supplementary,
+ * is before login whatever else the mode would give; a root kmscon is not
+ */
+static void test_gid_zero(pid_t child, uid_t owner, uid_t uid)
+{
+	unsigned int i;
+
+	for (i = 0; i < 3; i++) {
+		own_gids[i] = 0;
+		expect_prelogin(child, 0, owner, 990, 991);
+		own_gids[i] = 1000;
+	}
+	own_groups[1] = 0;
+	expect_prelogin(child, 0, owner, 990, 991);
+	own_euid = 0;
+	expect_user(child, 0, owner, true, uid);
+	own_euid = 1000;
+	own_groups[1] = 1000;
+	expect_user(child, 0, owner, true, uid);
+}
+
 int main(void)
 {
 	struct image_user user;
@@ -227,6 +274,8 @@ int main(void)
 	/* kmscon in a session of its own, another than the child's: still the child's */
 	own_session = "c9";
 	expect_user(77, 0, 4242, true, 4242);
+	/* even a session user is before login when a non-root kmscon holds gid 0 */
+	test_gid_zero(77, 4242, 4242);
 
 	/*
 	 * A session the child inherited from kmscon (kmscon started inside
@@ -295,6 +344,8 @@ int main(void)
 	 */
 	expect_prelogin(77, 0, 0, 990, 991);
 	test_candidates(77, 0);
+	/* a non-root kmscon holding gid 0: before login, the pty's owner aside */
+	test_gid_zero(77, 1000, 1000);
 	printf("test_image_identity: ok, without sd-login\n");
 #endif
 	return 0;

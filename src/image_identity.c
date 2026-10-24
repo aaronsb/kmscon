@@ -158,6 +158,29 @@ static int prelogin_user(struct image_user *user)
 	return 0;
 }
 
+/*
+ * A kmscon not running as root starts the helper with its own gids and
+ * supplementary groups, which it cannot change: when any of them is gid 0,
+ * as in a setgid-root install, the helper would read files as group root
+ */
+static bool own_gid_zero(void)
+{
+	gid_t r, e, s, groups[256];
+	int i, n;
+
+	if (!geteuid())
+		return false;
+	if (getresgid(&r, &e, &s) || !r || !e || !s)
+		return true;
+	n = getgroups(sizeof(groups) / sizeof(groups[0]), groups);
+	if (n < 0)
+		return true;
+	for (i = 0; i < n; i++)
+		if (!groups[i])
+			return true;
+	return false;
+}
+
 /* before login, or a root owner by fallback: no file, and inline media as the pre-login user */
 static int before_login(bool file, struct image_user *user)
 {
@@ -170,7 +193,12 @@ int image_identity_find(pid_t child, int owner_ret, uid_t owner, bool file, stru
 {
 #if IMAGE_IDENTITY_SD_LOGIN
 	uid_t logind;
+#endif
 
+	/* a non-root kmscon holding gid 0 reads no file, as before login */
+	if (own_gid_zero())
+		return before_login(file, user);
+#if IMAGE_IDENTITY_SD_LOGIN
 	if (!logind_uid(child, &logind)) {
 		if (!owner_ret && owner != logind)
 			log_disagreement(owner, logind);

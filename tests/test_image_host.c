@@ -781,15 +781,18 @@ static void test_no_ctty(const char *helper)
 }
 
 /*
- * As root: a kmscon running with effective uid and gid nobody's but real and
- * saved ids 0, as a setuid install or a wrapper that sets only the effective
- * ids leaves it, starts the helper with every id nobody's, so no 0 survives
- * for a user who traces it to take back
+ * As root: a kmscon running with effective uid nobody's but real and saved
+ * uid 0, as a setuid install or a wrapper that sets only the effective uid
+ * leaves it, starts the helper with every uid nobody's, so no 0 survives for
+ * a user who traces it to take back. Holding gid 0 in any form, as a
+ * setgid-root install does, it starts no helper at all.
  */
 static void test_effective_only(const char *helper)
 {
 	struct passwd *pw = getpwnam("nobody");
 	struct image_host_request r = request(700, 'f', "/nonexistent");
+	gid_t saved[64], g;
+	int n_saved, i;
 	struct image_user me;
 	struct image_host *h;
 	char want[64];
@@ -798,7 +801,10 @@ static void test_effective_only(const char *helper)
 	if (geteuid())
 		return;
 	assert(pw);
-	assert(!setresgid(0, pw->pw_gid, 0) && !setresuid(0, pw->pw_uid, 0));
+	n_saved = getgroups(64, saved);
+	assert(n_saved >= 0);
+	g = pw->pw_gid;
+	assert(!setgroups(1, &g) && !setresgid(g, g, g) && !setresuid(0, pw->pw_uid, 0));
 	me = user_of(geteuid());
 	assert(image_host_new(&h, loop, helper, reply, NULL) == 0);
 	assert(image_host_send(h, &me, &r) == 0);
@@ -808,12 +814,28 @@ static void test_effective_only(const char *helper)
 	snprintf(want, sizeof(want), "%u\t%u\t%u\t%u", pw->pw_uid, pw->pw_uid, pw->pw_uid,
 		 pw->pw_uid);
 	assert(!strcmp(status_of(pid, "Uid"), want));
-	snprintf(want, sizeof(want), "%u\t%u\t%u\t%u", pw->pw_gid, pw->pw_gid, pw->pw_gid,
-		 pw->pw_gid);
+	snprintf(want, sizeof(want), "%u\t%u\t%u\t%u", g, g, g, g);
 	assert(!strcmp(status_of(pid, "Gid"), want));
 	image_host_free(h);
-	assert(!setresuid(0, 0, 0) && !setresgid(0, 0, 0));
-	printf("test_image_host: root: real and saved ids 0 dropped with effective ids\n");
+
+	/* gid 0, real, saved or supplementary: refused, no helper started */
+	for (i = 0; i < 3; i++) {
+		gid_t zero = 0;
+
+		assert(!setresuid(0, 0, 0));
+		if (i == 2)
+			assert(!setgroups(1, &zero) && !setresgid(g, g, g));
+		else
+			assert(!setgroups(1, &g) && !setresgid(i == 0 ? 0 : g, g, i == 1 ? 0 : g));
+		assert(!setresuid(0, pw->pw_uid, 0));
+		assert(image_host_new(&h, loop, helper, reply, NULL) == 0);
+		r.id = 701 + i;
+		assert(image_host_send(h, &me, &r) == -EBADF && !image_host_pid(h));
+		image_host_free(h);
+	}
+
+	assert(!setresuid(0, 0, 0) && !setresgid(0, 0, 0) && !setgroups(n_saved, saved));
+	printf("test_image_host: root: real and saved uid 0 dropped, gid 0 refused\n");
 }
 
 int main(int argc, char **argv)

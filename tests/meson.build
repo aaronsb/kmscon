@@ -138,6 +138,92 @@ test_pty = executable(
 )
 test('test_pty', test_pty)
 
+# kmscon-image-helper over its socket, with no libtsm (ADR-103): the real one,
+# and a build with stops between each check and the step it guards
+test_image_helper_bin = executable(
+    'test_image_helper_bin',
+    '../src/image_helper.c',
+    c_args: '-DIMAGE_HELPER_TEST',
+    include_directories: src_inc,
+    dependencies: [libpng_deps, zlib_deps],
+)
+test_image_helper = executable(
+    'test_image_helper',
+    'test_image_helper.c',
+    include_directories: src_inc,
+    dependencies: [libpng_deps, zlib_deps],
+)
+test(
+    'test_image_helper',
+    test_image_helper,
+    args: [
+        kmscon_image_helper,
+        test_image_helper_bin,
+        meson.current_build_dir(),
+    ],
+)
+
+# kmscon's side of the helper: the real one, and a stand-in whose replies
+# each break one of kmscon's checks
+fake_image_helper = executable(
+    'fake_image_helper',
+    'fake_image_helper.c',
+    include_directories: src_inc,
+)
+test_image_host = executable(
+    'test_image_host',
+    'test_image_host.c',
+    include_directories: src_inc,
+    dependencies: [shl_deps, eloop_deps],
+)
+test(
+    'test_image_host',
+    test_image_host,
+    args: [kmscon_image_helper, fake_image_helper, meson.current_build_dir()],
+    timeout: 60,
+)
+
+# a reply memfd shrunk between kmscon's checks: fcntl is wrapped to hold the
+# window open while the stand-in shrinks and seals it
+test_image_host_race = executable(
+    'test_image_host_race',
+    'test_image_host_race.c',
+    '../src/image_host.c',
+    include_directories: src_inc,
+    link_args: ['-Wl,--wrap=fcntl', '-Wl,--wrap=fcntl64'],
+    dependencies: [shl_deps, eloop_deps],
+)
+test(
+    'test_image_host_race',
+    test_image_host_race,
+    args: [fake_image_helper, meson.current_build_dir()],
+)
+
+# the helper's user, built without sd-login and with it, its calls stood in for
+test_image_identity = executable(
+    'test_image_identity',
+    'test_image_identity.c',
+    '../src/image_identity.c',
+    c_args: '-DIMAGE_IDENTITY_SD_LOGIN=0',
+    include_directories: src_inc,
+    dependencies: [shl_deps],
+)
+test('test_image_identity', test_image_identity)
+if sd_login_deps.found()
+    test_image_identity_sd_login = executable(
+        'test_image_identity_sd_login',
+        'test_image_identity.c',
+        '../src/image_identity.c',
+        c_args: '-DIMAGE_IDENTITY_SD_LOGIN=1',
+        include_directories: src_inc,
+        dependencies: [
+            shl_deps,
+            sd_login_deps.partial_dependency(compile_args: true, includes: true),
+        ],
+    )
+    test('test_image_identity_sd_login', test_image_identity_sd_login)
+endif
+
 test_issue = executable(
     'test_issue',
     'test_issue.c',

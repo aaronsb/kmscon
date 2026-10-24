@@ -46,6 +46,11 @@ systemdsystemunitdir = systemd_deps.get_variable(
     'systemdsystemunitdir',
     default_value: 'lib/systemd/system',
 )
+# kmscon-image, the image helper's user before login (ADR-103)
+sysusersdir = systemd_deps.get_variable(
+    'sysusersdir',
+    default_value: 'lib/sysusers.d',
+)
 
 #
 # Required dependencies
@@ -58,6 +63,8 @@ threads_deps = dependency('threads')
 math_deps = meson.get_compiler('c').find_library('m', required: false)
 zlib_deps = dependency('zlib')
 zlib_deps_native = dependency('zlib', native: true)
+# kmscon-image-helper decodes PNG as the session's user (ADR-103)
+libpng_deps = dependency('libpng')
 
 python = find_program('python3')
 
@@ -122,6 +129,15 @@ if harfbuzz_raster_deps.found()
     )
 endif
 dbus_deps = dependency('dbus-1', disabler: true, required: get_option('dbus'))
+# The image helper's user through logind (ADR-103): libsystemd's sd-login, or
+# libelogind's, which provides the same <systemd/sd-login.h>.
+sd_login_deps = dependency('', required: false)
+if not get_option('sd_login').disabled()
+    sd_login_deps = dependency('libsystemd', required: false)
+    if not sd_login_deps.found()
+        sd_login_deps = dependency('libelogind', required: false)
+    endif
+endif
 xsltproc = find_program(
     'xsltproc',
     native: true,
@@ -155,6 +171,7 @@ foreach name, reqs : {
     'font_freetype': [freetype_deps, fontconfig_deps, harfbuzz_deps],
     'font_pango': [pango_deps, freetype_deps, fontconfig_deps, harfbuzz_deps],
     'dbus': [dbus_deps],
+    'sd_login': [sd_login_deps],
 }
     found = true
     foreach req : reqs
@@ -230,6 +247,7 @@ summary(
         'moduledir': moduledir,
         'mandir': mandir,
         'systemdsystemunitdir': systemdsystemunitdir,
+        'sysusersdir': sysusersdir,
     },
     section: 'Directories',
 )
@@ -288,6 +306,14 @@ foreach filename, kwargs : {
         kwargs: kwargs,
     )
 endforeach
+
+# The image helper's user before login: a system user with home / and no
+# login shell, created by systemd-sysusers (ADR-103, The image helper)
+install_data(
+    'scripts/sysusers.d/kmscon-image.conf',
+    install_dir: sysusersdir,
+    install_mode: 'rw-r--r--',
+)
 
 # kmscon.conf
 install_data(

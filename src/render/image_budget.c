@@ -103,9 +103,11 @@ static int next_victim(struct tsm_image_victim *best, const unsigned int *left)
 
 /*
  * Frees, in ADR-103's order, until @bytes more fit under the limit: pictures
- * no renderer drew on its last frame, then libtsm's images by rank and least
- * recently used, at most @left[i] of screen i's when @left is given. Returns 0,
- * or -ENOSPC when they still do not fit.
+ * no renderer drew on its last frame, then libtsm's images by rank and, within
+ * a rank, by last_use, at most @left[i] of screen i's when @left is given:
+ * least recently used for unplaced and scrollback images, oldest transmission
+ * for kitty images placed on a screen's own lines. Returns 0, or -ENOSPC when
+ * they still do not fit.
  */
 static int make_room(size_t bytes, unsigned int *left)
 {
@@ -128,7 +130,12 @@ static int make_room(size_t bytes, unsigned int *left)
 	return 0;
 }
 
-/* what one screen's victims can give a picture: those before the first its frame draws */
+/*
+ * What one screen's victims can give a picture: those before the first its
+ * frame draws, and before the first kitty image placed on the screen's own
+ * lines, which a picture never evicts whether or not its frame draws it
+ * (ADR-103, Notes of 2026-10-23, Q1)
+ */
 struct give {
 	struct tsm_screen *con;
 	image_budget_drawn_cb drawn;
@@ -141,6 +148,10 @@ static bool give_victim(const struct tsm_image_victim *v, void *data)
 {
 	struct give *g = data;
 
+#ifdef TSM_SCREEN_IMAGE_PLACED_KITTY
+	if (v->rank >= TSM_IMAGE_PLACED_KITTY)
+		return false;
+#endif
 	if (g->drawn(g->con, v->key, g->data))
 		return false;
 	g->bytes += v->bytes;
@@ -151,7 +162,8 @@ static bool give_victim(const struct tsm_image_victim *v, void *data)
 /*
  * Counts what the caches and each screen can give before anything is freed,
  * and frees only when that is enough. A screen gives its victims in its own
- * order up to the first its frame draws; eviction takes no more of each.
+ * order up to the first its frame draws or the first placed on its own lines;
+ * eviction takes no more of each.
  */
 int image_budget_picture_room(size_t bytes, image_budget_drawn_cb drawn, void *data)
 {

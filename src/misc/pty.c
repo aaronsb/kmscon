@@ -35,6 +35,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/signalfd.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -64,6 +65,7 @@ struct kmscon_pty {
 	size_t held_off;
 	size_t held_len;
 	bool feeding; /* held_idle is registered */
+	bool paused;  /* kmscon_pty_pause: nothing is read or fed */
 	/* the size last set with TIOCSWINSZ */
 	struct winsize ws;
 
@@ -201,6 +203,11 @@ void kmscon_pty_dispatch(struct kmscon_pty *pty)
 		return;
 
 	ev_eloop_dispatch(pty->eloop, 0);
+}
+
+struct ev_eloop *kmscon_pty_get_eloop(struct kmscon_pty *pty)
+{
+	return pty ? pty->eloop : NULL;
 }
 
 static bool pty_is_open(struct kmscon_pty *pty)
@@ -435,25 +442,26 @@ static void feeding_stop(struct kmscon_pty *pty)
  * Hands io_buf[@off, @len) to the input callback. What it does not take is
  * held: nothing more is read, and an idle source on the pty's loop hands the
  * rest over on later turns, so other events are handled between the parts.
- * Without an idle source the rest is handed over at once. Returns true when
- * all of it was taken.
+ * Without an idle source the rest is handed over at once. A pause from inside
+ * the callback holds the rest with no idle source until kmscon_pty_resume.
+ * Returns true when all of it was taken and the pty is not paused.
  */
 static bool feed(struct kmscon_pty *pty, size_t off, size_t len)
 {
 	off += pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
-	if (off < len && !pty->feeding) {
+	if (off < len && !pty->paused && !pty->feeding) {
 		if (!ev_eloop_register_idle_cb(pty->eloop, held_idle, pty, EV_NORMAL)) {
 			pty->feeding = true;
 		} else {
 			log_warn("cannot feed pty output in parts");
-			while (off < len)
+			while (off < len && !pty->paused)
 				off += pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
 		}
 	}
 	if (off >= len) {
 		pty->held_len = 0;
 		feeding_stop(pty);
-		return true;
+		return !pty->paused;
 	}
 	pty->held_off = off;
 	pty->held_len = len;
@@ -464,7 +472,7 @@ static int read_buf(struct kmscon_pty *pty)
 {
 	ssize_t len, num;
 
-	if (pty->held_len)
+	if (pty->held_len || pty->paused)
 		return 0;
 
 	/* Use a maximum of 50 steps to avoid staying here forever.
@@ -501,10 +509,42 @@ static void held_idle(struct ev_eloop *eloop, void *unused, void *data)
 {
 	struct kmscon_pty *pty = data;
 
-	if (!pty->held_len) {
+	if (!pty->held_len || pty->paused) {
 		feeding_stop(pty);
 		return;
 	}
+	if (feed(pty, pty->held_off, pty->held_len))
+		rearm(pty);
+}
+
+void kmscon_pty_pause(struct kmscon_pty *pty)
+{
+	if (!pty || !pty_is_open(pty))
+		return;
+	pty->paused = true;
+	feeding_stop(pty);
+}
+
+/*
+ * The fd is edge-triggered, so rearm() reports output that came while paused;
+ * a read finds the held output first and leaves it to held_idle, which rearms
+ * again once it is all taken.
+ */
+void kmscon_pty_resume(struct kmscon_pty *pty)
+{
+	if (!pty || !pty->paused)
+		return;
+	pty->paused = false;
+	if (!pty_is_open(pty))
+		return;
+	rearm(pty);
+	if (!pty->held_len || pty->feeding)
+		return;
+	if (!ev_eloop_register_idle_cb(pty->eloop, held_idle, pty, EV_NORMAL)) {
+		pty->feeding = true;
+		return;
+	}
+	log_warn("cannot feed pty output in parts");
 	if (feed(pty, pty->held_off, pty->held_len))
 		rearm(pty);
 }
@@ -618,6 +658,7 @@ int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short
 	if (ret)
 		goto err_sig;
 	pty->ws = ws;
+	pty->paused = false;
 
 	return 0;
 
@@ -641,7 +682,9 @@ void kmscon_pty_close(struct kmscon_pty *pty)
 	ev_eloop_unregister_child_cb(pty->eloop, sig_child, pty);
 	close(pty->fd);
 	pty->fd = -1;
+	pty->child = 0;
 	pty->held_len = 0;
+	pty->paused = false;
 	feeding_stop(pty);
 }
 
@@ -700,6 +743,31 @@ int kmscon_pty_get_slave_name(struct kmscon_pty *pty, char *buf, size_t len)
 		return -EINVAL;
 
 	return ptsname_r(pty->fd, buf, len);
+}
+
+pid_t kmscon_pty_get_child(struct kmscon_pty *pty)
+{
+	return pty && pty_is_open(pty) ? pty->child : 0;
+}
+
+/* the slave reached from the master, not by its name, which could be replaced */
+int kmscon_pty_get_slave_owner(struct kmscon_pty *pty, uid_t *uid)
+{
+	struct stat st;
+	int slave, ret = 0;
+
+	if (!pty || !uid || !pty_is_open(pty))
+		return -EINVAL;
+
+	slave = ioctl(pty->fd, TIOCGPTPEER, O_RDONLY | O_NOCTTY | O_CLOEXEC);
+	if (slave < 0)
+		return -errno;
+	if (fstat(slave, &st))
+		ret = -errno;
+	else
+		*uid = st.st_uid;
+	close(slave);
+	return ret;
 }
 
 void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned short height,

@@ -44,6 +44,8 @@
 
 #include <stdbool.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include "shl/eloop.h"
 
 struct kmscon_pty;
 
@@ -66,6 +68,8 @@ int kmscon_pty_set_conf(struct kmscon_pty *pty, const char *term, const char *co
 
 int kmscon_pty_get_fd(struct kmscon_pty *pty);
 void kmscon_pty_dispatch(struct kmscon_pty *pty);
+/* the pty's own loop, which reaps its children */
+struct ev_eloop *kmscon_pty_get_eloop(struct kmscon_pty *pty);
 
 /*
  * The size in cells, and the cell size in pixels (0: unknown): TIOCSWINSZ
@@ -82,5 +86,19 @@ void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned sh
 		       unsigned int cell_w, unsigned int cell_h);
 
 int kmscon_pty_get_slave_name(struct kmscon_pty *pty, char *buf, size_t len);
+/* the process the pty started, or 0 when it is not open */
+pid_t kmscon_pty_get_child(struct kmscon_pty *pty);
+/* the slave's owner, from fstat on the slave, as /bin/login sets it */
+int kmscon_pty_get_slave_owner(struct kmscon_pty *pty, uid_t *uid);
+
+/*
+ * While paused, the pty neither reads nor hands its held output to the input
+ * callback; a pause from inside the callback takes effect when it returns, and
+ * what it did not take stays held. Resuming hands the held output over from
+ * the next turn of the pty's loop, then reads again. Opening and closing the
+ * pty clear the pause.
+ */
+void kmscon_pty_pause(struct kmscon_pty *pty);
+void kmscon_pty_resume(struct kmscon_pty *pty);
 
 #endif /* KMSCON_PTY_H */

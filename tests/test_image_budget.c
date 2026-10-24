@@ -2,7 +2,9 @@
  * ADR-103's image budget (src/render/image_budget.c) against real libtsm
  * screens: the auto limit from the displays, a set limit, eviction across
  * screens in ADR-103's order with the renderers' undrawn pictures first, a
- * placed image never evicted, a shrinking limit evicting down, a removed
+ * sixel placed on a screen never evicted, and, with a libtsm that has kitty
+ * graphics, kitty images placed on a screen evicted last, oldest transmission
+ * first, but never for a renderer's picture; a shrinking limit evicting down, a removed
  * screen giving its bytes back, and a sixel drawn through the vte reserving
  * from the budget, and a terminal's vte made into the budget and unwound from
  * it. Images are made through libtsm's test calls.
@@ -53,13 +55,15 @@ static int unplaced(struct tsm_screen *con, uint32_t id, bool transient, uint64_
 	return tsm_screen_test_image(con, &img, key);
 }
 
-/* a kitty image placed at the top left of the screen */
-static uint64_t placed(struct tsm_screen *con, uint32_t id)
+/* an image of @kind placed at the top left of the screen */
+static uint64_t placed(struct tsm_screen *con, uint32_t id, unsigned int kind)
 {
+	struct tsm_test_image img = {
+		.width = W, .height = H, .pixels = pixels, .kind = kind, .id = id};
 	struct tsm_test_placement pl = {0};
 	uint64_t key, pkey;
 
-	assert(unplaced(con, id, false, &key) == 0);
+	assert(tsm_screen_test_image(con, &img, &key) == 0);
 	pl.image = key;
 	assert(tsm_screen_test_place(con, &pl, &pkey) == 0);
 	return key;
@@ -127,8 +131,9 @@ static void test_auto_limit(void)
 /*
  * Room for one more image is taken in ADR-103's order, across both screens:
  * undrawn pictures, then the transient unplaced image, then unplaced ones
- * least recently used first, then images placed only in scrollback. An image
- * placed on a screen's lines stays, and a new one that cannot fit is refused.
+ * least recently used first, then images placed only in scrollback. A sixel
+ * placed on a screen's lines stays, and a new image that cannot fit is
+ * refused.
  */
 static void test_eviction_order(void)
 {
@@ -140,13 +145,13 @@ static void test_eviction_order(void)
 	image_budget_set_limit(5 * IMG);
 	/* a: an unplaced image, then one placed and scrolled into scrollback */
 	assert(unplaced(a, 1, false, &old) == 0);
-	scrolled = placed(a, 2);
+	scrolled = placed(a, 2, TSM_IMAGE_KITTY);
 	for (i = 0; i < 20; i++)
 		tsm_screen_newline(a);
-	/* b: a newer unplaced one, a transient one, one placed on screen */
+	/* b: a newer unplaced one, a transient one, a sixel placed on screen */
 	assert(unplaced(b, 3, false, &newer) == 0);
 	assert(unplaced(b, 4, true, &transient) == 0);
-	onscreen = placed(b, 5);
+	onscreen = placed(b, 0, TSM_IMAGE_SIXEL);
 	assert(image_budget_used() == 5 * IMG);
 
 	/* undrawn pictures go first; images stay while they give room */
@@ -184,6 +189,55 @@ static void test_eviction_order(void)
 	assert(!budget.screens && !budget.n_screens);
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 }
+
+#ifdef TSM_SCREEN_IMAGE_PLACED_KITTY
+static bool drawn_none(struct tsm_screen *con, uint64_t key, void *data)
+{
+	return false;
+}
+
+/*
+ * ADR-103's storage-quota rule: kitty images placed on a screen's lines are
+ * evicted for a new image after the unplaced ones, oldest transmission first,
+ * and the sixel stays. A renderer's picture never evicts them, so its count
+ * of what a screen can give stops at the first of them.
+ */
+static void test_placed_kitty(void)
+{
+	struct tsm_screen *a = new_screen();
+	uint64_t k1, k2, six, u1, u2, k;
+
+	image_budget_set_limit(3 * IMG);
+	k1 = placed(a, 1, TSM_IMAGE_KITTY);
+	k2 = placed(a, 2, TSM_IMAGE_KITTY);
+	six = placed(a, 0, TSM_IMAGE_SIXEL);
+	assert(image_budget_used() == 3 * IMG);
+
+	assert(unplaced(a, 3, false, &u1) == 0);
+	assert(!holds(a, k1) && holds(a, k2) && holds(a, six));
+	assert(unplaced(a, 4, false, &u2) == 0);
+	assert(!holds(a, u1) && holds(a, k2) && holds(a, u2));
+
+	/* a picture takes the unplaced image, then stops at the placed kitty one */
+	assert(image_budget_picture_room(IMG, drawn_none, NULL) == 0);
+	assert(!holds(a, u2) && holds(a, k2));
+	image_budget_add_picture(IMG);
+	assert(image_budget_picture_room(IMG, drawn_none, NULL) == -ENOSPC);
+	assert(holds(a, k2) && holds(a, six));
+	image_budget_remove_picture(IMG);
+
+	/* a new image takes it; then only the sixel is left, which stays */
+	image_budget_set_limit(2 * IMG);
+	assert(holds(a, k2) && holds(a, six));
+	assert(unplaced(a, 5, false, &k) == 0 && !holds(a, k2));
+	image_budget_set_limit(IMG);
+	assert(holds(a, six) && image_budget_used() == IMG);
+	assert(unplaced(a, 6, false, &k) == -ENOSPC);
+
+	free_screen(a);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+#endif
 
 /*
  * A renderer re-set on a font change uncounts its display and counts it back
@@ -451,6 +505,9 @@ int main(void)
 
 	test_auto_limit();
 	test_eviction_order();
+#ifdef TSM_SCREEN_IMAGE_PLACED_KITTY
+	test_placed_kitty();
+#endif
 	test_display_recount();
 	test_zero();
 	test_sixel();

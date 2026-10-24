@@ -46,6 +46,11 @@ systemdsystemunitdir = systemd_deps.get_variable(
     'systemdsystemunitdir',
     default_value: 'lib/systemd/system',
 )
+# kmscon-image, the image helper's user before login (ADR-103)
+sysusersdir = systemd_deps.get_variable(
+    'sysusersdir',
+    default_value: 'lib/sysusers.d',
+)
 
 #
 # Required dependencies
@@ -242,6 +247,7 @@ summary(
         'moduledir': moduledir,
         'mandir': mandir,
         'systemdsystemunitdir': systemdsystemunitdir,
+        'sysusersdir': sysusersdir,
     },
     section: 'Directories',
 )
@@ -300,6 +306,14 @@ foreach filename, kwargs : {
         kwargs: kwargs,
     )
 endforeach
+
+# The image helper's user before login: a system user with home / and no
+# login shell, created by systemd-sysusers (ADR-103, The image helper)
+install_data(
+    'scripts/sysusers.d/kmscon-image.conf',
+    install_dir: sysusersdir,
+    install_mode: 'rw-r--r--',
+)
 
 # kmscon.conf
 install_data(

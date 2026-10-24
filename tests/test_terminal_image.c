@@ -25,7 +25,9 @@
  *   in time costs the client EBADF and the helper its life, and input goes on.
  * - kmscon's own input: asciicast playback feeds nothing while a request is
  *   out and loses no byte; a terminal in the background resumes it only when
- *   it comes back; terminal_image_input refuses bytes libtsm would drop.
+ *   it comes back; terminal_image_input refuses bytes libtsm would drop. A
+ *   reply resumes playback after a terminal's first activation, and not
+ *   while the held bytes it fed have sent the next request.
  */
 
 #include <assert.h>
@@ -88,8 +90,10 @@ static struct tsm_vte *vte;
 static struct image_budget_terminal images;
 static struct kmscon_pty *pty;
 static struct terminal_image ti;
-static int client; /* the pseudo-terminal's slave: the client's side */
+static int client;	      /* the pseudo-terminal's slave: the client's side */
+static struct ev_eloop *loop; /* the pty's, kept while a test takes it away */
 static unsigned int replied;
+static const char *test_name; /* the test running, for a stuck report */
 
 /* what the vte wrote back to the client */
 static char out[4096];
@@ -119,15 +123,17 @@ static void on_replied(void *data)
 	replied++;
 }
 
-static void setup(const char *helper)
+static void setup(const char *name, const char *helper)
 {
 	struct termios tio;
 	int master;
 
+	test_name = name;
 	assert(tsm_screen_new(&con, NULL, NULL) == 0);
 	assert(tsm_screen_resize(con, 40, 10) == 0);
 	assert(terminal_vte_new(&vte, &images, con, &conf, vte_write, NULL) == 0);
 	assert(kmscon_pty_new(&pty, pty_read, NULL, NULL) == 0);
+	loop = pty->eloop;
 
 	master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC | O_NONBLOCK);
 	assert(master >= 0 && !grantpt(master) && !unlockpt(master));
@@ -179,11 +185,11 @@ static void run_until(bool (*done)(void))
 	while (!done()) {
 		if (now_ms() >= end)
 			fprintf(stderr,
-				"stuck: busy %d paused %d held %zu cursor %u out %zu replied %u\n",
-				terminal_image_busy(&ti), pty->paused, pty->held_len,
+				"%s stuck: busy %d paused %d held %zu x %u out %zu replied %u\n",
+				test_name, terminal_image_busy(&ti), pty->paused, pty->held_len,
 				tsm_screen_get_cursor_x(con), out_len, replied);
 		assert(now_ms() < end);
-		ev_eloop_dispatch(pty->eloop, 10);
+		ev_eloop_dispatch(loop, 10);
 	}
 }
 
@@ -192,7 +198,7 @@ static void run_for(unsigned int ms)
 	uint64_t end = now_ms() + ms;
 
 	while (now_ms() < end)
-		ev_eloop_dispatch(pty->eloop, 10);
+		ev_eloop_dispatch(loop, 10);
 }
 
 static bool idle(void)
@@ -352,7 +358,7 @@ static void test_media(void)
 	pid_t helper;
 	int fd;
 
-	setup(real_helper);
+	setup(__func__, real_helper);
 
 	/* inline PNG */
 	kitty("a=T,f=100,i=1,z=1,C=1", b64(png, make_png(png)));
@@ -417,7 +423,7 @@ static void test_discard(void)
 	const char *path;
 	pid_t helper;
 
-	setup(real_helper);
+	setup(__func__, real_helper);
 	path = file_with_px("tty-graphics-protocol-discard");
 	kitty("a=f,t=t,f=32,s=2,v=1,i=6", b64(path, strlen(path)));
 	run_until(have_answer);
@@ -446,7 +452,7 @@ static void test_prelogin(void)
 	uint8_t png[128];
 	char p1[256], p2[256], p3[256];
 
-	setup(real_helper);
+	setup(__func__, real_helper);
 	id.prelogin = true;
 
 	strcpy(p1, file_with_px("image.rgba"));
@@ -488,7 +494,7 @@ static void test_pause(void)
 	const char *path = file_with_px("image.rgba");
 	int n;
 
-	setup(real_helper);
+	setup(__func__, real_helper);
 	n = snprintf(buf, sizeof(buf), "\033_Ga=t,t=f,f=32,s=2,v=1,i=12;%s\033\\",
 		     b64(path, strlen(path)));
 	n += snprintf(buf + n, sizeof(buf) - n, "\033_Ga=p,i=12,C=1;\033\\AB\033[c");
@@ -523,7 +529,7 @@ static void test_cancel(void)
 {
 	const char *path = file_with_px("image.rgba");
 
-	setup(real_helper);
+	setup(__func__, real_helper);
 	kitty("a=T,t=f,f=32,s=2,v=1,i=13,C=1", b64(path, strlen(path)));
 	send_client("AB", 2);
 	run_until(request_out);
@@ -565,7 +571,7 @@ static void test_close(void)
 	const char *path = file_with_px("image.rgba");
 	pid_t first;
 
-	setup(real_helper);
+	setup(__func__, real_helper);
 	kitty("a=T,t=f,f=32,s=2,v=1,i=16,C=1", b64(path, strlen(path)));
 	run_until(request_out);
 	first = image_host_pid(ti.host);
@@ -595,7 +601,7 @@ static void test_close(void)
  */
 static void test_timeout(void)
 {
-	setup(fake_helper);
+	setup(__func__, fake_helper);
 	image_host_set_timeout(ti.host, 200);
 	kitty("a=T,t=f,f=32,s=2,v=1,i=18,C=1", b64("hang", 4));
 	send_client("AB", 2);
@@ -608,9 +614,10 @@ static void test_timeout(void)
 	teardown();
 }
 
-/* what playback fed the vte */
+/* what playback fed the vte, and the events terminal_image_input refused */
 static char played[64];
 static size_t n_played;
+static unsigned int n_refused;
 
 static void playback_write(const char *u8, size_t len, void *data)
 {
@@ -619,12 +626,45 @@ static void playback_write(const char *u8, size_t len, void *data)
 		assert(n_played + len < sizeof(played));
 		memcpy(played + n_played, u8, len);
 		n_played += len;
+	} else {
+		n_refused++;
 	}
 }
 
 static bool played_all(void)
 {
 	return n_played == 4;
+}
+
+static char cast_path[256];
+
+/* a player of PQRS, its first event due 300 ms after the start, handed to ti */
+static struct kmscon_asciinema *player_new(void)
+{
+	static const char cast[] = "{\"version\":2,\"width\":80,\"height\":24}\n"
+				   "[0.3,\"o\",\"P\"]\n"
+				   "[0.31,\"o\",\"Q\"]\n"
+				   "[0.32,\"o\",\"R\"]\n"
+				   "[0.33,\"o\",\"S\"]\n";
+	struct kmscon_asciinema *player;
+	int fd;
+
+	snprintf(cast_path, sizeof(cast_path), "%s/play.cast", tmpdir);
+	fd = open(cast_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	assert(fd >= 0 && write(fd, cast, sizeof(cast) - 1) == (ssize_t)sizeof(cast) - 1);
+	close(fd);
+	assert(kmscon_asciinema_new(&player, loop, cast_path, false, playback_write, NULL) == 0);
+	terminal_image_set_playback(&ti, player);
+	n_played = 0;
+	n_refused = 0;
+	return player;
+}
+
+static void player_free(struct kmscon_asciinema *player)
+{
+	terminal_image_set_playback(&ti, NULL);
+	kmscon_asciinema_free(player);
+	unlink(cast_path);
 }
 
 /*
@@ -635,27 +675,13 @@ static bool played_all(void)
  */
 static void test_playback(void)
 {
-	static const char cast[] = "{\"version\":2,\"width\":80,\"height\":24}\n"
-				   "[0.3,\"o\",\"P\"]\n"
-				   "[0.31,\"o\",\"Q\"]\n"
-				   "[0.32,\"o\",\"R\"]\n"
-				   "[0.33,\"o\",\"S\"]\n";
 	struct kmscon_asciinema *player;
-	char path[256];
-	int fd;
 
-	setup(fake_helper);
+	setup(__func__, fake_helper);
 	image_host_set_timeout(ti.host, 1000);
-	snprintf(path, sizeof(path), "%s/play.cast", tmpdir);
-	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-	assert(fd >= 0 && write(fd, cast, sizeof(cast) - 1) == (ssize_t)sizeof(cast) - 1);
-	close(fd);
-	assert(kmscon_asciinema_new(&player, pty->eloop, path, false, playback_write, NULL) == 0);
-	terminal_image_set_playback(&ti, player);
+	player = player_new();
 	terminal_image_play(&ti, true);
-	n_played = 0;
 
-	/* the first event falls due 300 ms after the start */
 	assert(kmscon_asciinema_start(player));
 	kitty("a=T,t=f,f=32,s=2,v=1,i=19,C=1", b64("hang", 4));
 	run_until(request_out);
@@ -663,7 +689,7 @@ static void test_playback(void)
 	/* the events fall due while the request is out: none is fed */
 	assert(!terminal_image_input(&ti, "X", 1));
 	run_for(500);
-	assert(terminal_image_busy(&ti) && n_played == 0);
+	assert(terminal_image_busy(&ti) && n_played == 0 && n_refused == 0);
 	/* sent to the background meanwhile: the reply does not resume it */
 	terminal_image_play(&ti, false);
 	run_until(have_answer);
@@ -674,10 +700,78 @@ static void test_playback(void)
 	terminal_image_play(&ti, true);
 	run_until(played_all);
 	assert(!memcmp(played, "PQRS", 4) && tsm_screen_get_cursor_x(con) == 4);
+	assert(n_refused == 0);
 
-	terminal_image_set_playback(&ti, NULL);
-	kmscon_asciinema_free(player);
-	unlink(path);
+	player_free(player);
+	teardown();
+}
+
+/*
+ * terminal_activate on a terminal not yet open: terminal_open starts
+ * playback, then playback is marked in the foreground, so a request's reply
+ * resumes it with no activation after.
+ */
+static void test_first_activation(void)
+{
+	struct kmscon_asciinema *player;
+
+	setup(__func__, fake_helper);
+	player = player_new();
+	assert(kmscon_asciinema_start(player));
+	terminal_image_play(&ti, true);
+
+	kitty("a=T,t=f,f=32,s=2,v=1,i=22,C=1", b64("good", 4));
+	run_until(request_out);
+	run_until(have_answer);
+	answered(22, "OK");
+	run_until(played_all);
+	assert(!memcmp(played, "PQRS", 4) && n_refused == 0);
+
+	player_free(player);
+	teardown();
+}
+
+/*
+ * A reply whose pty has no idle source to feed in parts (the "cannot feed
+ * pty output in parts" path) feeds the held bytes at once. When they hold
+ * the next request, playback stays paused until that one is answered too:
+ * resumed between them, it would hand terminal_image_input an event that is
+ * refused and lost.
+ */
+static void test_reply_feeds_a_request(void)
+{
+	struct kmscon_asciinema *player;
+	char buf[256];
+	int n;
+
+	setup(__func__, fake_helper);
+	image_host_set_timeout(ti.host, 1000);
+	player = player_new();
+	terminal_image_play(&ti, true);
+	assert(kmscon_asciinema_start(player));
+
+	n = snprintf(buf, sizeof(buf), "\033_Ga=T,t=f,f=32,s=2,v=1,i=20,C=1;%s\033\\",
+		     b64("good", 4));
+	n += snprintf(buf + n, sizeof(buf) - n, "\033_Ga=T,t=f,f=32,s=2,v=1,i=21,C=1;%s\033\\",
+		      b64("hang", 4));
+	send_client(buf, n);
+	run_until(request_out);
+	assert(pty->paused && pty->held_len);
+	pty->eloop = NULL; /* ev_eloop_register_idle_cb fails */
+	run_until(have_answer);
+	pty->eloop = loop;
+	answered(20, "OK");
+	/* the reply fed the second command, which is out */
+	assert(terminal_image_busy(&ti) && pty->paused);
+	/* the events fall due meanwhile: none is offered */
+	run_for(500);
+	assert(n_played == 0 && n_refused == 0);
+	run_until(have_answer);
+	answered(21, "EBADF:Failed to read image file");
+	run_until(played_all);
+	assert(!memcmp(played, "PQRS", 4) && n_refused == 0);
+
+	player_free(player);
 	teardown();
 }
 
@@ -700,6 +794,8 @@ int main(int argc, char **argv)
 	test_close();
 	test_timeout();
 	test_playback();
+	test_first_activation();
+	test_reply_feeds_a_request();
 
 	snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
 	assert(!system(cmd));

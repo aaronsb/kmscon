@@ -92,7 +92,11 @@ static int image_event(struct tsm_vte *vte, const struct tsm_vte_image_request *
 	return 0;
 }
 
-/* -ENOENT from libtsm, a request it cancelled meanwhile, resumes all the same */
+/*
+ * -ENOENT from libtsm, a request it cancelled meanwhile, resumes all the same.
+ * The pty resumes first: when it cannot feed in parts it feeds the held bytes
+ * at once, and they may hold the next request, which pauses playback again.
+ */
 static void image_reply(struct image_host *host, uint64_t id, unsigned int status,
 			unsigned int width, unsigned int height, const uint8_t *bytes, size_t len,
 			void *data)
@@ -110,7 +114,7 @@ static void image_reply(struct image_host *host, uint64_t id, unsigned int statu
 	tsm_vte_image_reply(ti->vte, id, &res);
 	ti->replied(ti->data);
 	kmscon_pty_resume(ti->pty);
-	if (ti->playing)
+	if (ti->playing && !image_host_busy(ti->host))
 		kmscon_asciinema_resume(ti->asciinema);
 }
 #endif
@@ -178,7 +182,7 @@ bool terminal_image_busy(struct terminal_image *ti)
 bool terminal_image_input(struct terminal_image *ti, const char *u8, size_t len)
 {
 	if (image_host_busy(ti->host)) {
-		log_warning("%zu bytes of kmscon's own input held back: an image request is out",
+		log_warning("%zu bytes of kmscon's own input dropped: an image request is out",
 			    len);
 		return false;
 	}

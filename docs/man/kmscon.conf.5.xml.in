@@ -662,9 +662,12 @@ font-name=Ubuntu Mono
                 object, and places them at the cursor, above or below the
                 text. Files, shared memory, PNG and zlib data are read and
                 decoded by <command>kmscon-image-helper</command>, running as
-                the session's user; before anyone has logged in, files and
-                shared memory are refused. When off, kitty commands are
-                skipped without a reply, so a program's query finds no
+                the session's user. Before anyone has logged in, files and
+                shared memory are refused, and PNG and zlib data are decoded
+                by a helper running as <literal>kmscon-image</literal>, else
+                <literal>nobody</literal>, else refused; without logind, a pty
+                owned by root counts as before login. When off, kitty commands
+                are skipped without a reply, so a program's query finds no
                 support. (default: on)</para>
         </listitem>
       </varlistentry>

@@ -71,17 +71,23 @@
  * scaled and rotated once and kept, per image and drawn size, up to twice the
  * screen's size in ARGB; the least recently used goes first. The pictures draw
  * on ADR-103's image budget (image_budget.c), which libtsm's images share, and
- * with them never pass it, not even within a frame: a picture that would is
- * left out until the room in the budget grows (pictures or images freed, a
- * display added or removed, a larger limit) or this display's placements
- * change, and idle frames do not compose it again. A libtsm image that needs
- * room takes it first from the pictures the last frame did not draw. While
- * one is left out on any display, each display frees the pictures no placement
- * of its shows any more as its frame starts, and that frame tries its own
- * left-out placements again. A terminal whose session leaves the foreground
- * frees its pictures. The scaler's working memory (at most 16 MiB) and the
- * buffer a picture is rotated in (at most one screen) live only while one
- * picture is made and are not counted.
+ * with them never pass it, not even within a frame. A picture that needs room
+ * takes it from this display's pictures the frame does not place, then, in
+ * ADR-103's order, from other displays' pictures their last frame did not
+ * draw and from libtsm's images that are unplaced or placed only in
+ * scrollback, never one this frame draws (operator's answer, 2026-10-23):
+ * viewing a new picture can push older ones out of scrollback. Nothing is
+ * freed for it unless that makes it fit; one that does not fit is left out
+ * until the room in the budget grows (pictures or images freed, a display
+ * added or removed, a larger limit) or this display's placements change, and
+ * idle frames do not compose it again. A libtsm image that needs room takes it
+ * first from the pictures the last frame did not draw. While one is left out
+ * on any display, each display frees the pictures no placement of its shows
+ * any more as its frame starts, and that frame tries its own left-out
+ * placements again. A terminal whose session leaves the foreground frees its
+ * pictures. The scaler's working memory (at most 16 MiB) and the buffer a
+ * picture is rotated in (at most one screen) live only while one picture is
+ * made and are not counted.
  *
  * Placement damage: this display keeps the placements it drew last. One added,
  * removed, or changed in any way that changes what it draws (moved, resized,
@@ -206,6 +212,7 @@ struct bbulk {
 };
 
 static void bbulk_trim(struct image_budget_cache *cache, size_t want);
+static size_t bbulk_trimmable(struct image_budget_cache *cache);
 
 static int bbulk_init(struct kmscon_text *txt)
 {
@@ -261,55 +268,15 @@ static struct kmscon_glyph *bbulk_rotate_glyph(struct kmscon_glyph *glyph,
 	struct video_buffer *buf = &glyph->buf;
 	struct kmscon_glyph *rglyph;
 	unsigned int bpp = buf->format == VIDEO_FORMAT_ARGB32 ? 4 : 1;
-	int width, height, i, j;
-	uint8_t *dst, *src;
+	bool turn = orientation == OR_RIGHT || orientation == OR_LEFT;
 
 	rglyph = calloc(1, sizeof(*rglyph) + glyph->buf.width * glyph->buf.height * bpp);
 	if (!rglyph)
 		goto err_free;
 
-	if (orientation == OR_NORMAL || orientation == OR_UPSIDE_DOWN) {
-		width = buf->width;
-		height = buf->height;
-	} else {
-		width = buf->height;
-		height = buf->width;
-	}
-	src = buf->data;
-	dst = rglyph->buf.data;
-
-	switch (orientation) {
-	default:
-	case OR_NORMAL:
-		/* should never happen */
-		break;
-	case OR_RIGHT:
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++)
-				memcpy(&dst[(j * width + (width - i - 1)) * bpp], &src[j * bpp],
-				       bpp);
-			src += buf->width * bpp;
-		}
-		break;
-	case OR_UPSIDE_DOWN:
-		src += (buf->height - 1) * buf->width * bpp;
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++)
-				memcpy(&dst[j * bpp], &src[(buf->width - j - 1) * bpp], bpp);
-			dst += width * bpp;
-			src -= buf->width * bpp;
-		}
-		break;
-	case OR_LEFT:
-		for (i = 0; i < buf->height; i++) {
-			for (j = 0; j < buf->width; j++)
-				memcpy(&dst[((height - j - 1) * width + i) * bpp], &src[j * bpp],
-				       bpp);
-			src += buf->width * bpp;
-		}
-	}
-	rglyph->buf.width = width;
-	rglyph->buf.height = height;
+	picture_rotate(buf->data, buf->width, buf->height, bpp, rglyph->buf.data, orientation);
+	rglyph->buf.width = turn ? buf->height : buf->width;
+	rglyph->buf.height = turn ? buf->width : buf->height;
 	rglyph->buf.format = buf->format;
 	rglyph->double_width = glyph->double_width;
 	rglyph->key = glyph->key;
@@ -477,6 +444,7 @@ static int bbulk_set(struct kmscon_text *txt)
 		goto free_sprites;
 	bb->counted = txt->disp;
 	bb->cache.trim = bbulk_trim;
+	bb->cache.trimmable = bbulk_trimmable;
 	image_budget_add_cache(&bb->cache);
 	return 0;
 
@@ -578,7 +546,7 @@ static struct kmscon_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, ui
 	k.bold = attr.bold;
 	k.italic = attr.italic;
 	k.width = width;
-	hash = kmscon_glyph_key_hash(&k);
+	hash = kmscon_glyph_key_hash(key, attr.bold, attr.italic, width, 0);
 
 	glyph = shl_lru_find(bb->glyphs, hash, glyph_matches, &k);
 	if (glyph)
@@ -637,48 +605,67 @@ static inline uint32_t over_div255(uint32_t t)
 	return (t + (t >> 8)) >> 8;
 }
 
+/* premultiplied @a, @r, @g, @b over the premultiplied ARGB pixel @p */
+static inline uint32_t over_pixel(uint32_t p, uint32_t a, uint32_t r, uint32_t g, uint32_t b)
+{
+	uint32_t na = 255 - a;
+
+	return ((a + over_div255((p >> 24) * na)) << 24) |
+	       ((r + over_div255(((p >> 16) & 0xff) * na)) << 16) |
+	       ((g + over_div255(((p >> 8) & 0xff) * na)) << 8) |
+	       (b + over_div255((p & 0xff) * na));
+}
+
 /*
  * Paint @src over the premultiplied ARGB scratch @dst, with @src's top-left at
  * @ox, @oy, clipped to @dst: a mask tinted with @c, or a colour glyph as it is
  * (premultiplied, @c unused). Both are packed.
+ *
+ * This runs for every cell of every frame, so the format is chosen once, with
+ * a loop for each, and what the loops read is copied into locals first.
  */
 static void compose(struct video_buffer *dst, const struct video_buffer *src, unsigned int ox,
 		    unsigned int oy, struct tsm_screen_color c)
 {
-	bool argb = src->format == VIDEO_FORMAT_ARGB32;
+	const unsigned int sw = src->width, dw = dst->width;
+	const uint32_t cr = c.r, cg = c.g, cb = c.b;
+	uint32_t *const ddata = (uint32_t *)dst->data;
 	unsigned int x, y, w, h;
-	uint32_t *d;
 
-	if (ox >= dst->width || oy >= dst->height)
+	if (ox >= dw || oy >= dst->height)
 		return;
-	w = min(src->width, dst->width - ox);
+	w = min(sw, dw - ox);
 	h = min(src->height, dst->height - oy);
 
-	for (y = 0; y < h; y++) {
-		d = &((uint32_t *)dst->data)[(oy + y) * dst->width + ox];
-		for (x = 0; x < w; x++) {
-			uint32_t a, na, p = d[x], sr, sg, sb;
+	if (src->format == VIDEO_FORMAT_ARGB32) {
+		const uint32_t *const sdata = (const uint32_t *)src->data;
 
-			if (argb) {
-				uint32_t s = ((const uint32_t *)src->data)[y * src->width + x];
+		for (y = 0; y < h; y++) {
+			const uint32_t *s = &sdata[y * sw];
+			uint32_t *d = &ddata[(oy + y) * dw + ox];
 
-				a = s >> 24;
-				sr = (s >> 16) & 0xff;
-				sg = (s >> 8) & 0xff;
-				sb = s & 0xff;
-			} else {
-				a = src->data[y * src->width + x];
-				sr = over_div255(c.r * a);
-				sg = over_div255(c.g * a);
-				sb = over_div255(c.b * a);
+			for (x = 0; x < w; x++) {
+				uint32_t v = s[x], a = v >> 24;
+
+				if (a)
+					d[x] = over_pixel(d[x], a, (v >> 16) & 0xff,
+							  (v >> 8) & 0xff, v & 0xff);
 			}
-			if (!a)
-				continue;
-			na = 255 - a;
-			d[x] = ((a + over_div255((p >> 24) * na)) << 24) |
-			       ((sr + over_div255(((p >> 16) & 0xff) * na)) << 16) |
-			       ((sg + over_div255(((p >> 8) & 0xff) * na)) << 8) |
-			       (sb + over_div255((p & 0xff) * na));
+		}
+	} else {
+		const uint8_t *const sdata = src->data;
+
+		for (y = 0; y < h; y++) {
+			const uint8_t *s = &sdata[y * sw];
+			uint32_t *d = &ddata[(oy + y) * dw + ox];
+
+			for (x = 0; x < w; x++) {
+				uint32_t a = s[x];
+
+				if (a)
+					d[x] = over_pixel(d[x], a, over_div255(cr * a),
+							  over_div255(cg * a), over_div255(cb * a));
+			}
 		}
 	}
 }
@@ -970,6 +957,12 @@ static size_t picture_limit(struct bbulk *bb)
  * drawn at all, and a picture made from its room would then draw only in the
  * cells this frame draws, and stay left out of the rest of its box.
  */
+/* @pic was drawn on this frame, or a placement of it shows it */
+static bool picture_in_use(struct bbulk *bb, const struct picture *pic)
+{
+	return pic->last_use == bb->frame_count || picture_placed(bb, pic);
+}
+
 static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep_drawn)
 {
 	struct picture **pp, **lru, *victim;
@@ -977,8 +970,7 @@ static void pictures_trim(struct bbulk *bb, size_t want, size_t limit, bool keep
 	while (bb->picture_bytes + want > limit) {
 		lru = NULL;
 		for (pp = &bb->pictures; *pp; pp = &(*pp)->next) {
-			if (keep_drawn &&
-			    ((*pp)->last_use == bb->frame_count || picture_placed(bb, *pp)))
+			if (keep_drawn && picture_in_use(bb, *pp))
 				continue;
 			if (!lru || (*pp)->last_use < (*lru)->last_use)
 				lru = pp;
@@ -1003,6 +995,27 @@ static void bbulk_trim(struct image_budget_cache *cache, size_t want)
 	pictures_trim(bb, 0, want < bb->picture_bytes ? bb->picture_bytes - want : 0, true);
 }
 
+/* what bbulk_trim frees at most */
+static size_t bbulk_trimmable(struct image_budget_cache *cache)
+{
+	struct bbulk *bb = (struct bbulk *)cache;
+	struct picture *p;
+	size_t bytes = 0;
+
+	for (p = bb->pictures; p; p = p->next)
+		if (!picture_in_use(bb, p))
+			bytes += p->bytes;
+	return bytes;
+}
+
+/* a placement left out here may fit now: the budget has grown since */
+static bool bbulk_starved(struct kmscon_text *txt)
+{
+	struct bbulk *bb = txt->data;
+
+	return bb && bb->starving && bb->starved_gen != image_budget_gen();
+}
+
 /*
  * Between frames: the scaled pictures fit this display's limit. Pictures freed
  * to fit it do not try a placement left out here again, or two pictures over
@@ -1018,6 +1031,24 @@ static void pictures_settle(struct bbulk *bb)
 	starving_set(bb, starved);
 	pictures_trim(bb, 0, picture_limit(bb), false);
 	bb->starved_gen = image_budget_gen();
+}
+
+/*
+ * @con's image @key is shown by a placement of the frame that renderer @data
+ * draws; without the frame's screen, every image counts as drawn
+ */
+static bool frame_draws(struct tsm_screen *con, uint64_t key, void *data)
+{
+	struct kmscon_text *txt = data;
+	struct bbulk *bb = txt->data;
+	unsigned int i;
+
+	if (con != txt->screen)
+		return !txt->screen;
+	for (i = 0; i < bb->n_places; i++)
+		if (!bb->places[i].overlay && bb->places[i].fp.image_key == key)
+			return true;
+	return false;
 }
 
 /*
@@ -1111,7 +1142,8 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 		 * it the cells are drawn without the picture, and drawn again
 		 * once the budget has changed
 		 */
-		if (image_budget_used() + bytes > image_budget_limit())
+		if (image_budget_used() + bytes > image_budget_limit() &&
+		    image_budget_picture_room(bytes, frame_draws, txt))
 			return -ENOSPC;
 		pic = malloc(sizeof(*pic) + bytes);
 		tmp = txt->orientation == OR_NORMAL ? NULL : malloc(bytes);
@@ -1122,7 +1154,7 @@ static int place_resolve(struct kmscon_text *txt, struct place *p)
 		ret = picture_scale(src, stride, fp->src_width, fp->src_height, dw, dh, u0, v0, u1,
 				    v1, tmp ? tmp : pic->pixels);
 		if (!ret && tmp)
-			picture_rotate(tmp, w, h, pic->pixels, txt->orientation);
+			picture_rotate(tmp, w, h, sizeof(*tmp), pic->pixels, txt->orientation);
 		free(tmp);
 		if (ret) {
 			free(pic);
@@ -1815,5 +1847,6 @@ struct kmscon_text_ops kmscon_text_bbulk_ops = {
 	.render = bbulk_render,
 	.abort = NULL,
 	.release = bbulk_release,
+	.starved = bbulk_starved,
 	.draws_images = true,
 };

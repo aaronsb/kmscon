@@ -10,7 +10,7 @@ import time
 
 import t3_bench
 from t3_common import BASE, GUEST, RUNDIR, rel
-from t3_evaluate import BENCHMARKS, CASES, KEYS, SCREENS, evaluate
+from t3_evaluate import BENCHMARKS, CASES, KEYED, KEYS_AFTER, SCREENS, evaluate
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
 # Display variants. Each boots its own guest from the base image, with its
@@ -260,14 +260,20 @@ def run_variant(variant, timing, pkgs, log):
             last = wait_stable(vm, path, want=lambda img, prev=last: img.data != prev.data)
             caps[name] = path
             phase(name)
-            # Keys pressed on this screen, each captured once the screen has
-            # changed: a key that changes nothing fails its case.
-            for step, keys in KEYS.get(name, []):
-                vm.keys(*keys)
-                path = os.path.join(work, step + ".ppm")
+            # The keyed cases of this screen, each captured once the screen
+            # has changed from the capture before it: a key that changes
+            # nothing fails its case.
+            for screen, case, chords in KEYED:
+                if screen != name:
+                    continue
+                for chord in chords:
+                    vm.keys(*chord)
+                path = os.path.join(work, case + ".ppm")
                 last = wait_stable(vm, path, want=lambda img, prev=last: img.data != prev.data)
-                caps[step] = path
-                phase(step)
+                caps[case] = path
+                phase(case)
+            for chord in KEYS_AFTER.get(name, []):
+                vm.keys(*chord)
         # VT switch away and back. vt-switch: logind starts a second kmscon
         # on tty3, which must draw a screen (its login prompt). vt-restore:
         # back on tty2, the screen must be exactly as it was left. A switch

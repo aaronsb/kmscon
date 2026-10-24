@@ -342,9 +342,15 @@ read_size
 # Echo stays off for the whole run, so neither a key typed between prompts nor
 # the terminal's answer to cursor_row lands on a page. read_comment turns it on
 # while a comment is typed.
+#
+# Line editing stays off too (#131). read -n1 turns it off only while it reads,
+# and a Ctrl-D that arrives between two reads, while the page or a prompt is
+# drawn, meets a line-editing terminal: it becomes an end of file, which the
+# next read receives as a NUL byte and drops, and that read then waits for
+# another key. Off for the whole run, Ctrl-D is a key whenever it arrives.
 if [ -z "$nopage" ] && tty_mode=$(stty -g </dev/tty 2>/dev/null); then
 	trap 'stty "$tty_mode" </dev/tty' EXIT
-	stty -echo </dev/tty
+	stty -echo -icanon min 1 time 0 </dev/tty
 fi
 
 clear_screen

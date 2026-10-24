@@ -16,11 +16,27 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 # golden is the cjk one (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
            "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "sixel",
-           "sixel-ramps", "sixel-article", "sixel-bound", "photos", "photo-scroll",
-           "mpv-sixel", "tmux-2x2", "tmux-3x3", "s1-scroll", "cjk"]
+           "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict", "photos",
+           "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "s1-scroll", "flood", "cjk"]
+# Cases captured after a screen is drawn, by pressing keys: each is (screen,
+# case, the chords pressed before its capture), captured once the screen has
+# changed, so a key that changes nothing fails its case. After the last, the
+# chords in KEYS_AFTER put the terminal back as the screen left it. The
+# rotate grab is Logo with plus or equal, zoom Ctrl with the same, and both
+# match equal unshifted. photo-scroll's photograph has scrolled into
+# kmscon's scrollback, which Shift+PageUp shows and Shift+PageDown leaves
+# (ADR-103's A1).
+KEYED = [
+    ("sixel-evict", "sixel-evict-rotated", [("meta_l", "equal")]),
+    ("sixel-evict", "sixel-evict-history", [("meta_l", "minus")] + [("shift", "pgup")] * 30),
+    ("sixel-evict", "sixel-evict-zoomed", [("shift", "pgdn")] * 30 + [("ctrl", "equal")]),
+    ("photo-scroll", "photo-scrollback", [("shift", "pgup")]),
+    ("photo-scroll", "photo-scrollforward", [("shift", "pgdn")]),
+]
+KEYS_AFTER = {"sixel-evict": [("ctrl", "minus")]}
 # The screens that are also ADR-103 benchmark scenarios: each reports its
 # window on the event port, and the report carries its figures (t3_bench.py).
-BENCHMARKS = ["mpv-sixel", "tmux-2x2", "tmux-3x3", "s1-scroll"]
+BENCHMARKS = ["mpv-sixel", "tmux-2x2", "tmux-3x3", "s1-scroll", "flood"]
 # The benchmark screens judged by ADR-103's criterion for A2, that kmscon is
 # not the bottleneck (t3_bench.bottleneck); the tmux grids report their
 # figures only, since tmux redraws every pane's pictures itself.
@@ -32,20 +48,12 @@ KNOWN_BOTTLENECKS = {
     "mpv-sixel": {"2d-7680x2160": "aaronsb/kmscon#139",
                   "2d-7680x2160-font32": "aaronsb/kmscon#139"},
 }
-# Keys pressed after a screen is drawn, each a case of its own captured once
-# the screen has changed: (case, QEMU key codes pressed together).
-# photo-scroll's photograph has scrolled into kmscon's scrollback, which
-# Shift+PageUp shows and Shift+PageDown leaves (ADR-103's A1).
-KEYS = {
-    "photo-scroll": [("photo-scrollback", ("shift", "pgup")),
-                     ("photo-scrollforward", ("shift", "pgdn"))],
-}
 # A case compared with another case's golden: back from the scrollback, and
 # back from tty3 (vt-restore, with the last screen's).
 SAME_AS = {"photo-scrollforward": "photo-scroll", "vt-restore": SCREENS[-1]}
-# Every case of a variant: each screen and the key steps after it, then the
-# VT switch (a check without a golden) and the restore after it.
-CASES = [c for name in SCREENS for c in [name] + [k for k, _ in KEYS.get(name, [])]] \
+# Every case of a variant: each screen and the keyed cases after it, then
+# the VT switch (a check without a golden) and the restore after it.
+CASES = [c for name in SCREENS for c in [name] + [k for s, k, _ in KEYED if s == name]] \
     + ["vt-switch", "vt-restore"]
 # What each check shows and what correct looks like, for the conformance run
 # page; a screen's comes from the header comment of its script (describe).
@@ -57,6 +65,16 @@ CHECKS = {
     "photo-scrollforward": "After Shift+PageDown, back from the scrollback. Correct: identical "
                            "to the photo-scroll golden, nothing of the photograph left on "
                            "the lines.",
+    "sixel-evict-rotated": "The sixel-evict screen turned with Logo+=: a scaled copy of the last "
+                           "picture, which fits the full image budget only once picture 1 is "
+                           "evicted from scrollback (ADR-103's Q1 note). Correct: the last "
+                           "picture drawn, turned, under its caption.",
+    "sixel-evict-history": "Turned back with Logo+-, then Shift+PageUp to the top of the "
+                           "scrollback. Correct: picture 1's caption over blank cells, the "
+                           "pictures after it drawn under theirs.",
+    "sixel-evict-zoomed": "Scrolled down, then zoomed with Ctrl+=: a scaled copy of the last "
+                          "picture for the larger cells. Correct: the last picture drawn, "
+                          "scaled to the larger cells, under its caption.",
     "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
                  "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
                  "screen just left.",

@@ -24,6 +24,14 @@ _Glyphs, images and cells to pixels - fonts, text renderers, video backends_
 | [ADR-103](./render/ADR-103-images-are-placements-that-travel-with-lines-sixel-and-the-kitty-graphics-protocol-feed-one-store.md) | Images are placements that travel with lines; sixel and the kitty graphics protocol feed one store | accepted |
 | [ADR-104](./render/ADR-104-first-measurement-of-bbulk-image-composition-s1-to-s6-at-three-sizes.md) | First measurement of bbulk image composition, S1 to S6 at three sizes | accepted |
 
+## Terminal
+_Escape protocols and the screen model - libtsm parsing, cells, scrollback_
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [ADR-200](./terminal/ADR-200-mode-handling-in-libtsm-and-kmscon-as-of-libtsm-e8185ae.md) | Mode handling in libtsm and kmscon as of libtsm e8185ae | accepted |
+| [ADR-201](./terminal/ADR-201-one-mode-registry-in-libtsm-and-synchronized-output-mode-2026.md) | One mode registry in libtsm, and synchronized output (mode 2026) | accepted |
+
 ## Fork
 _Carrying this fork - upstream tracking, packaging, contribution back_
 

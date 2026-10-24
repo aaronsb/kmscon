@@ -53,11 +53,11 @@ class ScreenTextTest(unittest.TestCase):
         self.assertIsNone(t3_evaluate.screen_text("vt-switch", LOG))
         # wide-margin moves the cursor to reach the screen's real edge,
         # s1-scroll prints 500 000 lines of which the screen shows the last,
-        # and the sixel screens draw pictures, so they have no text on
-        # purpose; every other screen has its rows.
+        # the sixel screens draw pictures, and flood clears what it streamed,
+        # so they have no text on purpose; every other screen has its rows.
         textless = ("wide-margin", "s1-scroll", "sixel", "sixel-ramps", "sixel-article",
-                    "sixel-bound", "photos", "photo-scroll", "mpv-sixel", "tmux-2x2",
-                    "tmux-3x3")
+                    "sixel-bound", "sixel-evict", "photos", "photo-scroll", "mpv-sixel",
+                    "tmux-2x2", "tmux-3x3", "flood")
         with contextlib.redirect_stderr(io.StringIO()):
             for name in textless:
                 self.assertIsNone(t3_evaluate.screen_text(name, LOG))
@@ -186,9 +186,10 @@ class AcceptanceTest(unittest.TestCase):
     def test_key_steps(self):
         # After photo-scroll, Shift+PageUp shows the picture again from the
         # scrollback and Shift+PageDown must give back photo-scroll's screen.
-        self.assertEqual(t3_evaluate.KEYS["photo-scroll"],
-                         [("photo-scrollback", ("shift", "pgup")),
-                          ("photo-scrollforward", ("shift", "pgdn"))])
+        self.assertEqual([(case, chords) for screen, case, chords in t3_evaluate.KEYED
+                          if screen == "photo-scroll"],
+                         [("photo-scrollback", [("shift", "pgup")]),
+                          ("photo-scrollforward", [("shift", "pgdn")])])
         i = t3_evaluate.CASES.index("photo-scroll")
         self.assertEqual(t3_evaluate.CASES[i:i + 3],
                          ["photo-scroll", "photo-scrollback", "photo-scrollforward"])
@@ -446,6 +447,8 @@ class BenchTest(unittest.TestCase):
             # a console line after a prompt on the same line
             timer_line(100.5, 60, 60, before="tier3 login: "),
             "[  100.600000] kmscon[505]: terminal: Resized terminal to 128x42",
+            # broken into by the getty's queries on the serial console at boot
+            timer_line(101.5, 6, 6)[:150] + "\x1b]3008;start=568e;user=root;comm=(agetty)",
         ])
         got = t3_bench.timer_lines(text)
         self.assertEqual([x["t"] for x in got], [99.5, 100.5])
@@ -486,6 +489,37 @@ class BenchTest(unittest.TestCase):
         self.assertEqual((got["skipped"], got["skipped_cpu_ms"]), (400, 500.0))
         self.assertEqual(got["skipped_cpu_pct"], 25.0)     # 500 ms of the 2 s window
         self.assertEqual(got["displays"], ["pci-0000:00:01.0[Virtual-1]"])
+        # only the second from 100.6 to 101.6 lies wholly inside the window
+        self.assertEqual((got["intervals_inside"], got["flips_inside"]), (1, 60))
+        self.assertEqual(got["skipped_per_s"], 200.0)      # 400 over the 2 s window
+
+    FLOOD = "T3-BENCH flood lines=20 start=100.00 end=104.00"
+
+    def flood(self, *lines):
+        return t3_bench.measure("\n".join(lines), self.FLOOD, self.CONF)
+
+    def test_flood_verdict(self):
+        # Frames in every second of the stream, and a few passes that drew
+        # nothing: in bounds.
+        ok = [timer_line(t, 10, 10, skipped=(4, 0.0)) for t in (101.0, 102.0, 103.0, 104.0)]
+        self.assertNotIn("error", self.flood(*ok))
+        # The same screen as s1-scroll is not judged.
+        lines = [timer_line(t, 0, 0) for t in (101.0, 102.0, 103.0, 104.0)]
+        self.assertNotIn("error", t3_bench.measure("\n".join(lines), self.EVENT, self.CONF))
+        # No frame while the stream flowed: only the second that ends after
+        # the window presents.
+        late = [timer_line(t, 0, 0) for t in (101.0, 102.0, 103.0, 104.0)] + \
+            [timer_line(104.5, 30, 30)]
+        self.assertIn("no frame was presented while the stream flowed",
+                      self.flood(*late)["error"])
+        # A pass after every read: 100 a second that drew nothing.
+        busy = [timer_line(t, 10, 10, skipped=(100, 0.0)) for t in (101.0, 102.0, 103.0, 104.0)]
+        self.assertIn("100.0 passes a second drew nothing, over %d"
+                      % t3_bench.FLOOD_MAX_SKIPPED_PER_S, self.flood(*busy)["error"])
+        # A window too short to hold a whole second cannot show the stream.
+        short = "T3-BENCH flood lines=2 start=100.00 end=100.50"
+        got = t3_bench.measure(timer_line(101.0, 10, 10), short, self.CONF)
+        self.assertIn("no render-timer second lies wholly inside the window", got["error"])
 
     def test_measure(self):
         serial = timer_line(101.0, 60, 60)

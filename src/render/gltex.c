@@ -454,16 +454,20 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 	uint32_t one;
 	size_t len;
 	uint64_t id;
+	uint8_t extra;
 
 	attr.italic = !!(flags & TSM_FRAME_ITALIC);
 	attr.bold = !!(flags & TSM_FRAME_BOLD);
 
-	k.key = key ? key : ' ';
+	if (!key)
+		key = ' ';
+	extra = (underline & 7) | (strike ? 8 : 0);
+	k.key = key;
 	k.bold = attr.bold;
 	k.italic = attr.italic;
 	k.width = width;
-	k.extra = (underline & 7) | (strike ? 8 : 0);
-	id = kmscon_glyph_key_hash(&k);
+	k.extra = extra;
+	id = kmscon_glyph_key_hash(key, attr.bold, attr.italic, width, extra);
 
 	if (shl_hashtable_find(gt->glyphs, (void **)&glglyph, id)) {
 		if (kmscon_glyph_key_equal(&glglyph->key, &k))

@@ -90,6 +90,12 @@ static void fake_trim(struct image_budget_cache *cache, size_t want)
 	image_budget_remove_picture(n);
 }
 
+static size_t fake_trimmable(struct image_budget_cache *cache)
+{
+	(void)cache;
+	return fake.undrawn;
+}
+
 static void test_auto_limit(void)
 {
 	static int a, b; /* two displays, by address */
@@ -440,6 +446,7 @@ static void test_terminal_vte(void)
 int main(void)
 {
 	fake.cache.trim = fake_trim;
+	fake.cache.trimmable = fake_trimmable;
 	image_budget_add_cache(&fake.cache);
 
 	test_auto_limit();

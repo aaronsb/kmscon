@@ -232,32 +232,50 @@ out:
 #define ROT_UPSIDE_DOWN 2
 #define ROT_LEFT 3
 
-void picture_rotate(const uint32_t *src, unsigned int w, unsigned int h, uint32_t *dst,
-		    int orientation)
+/* picture_rotate() for one pixel size, which each caller passes as a constant */
+static inline void rotate(const uint8_t *s, unsigned int w, unsigned int h, size_t bpp, uint8_t *d,
+			  int orientation)
 {
 	unsigned int i, j;
 
+#define PX(p, n) (&(p)[(size_t)(n) * bpp])
 	switch (orientation) {
 	default:
 	case ROT_NORMAL:
-		memcpy(dst, src, (size_t)w * h * sizeof(*dst));
+		memcpy(d, s, (size_t)w * h * bpp);
 		break;
 	case ROT_RIGHT:
 		/* source row i becomes the column h - 1 - i, top to bottom */
 		for (i = 0; i < h; i++)
 			for (j = 0; j < w; j++)
-				dst[(size_t)j * h + (h - 1 - i)] = src[(size_t)i * w + j];
+				memcpy(PX(d, (size_t)j * h + (h - 1 - i)), PX(s, (size_t)i * w + j),
+				       bpp);
 		break;
 	case ROT_UPSIDE_DOWN:
 		for (i = 0; i < h; i++)
 			for (j = 0; j < w; j++)
-				dst[(size_t)(h - 1 - i) * w + (w - 1 - j)] = src[(size_t)i * w + j];
+				memcpy(PX(d, (size_t)(h - 1 - i) * w + (w - 1 - j)),
+				       PX(s, (size_t)i * w + j), bpp);
 		break;
 	case ROT_LEFT:
 		/* source row i becomes the column i, bottom to top */
 		for (i = 0; i < h; i++)
 			for (j = 0; j < w; j++)
-				dst[(size_t)(w - 1 - j) * h + i] = src[(size_t)i * w + j];
+				memcpy(PX(d, (size_t)(w - 1 - j) * h + i), PX(s, (size_t)i * w + j),
+				       bpp);
 		break;
 	}
+#undef PX
+}
+
+void picture_rotate(const void *src, unsigned int w, unsigned int h, size_t bpp, void *dst,
+		    int orientation)
+{
+	/* a constant size makes each copy a plain load and store, not a call */
+	if (bpp == 4)
+		rotate(src, w, h, 4, dst, orientation);
+	else if (bpp == 1)
+		rotate(src, w, h, 1, dst, orientation);
+	else
+		rotate(src, w, h, bpp, dst, orientation);
 }

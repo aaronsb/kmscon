@@ -97,6 +97,9 @@ considered:
     via: "operator's replies in the steering session, 2026-10-23, relayed by the team lead as answers to kmscon #133's questions 3 and 4"
     paraphrase: true
   - operator: aaronsb
+    said: "yes"
+    via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to Q1: on a display that needs a scaled copy of a picture (rotation, zoom, or a cell size other than the font's), may bbulk's scaled copy for an on-screen placement evict images in scrollback or unplaced, so that viewing a new picture can push older pictures out of scrollback and leave blank cells there when scrolled back, the way old lines drop off"
+  - operator: aaronsb
     said: "I have typically been using chafa"
     via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to kmscon #145's question 1 (img2sixel writes nothing on Arch; which encoder draws A1's photographs)"
   - operator: aaronsb
@@ -548,6 +551,13 @@ Recorded as considered entries above; what they change:
 - **Sixel only where it can be drawn** ("why not sketch the outline and include the flag to deactivate it so that sixel support is truthfully unavailable"). Each renderer declares whether it draws image placements: bbulk does, gltex does not until step 3f, and any other renderer without placement drawing does not. A terminal offers sixel (DA1 attribute 4, XTSMGRAPHICS) and stores pictures only while every display it draws on has a renderer that does; otherwise it behaves as if `sixel` were off, offering nothing and storing no new picture. Pictures it stored before such a display arrived stay, counted in the budget and not drawn, until they are cleared or evicted, and show again when the display goes. Displays drawn by a renderer without placements do not count toward `image-storage-limit=auto`. gltex keeps the hook where step 3f will compose placements (`gltex_draw_placements`).
 - **A shrinking auto limit evicts at the next reservation**, accepted by the operator. This refines the Memory section's "A smaller budget evicts down to fit": a renderer is unset and set again on every font change and zoom, which uncounts its display and counts it back at once, and evicting on that dip threw away pictures the budget could hold. The auto limit therefore follows the displays without evicting, and the next reservation evicts down to the limit it finds. A set limit that shrinks still evicts at once.
 - **`image-storage-limit` takes K, M and G** (KiB, MiB, GiB) beside plain bytes, kept by the operator, and at most 1 TiB: a display's share of the budget is the limit times its pixels over all the displays', computed in 64 bits.
+
+## Notes (2026-10-23, operator answer to Q1)
+
+Recorded as a considered entry above; what it changes:
+
+- **A picture on screen may evict the history** ("yes"). On a display that needs a scaled copy of a picture (a rotated display, a zoom, or placements made in a cell size other than the font's), bbulk makes that copy within the frame, and until now it evicted nothing outside its own renderer: while scrollback images held the budget, the picture on screen was left out. The scaled copy for an on-screen placement now takes its room in ADR-103's order after bbulk's own pictures the frame does not place: other displays' pictures their last frame did not draw, then libtsm's images unplaced, then those placed only in scrollback, least recently used first. It never evicts an image placed on a screen's own lines, nor one the frame draws, such as a scrollback image in view while the view is scrolled back; a picture that would need one is still left out, and retried only when the budget changes. Viewing a new picture on such a display can therefore push older pictures out of scrollback, which then show blank cells when scrolled back to, as old lines drop off the end of scrollback. A display that draws pictures at their own size makes no scaled copy and is unchanged.
+- History is evicted only when the eviction lets the picture fit. Before anything is freed, bbulk counts what can be: the pictures other displays' last frames did not draw, and each screen's victims (libtsm's `tsm_screen_image_victims`, which evicts nothing) up to the first image the frame draws. When that falls short, nothing is evicted and the picture is left out until the budget changes, as libtsm's own reservation evicts nothing for an image it cannot fit. Every terminal's screens give room, main and alternate, each as far as its own first drawn image.
 
 ## Notes (2026-10-23, operator answers from step 3e, kmscon #145)
 

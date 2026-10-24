@@ -40,11 +40,15 @@ test_text = executable(
 )
 test('test_text', test_text)
 
+# libtsm's test calls make the images a scaled picture evicts
 test_bbulk = executable(
     'test_bbulk',
     'test_bbulk.c',
     include_directories: src_inc,
-    dependencies: [libtsm_deps, htable_deps],
+    dependencies: [
+        subproject('libtsm').get_variable('libtsm_test_dep'),
+        htable_deps,
+    ],
 )
 test('test_bbulk', test_bbulk)
 
@@ -95,6 +99,25 @@ if enable_video_drm2d
         dependencies: [libdrm_deps, shl_deps, htable_deps],
     )
     test('test_blend', test_blend)
+endif
+
+if enable_video_fbdev
+    # fbdev's per-depth blend against the single loop it replaced (fbdev_ref.h)
+    test_fbdev_blend = executable(
+        'test_fbdev_blend',
+        'test_fbdev_blend.c',
+        include_directories: [src_inc, include_directories('../src/video')],
+        dependencies: [shl_deps, htable_deps],
+    )
+    test('test_fbdev_blend', test_fbdev_blend)
+
+    # the same, timed; run by make bench-fbdev, not a test
+    executable(
+        'bench_fbdev',
+        'bench_fbdev.c',
+        include_directories: [src_inc, include_directories('../src/video')],
+        dependencies: [shl_deps, htable_deps, math_deps],
+    )
 endif
 
 test_asciinema = executable(
@@ -292,6 +315,29 @@ if enable_font_freetype and enable_video_drm2d
         ],
     )
     test('test_blink', test_blink, args: [meson.current_source_dir() / 'fonts'])
+
+    test_present = executable(
+        'test_present',
+        'test_present.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            libtsm_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            harfbuzz_raster_deps,
+            libdrm_deps,
+            threads_deps,
+            math_deps,
+            shl_deps,
+            htable_deps,
+        ],
+    )
+    test(
+        'test_present',
+        test_present,
+        args: [meson.current_source_dir() / 'fonts'],
+    )
 
     # ADR-103's S1 to S6 drawn into memory; run by make bench-compose, not a test
     executable(

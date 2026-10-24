@@ -12,13 +12,15 @@ The video is never downloaded or committed. *Bad Apple!!* is a fan work (origina
 | 2. we can do better | black, a dramatic pause, then "we can do better!" slammed in letter by letter in toilet's `mono12` block letters (▀ ▄ █, rainbow), then a half-block plasma fading in behind them, then shadebobs | python3, toilet | plays |
 | 3. aalib | libcaca's `img2txt` in 80x25. It asks the terminal for a real 80x25 grid (xterm's `CSI 8 ; 25 ; 80 t`) and plays full screen where the size took effect; elsewhere it plays in a double-lined 80x25 frame. Then it freezes, broken, and a resized terminal is put back to its size | ffmpeg, img2txt, python3 | plays in the frame (kmscon gains `CSI 8 t` with #77) |
 | 4. don't we have libsixel? | "wait a minute... don't we have ... LIBSIXEL?" typed over the frozen frame | python3 | plays |
-| 5. sixel | `mpv --vo=sixel` plays it 480 px wide, then it glitches (red channel only, shifted, a band torn sideways) and `img2sixel` holds the halted frame; without sixel, a panel of static reading "[sixel arrives in step 3]" | ffmpeg, mpv, img2sixel, python3 | placeholder: sixel arrives in step 3 of ADR-101 |
+| 5. sixel | `mpv --vo=sixel` plays it half the screen's height, centred, then it glitches (red channel only, shifted, a band torn sideways) and halts on its last frame; without sixel, a panel of static reading "[no sixel: DA1 lacks attribute 4]" | ffmpeg, mpv, python3 | plays (ADR-103 step 3) |
 | 6. kitty and the cats | a fire wipe burns the screen away, then "hold on, we also have kitty. hold on, feeding the cats" and a crowd of colour cats (🐱🐈😺😸🙀🐈‍⬛ ...) | python3 | plays |
 | 7. kitty, full size | `mpv --vo=kitty` full size in the rows above a demoscene scroller: what the fork supports, in toilet's `mono9` block letters with colour emoji between, riding a sine wave over copper bars, one column a frame; without kitty graphics, a panel reading "[kitty graphics arrive in steps 4 and 5]" above the scroller | mpv, toilet, python3 | placeholder and scroller: kitty graphics arrive in steps 4 and 5 |
 
 The end card follows act 7: the credits over a turning Braille wireframe, until a key. The acts follow the video on: act 1 plays from 0:00 (its Braille pass from 0:20), act 3 from 0:30, act 5 from 0:38 and act 7 from 0:46 to the end.
 
-Acts 5 and 7 ask the terminal what it draws. Sixel is attribute 4 in the answer to DA1 (`CSI c`); kitty graphics answer a query (`a=q`) sent before DA1 with `OK`, per the kitty graphics protocol's documentation. A terminal with neither ignores the query, an APC string, and answers DA1 alone; kmscon's libtsm does exactly that. `SIXEL=yes|no` and `KITTY=yes|no` override the answer.
+Acts 5 and 7 ask the terminal what it draws. Sixel is attribute 4 in the answer to DA1 (`CSI c`); kitty graphics answer a query (`a=q`) sent before DA1 with `OK`, per the kitty graphics protocol's documentation. A terminal with neither ignores the query, an APC string, and answers DA1 alone. kmscon offers sixel (ADR-103 step 3) and ignores the kitty query until step 4. `SIXEL=yes|no` and `KITTY=yes|no` override the answer.
+
+Both size their pictures in pixels from the cell size the terminal reports, asked before each act: XTWINOPS 16 (`CSI 16 t`, the cell), else XTWINOPS 14 (`CSI 14 t`, the text area) over the cells, else the pty's pixel size, else 10x20. A DA1 query follows the two, so a terminal that answers neither is not waited for and is not asked again. Act 5's picture is `ACT5_SIZE` (0.5) of the screen's rows tall, narrower where the columns run out, and centred in whole cells, so it fits at any cell size: 1419x1061 pixels in 75x28 cells at 7680x2160 with a 19x38 cell, 505x378 in 51x20 at 1366x768 with a 10x19 cell. The clip is rendered 960 pixels wide (`ACT5_WIDTH`) and mpv scales it, without dithering (`ACT5_DITHER=none`): about 85 KB a frame at 7680x2160, against about 240 KB with mpv's default dithering, which also drops frames on this machine. mpv's last frame stays on screen after it exits (`--vo-sixel-alt-screen=no`), and that is the halted frame.
 
 The scroller's list is one variable, `BANNER_FEATURES` at the top of `bad-apple.sh` (features separated by `;`, each followed by the next emoji of `BANNER_EMOJI`): add a feature there when it lands. `--act 7 --banner-only` runs the scroller alone, without the video, so it can be shown and tuned on kmscon today.
 
@@ -75,11 +77,11 @@ BAD_APPLE=... fork/showcase/bad-apple.sh --prepare                 # render the 
 fork/showcase/bad-apple.sh --fx plasma                             # one effect alone, with its frame rate
 ```
 
-`--audio` plays the soundtrack, `--no-wait` starts without waiting for a key. q or Ctrl-C ends the show at any point: the players stop, and the cursor, the main screen, the colours and the terminal's mode come back. Acts 2, 4 and 6, and act 7 with `--banner-only`, run without the video.
+`--audio` plays the soundtrack, `--no-wait` starts without waiting for a key. q or Ctrl-C ends the show at any point: the players stop, and the cursor, the main screen, the colours and the terminal's mode come back. mpv's video outputs turn on mouse tracking (`CSI ?1003 h`) and turn it off only when they exit cleanly, so a player stopped by q left a terminal reporting every mouse movement to the shell (#88); the show now turns off every mouse mode and encoding, focus events and bracketed paste on its way out. While mpv plays, a mouse report arriving as keys (X10 or SGR) is dropped once it is whole, even when it arrives split across reads, so a byte of its coordinates is not taken for q; any other byte, a q right after Esc included, is a key. When mpv stops, however it stops, the show turns tracking off again and drops the reports already sent. Acts 2, 4 and 6, and act 7 with `--banner-only`, run without the video.
 
 ## Pacing
 
-Every timing is a variable at the top of `bad-apple.sh` (seconds unless marked), and each can also be set in the environment for a run from a shell: where each act starts in the video and for how long (`ACT1_START`, `ACT1_SECONDS`, `ACT1_DOTS_SECONDS`, ...), frame rates, the act 2 pause, letter speed, plasma and shadebobs (`ACT2_PAUSE`, `ACT2_LETTER`, `ACT2_PLASMA`, `ACT2_BOBS`), act 3's resize (`ACT3_RESIZE=no` keeps the frame; `RESIZE_WAIT`, 1.5 s, is how long it waits for the terminal), typing speed (`ACT4_CPS`), the glitch and hold of act 5, the fire and the cats of act 6, the scroller's rows, frame rate and words (`BANNER_ROWS`, `BANNER_FPS`, `BANNER_FEATURES`, `BANNER_EMOJI`, `BANNER_INTRO`, `BANNER_OUTRO`), how long a placeholder stays (`PLACEHOLDER_SECONDS`), and an optional starfield title card before act 1 (`TITLE_SECONDS`, 0 by default).
+Every timing is a variable at the top of `bad-apple.sh` (seconds unless marked), and each can also be set in the environment for a run from a shell: where each act starts in the video and for how long (`ACT1_START`, `ACT1_SECONDS`, `ACT1_DOTS_SECONDS`, ...), frame rates, the act 2 pause, letter speed, plasma and shadebobs (`ACT2_PAUSE`, `ACT2_LETTER`, `ACT2_PLASMA`, `ACT2_BOBS`), act 3's resize (`ACT3_RESIZE=no` keeps the frame; `RESIZE_WAIT`, 1.5 s, is how long it waits for the terminal), typing speed (`ACT4_CPS`), act 5's size, clip width, dither, glitch and hold (`ACT5_SIZE`, `ACT5_WIDTH`, `ACT5_DITHER`, `ACT5_GLITCH`, `ACT5_HOLD`), the fire and the cats of act 6, the scroller's rows, frame rate and words (`BANNER_ROWS`, `BANNER_FPS`, `BANNER_FEATURES`, `BANNER_EMOJI`, `BANNER_INTRO`, `BANNER_OUTRO`), how long a placeholder stays (`PLACEHOLDER_SECONDS`), and an optional starfield title card before act 1 (`TITLE_SECONDS`, 0 by default).
 
 ## The effects
 
@@ -119,13 +121,13 @@ The acts run these programs; `--dry-run` says which are missing and the Arch pac
 | ffmpeg, ffprobe | ffmpeg | acts 1, 3, 5: decoding, act 5's glitched clip | present (n9.0.2) |
 | img2txt | libcaca | act 3 | present (0.99.beta20) |
 | mpv | mpv | acts 5 and 7 (`--vo=sixel`, `--vo=kitty`), `--audio` | present (0.41.0; built without the `caca` vo, so act 3 uses `img2txt`) |
-| img2sixel | libsixel | act 5's halted frame | present (1.10.5) |
+| img2sixel | libsixel | not used: on this host it prints nothing for any picture, so act 5 holds mpv's last frame instead | present (1.10.5, with gdk-pixbuf 2.44, whose loader libsixel reads before closing it) |
 | toilet | toilet | the block letters of acts 2 and 7 and the title card | present; without it, figlet's `banner` font, then plain text |
 | figlet | figlet | fallback for toilet | present |
 | chafa | chafa | not used | present |
 | mplayer | mplayer | not used (`-vo aa` would need it) | missing |
 
-The dev image (`fork/dev.Dockerfile`) carries none of the media tools and needs none: the show runs on the host, and `make test` runs only `--list`, `--dry-run`, the refusals and the pure helpers. Pinning them there would mean adding `ffmpeg mpv libcaca libsixel toilet` to its `pacman -S` line.
+The dev image (`fork/dev.Dockerfile`) carries none of the media tools and needs none: the show runs on the host, and `make test` runs only `--list`, `--dry-run`, the refusals, the pure helpers and act 4 on a pty (python3 alone), quit with q to check the modes it turns off. Pinning them there would mean adding `ffmpeg mpv libcaca toilet` to its `pacman -S` line.
 
 ## Files
 
@@ -142,4 +144,4 @@ The dev image (`fork/dev.Dockerfile`) carries none of the media tools and needs 
 
 The frame caches go to `~/.cache/kmscon-showcase/<video id>/` (`SHOWCASE_CACHE` moves them), keyed by the video's path, size and time and by each act's settings. A cache made for one grid size is not reused for another: act 1's grids and act 3's framed region shrink in a smaller terminal and render again there.
 
-`tests/showcase/showcase.py`, part of `make test`, checks the act and effect tables, the plan, the refusals and the pure helpers (the painter's diff, Braille dots, the outline table, img2txt's colours) without a video, a terminal or any media tool.
+`tests/showcase/showcase.py`, part of `make test`, checks the act and effect tables, the plan, the refusals and the pure helpers (the painter's diff, Braille dots, the outline table, img2txt's colours, act 5's picture size, the XTWINOPS answers) without a video or any media tool, and quits act 4 on a pty to check that every mouse mode, focus events and bracketed paste are turned off.

@@ -49,11 +49,12 @@ int picture_scale(const uint32_t *src, size_t stride, unsigned int sw, unsigned 
 		  unsigned int x1, unsigned int y1, uint32_t *dst);
 
 /*
- * Rotate @src, @w x @h packed pixels, into @dst as the display's orientation
- * @orientation (enum Orientation) turns the screen, as bbulk rotates glyphs:
- * @dst is @h x @w for a quarter turn, else @w x @h.
+ * Rotate @src, @w x @h packed pixels of @bpp bytes each, into @dst as the
+ * display's orientation @orientation (enum Orientation) turns the screen: a
+ * picture's ARGB32 pixels, or a glyph's A8 or ARGB32 ones. @dst is @h x @w
+ * for a quarter turn, else @w x @h.
  */
-void picture_rotate(const uint32_t *src, unsigned int w, unsigned int h, uint32_t *dst,
+void picture_rotate(const void *src, unsigned int w, unsigned int h, size_t bpp, void *dst,
 		    int orientation);
 
 #endif /* KMSCON_PICTURE_H */

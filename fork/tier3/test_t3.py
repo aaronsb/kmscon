@@ -560,9 +560,9 @@ class BenchTest(unittest.TestCase):
         got = t3_bench.measure(serial, line % 0, self.CONF)
         self.assertIn("placeholder", got["error"])
 
-    def test_measure_tmux_kept_up(self):
-        # A4 judges no frame rate, only that kmscon keeps up with what tmux
-        # sends: its CPU time per picture tmux sent under the clip's 33.3 ms.
+    def test_measure_tmux_reported(self):
+        # A4 is compatibility through tmux (ADR-103): kmscon's CPU time per
+        # picture tmux sent is reported, and no figure of it fails the grid.
         serial = timer_line(101.0, 20, 20)
         line = ("T3-BENCH tmux-3x3 start=100.00 end=102.00 mpv_frames=300 mpv_dropped=900 "
                 "kmscon_cpu_ms=%d panes=9 tmux_sixels=100")
@@ -570,9 +570,8 @@ class BenchTest(unittest.TestCase):
         self.assertNotIn("error", got)
         self.assertEqual(got["kmscon_cpu_ms_per_tmux_sixel"], 14.0)
         got = t3_bench.measure(serial, line % 3400, self.CONF)
+        self.assertNotIn("error", got)
         self.assertEqual(got["kmscon_cpu_ms_per_tmux_sixel"], 34.0)
-        self.assertIn("did not keep up with tmux", got["error"])
-        self.assertIn("34.0 ms", got["error"])
 
     def test_measure_program(self):
         # mpv's counts beside the render timer's: its output rate over the

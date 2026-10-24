@@ -1,10 +1,10 @@
 #!/bin/bash
 # kit: sixel
 # look-for: For five seconds tmux shows 4 panes, 2 by 2, every pane playing the
-# look-for: test pattern inside its borders, its counter rising. Judged: every
-# look-for: pane animates and kmscon keeps up. The frame rate is reported, not
-# look-for: judged: tmux and mpv set it (under half the frames at 8K). Then
-# look-for: this page cleared, with mpv's counts and rate in bold.
+# look-for: test pattern inside its borders, its counter rising: every pane
+# look-for: animates. This page judges tmux compatibility; the frame rate is
+# look-for: reported, not judged, as tmux and mpv set it (under half the frames
+# look-for: at 8K). Then this page cleared, mpv's counts and rate in bold.
 # wrong-looks-like: "SIXEL IMAGE" placeholders in place of video, a picture
 # wrong-looks-like: across a pane border or in the wrong pane, frozen panes,
 # wrong-looks-like: or pieces of video left on this page afterwards.

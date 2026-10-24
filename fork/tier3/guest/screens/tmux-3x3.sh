@@ -2,8 +2,8 @@
 # kit: sixel
 # look-for: For five seconds tmux shows 9 panes, 3 by 3, each playing the
 # look-for: test pattern with its own counter rising by 30 a second, inside the
-# look-for: pane's borders. Then "[exited]" and this page, with nothing of the
-# look-for: videos left on it.
+# look-for: pane's borders. Then this page on a cleared screen, with nothing
+# look-for: of the videos left on it.
 # wrong-looks-like: "SIXEL IMAGE" placeholders in place of video, a picture
 # wrong-looks-like: across a pane border or in the wrong pane, frozen panes,
 # wrong-looks-like: or pieces of video left on this page afterwards.

@@ -7,8 +7,8 @@
 # terminal only through terminal-features, and draws a "SIXEL IMAGE"
 # placeholder without it; the screen counts the pictures tmux sends to
 # kmscon, and fails when there are none. When every pane's clip ends its
-# pane closes, tmux exits and leaves the alternate screen, printing
-# "[exited]", and the page must come back with nothing of the videos left.
+# pane closes and tmux exits; the page then leaves the alternate screen
+# itself and must come back with nothing of the videos left.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/acceptance.inc"
 sixel_offered
 needs mpv mpv
@@ -46,6 +46,15 @@ grid() {
 	wait
 }
 measure grid
+# tmux, exiting, drops the output it still holds, which can cut a sixel
+# picture off inside its DCS, and gives up its restore sequences (cursor
+# shown, alternate screen left) when the pty is full (#154). So the page
+# closes any DCS left open, leaves the alternate screen, shows the cursor
+# and clears the screen and the scrollback itself, and what follows does not
+# depend on what tmux managed to write.
+printf '\033\\\033[?1049l\033[?25h'
+clear
+printf '\033[3J'
 read -r frames dropped < <(mpv_counts "$dir"/[0-9]*)
 read -r sixels <"$dir/sixels" || sixels=0
 rm -rf "$dir"

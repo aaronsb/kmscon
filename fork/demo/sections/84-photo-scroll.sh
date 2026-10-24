@@ -1,0 +1,1 @@
+../../tier3/guest/screens/photo-scroll.sh

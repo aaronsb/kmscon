@@ -91,17 +91,30 @@ def bench_line(name, b):
     head = "Benchmark `%s`" % name
     if b.get("error"):
         return "%s: not measured: %s." % (head, b["error"])
-    text = "%s: %s lines in %.2f s, %s lines per second" % (
-        head, format(b["lines"], ","), b["seconds"], format(b["lines_per_s"], ","))
+    if "lines" in b:
+        text = "%s: %s lines in %.2f s, %s lines per second" % (
+            head, format(b["lines"], ","), b["seconds"], format(b["lines_per_s"], ","))
+    else:
+        text = "%s: mpv showed %d frames and dropped %d in %.2f s, %.1f per second" % (
+            head, b["mpv_frames"], b["mpv_dropped"], b["seconds"], b["mpv_per_s"])
+        if "kmscon_cpu_pct" in b:
+            text += "; kmscon used %.1f%% of a CPU" % b["kmscon_cpu_pct"]
+            if "kmscon_cpu_ms_per_mpv_frame" in b:
+                text += ", %.3f ms per frame mpv sent, parsing included" % (
+                    b["kmscon_cpu_ms_per_mpv_frame"])
     if b.get("note"):
         return "%s; no render-timer figures: %s." % (text, b["note"])
     if "cpu_ms_mean" not in b:
         return "%s; %.1f frames presented per second." % (text, b["presented_per_s"])
-    return ("%s; %.1f frames presented per second; kmscon's CPU time per frame %.3f ms mean, "
+    text = ("%s; %.1f frames presented per second; kmscon's CPU time per frame %.3f ms mean, "
             "%.3f ms median, %.3f ms at the 95th percentile, %.3f ms at most; %s pixels "
-            "damaged per frame, %.2f%% of the screen." % (
+            "damaged per frame, %.2f%% of the screen" % (
                 text, b["presented_per_s"], b["cpu_ms_mean"], b["cpu_ms_median"], b["cpu_ms_p95"],
                 b["cpu_ms_max"], format(b["damage_px_mean"], ","), b["damage_pct"]))
+    if b.get("skipped"):
+        text += "; %d redraws presented nothing, %.1f ms of CPU time" % (
+            b["skipped"], b.get("skipped_cpu_ms", 0))
+    return text + "."
 
 
 def case_heading(tier, name, status):

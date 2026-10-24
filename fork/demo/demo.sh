@@ -8,7 +8,7 @@
 #   1 looks right   2 looks wrong   3 unsure
 #   s skips the page for now: not reviewed this time, still to review
 #   c types a comment of any length, then asks for a rating (Enter: none)
-#   b goes back one page   q quits
+#   r draws the page again   b goes back one page   q quits
 #
 # Each judgement is appended as one TSV line to $DEMO_FEEDBACK, by default
 # /tmp/kmscon-demo/feedback.tsv; feedback.sh prints it. A summary page with
@@ -19,7 +19,11 @@
 # the same pages can be compared on a dev-build VT and a stock kmscon VT.
 #
 #   demo.sh [SECTION...]   SECTION is a file name without the number and .sh,
-#                          such as cjk; with none, every section runs
+#                          such as cjk; with none, the sections of the kit
+#                          run
+#
+# DEMO_KIT picks the review kit (#123): text (the default), sixel, kitty or
+# all. A section's "# kit:" line names its kit; one without it is text.
 #
 # DEMO_LABEL names the terminal on the title page and in the feedback;
 # run-vt.sh sets it to "dev build <git describe>". DEMO_NOPROMPT=1 shows the
@@ -29,6 +33,7 @@
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
+kit=${DEMO_KIT:-text}
 nopage=${DEMO_NOPAGE:-}
 noprompt=${DEMO_NOPROMPT:-$nopage}
 feedback=${DEMO_FEEDBACK:-/tmp/kmscon-demo/feedback.tsv}
@@ -212,7 +217,7 @@ read_comment() {
 	note=$(printf '%s\n' "${lines[@]}")
 }
 
-ask_keys='1 right  2 wrong  3 unsure  s skip for now  c comment  b back  q quit'
+ask_keys='1 right  2 wrong  3 unsure  s skip  c comment  r redraw  b back  q quit'
 
 # Shows page I with its footer and reads keys until one rates the page, goes
 # back or quits; go says which. When the footer does not fit below the page,
@@ -250,6 +255,9 @@ ask() {
 				go=next
 				return
 				;;
+			# The page drawn again from the start, as a page whose keys
+			# changed kmscon's state (sixel-evict's) needs.
+			r | R) continue 2 ;;
 			b | B) [ "$i" -eq 0 ] || { go=back; return; } ;;
 			q | Q) go=quit; return ;;
 			esac
@@ -307,9 +315,21 @@ summary() {
 	done
 }
 
+# A section's review kit: its "# kit:" line, or text.
+kit_of() {
+	local k
+	k=$(meta kit "$1")
+	printf '%s' "${k:-text}"
+}
+
+case $kit in
+text | sixel | kitty | all) ;;
+*) echo "demo: DEMO_KIT=$kit: the kits are text, sixel, kitty or all" >&2; exit 2 ;;
+esac
 sections=()
 for f in "$here"/sections/*.sh; do
 	if [ $# -eq 0 ]; then
+		[ "$kit" = all ] || [ "$(kit_of "$f")" = "$kit" ] || continue
 		sections+=("$f")
 	else
 		for want in "$@"; do
@@ -339,7 +359,12 @@ fi
 clear_screen
 printf '\033[1mkmscon fork: local VT demo\033[0m\n\n'
 printf '  running   %s\n' "${DEMO_LABEL:-unlabelled (DEMO_LABEL not set; run-vt.sh sets it for the dev build)}"
-printf '  terminal  TERM=%s, %s rows by %s columns\n\n' "${TERM:-unset}" "$rows" "$cols"
+printf '  terminal  TERM=%s, %s rows by %s columns\n' "${TERM:-unset}" "$rows" "$cols"
+if [ $# -eq 0 ]; then
+	printf '  kit       %s\n\n' "$kit"
+else
+	printf '  sections  named on the command line\n\n'
+fi
 printf '  Below each page: what a right and a wrong screen look like.\n'
 if [ -z "$noprompt" ]; then
 	printf '  Then one key: 1 looks right, 2 looks wrong, 3 unsure, s skips it for now\n'

@@ -62,26 +62,22 @@ pkg: image ## Build the kmscon-aaronsb package from this checkout -> fork/build/
 		-w /out/work $(IMAGE) \
 		sh -c 'cp /src/fork/pkg/PKGBUILD . && makepkg --nodeps --cleanbuild --force'
 
-T3_BASE := $(T3_VM)/base.qcow2
-T3_GUEST := $(wildcard $(T3_DIR)/guest/user-data.in $(T3_DIR)/guest/meta-data \
-	$(T3_DIR)/guest/tier3-install $(T3_DIR)/guest/tier3-install.service)
-
-$(T3_VM)/images/$(T3_IMAGE):
-	$(T3_DIR)/fetch-image.sh $(T3_VM)/images $(T3_IMAGE_URL) $(T3_IMAGE) \
-		$(T3_IMAGE_SHA256) $(T3_IMAGE_KEY)
-
-$(T3_BASE): $(T3_VM)/images/$(T3_IMAGE) $(T3_GUEST)
+# The base image is provisioned once per set of inputs (the guest files,
+# the pristine image and the archive date) and kept in fork/vm/images under a
+# name made from them, which worktrees share by linking that directory from
+# the main checkout; fork/vm/base.qcow2 links to it. tier3-image builds it
+# only when no checkout has, so a branch that changes the guest's packages
+# downloads them once, and every checkout on that branch reuses the build.
+.PHONY: tier3-image
+tier3-image: $(T3_VM)/images/$(T3_IMAGE) ## Fetch, verify and provision the tier 3 guest base image, or reuse one built from the same inputs
 	$(T3_PY) $(T3_DIR)/t3.py provision --image $(T3_IMAGE) --archive $(T3_ARCHIVE)
 
-.PHONY: tier3-image
-tier3-image: $(T3_BASE) ## Fetch, verify and provision the tier 3 guest base image
-
 .PHONY: tier3
-tier3: $(T3_BASE) ## Tier 3: the 2D variants, or VARIANTS="2d-1280x800 gl-1280x800 ..."; JOBS=N runs N at once
+tier3: tier3-image ## Tier 3: the 2D variants, or VARIANTS="2d-1280x800 gl-1280x800 ..."; JOBS=N runs N at once
 	$(T3_RUN) --pkg-target pkg $(VARIANTS)
 
 .PHONY: tier3-gl
-tier3-gl: $(T3_BASE) ## Tier 3 on the GL variant (virgl), outside the default run: #17
+tier3-gl: tier3-image ## Tier 3 on the GL variant (virgl), outside the default run: #17
 	$(T3_RUN) --pkg-target pkg gl-1280x800
 
 .PHONY: tier3-run

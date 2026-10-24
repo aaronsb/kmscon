@@ -3,6 +3,7 @@
 Paths are relative to the repository root, which is two levels above this file.
 """
 
+import hashlib
 import os
 import sys
 import time
@@ -17,6 +18,25 @@ RUNDIR = os.path.join(ROOT, "fork", "build", "tier3")
 REPORT = os.path.join(ROOT, "fork", "build", "tier3-report.json")
 LOCK = os.path.join(ROOT, "fork", "build", "tier3.lock")
 BASE = os.path.join(VM, "base.qcow2")
+# The files in GUEST that provisioning builds the base image from.
+BASE_INPUTS = ("user-data.in", "meta-data", "tier3-install", "tier3-install.service")
+
+
+def base_image(image, archive):
+    """Where the base image built from the pristine `image`, the archive
+    date `archive` and the guest's BASE_INPUTS lives: in fork/vm/images,
+    which worktrees link from the main checkout, named by a digest of all
+    of them. Checkouts with the same inputs share one build, and changed
+    inputs get a new one beside it, so a base image a running VM backs on
+    is never rewritten. BASE is a link to it."""
+    h = hashlib.sha256()
+    for part in (image, archive):
+        h.update(part.encode() + b"\0")
+    for name in BASE_INPUTS:
+        with open(os.path.join(GUEST, name), "rb") as f:
+            data = f.read()
+        h.update(name.encode() + b"\0" + str(len(data)).encode() + b"\0" + data)
+    return os.path.join(VM, "images", "base-%s.qcow2" % h.hexdigest()[:16])
 
 
 def rel(path):

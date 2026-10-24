@@ -157,6 +157,23 @@ def main():
         check("DEMO_ARGS with an open quote is refused",
               p.returncode != 0 and "cannot be split" in p.stderr, p.stderr)
 
+        # KIT reaches run-vt.sh as --kit before the VT (#123); without it,
+        # run-vt.sh's default, the text kit.
+        p = c.run(["6"], VT_DEMO_KIT="sixel")
+        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
+        check("VT_DEMO_KIT reaches run-vt.sh before the VT",
+              p.returncode == 0 and cmd.endswith("run-vt.sh --kit=sixel 6 --"), p.stdout + p.stderr)
+        p = c.run(["6"])
+        check("no KIT passes no --kit", p.returncode == 0 and "--kit" not in p.stdout, p.stdout)
+        p = c.run(["6"], VT_DEMO_KIT="bogus")
+        check("KIT=bogus is refused",
+              p.returncode != 0 and "KIT=bogus: text, sixel, kitty or all" in p.stderr, p.stderr)
+        video = os.path.join(tmp, "kit.mkv")
+        open(video, "w").close()
+        p = c.run(["6"], VT_DEMO_KIT="sixel", VT_DEMO_SHOWCASE=video)
+        check("KIT with the showcase is refused",
+              p.returncode != 0 and "KIT goes with the demo" in p.stderr, p.stderr)
+
         p = c.run([], active="tty7", sessions=[6], gone=[5])
         check("a session gone between list and query is skipped",
               p.returncode == 0 and picked(p) == "5", p.stdout + p.stderr)
@@ -320,6 +337,11 @@ def main():
                           (["--showcase-from=2"], "go with --showcase=VIDEO")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
             check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
+        for opts, why in ((["--kit=bogus"], "--kit takes text, sixel, kitty or all"),
+                          (["--kit="], "--kit takes text, sixel, kitty or all"),
+                          (["--kit=sixel", "--showcase=/v.mkv"], "--kit goes with the demo")):
+            p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
+            check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
         p = subprocess.run(["bash", run_vt, "--dry-run", "--showcase=/v.mkv", "--showcase-from=5", "--showcase-audio", "3"],
                            capture_output=True, text=True, timeout=30)
         check("run-vt.sh accepts the showcase's options",
@@ -367,6 +389,20 @@ def main():
                                    "--from", "5", "--audio"]
               and not any(w.startswith("BAD_APPLE=") for w in words[:env_at])
               and "--font-size=30" in words[:login],
+              p.stdout + p.stderr)
+
+        # The demo's kit is one word of env's, after setpriv, like the label.
+        p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
+                            "--kit=sixel", "4"],
+                           capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, SUDO_USER="nobody",
+                                    RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir")))
+        unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
+        words = shlex.split(unshare[2:]) if unshare else []
+        env_at = words.index("/usr/bin/env") if "/usr/bin/env" in words else -1
+        check("run-vt.sh hands the demo its kit in env's words",
+              p.returncode == 0 and env_at > 0 and "DEMO_KIT=sixel" in words[env_at:]
+              and words[-2:] == ["/bin/bash", os.path.join(copy, "fork/demo/demo.sh")],
               p.stdout + p.stderr)
 
         p = subprocess.run(["bash", run_vt, "--dry-run", "05"], capture_output=True, text=True, timeout=30)

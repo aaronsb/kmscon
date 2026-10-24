@@ -455,102 +455,18 @@ audio_stop() {
 	audio_pid=
 }
 
-# The output the soundtrack plays through, picked before the show takes the
-# screen (--audio). AUDIO_DEVICE names it as mpv --audio-device=help lists
-# it, or none for no sound, and nothing is asked. Otherwise the outputs mpv
-# finds are listed (the sound server's, PipeWire's before PulseAudio's; with
-# no server, each ALSA card's default and HDMI devices); a number plays a
-# one-second tone through one, y keeps it, and 0 is no sound.
+# The output the soundtrack plays through, asked for before the show takes
+# the screen (--audio) by fork/demo/pick-audio.sh, which AUDIO_DEVICE
+# answers in advance: mpv's name for it, or none for no sound.
 audio_opts=()
 pick_audio() {
-	local all=() names=() descs=() want pat line i n k dev
-	case ${AUDIO_DEVICE:-} in
-	none) audio=0; return ;;
-	?*) audio_opts=(--audio-device="$AUDIO_DEVICE"); return ;;
-	esac
-	mapfile -t all < <(mpv --no-config --audio-device=help 2>/dev/null |
-		sed -n "s/^  '\\(.*\\)' (\\(.*\\))\$/\\1\\t\\2/p")
-	for want in 'pipewire pipewire/*' 'pulse pulse/*' 'alsa/sysdefault:CARD=* alsa/hdmi:CARD=*'; do
-		for line in "${all[@]}"; do
-			for pat in $want; do
-				# shellcheck disable=SC2053 # the patterns are globs
-				[[ ${line%%$'\t'*} != $pat ]] || { names+=("${line%%$'\t'*}"); descs+=("${line#*$'\t'}"); }
-			done
-		done
-		[ ${#names[@]} -eq 0 ] || break
-	done
-	echo
-	cards_note "$want"
-	if [ ${#names[@]} -eq 0 ]; then
-		echo "mpv finds no sound output here, so the show plays without sound."
+	local dev
+	dev=$(bash "$here/../demo/pick-audio.sh") || exit $?
+	if [ "$dev" = none ]; then
 		audio=0
-		return
-	fi
-	echo "Where should the soundtrack play?"
-	printf '  %2d  no sound\n' 0
-	for i in "${!names[@]}"; do
-		printf '  %2d  %s\n' $((i + 1)) "${descs[i]}"
-	done
-	while :; do
-		read -rp "number (0 to ${#names[@]}): " n || exit 0
-		[[ $n =~ ^[0-9]{1,3}$ ]] && ((10#$n <= ${#names[@]})) || continue
-		n=$((10#$n))
-		if [ "$n" = 0 ]; then
-			audio=0
-			return
-		fi
-		dev=${names[n - 1]}
-		while :; do
-			echo "a one-second tone through ${descs[n - 1]} ..."
-			timeout 10 mpv --no-config --really-quiet --no-video --no-input-terminal --audio-device="$dev" \
-				'av://lavfi:sine=frequency=660:duration=1' </dev/null >/dev/null 2>&1 ||
-				echo "mpv could not play through it."
-			read -rp "heard it? y keeps it, t plays it again, anything else picks another: " k || exit 0
-			[[ $k == [tT] ]] || break
-		done
-		if [[ $k == [yY] ]]; then
-			audio_opts=(--audio-device="$dev")
-			return
-		fi
-	done
-}
-
-# Says why the sound cards may be missing from the list, and the fix. On the
-# VT run-vt.sh gives it, the show is no logind session, so while it is on
-# screen logind lets nobody open the cards (/dev/snd) through their ACLs, and
-# PipeWire, which opens them for the user, drops them; only the audio group
-# opens them then. $1 says who opens them: a sound server, or this script
-# (ALSA alone).
-cards_note() {
-	local c gid pw ok=
-	for c in /dev/snd/controlC*; do
-		[ -e "$c" ] || return 0
-		[ -r "$c" ] && [ -w "$c" ] && ok=1
-	done
-	gid=$(getent group audio | cut -d: -f3)
-	if [[ $1 != alsa* ]]; then
-		# The server opens the cards: through the ACLs this script has when it
-		# can open them without the audio group, or through that group.
-		pw=$(pgrep -u "$(id -u)" -x pipewire | head -1)
-		if [ -n "$ok" ] && ! id -G | tr ' ' '\n' | grep -qx "$gid"; then
-			return 0
-		fi
-		ok=
-		[ -z "$pw" ] || ! sed -n 's/^Groups:\t*//p' "/proc/$pw/status" | tr ' ' '\n' | grep -qx "$gid" || ok=1
-	fi
-	[ -z "$ok" ] || return 0
-	echo "The sound cards are out of reach here: this VT is no logind session, so"
-	echo "nobody opens them through their ACLs while it is on screen; the audio group does."
-	if getent group audio | cut -d: -f4 | tr ',' '\n' | grep -qx "$(id -un)"; then
-		echo "You are in the audio group, but this login and your sound server started before"
-		echo "you joined it: log out of every session (or reboot) to take it up."
 	else
-		echo "Fix: sudo usermod -aG audio $(id -un), then log out of every session (or"
-		echo "reboot). Every program you run then opens the sound cards directly, on every"
-		echo "VT, past logind's seat rule."
+		audio_opts=(--audio-device="$dev")
 	fi
-	echo "Until then, pick a Bluetooth output below, or 0 for no sound."
-	echo
 }
 
 saved_tty=

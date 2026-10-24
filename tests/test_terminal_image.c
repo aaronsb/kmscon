@@ -18,9 +18,9 @@
  *   still decodes in a helper run as the pre-login user.
  * - The pause: the bytes after a command, a DA1 query among them, are parsed
  *   only after its reply, in order; the pty reads nothing meanwhile.
- * - Cancelling: a reset while a request is out (terminal_open's, or turning
- *   kitty graphics off) leaves no reply to the client, and the helper's late
- *   reply resumes the pty; closing kills the helper and drops the request.
+ * - Cancelling: a reset while a request is out, or turning kitty graphics
+ *   off, leaves no reply to the client, and the helper's late reply resumes
+ *   the pty; closing kills the helper and drops the request.
  * - The helper's lifetime: started at the first request and kept for the
  *   next, killed at close and started again after; one that does not answer
  *   in time costs the client EBADF and the helper its life, and input goes on.
@@ -535,37 +535,60 @@ static void test_pause(void)
 	teardown();
 }
 
+/* the text after the command is parsed: B is left of the cursor */
+static bool ab_parsed(void)
+{
+	unsigned int x = tsm_screen_get_cursor_x(con);
+
+	return idle() && x >= 2 && tsm_frame_cell_at(tsm_screen_frame(con), x - 1, 0)->key == 'B';
+}
+
 /*
- * A reset while a request is out, as terminal_open's hard reset or a
- * keyboard reset makes it, drops the request with no reply; the helper's
- * reply comes later, libtsm answers -ENOENT, and the pty resumes all the
- * same. Turning kitty graphics off, as a display without placements does
- * (image_budget.h), cancels the same way.
+ * KNOWN: aaronsb/libtsm#53. A request is taken at the ESC of its ST, and a
+ * reset while it is out leaves the parser in ground, so the ST's final
+ * backslash, held by the pty, prints before the text after it. The one
+ * kmscon path that resets with a request out, terminal_image_close, drops
+ * the held bytes with it (test_close). This assertion fails when libtsm
+ * swallows the backslash: drop it then, and expect AB at column 0.
+ */
+static bool libtsm_53_prints_the_st_backslash(void)
+{
+	return tsm_frame_cell_at(tsm_screen_frame(con), 0, 0)->key == '\\' &&
+	       tsm_screen_get_cursor_x(con) == 3;
+}
+
+/*
+ * A reset while a request is out drops the request with no reply; the
+ * helper's reply comes later, libtsm answers -ENOENT, and the pty resumes
+ * all the same. Turning kitty graphics off, as a display without placements
+ * does (image_budget.h), cancels the same way, and keeps the pty's held
+ * bytes: the ST's backslash among them is parsed as the end of the command.
  */
 static void test_cancel(void)
 {
 	const char *path = file_with_px("image.rgba");
+	char buf[512];
+	unsigned int x;
+	int n;
 
 	setup(__func__, real_helper);
-	kitty("a=T,t=f,f=32,s=2,v=1,i=13,C=1", b64(path, strlen(path)));
-	send_client("AB", 2);
+	n = snprintf(buf, sizeof(buf), "\033_Ga=T,t=f,f=32,s=2,v=1,i=13,C=1;%s\033\\AB",
+		     b64(path, strlen(path)));
+	send_client(buf, n);
 	run_until(request_out);
 	tsm_vte_hard_reset(vte);
-	/*
-	 * KNOWN: aaronsb/libtsm#53. The request was taken at the ESC of its
-	 * ST, and the reset leaves the parser in ground, so the ST's final
-	 * backslash prints before AB. No kmscon path resets and keeps the
-	 * pty's held bytes; this flips red when libtsm swallows it.
-	 */
-	run_to_column(3);
-	run_until(idle);
+	run_until(ab_parsed);
+	assert(libtsm_53_prints_the_st_backslash());
 	assert(!out_len && replied == 1);
 	assert(tsm_screen_test_image_count(con) == 0);
 
+	x = tsm_screen_get_cursor_x(con);
 	kitty("a=T,t=f,f=32,s=2,v=1,i=14,C=1", b64(path, strlen(path)));
 	run_until(request_out);
 	image_budget_terminal_display(&images, false, true);
 	run_until(idle);
+	/* the ST's backslash ended the command: nothing printed */
+	assert(tsm_screen_get_cursor_x(con) == x);
 	assert(!out_len && tsm_screen_test_image_count(con) == 0);
 	/* kitty graphics off: a query gets no reply */
 	kitty("a=q,i=15,s=1,v=1,f=32", "AAAAAA==");

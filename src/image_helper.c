@@ -142,12 +142,53 @@ static bool fd_path(int fd, char *buf, size_t size)
 }
 
 /*
+ * Opens @path, under @dirfd and resolved as @resolve says, read-only into the
+ * returned descriptor, or returns -errno, without opening anything but a
+ * regular file: an O_PATH descriptor comes first, which opens nothing, and
+ * only once fstat shows a regular file is the file itself opened through
+ * /proc/self/fd. A FIFO or a device is never opened, so a writer waiting on a
+ * FIFO is not let go and a device sees no open. @st describes the file opened.
+ */
+static int open_regular(int dirfd, const char *path, uint64_t resolve, struct stat *st)
+{
+	struct open_how how = {
+		.flags = O_PATH | O_NOFOLLOW | O_CLOEXEC,
+		.resolve = resolve,
+	};
+	struct stat opened;
+	char proc[64];
+	int pfd, fd;
+
+	pfd = syscall(SYS_openat2, dirfd, path, &how, sizeof(how));
+	if (pfd < 0)
+		return -errno;
+	if (fstat(pfd, st) || !S_ISREG(st->st_mode)) {
+		close(pfd);
+		return -EINVAL;
+	}
+	snprintf(proc, sizeof(proc), "/proc/self/fd/%d", pfd);
+	fd = open(proc, O_RDONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+	close(pfd);
+	if (fd < 0)
+		return -errno;
+	if (fstat(fd, &opened) || !S_ISREG(opened.st_mode) || opened.st_dev != st->st_dev ||
+	    opened.st_ino != st->st_ino) {
+		close(fd);
+		return -EINVAL;
+	}
+	*st = opened;
+	return fd;
+}
+
+/*
  * Opens a t=f or t=t path read-only into @fd: resolved, following symlinks
- * and failing on loops, refused in /proc, /sys and /dev, and a regular file
- * both before the open and from the opened descriptor, whose own path must
- * pass the same checks. @temp also applies the temporary-file rule to both
- * paths; @temp_too, when given, reports whether both pass it instead. The
- * resolved path is left in @resolved, PATH_MAX bytes.
+ * and failing on loops, refused in /proc, /sys and /dev, then opened by
+ * open_regular with no symlink allowed on the resolved path, and checked
+ * again from the opened descriptor, whose own path must pass the same checks.
+ * A symlink swapped into the resolved path between the check and the open
+ * fails the open. @temp also applies the temporary-file rule to both paths;
+ * @temp_too, when given, reports whether both pass it instead. The resolved
+ * path is left in @resolved, PATH_MAX bytes.
  */
 static int open_file(struct job *j, bool temp, bool *temp_too, char *resolved, int *fd,
 		     struct stat *st)
@@ -161,17 +202,12 @@ static int open_file(struct job *j, bool temp, bool *temp_too, char *resolved, i
 		return fail(j, -EBADF, "refused location %s", resolved);
 	if (temp && !temp_ok(resolved))
 		return fail(j, -EBADF, "not a temporary file: %s", resolved);
-	if (stat(resolved, st))
-		return fail(j, -EBADF, "cannot stat %s: %s", resolved, strerror(errno));
-	if (!S_ISREG(st->st_mode))
-		return fail(j, -EBADF, "not a regular file: %s", resolved);
 
 	seam("open");
-	*fd = open(resolved, O_RDONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+	*fd = open_regular(AT_FDCWD, resolved, RESOLVE_NO_SYMLINKS, st);
 	if (*fd < 0)
-		return fail(j, -EBADF, "cannot open %s: %s", resolved, strerror(errno));
-	if (fstat(*fd, st) || !S_ISREG(st->st_mode))
-		goto refuse;
+		return fail(j, -EBADF, "cannot open %s as a regular file: %s", resolved,
+			    strerror(-*fd));
 	if (!fd_path(*fd, opened, sizeof(opened)) || !location_ok(opened))
 		goto refuse;
 	t = temp_ok(resolved) && temp_ok(opened);
@@ -192,6 +228,13 @@ refuse:
  * entry with its device and inode, in a parent reached with no symlink, so a
  * directory component swapped for a symlink after the check deletes nothing.
  * A failure leaves the file and only adds to the reason.
+ *
+ * Between fstatat and unlinkat the entry can still be renamed away and
+ * another file put in its place; unlinkat then removes that file. The race
+ * needs write access to the directory the checked file is in, which a
+ * temporary file's directory gives only to users who could delete the entry
+ * themselves, and the parent was reached with no symlink, so it cannot lead
+ * outside that directory.
  */
 static void delete_checked(struct job *j, const char *path, const struct stat *st)
 {
@@ -233,8 +276,11 @@ static void delete_checked(struct job *j, const char *path, const struct stat *s
 /*
  * Opens shared memory object @name read-only into @fd: a leading '/', no other
  * '/', at most SHM_NAME_MAX bytes, and a regular object, opened under /dev/shm
- * as shm_open does but without blocking on a FIFO. It is then unlinked, by its
- * device and inode as delete_checked does, whatever happens next.
+ * as shm_open does, but through open_regular, so a FIFO or a symlink there is
+ * never opened. It is then unlinked, by its device and inode as
+ * delete_checked does, whatever happens next; the same rename race as
+ * delete_checked's applies, bounded by /dev/shm's sticky bit to objects the
+ * user could unlink anyway.
  */
 static int open_shm(struct job *j, int *fd, struct stat *st)
 {
@@ -251,15 +297,11 @@ static int open_shm(struct job *j, int *fd, struct stat *st)
 	dfd = open(SHM_DIR, O_PATH | O_DIRECTORY | O_CLOEXEC);
 	if (dfd < 0)
 		return fail(j, -EBADF, "cannot open " SHM_DIR ": %s", strerror(errno));
-	*fd = openat(dfd, name + 1, O_RDONLY | O_NOFOLLOW | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+	*fd = open_regular(dfd, name + 1, RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS, st);
 	if (*fd < 0) {
-		fail(j, -EBADF, "cannot open shared memory %s: %s", name, strerror(errno));
-		goto out;
-	}
-	if (fstat(*fd, st) || !S_ISREG(st->st_mode)) {
-		close(*fd);
+		fail(j, -EBADF, "cannot open shared memory %s as a regular object: %s", name,
+		     strerror(-*fd));
 		*fd = -1;
-		fail(j, -EBADF, "not a shared memory object: %s", name);
 		goto out;
 	}
 	if (fstatat(dfd, name + 1, &entry, AT_SYMLINK_NOFOLLOW) || entry.st_dev != st->st_dev ||
@@ -507,12 +549,15 @@ static int out_seal(struct job *j, uint8_t *map)
 /* @w x @h within max-graphic-size, and its pixels within the budget */
 static int check_size(struct job *j, uint64_t w, uint64_t h)
 {
+	uint64_t bytes;
+
 	if (!w || !h)
 		return fail(j, -EINVAL, "no size");
 	if (w > j->req->max_width || h > j->req->max_height)
 		return fail(j, -EINVAL, "%llux%llu past max-graphic-size", (unsigned long long)w,
 			    (unsigned long long)h);
-	if (w * h * 4 > j->req->max_bytes)
+	if (__builtin_mul_overflow(w, h, &bytes) || __builtin_mul_overflow(bytes, 4, &bytes) ||
+	    bytes > j->req->max_bytes)
 		return fail(j, -ENOSPC, "%llux%llu past the budget", (unsigned long long)w,
 			    (unsigned long long)h);
 	return 0;

@@ -312,6 +312,10 @@ static void test_files(void)
 	r = req_of('f', 32, 4096, 4096);
 	r.max_bytes = 4096 * 4096 * 4 - 1;
 	assert(ask(&h, r, "/nonexistent", -1, &rep) == -ENOSPC);
+	/* 2^31 x 2^31 x 4 bytes is 0 in 64 bits, and still past the budget */
+	r = req_of('f', 32, 0x80000000u, 0x80000000u);
+	r.max_width = r.max_height = 0xffffffffu;
+	assert(ask(&h, r, "/nonexistent", -1, &rep) == -ENOSPC);
 
 	/* a missing file, and a NUL in the name */
 	refused(&h, 'f', path_in(other, "missing"));
@@ -327,6 +331,33 @@ static void test_files(void)
 	}
 	unlink(f);
 	assert(stop(&h) == 0);
+}
+
+/* a child waiting in open() to write to FIFO @path */
+static pid_t start_writer(const char *path)
+{
+	pid_t pid = fork();
+
+	assert(pid >= 0);
+	if (!pid) {
+		int w = open(path, O_WRONLY);
+
+		_exit(w >= 0 ? 0 : 1);
+	}
+	usleep(20000);
+	return pid;
+}
+
+/* the writer is still waiting, so nothing opened the FIFO; then lets it go */
+static void still_waiting(pid_t writer, const char *path)
+{
+	int fd;
+
+	usleep(50000);
+	assert(waitpid(writer, NULL, WNOHANG) == 0);
+	fd = open(path, O_RDONLY | O_NONBLOCK);
+	assert(fd >= 0 && waitpid(writer, NULL, 0) == writer);
+	close(fd);
 }
 
 /* the first regular file of @paths, or NULL */
@@ -376,20 +407,9 @@ static void test_refusals(void)
 	 * still waiting after the reply, as opening it would have let it go on
 	 */
 	assert(mkfifo(fifo, 0600) == 0);
-	writer = fork();
-	assert(writer >= 0);
-	if (!writer) {
-		int w = open(fifo, O_WRONLY);
-
-		_exit(w >= 0 ? 0 : 1);
-	}
-	usleep(20000);
+	writer = start_writer(fifo);
 	refused(&h, 'f', fifo);
-	usleep(50000);
-	assert(waitpid(writer, NULL, WNOHANG) == 0);
-	fd = open(fifo, O_RDONLY | O_NONBLOCK);
-	assert(fd >= 0 && waitpid(writer, NULL, 0) == writer);
-	close(fd);
+	still_waiting(writer, fifo);
 	/* a socket and a directory */
 	snprintf(sun.sun_path, sizeof(sun.sun_path), "%s", sock);
 	fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -494,12 +514,16 @@ static void go_on(struct helper *h)
 
 static void test_swaps(void)
 {
-	char *f = path_in(other, "swap.rgba"), *link = path_in(other, "swap.link");
+	char f[PATH_MAX], link[PATH_MAX];
 	char dir[PATH_MAX], moved[PATH_MAX], elsewhere[PATH_MAX];
 	struct kmscon_image_request r;
 	struct helper h;
 	struct reply rep;
+	pid_t writer;
 
+	/* copies: path_in's buffers are reused */
+	snprintf(f, sizeof(f), "%s", path_in(other, "swap.rgba"));
+	snprintf(link, sizeof(link), "%s", path_in(other, "swap.link"));
 	start_env(&h, test_helper, true, NULL);
 
 	/* a symlink swapped in between the check and the open */
@@ -512,16 +536,71 @@ static void test_swaps(void)
 	go_on(&h);
 	assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
 
-	/* a FIFO swapped in: opened without blocking, then refused */
+	/* a FIFO swapped in: refused, and never opened */
 	unlink(f);
 	write_file(f, px1, 4);
 	r = req_of('f', 32, 1, 1);
 	send_req(&h, &r, f, -1);
 	at_seam(&h, "open");
 	assert(unlink(f) == 0 && mkfifo(f, 0600) == 0);
+	writer = start_writer(f);
+	go_on(&h);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+	still_waiting(writer, f);
+	unlink(f);
+
+	/* a symlink to a FIFO swapped in: the FIFO is never opened either */
+	write_file(f, px1, 4);
+	assert(mkfifo(path_in(other, "swap.fifo"), 0600) == 0);
+	r = req_of('f', 32, 1, 1);
+	send_req(&h, &r, f, -1);
+	at_seam(&h, "open");
+	assert(unlink(f) == 0 && symlink(path_in(other, "swap.fifo"), f) == 0);
+	writer = start_writer(path_in(other, "swap.fifo"));
+	go_on(&h);
+	assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+	still_waiting(writer, path_in(other, "swap.fifo"));
+	unlink(f);
+	unlink(path_in(other, "swap.fifo"));
+
+	/*
+	 * a symlink to another readable regular file, in an allowed place:
+	 * the resolved path admits no symlink, so it is refused
+	 */
+	write_file(f, px1, 4);
+	write_file(path_in(other, "swap.other"), px1, 4);
+	r = req_of('f', 32, 1, 1);
+	send_req(&h, &r, f, -1);
+	at_seam(&h, "open");
+	assert(unlink(f) == 0 && symlink(path_in(other, "swap.other"), f) == 0);
 	go_on(&h);
 	assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
 	unlink(f);
+	unlink(path_in(other, "swap.other"));
+
+	/* a directory component swapped for a symlink before the open: refused too */
+	{
+		char d[PATH_MAX], real[PATH_MAX], alt[PATH_MAX], name[PATH_MAX];
+
+		snprintf(d, sizeof(d), "%s", path_in(other, "dswap"));
+		snprintf(real, sizeof(real), "%s", path_in(other, "dswap.real"));
+		snprintf(alt, sizeof(alt), "%s", path_in(other, "dswap.alt"));
+		assert(mkdir(d, 0700) == 0 && mkdir(alt, 0700) == 0);
+		write_file(path_in(d, "img"), px1, 4);
+		write_file(path_in(alt, "img"), px1, 4);
+		snprintf(name, sizeof(name), "%s", path_in(d, "img"));
+		r = req_of('f', 32, 1, 1);
+		send_req(&h, &r, name, -1);
+		at_seam(&h, "open");
+		assert(rename(d, real) == 0 && symlink(alt, d) == 0);
+		go_on(&h);
+		assert(recv_reply(&h, &rep) > 0 && rep.r.status == -EBADF && rep.fd < 0);
+		unlink(d);
+		unlink(path_in(real, "img"));
+		unlink(path_in(alt, "img"));
+		rmdir(real);
+		rmdir(alt);
+	}
 
 	/*
 	 * t=t: a directory component swapped for a symlink after the check
@@ -611,6 +690,7 @@ static void test_shm(void)
 	struct kmscon_image_request r;
 	struct helper h;
 	struct reply rep;
+	pid_t writer;
 
 	snprintf(name, sizeof(name), "/kmscon-test-%d", getpid());
 	start(&h);
@@ -660,10 +740,12 @@ static void test_shm(void)
 	refused(&h, 's', longest);
 	assert(shm_exists(longest));
 	unlink(path_in("/dev/shm", longest + 1));
-	/* not a regular object: refused, never opened blocking, and left */
+	/* not a regular object: refused, never opened, and left */
 	assert(mkfifo(path_in("/dev/shm", name + 1), 0600) == 0);
+	writer = start_writer(path_in("/dev/shm", name + 1));
 	refused(&h, 's', name);
 	assert(shm_exists(name));
+	still_waiting(writer, path_in("/dev/shm", name + 1));
 	unlink(path_in("/dev/shm", name + 1));
 
 	assert(stop(&h) == 0);

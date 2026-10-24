@@ -677,6 +677,45 @@ static void test_sanitize(void)
 	assert(!buf[0]);
 }
 
+/*
+ * A deferred request was never sent: a helper's packet answering its id is a
+ * reply with no request out, and a helper closing its socket meanwhile is no
+ * failure of it. Either stops the helper, and the request still ends
+ * KMSCON_IMAGE_OVER_BUDGET, ENOSPC to the client. receive() is called by
+ * hand once the packet or the close is there, so the timer cannot answer
+ * first.
+ */
+static void test_deferred(const char *fake)
+{
+	static const char *const names[] = {"lateid", "lateclose"};
+	struct image_user me = user_of(getuid());
+	struct image_host_request r;
+	struct image_host *h;
+	struct pollfd pfd;
+	unsigned int i, calls;
+
+	for (i = 0; i < 2; i++) {
+		assert(image_host_new(&h, loop, fake, reply, NULL) == 0);
+		r = request(500 + 2 * i, 'f', names[i]);
+		assert(image_host_send(h, &me, &r) == 0);
+		wait_reply(h, 5000);
+		assert(got.status == KMSCON_IMAGE_OK && image_host_pid(h));
+
+		r = request(501 + 2 * i, 'f', "good");
+		r.min_bytes = r.max_bytes + 1;
+		assert(image_host_send(h, &me, &r) == 0);
+		pfd = (struct pollfd){.fd = h->sock, .events = POLLIN};
+		assert(poll(&pfd, 1, 5000) == 1);
+		calls = got.calls;
+		receive(h);
+		assert(got.calls == calls && !image_host_pid(h));
+		assert(image_host_busy(h) && h->deferred);
+		wait_reply(h, 1000);
+		assert(got.id == 501 + 2 * i && got.status == KMSCON_IMAGE_OVER_BUDGET);
+		image_host_free(h);
+	}
+}
+
 /* @pid's session and controlling terminal, from its /proc stat */
 static void stat_of(pid_t pid, int *session, int *tty)
 {
@@ -797,6 +836,7 @@ int main(int argc, char **argv)
 	test_real(helper);
 	test_checks(fake);
 	test_hardening(helper);
+	test_deferred(fake);
 	test_no_ctty(helper);
 	test_effective_only(helper);
 

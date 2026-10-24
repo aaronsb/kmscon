@@ -237,6 +237,20 @@ int main(void)
 			close(go);
 			close(ack);
 			close(fds[0]);
+		} else if (!strcmp(name, "lateid") || !strcmp(name, "lateclose")) {
+			/*
+			 * a good reply, then after a pause either a reply to the
+			 * next id, which kmscon has not sent, or an exit
+			 */
+			fds[0] = memfd(len, seals);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			close(fds[0]);
+			usleep(100000);
+			if (!strcmp(name, "lateclose"))
+				return 0;
+			r.id++;
+			r.status = KMSCON_IMAGE_TOO_LARGE;
+			send_fds(&r, sizeof(r), NULL, 0, NULL, 0, 0);
 		} else if (!strcmp(name, "close")) {
 			return 0;
 		} else if (!strcmp(name, "hang")) {

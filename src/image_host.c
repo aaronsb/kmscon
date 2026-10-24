@@ -302,11 +302,20 @@ static void end_request(struct image_host *h)
 	ev_timer_update(h->timer, NULL);
 }
 
-/* the request out, if any, ends as IMAGE_HOST_FAILED, and the helper with SIGKILL */
+/* a request the helper holds: a deferred one was never sent */
+static bool sent(const struct image_host *h)
+{
+	return h->busy && !h->deferred;
+}
+
+/*
+ * The helper stops with SIGKILL, and the request it holds, if any, ends as
+ * IMAGE_HOST_FAILED; a deferred request keeps its KMSCON_IMAGE_OVER_BUDGET
+ */
 static void fail(struct image_host *h, const char *why)
 {
 	uint64_t id = h->req.id;
-	bool busy = h->busy;
+	bool busy = sent(h);
 
 	log_warning("image helper %d: %s; stopping it", h->pid, why);
 	h->failure = why;
@@ -484,7 +493,7 @@ static void receive(struct image_host *h)
 		why = "its socket failed";
 	else if (!got)
 		why = "it closed its socket";
-	else if (!h->busy)
+	else if (!sent(h))
 		why = "a reply with no request out";
 	else if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC))
 		why = "a truncated reply";
@@ -509,8 +518,8 @@ static void receive(struct image_host *h)
 
 	if (why) {
 		close_fds(fds, n_fds);
-		/* the helper exiting with no request out is no failure */
-		if (!got && !h->busy) {
+		/* the helper exiting with no request sent to it is no failure */
+		if (!got && !sent(h)) {
 			log_debug("image helper %d exited", h->pid);
 			stop_helper(h);
 			return;

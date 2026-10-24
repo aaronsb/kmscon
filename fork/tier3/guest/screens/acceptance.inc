@@ -121,11 +121,12 @@ mpv_counts() {
 # Reports the window to the tier 3 harness on its event port, which t3 names
 # in T3_EVENTS, as "T3-BENCH NAME start=S end=E KEY=VALUE...". Anywhere
 # else, as on the VT demo's pages, it prints the figures under the page, mpv's
-# own counts first and in bold when the page played video, so the reviewer
-# can set what mpv sent beside kmscon's rate in its corner
-# (--render-timer=osd) and see which side was slow.
+# own counts and the frame rate they make first and in bold when the page
+# played video (per pane, with panes=N), so the reviewer can set what mpv sent
+# beside kmscon's rate in its corner (--render-timer=osd) and see which side
+# was slow.
 report() {
-	local name=$1 kv frames= dropped= kvs
+	local name=$1 kv frames= dropped= panes=1 kvs
 	shift
 	if [ -n "${T3_EVENTS:-}" ]; then
 		echo "T3-BENCH $name start=$start end=$end $*" >"$T3_EVENTS"
@@ -136,11 +137,15 @@ report() {
 		case $kv in
 		mpv_frames=*) frames=${kv#*=} ;;
 		mpv_dropped=*) dropped=${kv#*=} ;;
+		panes=*) panes=${kv#*=} ;;
 		esac
 	done
 	if [ -n "$frames" ] && [ -n "$dropped" ]; then
-		printf '\n%s[1mmpv sent %d frames to the terminal and dropped %d (%d%% sent).%s[0m' \
-			"$esc" "$frames" "$dropped" $((100 * frames / (frames + dropped > 0 ? frames + dropped : 1))) "$esc"
+		printf '\n%s[1mmpv sent %d frames to the terminal and dropped %d (%d%% sent): %s frames a second%s.%s[0m' \
+			"$esc" "$frames" "$dropped" $((100 * frames / (frames + dropped > 0 ? frames + dropped : 1))) \
+			"$(awk -v f="$frames" -v n="$panes" -v a="$start" -v b="$end" \
+				'BEGIN { printf "%.1f", (b > a ? f / n / (b - a) : 0) }')" \
+			"$( ((panes > 1)) && printf ' in each pane')" "$esc"
 	fi
 	printf '\nmeasured over %s seconds: %s\n' \
 		"$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.1f", b - a }')" "$*"

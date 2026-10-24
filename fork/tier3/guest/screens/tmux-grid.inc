@@ -1,6 +1,7 @@
 # ADR-103's acceptance scenario A4, shared by tmux-2x2.sh and tmux-3x3.sh,
 # which source it after setting n: tmux in an n by n grid of panes, each
-# playing the test pattern through mpv --vo=sixel. tmux decodes each pane's
+# playing the test pattern through mpv --vo=sixel without dithering, which
+# spares mpv's encoder (as in mpv-sixel). tmux decodes each pane's
 # sixel pictures and draws them again on kmscon, so n * n streams and
 # placements change at once. tmux runs on a server of its own (-L), with a
 # config that names kmscon's sixel support: tmux turns sixel on for a
@@ -23,7 +24,8 @@ grid() {
 		# Paths go into tmux's shell command quoted with %q.
 		local wait=(tmux -L "$sock" wait-for go)
 		local mpv=(mpv --no-config --really-quiet --no-input-terminal --ao=null --no-audio
-			--vo=sixel --script="$here/mpv-stats.lua" --script-opts=t3-stats="$dir/$i"
+			--vo=sixel --vo-sixel-dither=none
+			--script="$here/mpv-stats.lua" --script-opts=t3-stats="$dir/$i"
 			"$(clip 320x180 5)")
 		printf -v play '%q ' "${wait[@]}"
 		play+="; $(printf '%q ' "${mpv[@]}")"

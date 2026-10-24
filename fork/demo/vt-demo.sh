@@ -58,7 +58,10 @@ if [ -n "${VT_DEMO_SHOWCASE:-}" ]; then
 	[ -z "${VT_DEMO_SHOWCASE_FROM:-}" ] || session+=(--showcase-from="$VT_DEMO_SHOWCASE_FROM")
 	case ${VT_DEMO_SHOWCASE_AUDIO:-} in
 	yes | 1) session+=(--showcase-audio${VT_DEMO_SHOWCASE_AUDIO_DEVICE:+="$VT_DEMO_SHOWCASE_AUDIO_DEVICE"}) ;;
-	no | 0 | '') ;;
+	no | 0 | '')
+		[ -z "${VT_DEMO_SHOWCASE_AUDIO_DEVICE:-}" ] ||
+			echo "vt-demo: AUDIO_DEVICE=$VT_DEMO_SHOWCASE_AUDIO_DEVICE is ignored without AUDIO=1" >&2
+		;;
 	*) die "AUDIO=$VT_DEMO_SHOWCASE_AUDIO: yes or 1 plays the soundtrack, no or 0 does not" ;;
 	esac
 fi

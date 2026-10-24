@@ -288,6 +288,10 @@ def main():
         cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
         check("AUDIO_DEVICE names the soundtrack's output to run-vt.sh",
               p.returncode == 0 and "--showcase-audio=pipewire/bt\\ sink 6" in cmd, p.stdout + p.stderr)
+        p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO_DEVICE="pipewire/x")
+        check("AUDIO_DEVICE without AUDIO=1 is reported as ignored",
+              p.returncode == 0 and "ignored without AUDIO=1" in p.stderr and "--showcase-audio" not in p.stdout,
+              p.stdout + p.stderr)
         p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO="loud")
         check("AUDIO=loud is refused", p.returncode != 0 and "AUDIO=loud" in p.stderr, p.stderr)
         p = c.run(["6"], VT_DEMO_SHOWCASE=os.path.join(tmp, "missing.mkv"))

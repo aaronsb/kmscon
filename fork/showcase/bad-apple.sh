@@ -239,7 +239,7 @@ dry_run() {
 		1) echo "  video: ${ACT1_START}s for ${ACT1_SECONDS}s, then ${ACT1_DOTS_SECONDS}s in Braille" ;;
 		3) echo "  video: ${ACT3_START}s for ${ACT3_SECONDS}s" ;;
 		5) echo "  video: ${ACT5_START}s for ${ACT5_SECONDS}s, then ${ACT5_GLITCH}s glitched" ;;
-		7) echo "  video: ${ACT7_START}s to $( [ "$ACT7_SECONDS" = 0 ] && echo 'the end' || echo "+${ACT7_SECONDS}s, then the end card")" ;;
+		7) echo "  video: from ${ACT7_START}s $( [ "$ACT7_SECONDS" = 0 ] && echo 'to the end' || echo "for ${ACT7_SECONDS}s, then the end card")" ;;
 		esac
 		echo "  kmscon today: ${ACT_KMSCON[n]}"
 	done
@@ -457,11 +457,21 @@ audio_stop() {
 
 # The output the soundtrack plays through, asked for before the show takes
 # the screen (--audio) by fork/demo/pick-audio.sh, which AUDIO_DEVICE
-# answers in advance: mpv's name for it, or none for no sound.
+# answers in advance: mpv's name for it, or none for no sound. With
+# --no-wait nothing is asked. Nothing is asked either when no act in the run
+# plays sound (acts 2, 4 and 6, or act 7 with --banner-only).
 audio_opts=()
 pick_audio() {
-	local dev
-	dev=$(bash "$here/../demo/pick-audio.sh") || exit $?
+	local dev n heard= no_wait=()
+	for ((n = first; n <= last; n++)); do
+		case $n in 1 | 3 | 5) heard=1 ;; 7) [ -n "$banner_only" ] || heard=1 ;; esac
+	done
+	if [ -z "$heard" ]; then
+		audio=0
+		return
+	fi
+	[ "$wait_key" = 1 ] || no_wait=(--no-wait)
+	dev=$(bash "$here/../demo/pick-audio.sh" "${no_wait[@]}") || exit $?
 	if [ "$dev" = none ]; then
 		audio=0
 	else
@@ -778,8 +788,10 @@ act_7() {
 	[ "$ACT7_SECONDS" = 0 ] || length=(--length="$ACT7_SECONDS")
 	if [ "$audio" = 1 ]; then
 		sound=("${audio_opts[@]}")
-		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || sound+=(--af="lavfi=[afade=t=out:st=$(awk \
-			-v s="$ACT7_START" -v l="$ACT7_SECONDS" -v f="$ACT7_FADE" 'BEGIN { print s + l - f }'):d=$ACT7_FADE]")
+		# The fade, no longer than the act, ends with it.
+		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || sound+=(--af="lavfi=[afade=t=out:$(awk \
+			-v s="$ACT7_START" -v l="$ACT7_SECONDS" -v f="$ACT7_FADE" \
+			'BEGIN { if (f > l) f = l; printf "st=%s:d=%s", s + l - f, f }')]")
 	fi
 	[ "$KITTY_SHM" != yes ] || shm=yes
 	# The scroller draws in its own process with one write per frame and the

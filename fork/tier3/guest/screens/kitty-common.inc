@@ -32,14 +32,20 @@ kitty_send() {
 # Sends a command that carries i and reads the terminal's reply, which ends
 # with ST, into reply, as "i=N;OK" or "i=N;CODE:message"; "no reply" when
 # none comes within 3 seconds (a file the image helper reads, or a PNG it
-# decodes, answers after the helper). Echo is off while it waits, so the
-# reply is not printed.
+# decodes, answers after the helper). A reply for another i, one that came
+# after an earlier command's 3 seconds ran out, is skipped. Echo is off while
+# it waits, so the reply is not printed.
 kitty_ask() {
-	local mode r=
+	local mode r= want= n
+	[[ ,$1, =~ ,i=([0-9]+), ]] && want="_Gi=${BASH_REMATCH[1]};"
 	if [ -t 0 ] && mode=$(stty -g </dev/tty 2>/dev/null); then
 		stty -echo </dev/tty
 		kitty_send "$1" "$2" >/dev/tty
-		IFS= read -rsd '\' -t 3 r </dev/tty
+		for ((n = 0; n < 8; n++)); do
+			IFS= read -rsd '\' -t 3 r </dev/tty || break
+			[[ $r == *"$want"* ]] && break
+		done
+		[[ $r == *"$want"* ]] || r=
 		stty "$mode" </dev/tty
 	else
 		kitty_send "$1" "$2"

@@ -63,6 +63,18 @@
 #include <zlib.h>
 #include "image_helper_proto.h"
 
+/*
+ * Magics <linux/magic.h> lacks: configfs's arrived in a header after the
+ * 6.8 one Ubuntu's CI builds against, and rpc_pipefs's was never there
+ * (the kernel's net/sunrpc/rpc_pipe.c)
+ */
+#ifndef CONFIGFS_MAGIC
+#define CONFIGFS_MAGIC 0x62656570
+#endif
+#ifndef RPC_PIPEFS_MAGIC
+#define RPC_PIPEFS_MAGIC 0x67596969
+#endif
+
 #define TEMP_MARK "tty-graphics-protocol"
 #define SHM_DIR "/dev/shm"
 #define SHM_NAME_MAX 255
@@ -159,7 +171,7 @@ static bool pseudo_fs(int fd)
 		SECURITYFS_MAGIC,    CGROUP_SUPER_MAGIC,    CGROUP2_SUPER_MAGIC, DEVPTS_SUPER_MAGIC,
 		CONFIGFS_MAGIC,	     BPF_FS_MAGIC,	    PSTOREFS_MAGIC,	 EFIVARFS_MAGIC,
 		SELINUX_MAGIC,	     SMACK_MAGIC,	    BINFMTFS_MAGIC,	 NSFS_MAGIC,
-		ANON_INODE_FS_MAGIC, USBDEVICE_SUPER_MAGIC,
+		ANON_INODE_FS_MAGIC, USBDEVICE_SUPER_MAGIC, RPC_PIPEFS_MAGIC,
 	};
 	struct statfs fs;
 	size_t i;

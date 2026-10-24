@@ -142,6 +142,8 @@ ADR-103 step 3e ran the sixel acceptance scenarios that tier 3 can run, at kmsco
 
 `photos` draws each of two NASA Visible Earth photographs of the Earth, by day and by night (xplanet's `earth.jpg` and `night.jpg`, 2048x1024, which its images/README says are not copyrighted), twice side by side for comparison: chafa, the operator's everyday sixel tool, on the left, and libsixel's encoder, by way of mpv (ffmpeg decoding), on the right, each five rows tall; `photo-scroll` draws chafa's day photograph six rows tall. Placed, scrolled into scrollback with a screenful of lines, shown again with Shift+PageUp and returned with Shift+PageDown, they match their goldens at every variant, and the screen after them, drawn after `clear`, holds no pixel of them.
 
+Note (2026-10-24, kmscon #145): the run above drew xplanet's photographs. The screens have since drawn one photograph, the operator's own street at sunset (2040x1536, CC BY 4.0, `fork/tier3/guest/screens/photo/`), eight rows tall on `photos` and six on `photo-scroll`, and the guest no longer installs xplanet. A1 has no timing figures, so none of this section's figures change.
+
 img2sixel itself writes nothing on current Arch, on the host as in the guest, for any input: libsixel 1.10.5 tries gdk-pixbuf first and asks for the picture right after `gdk_pixbuf_loader_write`, without closing the loader; gdk-pixbuf 2.44 decodes through glycin and has no picture until the close, so libsixel returns success with no frame and skips its built-in loaders (src/loader.c, `load_with_gdkpixbuf`, MIT). `photos` prints how many bytes img2sixel wrote, 0 here, so a fixed libsixel shows on the page by itself (ADR-103's notes of 2026-10-23, step 3e).
 
 ### A2: mpv --vo=sixel full screen

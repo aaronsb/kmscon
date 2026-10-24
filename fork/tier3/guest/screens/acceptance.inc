@@ -1,14 +1,16 @@
 # Shared by ADR-103's sixel acceptance screens (photos.sh, photo-scroll.sh,
 # mpv-sixel.sh, tmux-grid.inc), which source it: the
-# programs they need, the photographs, the clip, and the figures a measured
+# programs they need, the photograph, the clip, and the figures a measured
 # screen reports. It draws nothing itself, and sources sixel-common.inc.
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 . "$here/sixel-common.inc"
 
-# NASA Visible Earth photographs of the Earth by day and by night, 2048x1024,
-# as xplanet installs them. xplanet's images/README: "These images are not
-# copyrighted."
-photo_dir=/usr/share/xplanet/images
+# The photograph the pages draw, beside these scripts: a street at sunset,
+# 2040x1536, the operator's own, licensed CC BY 4.0 (photo/LICENSE). It
+# travels with the scripts, onto tier 3's disc and into the VT demo's
+# sections, so nothing is installed for it.
+photo_dir=$here/photo
+photo_file=street-sunset.jpg photo_w=2040 photo_h=1536
 
 # Exits with a message unless program $1 is installed; $2 is the Arch package
 # that has it.
@@ -19,12 +21,10 @@ needs() {
 	exit 0
 }
 
-# Exits with a message unless the photographs are installed.
-needs_photos() {
-	[ -r "$photo_dir/earth.jpg" ] && [ -r "$photo_dir/night.jpg" ] && return
-	printf 'The photographs are not installed (%s/earth.jpg and\n' "$photo_dir"
-	printf 'night.jpg): install xplanet, which ships them, and run the page again.\n'
-	exit 0
+# The width in cells, in w, of the photograph $1 rows tall with its shape
+# kept, to the nearest cell, for the cell size cell_size gave.
+photo_cols() {
+	w=$((($1 * ch * photo_w + photo_h * cw / 2) / (photo_h * cw)))
 }
 
 # mpv with nothing of the user's: no config, no input from the terminal, no
@@ -45,7 +45,7 @@ chafa_photo() {
 
 # Photograph $1 drawn through libsixel's encoder (mpv's sixel output) at
 # column $2 and row $3, counted from 1, stretched to fill $4 by $5 cells
-# exactly (the callers keep the photographs' 2:1 shape to within a cell). The
+# exactly (photo_cols keeps the photograph's shape to within half a cell). The
 # picture stays on the screen as ordinary sixel content: mpv draws it on the
 # main screen, clears nothing and exits after the one frame.
 photo() {
@@ -59,7 +59,7 @@ photo() {
 # images through gdk-pixbuf, and with gdk-pixbuf 2.44 it gets no picture and
 # writes nothing, so the page says so rather than showing an empty space.
 img2sixel_bytes() {
-	img2sixel -w "$1" "$photo_dir/earth.jpg" 2>/dev/null | wc -c
+	img2sixel -w "$1" "$photo_dir/$photo_file" 2>/dev/null | wc -c
 }
 
 # The clip mpv plays: ffmpeg's testsrc2 pattern, generated as it plays, so

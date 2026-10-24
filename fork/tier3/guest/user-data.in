@@ -38,10 +38,9 @@ write_files:
       # ADR-103's sixel acceptance programs (A1, A2, A4): chafa, the
       # operator's everyday sixel tool, and img2sixel from libsixel for A1's
       # pictures, mpv (which brings ffmpeg) for A1 and A2, and tmux, built
-      # with sixel, for A4. xplanet is installed for its photographs of the
-      # Earth from NASA's Visible Earth, which are not copyrighted (its
-      # images/README), the pictures A1 draws; the run downloads nothing.
-      pac -S --needed chafa libsixel mpv tmux xplanet
+      # with sixel, for A4. A1's photograph travels with the screens on the
+      # run's disc; the run downloads nothing.
+      pac -S --needed chafa libsixel mpv tmux
       echo LANG=C.UTF-8 > /etc/locale.conf
       # VTs that logind spawns on switch (tty2 and up) run kmscon.
       ln -sfn /usr/lib/systemd/system/kmsconvt@.service /etc/systemd/system/autovt@.service

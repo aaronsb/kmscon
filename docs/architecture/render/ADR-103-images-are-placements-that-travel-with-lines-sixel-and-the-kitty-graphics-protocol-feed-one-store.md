@@ -136,6 +136,10 @@ considered:
   - operator: aaronsb
     said: "I don't like append only. I thought it made sense but we need to be able to edit where it makes sense too"
     via: Claude Code session, 2026-10-24, relayed verbatim by the team lead, overruling the append-only convention for accepted records; it governs this PR's in-place edits to the Summary's store and budget bullet and the Image store section
+  - operator: aaronsb
+    said: "Rank 3's order: on-screen kitty images are evicted oldest transmission first; unplaced and scrollback images stay least recently used"
+    via: Claude Code session, 2026-10-24, answering the rank-3 order question; the operator picked the option in a structured question, relayed by the team lead
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"

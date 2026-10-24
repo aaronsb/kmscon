@@ -218,10 +218,6 @@ considered:
     paraphrase: true
   - operator: aaronsb
     said: "Install over system kmscon: pacman -U the built package over Arch's kmscon and kmscon-terminfo, log in on a normal kmscon VT, run demo.sh kitty-files, then reinstall Arch's package to undo"
-    via: Claude Code session, 2026-10-24, AskUserQuestion after a harness login mode was found to need kmscon started outside the desktop session as a transient systemd unit; the operator picked this over make vt-login
-    paraphrase: true
-  - operator: aaronsb
-    said: "Install over system kmscon: pacman -U the built package over Arch's kmscon and kmscon-terminfo, log in on a normal kmscon VT, run demo.sh kitty-files, then reinstall Arch's package to undo"
     via: "Claude Code session, 2026-10-24, AskUserQuestion after a harness login mode was found to need kmscon started outside the desktop session as a transient systemd unit; the operator picked this over make vt-login, then added: \"I think our package is actually reliable enough to try\""
     paraphrase: true
 observable:

@@ -54,11 +54,11 @@ Read at the commits above for each point the spec leaves open. Citations are to 
 | `O` past the end | EBADF | EINVAL (shared memory `graphics_image.zig:320`; files seek at `:439`, then read short) | an error | EINVAL |
 | `a=q` | loads | loads and decodes in full (`graphics_exec.zig:156-195`) | reads only (`kitty.rs:181-198`) | loads in full (`:724-756`) |
 | `t=t` removed after a failed read | yes | yes, once the temporary-file rule has passed (`graphics_image.zig:390`, `:422`) | no (`apc.rs:217-253`) | no (`:1116-1118`) |
-| `t=s` unlinked after a failed read | yes | yes (`graphics_image.zig:248`) | no (`apc.rs:298-305`) | yes (`:1149-1170`) |
+| `t=s` unlinked after a failed read | yes | yes (`graphics_image.zig:248`) | no (`apc.rs:298-305`) | on some failures: after an `fstat` failure (`:1158-1161`), an `S` past the object's size (`:1175-1178`) and a size past its limit (`:1185-1188`); not after a failed open (`:1147-1154`), nor after a failed `mmap` (`:1201-1205`), which an offset that is not page-aligned, such as 10, causes |
 
 - All three treat `S` as exact; none matches kitty on every point.
 - Ghostty and Rio also accept a shared memory name without a leading `/`, which the spec forbids. WezTerm does not require `tty-graphics-protocol` in a temporary file's path, and adds `/var/tmp` to the temporary directories.
-- kitten icat's detection queries hold 3 bytes with `S` set to the length of the name (47 for `t=t`, 19 for `t=s`), so under an exact `S` they fail. Its real transfers carry a correct `S`, and in memory mode it sends no queries.
+- kitten icat's detection queries hold 3 bytes with `S` set to the length of the file or object's name, which varies with the name (47 and 19 in this probe, 46 for `t=t` in ADR-106's GIF run), so under an exact `S` they fail. Its real transfers carry a correct `S`, and in memory mode it sends no queries.
 
 ## `q` in kitty 0.49.2 (added 2026-10-24)
 

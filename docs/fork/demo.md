@@ -122,7 +122,7 @@ The pages fall into review kits (#123), so a visual review runs the pages a chan
 | Kit | Pages |
 |---|---|
 | `text`, the default | every page from sgr to emoji: text, colour, decorations, box drawing, CJK, combining marks, emoji |
-| `sixel` | sixel, sixel-ramps, sixel-article and sixel-evict, then ADR-103's acceptance pages: photos, photo-scroll, mpv-sixel, tmux-2x2 and tmux-3x3 |
+| `sixel` | sixel, sixel-ramps and sixel-article, then ADR-103's acceptance pages: photos, photo-scroll, mpv-sixel, tmux-2x2 and tmux-3x3; and sixel-evict, whose section, numbered before the two sides met, sorts between photos and photo-scroll |
 | `kitty` | one placeholder page until the kitty graphics protocol arrives with ADR-103 step 4 |
 | `all` | every page |
 

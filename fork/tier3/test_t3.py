@@ -18,6 +18,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3_bench  # noqa: E402
@@ -634,8 +635,19 @@ class BottleneckTest(unittest.TestCase):
 
     def test_known(self):
         # A known bottleneck, named by its issue, passes with a note, and
-        # fails once it is gone, so its entry is removed with the fix.
-        variant, issue = next(iter(t3_evaluate.KNOWN_BOTTLENECKS["mpv-sixel"].items()))
+        # fails once it is gone, so its entry is removed with the fix. The
+        # entry is the test's own, since none is known today.
+        variant, issue = "v-known", "aaronsb/kmscon#0"
+        with mock.patch.dict(t3_evaluate.KNOWN_BOTTLENECKS, {"mpv-sixel": {variant: issue}}):
+            self.known(variant, issue)
+        # Without the entry the same variant is judged like any other.
+        self.assertEqual(self.evaluate(variant, self.SLOW)["status"], "fail")
+        # #139 at both 7680x2160 variants was fixed by #152, so A2 is
+        # judged at every variant.
+        self.assertEqual(t3_evaluate.KNOWN_BOTTLENECKS, {})
+        self.assertEqual(t3_evaluate.RATE_CHECKED, ["mpv-sixel"])
+
+    def known(self, variant, issue):
         known = self.evaluate(variant, self.SLOW)
         self.assertEqual(known["status"], "pass")
         self.assertIn(issue, known["note"])
@@ -647,9 +659,6 @@ class BottleneckTest(unittest.TestCase):
         dead = self.evaluate(variant, dict(self.SLOW, mpv_frames=0))
         self.assertEqual(dead["status"], "fail")
         self.assertIn("no frame", dead["error"])
-        self.assertEqual(sorted(t3_evaluate.KNOWN_BOTTLENECKS["mpv-sixel"]),
-                         ["2d-7680x2160", "2d-7680x2160-font32"])
-        self.assertEqual(t3_evaluate.RATE_CHECKED, ["mpv-sixel"])
 
 
 class SerialTest(unittest.TestCase):

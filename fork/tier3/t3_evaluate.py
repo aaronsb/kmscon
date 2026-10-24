@@ -42,12 +42,11 @@ BENCHMARKS = ["mpv-sixel", "tmux-2x2", "tmux-3x3", "s1-scroll", "flood"]
 # figures only, since tmux redraws every pane's pictures itself.
 RATE_CHECKED = ["mpv-sixel"]
 # Variants where kmscon is known to be the bottleneck, by screen, each with
-# the issue that tracks it. Such a case passes with a note while the
-# bottleneck lasts and fails once it is gone, so the entry goes with the fix.
-KNOWN_BOTTLENECKS = {
-    "mpv-sixel": {"2d-7680x2160": "aaronsb/kmscon#139",
-                  "2d-7680x2160-font32": "aaronsb/kmscon#139"},
-}
+# the issue that tracks it, as {"mpv-sixel": {"2d-7680x2160": "owner/repo#N"}}.
+# Such a case passes with a note while the bottleneck lasts and fails once
+# it is gone, so the entry goes with the fix. None today: both 7680x2160
+# variants carried aaronsb/kmscon#139 until #152 fixed it there.
+KNOWN_BOTTLENECKS = {}
 # A case compared with another case's golden: back from the scrollback, and
 # back from tty3 (vt-restore, with the last screen's).
 SAME_AS = {"photo-scrollforward": "photo-scroll", "vt-restore": SCREENS[-1]}

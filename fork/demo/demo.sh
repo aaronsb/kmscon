@@ -8,7 +8,7 @@
 #   1 looks right   2 looks wrong   3 unsure
 #   s skips the page for now: not reviewed this time, still to review
 #   c types a comment of any length, then asks for a rating (Enter: none)
-#   b goes back one page   q quits
+#   r draws the page again   b goes back one page   q quits
 #
 # Each judgement is appended as one TSV line to $DEMO_FEEDBACK, by default
 # /tmp/kmscon-demo/feedback.tsv; feedback.sh prints it. A summary page with
@@ -217,7 +217,7 @@ read_comment() {
 	note=$(printf '%s\n' "${lines[@]}")
 }
 
-ask_keys='1 right  2 wrong  3 unsure  s skip for now  c comment  b back  q quit'
+ask_keys='1 right  2 wrong  3 unsure  s skip  c comment  r redraw  b back  q quit'
 
 # Shows page I with its footer and reads keys until one rates the page, goes
 # back or quits; go says which. When the footer does not fit below the page,
@@ -255,6 +255,9 @@ ask() {
 				go=next
 				return
 				;;
+			# The page drawn again from the start, as a page whose keys
+			# changed kmscon's state (sixel-evict's) needs.
+			r | R) continue 2 ;;
 			b | B) [ "$i" -eq 0 ] || { go=back; return; } ;;
 			q | Q) go=quit; return ;;
 			esac

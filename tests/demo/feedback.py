@@ -35,7 +35,7 @@ ROWS, COLS = 25, 80
 ESC = re.compile(rb"\x1b\[[0-9;?]*[A-Za-z]")
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$")
 RUN = re.compile(r"^\d{8}T\d{6}-\d+$")
-PROMPT = b"c comment  b back  q quit"
+PROMPT = b"c comment  r redraw  b back  q quit"
 COMMENT = b"a line holding only ."
 RATE = b"Enter no rating"
 RERUN = b"r review again from page 1  q exit"
@@ -187,10 +187,10 @@ def main():
     status, names, out = listed({}, "sixel", "cjk")
     check(status == 0 and names == ["cjk", "sixel"], "named sections run whatever their kit", out)
 
-    # Run 1: reprompts on x and on Ctrl-D, ratings 1 and 3, a comment of two
-    # lines ended by "." and rated 2, b, an empty comment, a comment ended by
-    # Ctrl-D with no rating, the footer on a screen of its own, q, then r for a
-    # second pass and q.
+    # Run 1: reprompts on x and on Ctrl-D, r drawing page 1 again, ratings 1
+    # and 3, a comment of two lines ended by "." and rated 2, b, an empty
+    # comment, a comment ended by Ctrl-D with no rating, the footer on a
+    # screen of its own, q, then r for a second pass and q.
     d = Demo(root, ["sgr", "colour-forms", "underline-styles", "strike"],
              {**base, "DEMO_LABEL": "dev\tbuild"})
     d.expect("press a key for the first section")
@@ -204,6 +204,12 @@ def main():
           "the file holds only its header before an answer; x reprompted")
     d.send("\x04")
     d.expect(PROMPT)
+    d.send("r")
+    page = d.expect(PROMPT)
+    check("[1/4] sgr" in page and "right:    16 different colours" in page
+          and rows_of(path) == [["time", "run", "label", "term", "size", "section", "rating",
+                                 "note"]],
+          "r draws the page again and records nothing")
     d.send("1")
     d.expect("[2/4] colour-forms")
     d.expect(PROMPT)
@@ -368,7 +374,7 @@ def main():
     check("s skips it for now\r\n  (still to review)" in page, "the title page explains s")
     d.send(" ")
     page = d.expect(PROMPT)
-    check("s skip for now" in page, "the prompt offers s")
+    check("s skip  c comment" in page, "the prompt offers s")
     d.send("s")
     d.expect("[2/4] colour-forms")
     d.expect(PROMPT)

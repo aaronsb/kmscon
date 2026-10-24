@@ -98,7 +98,7 @@ right:    Each line underlined in the shape it names, all distinct: single,
           double, curly, dotted, dashed; 4:0 and 24 end it mid-line.
 wrong:    Every style drawn as one single line, or a line with none of its
           attributes: on stock kmscon only the plain 4 line is underlined.
- 1 right  2 wrong  3 unsure  s skip for now  c comment  b back  q quit
+ 1 right  2 wrong  3 unsure  s skip  c comment  r redraw  b back  q quit
 ```
 
 | Key | What it does |
@@ -108,6 +108,7 @@ wrong:    Every style drawn as one single line, or a line with none of its
 | `3` | unsure: the page was looked at and the reviewer cannot tell |
 | `s` | skipped: the page is not being reviewed this time. It is recorded as `skipped`, apart from unsure, and listed again as still to review on the summary page, by `feedback.sh` and at the end of `make vt-demo` |
 | `c` | opens a comment below the page, as many lines as needed, each with line editing; on a full page each line scrolls the page up by one. Ctrl-D on an empty line, or a line holding only `.`, ends it. Then one key rates the page (`1`, `2`, `3`, `s`, or Enter for no rating, recorded as `none`) and the next page follows. An empty comment goes back to the page. Ctrl-D never ends the demonstration. |
+| `r` | draws the page again from the start and records nothing: for a page whose keys changed kmscon's state, such as sixel-evict's turned screen, before trying its keys again |
 | `b` | back one page; a new answer there replaces the old one on the summary page and in `feedback.sh`, and the file keeps both lines |
 | `q` | quits to the summary page |
 

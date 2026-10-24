@@ -163,6 +163,27 @@ test(
     ],
 )
 
+# kmscon's side of the helper: the real one, and a stand-in whose replies
+# each break one of kmscon's checks
+fake_image_helper = executable(
+    'fake_image_helper',
+    'fake_image_helper.c',
+    include_directories: src_inc,
+)
+test_image_host = executable(
+    'test_image_host',
+    'test_image_host.c',
+    '../src/image_host.c',
+    include_directories: src_inc,
+    dependencies: [shl_deps, eloop_deps],
+)
+test(
+    'test_image_host',
+    test_image_host,
+    args: [kmscon_image_helper, fake_image_helper, meson.current_build_dir()],
+    timeout: 60,
+)
+
 test_issue = executable(
     'test_issue',
     'test_issue.c',

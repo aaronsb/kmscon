@@ -1,0 +1,192 @@
+/*
+ * A stand-in for kmscon-image-helper that answers each request the way its
+ * name says (test_image_host.c): a well-formed reply, or one that breaks one
+ * of the checks kmscon makes before reading a pixel. Inline requests get the
+ * well-formed reply.
+ */
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include "image_helper_proto.h"
+
+#define FD KMSCON_IMAGE_FD
+
+/* a memfd of @len bytes of 0x55, sealed with @seals */
+static int memfd(size_t len, int seals)
+{
+	int fd = memfd_create("fake", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+	uint8_t *buf = malloc(len ? len : 1);
+
+	memset(buf, 0x55, len);
+	if (fd < 0 || write(fd, buf, len) != (ssize_t)len)
+		_exit(4);
+	free(buf);
+	if (seals && fcntl(fd, F_ADD_SEALS, seals) < 0)
+		_exit(5);
+	return fd;
+}
+
+static void send_fds(const void *head, size_t head_len, const void *tail, size_t tail_len,
+		     const int *fds, int n_fds, int n_cmsgs)
+{
+	struct iovec iov[2] = {{.iov_base = (void *)head, .iov_len = head_len},
+			       {.iov_base = (void *)tail, .iov_len = tail_len}};
+	char cbuf[2 * CMSG_SPACE(2 * sizeof(int))] = {0};
+	struct msghdr msg = {.msg_iov = iov, .msg_iovlen = 2};
+	struct cmsghdr *cmsg;
+	int i;
+
+	if (n_fds) {
+		msg.msg_control = cbuf;
+		msg.msg_controllen = n_cmsgs == 2 ? 2 * CMSG_SPACE(sizeof(int))
+						  : CMSG_SPACE(n_fds * sizeof(int));
+		cmsg = CMSG_FIRSTHDR(&msg);
+		for (i = 0; i < n_cmsgs; i++) {
+			int n = n_cmsgs == 2 ? 1 : n_fds;
+
+			cmsg->cmsg_level = SOL_SOCKET;
+			cmsg->cmsg_type = SCM_RIGHTS;
+			cmsg->cmsg_len = CMSG_LEN(n * sizeof(int));
+			memcpy(CMSG_DATA(cmsg), fds + i, n * sizeof(int));
+			cmsg = CMSG_NXTHDR(&msg, cmsg);
+		}
+	}
+	if (sendmsg(FD, &msg, MSG_NOSIGNAL) < 0)
+		_exit(6);
+}
+
+int main(void)
+{
+	union {
+		struct kmscon_image_request req;
+		char buf[sizeof(struct kmscon_image_request) + KMSCON_IMAGE_NAME_MAX + 1];
+	} in;
+	char cbuf[CMSG_SPACE(sizeof(int))];
+	const int seals = F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE;
+	char name[KMSCON_IMAGE_NAME_MAX + 1];
+	struct kmscon_image_reply r;
+	int fds[2];
+	ssize_t n;
+
+	for (;;) {
+		struct iovec iov = {.iov_base = in.buf, .iov_len = sizeof(in.buf)};
+		struct msghdr msg = {.msg_iov = &iov,
+				     .msg_iovlen = 1,
+				     .msg_control = cbuf,
+				     .msg_controllen = sizeof(cbuf)};
+		const struct kmscon_image_request *q = &in.req;
+		uint32_t w, h;
+		size_t len;
+
+		n = recvmsg(FD, &msg, MSG_CMSG_CLOEXEC);
+		if (n <= 0)
+			return 0;
+		w = q->width ? q->width : 1;
+		h = q->height ? q->height : 1;
+		len = (size_t)w * h * 4;
+		memcpy(name, in.buf + sizeof(*q), q->name_len);
+		name[q->name_len] = 0;
+		if (q->medium == 'd')
+			strcpy(name, "good");
+
+		r = (struct kmscon_image_reply){
+			.version = KMSCON_IMAGE_VERSION, .id = q->id, .width = w, .height = h};
+
+		if (!strcmp(name, "good") || !strcmp(name, "extra")) {
+			fds[0] = memfd(len, seals);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			close(fds[0]);
+			if (!strcmp(name, "extra")) {
+				fds[0] = memfd(len, seals);
+				send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+				close(fds[0]);
+			}
+		} else if (!strcmp(name, "error")) {
+			r.status = -EINVAL;
+			r.reason_len = 12;
+			send_fds(&r, sizeof(r), "bad\x01\x7f\n data!", 12, NULL, 0, 0);
+		} else if (!strcmp(name, "nofd")) {
+			send_fds(&r, sizeof(r), NULL, 0, NULL, 0, 0);
+		} else if (!strcmp(name, "twofd") || !strcmp(name, "twocmsg")) {
+			fds[0] = memfd(len, seals);
+			fds[1] = memfd(len, seals);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 2, strcmp(name, "twofd") ? 2 : 1);
+			close(fds[0]);
+			close(fds[1]);
+		} else if (!strcmp(name, "errfd")) {
+			r.status = -EBADF;
+			fds[0] = memfd(len, seals);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			close(fds[0]);
+		} else if (!strcmp(name, "unsealed") || !strcmp(name, "noshrink") ||
+			   !strcmp(name, "nogrow") || !strcmp(name, "nowrite") ||
+			   !strcmp(name, "futurewrite") || !strcmp(name, "short") ||
+			   !strcmp(name, "long")) {
+			int s = !strcmp(name, "unsealed")   ? 0
+				: !strcmp(name, "noshrink") ? F_SEAL_GROW | F_SEAL_WRITE
+				: !strcmp(name, "nogrow")   ? F_SEAL_SHRINK | F_SEAL_WRITE
+				: !strcmp(name, "nowrite")  ? F_SEAL_SHRINK | F_SEAL_GROW
+				: !strcmp(name, "futurewrite")
+					? F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_FUTURE_WRITE
+					: seals;
+
+			fds[0] = memfd(!strcmp(name, "short")  ? len - 1
+				       : !strcmp(name, "long") ? len + 1
+							       : len,
+				       s);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			close(fds[0]);
+		} else if (!strcmp(name, "pipe")) {
+			if (pipe(fds))
+				_exit(7);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			close(fds[0]);
+			close(fds[1]);
+		} else if (!strcmp(name, "wide") || !strcmp(name, "zero") ||
+			   !strcmp(name, "budget") || !strcmp(name, "sv")) {
+			r.width = !strcmp(name, "wide")	    ? q->max_width + 1
+				  : !strcmp(name, "zero")   ? 0
+				  : !strcmp(name, "budget") ? q->max_width
+							    : w + 1;
+			r.height = !strcmp(name, "budget") ? q->max_height : h;
+			fds[0] = memfd((size_t)(r.width ? r.width : 1) * r.height * 4, seals);
+			send_fds(&r, sizeof(r), NULL, 0, fds, 1, 1);
+			close(fds[0]);
+		} else if (!strcmp(name, "id") || !strcmp(name, "version") ||
+			   !strcmp(name, "reserved") || !strcmp(name, "status")) {
+			if (!strcmp(name, "id"))
+				r.id++;
+			else if (!strcmp(name, "version"))
+				r.version = 2;
+			else if (!strcmp(name, "reserved"))
+				r.reserved = 1;
+			else
+				r.status = -EIO;
+			r.status = r.status ? r.status : -EINVAL;
+			send_fds(&r, sizeof(r), NULL, 0, NULL, 0, 0);
+		} else if (!strcmp(name, "truncated")) {
+			send_fds(&r, 16, NULL, 0, NULL, 0, 0);
+		} else if (!strcmp(name, "reasonlen")) {
+			r.status = -EINVAL;
+			r.reason_len = 10;
+			send_fds(&r, sizeof(r), "short", 5, NULL, 0, 0);
+		} else if (!strcmp(name, "reasonmax")) {
+			static char reason[256];
+
+			memset(reason, 'r', sizeof(reason));
+			r.status = -EINVAL;
+			r.reason_len = sizeof(reason);
+			send_fds(&r, sizeof(r), reason, sizeof(reason), NULL, 0, 0);
+		} else if (!strcmp(name, "close")) {
+			return 0;
+		} else if (!strcmp(name, "hang")) {
+			pause();
+		}
+	}
+}

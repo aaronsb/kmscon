@@ -143,6 +143,12 @@ struct kmscon_text_ops {
 	/* optional: free what the renderer keeps and can make again */
 	void (*release)(struct kmscon_text *txt);
 	/*
+	 * optional: a placement this display left out for the image budget
+	 * may fit now, so a draw would try it again though the screen has not
+	 * changed (kmscon_text_changed)
+	 */
+	bool (*starved)(struct kmscon_text *txt);
+	/*
 	 * It draws the frame's image placements (ADR-103). A terminal offers
 	 * sixel only while every display it draws on has a renderer that does.
 	 */
@@ -174,6 +180,7 @@ int kmscon_text_rotate(struct kmscon_text *txt, enum Orientation orientation);
 
 void kmscon_text_set_decorations(struct kmscon_text *txt, const struct kmscon_text_deco *deco);
 int kmscon_text_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr, bool blinking);
+bool kmscon_text_changed(struct kmscon_text *txt, struct tsm_screen *con);
 int kmscon_text_draw(struct kmscon_text *txt, struct tsm_screen *con, bool cursor_blink);
 int kmscon_text_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned int y);
 int kmscon_text_render(struct kmscon_text *txt);

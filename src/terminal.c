@@ -391,20 +391,29 @@ static void redraw_all(struct kmscon_terminal *term)
 
 /*
  * After each turn of the event loop: draws the child's output parsed in the
- * turn once, however many input calls it took. A draw walks the whole frame,
- * and output arrives a pty read of about 4 KB at a time, up to 50 reads a
- * turn, so drawing after each one walked a 7680x2160 screen hundreds of times
- * a second while a sixel picture streamed in and nothing on it changed (#139).
- * A keystroke's echo is read and drawn in the same turn.
+ * turn once, however many input calls it took, on each display whose screen
+ * it changed. A draw walks the whole frame, and output arrives a pty read of
+ * about 4 KB at a time, up to 50 reads a turn, so drawing after each one
+ * walked a 7680x2160 screen hundreds of times a second while a sixel picture
+ * streamed in and nothing on it changed (#139). A keystroke's echo is read and
+ * drawn in the same turn.
  */
 static void terminal_turn_end(struct ev_eloop *eloop, void *unused, void *data)
 {
 	struct kmscon_terminal *term = data;
+	struct screen *scr;
 
 	if (!term->redraw_owed)
 		return;
 	term->redraw_owed = false;
-	redraw_all(term);
+	if (!term->awake)
+		return;
+
+	dlist_for_each_entry(scr, &term->screens, list)
+	{
+		if (kmscon_text_changed(scr->txt, term->console))
+			redraw_screen(scr);
+	}
 }
 
 static bool has_kms_display(struct kmscon_terminal *term)

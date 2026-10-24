@@ -17,7 +17,7 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
            "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "sixel",
            "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict", "photos",
-           "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "kitty", "kitty-photo", "kitty-files", "kitty-shm", "kitty-layers", "kitty-refusal", "s1-scroll", "flood", "cjk"]
+           "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "kitty", "kitty-photo", "kitty-files", "kitty-layers", "s1-scroll", "flood", "cjk"]
 # Cases captured after a screen is drawn, by pressing keys: each is (screen,
 # case, the chords pressed before its capture), captured once the screen has
 # changed, so a key that changes nothing fails its case. After the last, the

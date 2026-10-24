@@ -1,1 +1,0 @@
-../../tier3/guest/screens/kitty-refusal.sh

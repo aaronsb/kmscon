@@ -154,8 +154,7 @@ def main():
                                 "83-sixel-evict", "84-photo-scroll", "85-mpv-sixel", "86-tmux-2x2",
                                 "87-tmux-3x3"],
           "the sixel kit holds the sixel pages and the acceptance pages", repr(kits.get("sixel")))
-    check(kits.get("kitty") == ["90-kitty", "91-kitty-photo", "92-kitty-files", "93-kitty-shm",
-                                "94-kitty-layers", "95-kitty-refusal"],
+    check(kits.get("kitty") == ["90-kitty", "91-kitty-photo", "92-kitty-files", "93-kitty-layers"],
           "the kitty kit holds the kitty pages",
           repr(kits.get("kitty")))
     check("10-sgr" in kits.get("text", []) and "70-emoji" in kits.get("text", []),

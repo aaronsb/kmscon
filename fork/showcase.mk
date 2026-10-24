@@ -3,7 +3,7 @@
 # and run-vt.sh), with fork/showcase/bad-apple.sh as the session. See
 # fork/showcase/README.md.
 #
-#   make showcase BAD_APPLE=/path/to/your/copy [FROM=N] [AUDIO=1] [VT=N] [DEMO_ARGS='...']
+#   make showcase BAD_APPLE=/path/to/your/copy [FROM=N] [AUDIO=1 [AUDIO_DEVICE=dev]] [VT=N] [DEMO_ARGS='...']
 #
 # The video's frame caches are rendered first, as the invoking user, so the
 # show starts at once on the VT and a missing video or tool fails before the
@@ -19,7 +19,8 @@ showcase: export VT_DEMO_ARGS = $(value DEMO_ARGS)
 showcase: export VT_DEMO_SHOWCASE = $(value BAD_APPLE)
 showcase: export VT_DEMO_SHOWCASE_FROM = $(value FROM)
 showcase: export VT_DEMO_SHOWCASE_AUDIO = $(value AUDIO)
-showcase: ## Build, stage and run the Bad Apple!! showcase on a free VT (BAD_APPLE=video, FROM=N, AUDIO=1, VT=N, DEMO_ARGS='...')
+showcase: export VT_DEMO_SHOWCASE_AUDIO_DEVICE = $(value AUDIO_DEVICE)
+showcase: ## Build, stage and run the Bad Apple!! showcase on a free VT (BAD_APPLE=video, FROM=N, AUDIO=1, AUDIO_DEVICE=dev, VT=N, DEMO_ARGS='...')
 	env -i PATH="$$PATH" HOME="$$HOME" BAD_APPLE="$$VT_DEMO_SHOWCASE" fork/showcase/bad-apple.sh --prepare
 	$(MAKE) --no-print-directory demo
 	fork/demo/vt-demo.sh

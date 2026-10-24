@@ -283,6 +283,11 @@ def main():
             p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO=value)
             check(f"AUDIO={value} {'plays' if wanted else 'does not play'} the soundtrack",
                   p.returncode == 0 and ("--showcase-audio" in p.stdout) == wanted, p.stdout + p.stderr)
+        p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO="1",
+                  VT_DEMO_SHOWCASE_AUDIO_DEVICE="pipewire/bt sink")
+        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
+        check("AUDIO_DEVICE names the soundtrack's output to run-vt.sh",
+              p.returncode == 0 and "--showcase-audio=pipewire/bt\\ sink 6" in cmd, p.stdout + p.stderr)
         p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO="loud")
         check("AUDIO=loud is refused", p.returncode != 0 and "AUDIO=loud" in p.stderr, p.stderr)
         p = c.run(["6"], VT_DEMO_SHOWCASE=os.path.join(tmp, "missing.mkv"))
@@ -334,6 +339,8 @@ def main():
                           (["--showcase=/v.mkv", "--showcase-from=8"], "an act from 1 to 7"),
                           (["--showcase=/v.mkv", "--showcase-from=x"], "an act from 1 to 7"),
                           (["--showcase-audio"], "go with --showcase=VIDEO"),
+                          (["--showcase=/v.mkv", "--showcase-audio=a b"], "an mpv audio device name"),
+                          (["--showcase=/v.mkv", "--showcase-audio=$(id)"], "an mpv audio device name"),
                           (["--showcase-from=2"], "go with --showcase=VIDEO")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
             check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
@@ -385,10 +392,25 @@ def main():
               and drop == ["/usr/bin/setpriv", f"--reuid={nobody.pw_uid}", f"--regid={nobody.pw_gid}",
                            "--init-groups", "--reset-env", "--"]
               and f"BAD_APPLE={tricky}" in session
+              and not any(w.startswith("AUDIO_DEVICE=") for w in words)
               and session[-5:] == ["/bin/bash", os.path.join(copy, "fork/showcase/bad-apple.sh"),
                                    "--from", "5", "--audio"]
               and not any(w.startswith("BAD_APPLE=") for w in words[:env_at])
               and "--font-size=30" in words[:login],
+              p.stdout + p.stderr)
+
+        # The soundtrack's output is one word of env's, after setpriv.
+        p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
+                            "--showcase=/v.mkv", "--showcase-audio=alsa/hdmi:CARD=HDMI,DEV=0", "4"],
+                           capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, SUDO_USER="nobody",
+                                    RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir")))
+        unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
+        words = shlex.split(unshare[2:]) if unshare else []
+        env_at = words.index("/usr/bin/env") if "/usr/bin/env" in words else -1
+        check("run-vt.sh hands the showcase its audio device in env's words",
+              p.returncode == 0 and env_at > 0 and "AUDIO_DEVICE=alsa/hdmi:CARD=HDMI,DEV=0" in words[env_at:]
+              and words[-2:] == [os.path.join(copy, "fork/showcase/bad-apple.sh"), "--audio"],
               p.stdout + p.stderr)
 
         # The demo's kit is one word of env's, after setpriv, like the label.

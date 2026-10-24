@@ -14,9 +14,9 @@ The video is never downloaded or committed. *Bad Apple!!* is a fan work (origina
 | 4. don't we have libsixel? | "wait a minute... don't we have ... LIBSIXEL?" typed over the frozen frame | python3 | plays |
 | 5. sixel | `mpv --vo=sixel` plays it half the screen's height, centred, then it glitches (red channel only, shifted, a band torn sideways) and halts on its last frame; without sixel, a panel of static reading "[no sixel: DA1 lacks attribute 4]" | ffmpeg, mpv, python3 | plays (ADR-103 step 3) |
 | 6. kitty and the cats | a fire wipe burns the screen away, then "hold on, we also have kitty. hold on, feeding the cats" and a crowd of colour cats (🐱🐈😺😸🙀🐈‍⬛ ...) | python3 | plays |
-| 7. kitty, full size | `mpv --vo=kitty` full size in the rows above a demoscene scroller: what the fork supports, in toilet's `mono9` block letters with colour emoji between, riding a sine wave over copper bars, one column a frame; without kitty graphics, a panel reading "[kitty graphics arrive in steps 4 and 5]" above the scroller | mpv, toilet, python3 | placeholder and scroller: kitty graphics arrive in steps 4 and 5 |
+| 7. kitty, full size | `mpv --vo=kitty` full size in the rows above a demoscene scroller, for a minute: what the fork supports, in toilet's `mono9` block letters with colour emoji between, riding a sine wave over copper bars, one column a frame; without kitty graphics, a panel reading "[kitty graphics arrive in steps 4 and 5]" above the scroller | mpv, toilet, python3 | placeholder and scroller until ADR-103 step 4c (#169) lands kitty graphics in kmscon |
 
-The end card follows act 7: the credits over a turning Braille wireframe, until a key. The acts follow the video on: act 1 plays from 0:00 (its Braille pass from 0:20), act 3 from 0:30, act 5 from 0:38 and act 7 from 0:46 to the end.
+The end card follows act 7: the credits over a turning Braille wireframe, until a key. The acts follow the video on: act 1 plays from 0:00 (its Braille pass from 0:20), act 3 from 0:30, act 5 from 0:38 and act 7 from 0:46 to 1:46, where the end card takes over and act 7's sound has faded out over its last two seconds (`ACT7_FADE`). A placeholder in act 7 stays no longer than that. The times are one hand-written cue sheet, `CUES` at the top of `bad-apple.sh`, in the video's time (m:ss): edit them there, and `--list` prints them. Acts 2, 4 and 6 sit between cues for their own lengths, silent, and the soundtrack picks up at the next cue; delete the `endcard` line to play act 7 to the end of the video.
 
 Acts 5 and 7 ask the terminal what it draws. Sixel is attribute 4 in the answer to DA1 (`CSI c`); kitty graphics answer a query (`a=q`) sent before DA1 with `OK`, per the kitty graphics protocol's documentation. A terminal with neither ignores the query, an APC string, and answers DA1 alone. kmscon offers sixel (ADR-103 step 3) and ignores the kitty query until step 4. `SIXEL=yes|no` and `KITTY=yes|no` override the answer.
 
@@ -32,7 +32,7 @@ Run it straight from the checkout in a terminal on the desktop, outside make and
 BAD_APPLE=/path/to/your/copy fork/showcase/bad-apple.sh
 ```
 
-Press a key to start; q ends it. Add `--audio` for the soundtrack. What each terminal plays:
+Press a key to start; q ends it. Add `--audio` for the soundtrack ([Sound](#sound)). What each terminal plays:
 
 | Terminal | Act 3 | Act 5 | Act 7 |
 |---|---|---|---|
@@ -43,7 +43,7 @@ Press a key to start; q ends it. Add `--audio` for the soundtrack. What each ter
 
 Act 7 sizes the video to leave the scroller its rows: mpv gets `--vo-kitty-rows` (the screen's rows less `BANNER_ROWS`) and the pixel height of those rows, so the video fills the rows above and is centred across. Everything sizes itself to the window when each act starts, and the effects and the scroller follow a resize while they run. mpv sends kitty its frames as escape codes: `KITTY_SHM=yes` would use shared memory instead, but kitty 0.49 refuses the shared memory names mpv 0.41 gives ("POSIX SHM names must start with /") and shows no video, so it is off.
 
-Checked here in kitty 0.49 and `xterm -ti vt340` on a private Xvfb display: kitty played act 7's video above the scroller and showed act 5's placeholder and act 3's frame; xterm played act 5 in sixel. foot and WezTerm are not installed on this machine.
+Checked here in kitty 0.49 and `xterm -ti vt340` on a private Xvfb display: kitty played act 7's video above the scroller and showed act 5's placeholder and act 3's frame; xterm played act 5 in sixel. foot and WezTerm are not installed on this machine. On 2026-10-24, kitty 0.49.2 at 1280x800 ran the whole show with `--audio --no-wait`, its sound sent to a PipeWire null sink (`AUDIO_DEVICE=`), each act's start timed from a trace of the script: act 1's outlines played 20.0 s and its Braille pass 10.1 s against the soundtrack's 30 s from 0:00; act 3 8.1 s against 8 s from 0:30 (after the 1.5 s act 3 waits for a resize kitty does not make); act 5 the placeholder for 6 s, silent; act 7 the video above the scroller for 60.4 s from 0:46, then the end card. Act 2 took 18.2 s, act 4 7.9 s and act 6 19.5 s, all silent.
 
 ## On a VT: `make showcase`
 
@@ -58,10 +58,11 @@ It renders the video's frame caches as you (so a missing video or tool fails bef
 |---|---|
 | `BAD_APPLE=` | the video; required |
 | `FROM=N` | start at act N |
-| `AUDIO=1` | play the soundtrack with mpv, through the user's audio server (`run-vt.sh` passes the user's `/run/user/UID`) |
+| `AUDIO=1` | play the soundtrack with mpv, through the user's audio server (`run-vt.sh` passes the user's `/run/user/UID`); the show asks which output on the VT before it starts ([Sound](#sound)) |
+| `AUDIO_DEVICE=` | with `AUDIO=1`, the output to play through, as `mpv --audio-device=help` names it (`none` for no sound), so nothing is asked |
 | `VT=N`, `DEMO_ARGS='...'` | as for `make vt-demo` |
 
-`VT_DEMO_DRY_RUN=1 make showcase BAD_APPLE=...` builds, stages and prints the `run-vt.sh` command without running it. By hand: `sudo fork/demo/run-vt.sh --showcase=/abs/path [--showcase-from=N] [--showcase-audio] [N] [-- kmscon-option...]`.
+`VT_DEMO_DRY_RUN=1 make showcase BAD_APPLE=...` builds, stages and prints the `run-vt.sh` command without running it. By hand: `sudo fork/demo/run-vt.sh --showcase=/abs/path [--showcase-from=N] [--showcase-audio[=DEVICE]] [N] [-- kmscon-option...]`.
 
 `run-vt.sh` starts the session with a cleared environment, so the pacing variables below and `SHOWCASE_CACHE` do not reach a VT run from your shell: tune them by editing their defaults at the top of `bad-apple.sh`. `make showcase` renders the caches with the environment cleared too, so they are the ones the VT run reads. `AUDIO=` takes `yes` or `1` for the soundtrack and `no`, `0` or nothing for none.
 
@@ -77,11 +78,17 @@ BAD_APPLE=... fork/showcase/bad-apple.sh --prepare                 # render the 
 fork/showcase/bad-apple.sh --fx plasma                             # one effect alone, with its frame rate
 ```
 
-`--audio` plays the soundtrack, `--no-wait` starts without waiting for a key. q or Ctrl-C ends the show at any point: the players stop, and the cursor, the main screen, the colours and the terminal's mode come back. mpv's video outputs turn on mouse tracking (`CSI ?1003 h`) and turn it off only when they exit cleanly, so a player stopped by q left a terminal reporting every mouse movement to the shell (#88); the show now turns off every mouse mode and encoding, focus events and bracketed paste on its way out. While mpv plays, a mouse report arriving as keys (X10 or SGR) is dropped once it is whole, even when it arrives split across reads, so a byte of its coordinates is not taken for q; any other byte, a q right after Esc included, is a key. When mpv stops, however it stops, the show turns tracking off again and drops the reports already sent. Acts 2, 4 and 6, and act 7 with `--banner-only`, run without the video.
+`--audio` plays the soundtrack ([Sound](#sound)), `--no-wait` starts without waiting for a key. q or Ctrl-C ends the show at any point: the players stop, and the cursor, the main screen, the colours and the terminal's mode come back. mpv's video outputs turn on mouse tracking (`CSI ?1003 h`) and turn it off only when they exit cleanly, so a player stopped by q left a terminal reporting every mouse movement to the shell (#88); the show now turns off every mouse mode and encoding, focus events and bracketed paste on its way out. While mpv plays, a mouse report arriving as keys (X10 or SGR) is dropped once it is whole, even when it arrives split across reads, so a byte of its coordinates is not taken for q; any other byte, a q right after Esc included, is a key. When mpv stops, however it stops, the show turns tracking off again and drops the reports already sent. Acts 2, 4 and 6, and act 7 with `--banner-only`, run without the video.
+
+## Sound
+
+With `--audio`, before the show takes the screen, it asks where the soundtrack plays. It lists the outputs `mpv --audio-device=help` finds: the sound server's (PipeWire's, else PulseAudio's), the server's default first, or, with no server, each ALSA card's default and HDMI devices, and `0` for no sound. A number plays a one-second 660 Hz tone through that output; `y` keeps it, `t` plays the tone again, anything else asks again. `AUDIO_DEVICE=NAME` (an mpv device name, or `none`) answers the question in advance. The soundtrack, act 5's clip and act 7's video then play through that output.
+
+On the VT, the wired and USB outputs need the user in the `audio` group: the operator's choice, 2026-10-24 (#171). `run-vt.sh` starts the show without a logind session, so while its VT is on screen logind grants nobody the sound cards (`/dev/snd`) through their ACLs, and PipeWire, which opens them for the user, drops them. With the group, PipeWire and mpv open the cards whatever VT is on screen. The trade-off: every process the user runs gets raw ALSA on every VT, outside logind's seat model. Join with `sudo usermod -aG audio $USER`, then log out of every session (or reboot), so that the user's PipeWire starts again with the group. Until then the show says so above its list and offers what still plays, a Bluetooth output (WirePlumber ships with Bluetooth seat monitoring off) or no sound. On the desktop the user's session holds the cards, and no group is needed.
 
 ## Pacing
 
-Every timing is a variable at the top of `bad-apple.sh` (seconds unless marked), and each can also be set in the environment for a run from a shell: where each act starts in the video and for how long (`ACT1_START`, `ACT1_SECONDS`, `ACT1_DOTS_SECONDS`, ...), frame rates, the act 2 pause, letter speed, plasma and shadebobs (`ACT2_PAUSE`, `ACT2_LETTER`, `ACT2_PLASMA`, `ACT2_BOBS`), act 3's resize (`ACT3_RESIZE=no` keeps the frame; `RESIZE_WAIT`, 1.5 s, is how long it waits for the terminal), typing speed (`ACT4_CPS`), act 5's size, clip width, dither, glitch and hold (`ACT5_SIZE`, `ACT5_WIDTH`, `ACT5_DITHER`, `ACT5_GLITCH`, `ACT5_HOLD`), the fire and the cats of act 6, the scroller's rows, frame rate and words (`BANNER_ROWS`, `BANNER_FPS`, `BANNER_FEATURES`, `BANNER_EMOJI`, `BANNER_INTRO`, `BANNER_OUTRO`), how long a placeholder stays (`PLACEHOLDER_SECONDS`), and an optional starfield title card before act 1 (`TITLE_SECONDS`, 0 by default).
+The cue sheet, `CUES` at the top of `bad-apple.sh`, sets where each video item starts and stops. Every other timing is a variable at the top of `bad-apple.sh` (seconds unless marked), and each can also be set in the environment for a run from a shell: where each act starts in the video and for how long (`ACT1_START`, `ACT1_SECONDS`, `ACT1_DOTS_SECONDS`, ..., `ACT7_SECONDS`, all taken from the cue sheet unless set), act 7's fade (`ACT7_FADE`), frame rates, the act 2 pause, letter speed, plasma and shadebobs (`ACT2_PAUSE`, `ACT2_LETTER`, `ACT2_PLASMA`, `ACT2_BOBS`), act 3's resize (`ACT3_RESIZE=no` keeps the frame; `RESIZE_WAIT`, 1.5 s, is how long it waits for the terminal), typing speed (`ACT4_CPS`), act 5's size, clip width, dither, glitch and hold (`ACT5_SIZE`, `ACT5_WIDTH`, `ACT5_DITHER`, `ACT5_GLITCH`, `ACT5_HOLD`), the fire and the cats of act 6, the scroller's rows, frame rate and words (`BANNER_ROWS`, `BANNER_FPS`, `BANNER_FEATURES`, `BANNER_EMOJI`, `BANNER_INTRO`, `BANNER_OUTRO`), how long a placeholder stays (`PLACEHOLDER_SECONDS`), and an optional starfield title card before act 1 (`TITLE_SECONDS`, 0 by default).
 
 ## The effects
 

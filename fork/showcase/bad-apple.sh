@@ -12,25 +12,49 @@
 # does it before it takes the VT). --fx runs one effect alone (--list names
 # them) and reports its frame rate and bytes per frame. --banner-only makes
 # act 7 the scroller alone, which needs no video. --audio plays the
-# soundtrack with mpv. --no-wait starts without waiting for a key.
+# soundtrack with mpv, through an output it asks for first (AUDIO_DEVICE
+# names one and skips the question). --no-wait starts without waiting for a
+# key. The cue sheet below sets where each video act starts and stops.
 #
 # The video is never downloaded: BAD_APPLE names the operator's own copy.
 # q or Ctrl-C ends the show at any point and restores the terminal.
 set -euo pipefail
 
-# Pacing, in seconds unless marked. Each can be set in the environment too.
-# The acts follow the video on: act 1 plays from ACT1_START, act 3 picks up
-# where it stops, act 5 after that, act 7 to the end.
+# The cue sheet: where each video item starts in the video, and so in its
+# soundtrack, as m:ss. Each plays until the next cue: act 1's outlines, its
+# Braille pass, act 3, act 5 (its last ACT5_GLITCH seconds glitched), then
+# act 7 until the end card's cue (delete that line to play act 7 to the end
+# of the video). Acts 2, 4 and 6 play between them, silent, for the lengths
+# set below, and the soundtrack picks up again at the next cue, so the times
+# are the video's, not the show's. Edit the times here.
+CUES="
+0:00 act1-ascii
+0:20 act1-braille
+0:30 act3-aalib
+0:38 act5-sixel
+0:46 act7-kitty
+1:46 endcard
+"
+# The time of cue $1 in seconds; with $2, the seconds from $1 to $2 (0 when
+# there is no cue $2).
+cue() {
+	awk -v a="$1" -v b="${2:-}" 'function s(x, t) { split(x, t, ":"); return t[1] * 60 + t[2] }
+		$2 == a { x = s($1) } b != "" && $2 == b { y = s($1); found = 1 }
+		END { print (b == "" ? x : (found ? y - x : 0)) }' <<<"$CUES"
+}
+
+# Pacing, in seconds unless marked. Each can be set in the environment too,
+# the cue sheet's included.
 : "${START_WAIT:=1}"             # wait for a key before the first act (0: no)
 : "${TITLE_SECONDS:=0}"          # starfield title card before act 1 (0: none)
 : "${ACT_GAP:=0.6}"              # black between acts
 
-: "${ACT1_START:=0}"             # stick figures: from this point of the video
-: "${ACT1_SECONDS:=20}"          #   for this long
+: "${ACT1_START:=$(cue act1-ascii)}"   # stick figures: from this point of the video
+: "${ACT1_SECONDS:=$(cue act1-ascii act1-braille)}"  #   for this long
 : "${ACT1_FPS:=12}"              #   at this frame rate
 : "${ACT1_ROWS:=27}"             #   on a grid this many rows tall (columns follow the video)
 : "${ACT1_FILL:= }"              #   the character inside a shape (space: outlines only)
-: "${ACT1_DOTS_SECONDS:=10}"     #   then a Braille pass, this long (0: none)
+: "${ACT1_DOTS_SECONDS:=$(cue act1-braille act3-aalib)}"  #   then a Braille pass, this long (0: none)
 : "${ACT1_DOTS_FPS:=24}"
 : "${ACT1_DOTS_ROWS:=52}"        #   this many rows tall, at most
 
@@ -43,8 +67,8 @@ set -euo pipefail
 : "${ACT2_BOBS:=5}"              #   then shadebobs, this long
 : "${ACT2_FPS:=60}"              #   frames a second at most
 
-: "${ACT3_START:=30}"            # aalib (libcaca) in 80x25
-: "${ACT3_SECONDS:=8}"
+: "${ACT3_START:=$(cue act3-aalib)}"   # aalib (libcaca) in 80x25
+: "${ACT3_SECONDS:=$(cue act3-aalib act5-sixel)}"
 : "${ACT3_FPS:=15}"
 : "${ACT3_DITHER:=none}"         #   img2txt -d: none, ordered2, ordered4, ordered8, random, fstein
 : "${ACT3_RESIZE:=auto}"         #   auto: ask for a real 80x25 grid (CSI 8;25;80 t); no: the framed box
@@ -54,9 +78,9 @@ set -euo pipefail
 : "${ACT4_DOTS:=0.9}"            #   the pause after each "..."
 : "${ACT4_HOLD:=2}"
 
-: "${ACT5_START:=38}"            # sixel: plays small
-: "${ACT5_SECONDS:=6}"
-: "${ACT5_GLITCH:=2}"            #   then glitches (one RGB channel, a tear)
+: "${ACT5_GLITCH:=2}"            # sixel: plays small, its last seconds glitched (one RGB channel, a tear)
+: "${ACT5_START:=$(cue act5-sixel)}"
+: "${ACT5_SECONDS:=$(awk -v a="$(cue act5-sixel act7-kitty)" -v g="$ACT5_GLITCH" 'BEGIN { print a - g }')}"
 : "${ACT5_SIZE:=0.5}"            #   this share of the screen's rows tall (mpv scales the clip)
 : "${ACT5_WIDTH:=960}"           #   the clip is rendered this many pixels wide
 : "${ACT5_DITHER:=none}"         #   mpv's --vo-sixel-dither (none keeps the frames small)
@@ -67,8 +91,9 @@ set -euo pipefail
 : "${ACT6_CATS:=9}"              #   the cats
 : "${ACT6_DENSITY:=0.55}"        #   share of the screen's cat spots filled
 
-: "${ACT7_START:=46}"            # kitty graphics, full size
-: "${ACT7_SECONDS:=0}"           #   0: to the end of the video
+: "${ACT7_START:=$(cue act7-kitty)}"   # kitty graphics, full size
+: "${ACT7_SECONDS:=$(cue act7-kitty endcard)}"  #   0: to the end of the video
+: "${ACT7_FADE:=2}"              #   the soundtrack fades out over its last seconds (0: no fade)
 : "${BANNER_ROWS:=12}"           #   the scroller's rows along the bottom
 : "${BANNER_FPS:=40}"            #   frames a second; it moves one column a frame
 : "${BANNER_SECONDS:=0}"         #   --banner-only runs this long (0: until q)
@@ -119,7 +144,7 @@ ACT_WHAT=(""
 	"\"wait a minute... don't we have ... LIBSIXEL?\" typed over the frozen frame"
 	"sixel (DA1 attribute 4): mpv --vo=sixel plays it ${ACT5_SIZE} of the screen's height, sized from the cell size the terminal reports (XTWINOPS 16), it glitches to one channel and tears, and its last frame stays; else a placeholder"
 	"a fire wipe, \"hold on, we also have kitty. hold on, feeding the cats\", a crowd of colour cats"
-	"kitty graphics (a=q): mpv --vo=kitty full size above a scroller of the fork's features over copper bars; else a placeholder above the scroller; --banner-only: the scroller alone")
+	"kitty graphics (a=q): mpv --vo=kitty full size, until the end card's cue, above a scroller of the fork's features over copper bars; else a placeholder above the scroller; --banner-only: the scroller alone")
 ACT_KMSCON=(""
 	"plays"
 	"plays"
@@ -127,7 +152,7 @@ ACT_KMSCON=(""
 	"plays"
 	"plays (sixel, ADR-103 step 3)"
 	"plays"
-	"placeholder and scroller: kitty graphics arrive in steps 4 and 5")
+	"placeholder and scroller until ADR-103 step 4c (#169) lands kitty graphics")
 LAST_ACT=7
 
 # The effects: where each plays, and what it needs. --fx NAME runs one alone.
@@ -184,6 +209,9 @@ list_acts() {
 		IFS='|' read -r name where needs <<<"$e"
 		printf '%-10s %-44s %s\n' "$name" "$where" "$needs"
 	done
+	echo
+	echo "cue sheet (video time; CUES in bad-apple.sh):"
+	sed '/^$/d; s/^/  /' <<<"$CUES"
 }
 
 video_note() {
@@ -211,7 +239,7 @@ dry_run() {
 		1) echo "  video: ${ACT1_START}s for ${ACT1_SECONDS}s, then ${ACT1_DOTS_SECONDS}s in Braille" ;;
 		3) echo "  video: ${ACT3_START}s for ${ACT3_SECONDS}s" ;;
 		5) echo "  video: ${ACT5_START}s for ${ACT5_SECONDS}s, then ${ACT5_GLITCH}s glitched" ;;
-		7) echo "  video: ${ACT7_START}s to $( [ "$ACT7_SECONDS" = 0 ] && echo 'the end' || echo "+${ACT7_SECONDS}s")" ;;
+		7) echo "  video: ${ACT7_START}s to $( [ "$ACT7_SECONDS" = 0 ] && echo 'the end' || echo "+${ACT7_SECONDS}s, then the end card")" ;;
 		esac
 		echo "  kmscon today: ${ACT_KMSCON[n]}"
 	done
@@ -416,7 +444,7 @@ stop_bg() {
 audio_start() {
 	[ "$audio" = 1 ] || return 0
 	mpv --no-config --really-quiet --no-input-terminal --no-video --start="$1" --length="$2" \
-		-- "$BAD_APPLE" </dev/null >/dev/null 2>&1 &
+		"${audio_opts[@]}" -- "$BAD_APPLE" </dev/null >/dev/null 2>&1 &
 	audio_pid=$!
 }
 
@@ -425,6 +453,104 @@ audio_stop() {
 	kill "$audio_pid" 2>/dev/null || true
 	wait "$audio_pid" 2>/dev/null || true
 	audio_pid=
+}
+
+# The output the soundtrack plays through, picked before the show takes the
+# screen (--audio). AUDIO_DEVICE names it as mpv --audio-device=help lists
+# it, or none for no sound, and nothing is asked. Otherwise the outputs mpv
+# finds are listed (the sound server's, PipeWire's before PulseAudio's; with
+# no server, each ALSA card's default and HDMI devices); a number plays a
+# one-second tone through one, y keeps it, and 0 is no sound.
+audio_opts=()
+pick_audio() {
+	local all=() names=() descs=() want pat line i n k dev
+	case ${AUDIO_DEVICE:-} in
+	none) audio=0; return ;;
+	?*) audio_opts=(--audio-device="$AUDIO_DEVICE"); return ;;
+	esac
+	mapfile -t all < <(mpv --no-config --audio-device=help 2>/dev/null |
+		sed -n "s/^  '\\(.*\\)' (\\(.*\\))\$/\\1\\t\\2/p")
+	for want in 'pipewire pipewire/*' 'pulse pulse/*' 'alsa/sysdefault:CARD=* alsa/hdmi:CARD=*'; do
+		for line in "${all[@]}"; do
+			for pat in $want; do
+				# shellcheck disable=SC2053 # the patterns are globs
+				[[ ${line%%$'\t'*} != $pat ]] || { names+=("${line%%$'\t'*}"); descs+=("${line#*$'\t'}"); }
+			done
+		done
+		[ ${#names[@]} -eq 0 ] || break
+	done
+	echo
+	cards_note "$want"
+	if [ ${#names[@]} -eq 0 ]; then
+		echo "mpv finds no sound output here, so the show plays without sound."
+		audio=0
+		return
+	fi
+	echo "Where should the soundtrack play?"
+	printf '  %2d  no sound\n' 0
+	for i in "${!names[@]}"; do
+		printf '  %2d  %s\n' $((i + 1)) "${descs[i]}"
+	done
+	while :; do
+		read -rp "number (0 to ${#names[@]}): " n || exit 0
+		[[ $n =~ ^[0-9]{1,3}$ ]] && ((10#$n <= ${#names[@]})) || continue
+		n=$((10#$n))
+		if [ "$n" = 0 ]; then
+			audio=0
+			return
+		fi
+		dev=${names[n - 1]}
+		while :; do
+			echo "a one-second tone through ${descs[n - 1]} ..."
+			timeout 10 mpv --no-config --really-quiet --no-video --no-input-terminal --audio-device="$dev" \
+				'av://lavfi:sine=frequency=660:duration=1' </dev/null >/dev/null 2>&1 ||
+				echo "mpv could not play through it."
+			read -rp "heard it? y keeps it, t plays it again, anything else picks another: " k || exit 0
+			[[ $k == [tT] ]] || break
+		done
+		if [[ $k == [yY] ]]; then
+			audio_opts=(--audio-device="$dev")
+			return
+		fi
+	done
+}
+
+# Says why the sound cards may be missing from the list, and the fix. On the
+# VT run-vt.sh gives it, the show is no logind session, so while it is on
+# screen logind lets nobody open the cards (/dev/snd) through their ACLs, and
+# PipeWire, which opens them for the user, drops them; only the audio group
+# opens them then. $1 says who opens them: a sound server, or this script
+# (ALSA alone).
+cards_note() {
+	local c gid pw ok=
+	for c in /dev/snd/controlC*; do
+		[ -e "$c" ] || return 0
+		[ -r "$c" ] && [ -w "$c" ] && ok=1
+	done
+	gid=$(getent group audio | cut -d: -f3)
+	if [[ $1 != alsa* ]]; then
+		# The server opens the cards: through the ACLs this script has when it
+		# can open them without the audio group, or through that group.
+		pw=$(pgrep -u "$(id -u)" -x pipewire | head -1)
+		if [ -n "$ok" ] && ! id -G | tr ' ' '\n' | grep -qx "$gid"; then
+			return 0
+		fi
+		ok=
+		[ -z "$pw" ] || ! sed -n 's/^Groups:\t*//p' "/proc/$pw/status" | tr ' ' '\n' | grep -qx "$gid" || ok=1
+	fi
+	[ -z "$ok" ] || return 0
+	echo "The sound cards are out of reach here: this VT is no logind session, so"
+	echo "nobody opens them through their ACLs while it is on screen; the audio group does."
+	if getent group audio | cut -d: -f4 | tr ',' '\n' | grep -qx "$(id -un)"; then
+		echo "You are in the audio group, but this login and your sound server started before"
+		echo "you joined it: log out of every session (or reboot) to take it up."
+	else
+		echo "Fix: sudo usermod -aG audio $(id -un), then log out of every session (or"
+		echo "reboot). Every program you run then opens the sound cards directly, on every"
+		echo "VT, past logind's seat rule."
+	fi
+	echo "Until then, pick a Bluetooth output below, or 0 for no sound."
+	echo
 }
 
 saved_tty=
@@ -683,7 +809,7 @@ act_5() {
 	read -r w h < <(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$clip" | tr ',' ' ')
 	read -r pw vr left top < <(act5_box "$w" "$h")
 	local sound=(--no-audio)
-	[ "$audio" != 1 ] || sound=()
+	[ "$audio" != 1 ] || sound=("${audio_opts[@]}")
 	mpv --no-config --really-quiet --no-input-terminal --vo=sixel --vo-sixel-alt-screen=no \
 		--vo-sixel-config-clear=no --vo-sixel-dither="$ACT5_DITHER" \
 		--vo-sixel-cols="$screen_cols" --vo-sixel-rows=$((vr + 1)) \
@@ -712,7 +838,10 @@ act_6() {
 }
 
 # Act 7: the video in the rows above the scroller (mpv's --vo-kitty-rows and
-# the pixel height of those rows), the scroller in its own process below.
+# the pixel height of those rows), the scroller in its own process below,
+# until the end card's cue (ACT7_SECONDS), the soundtrack fading out over
+# its last ACT7_FADE seconds. A placeholder stays no longer than the video
+# would.
 act_7() {
 	local vrows=$((screen_rows - BANNER_ROWS))
 	clear_screen
@@ -724,13 +853,18 @@ act_7() {
 	if [ -z "$have_kitty" ] || ! have mpv; then
 		local why="[kitty graphics arrive in steps 4 and 5]"
 		[ -z "$have_kitty" ] || why="[kitty graphics: mpv is needed]"
-		banner --placeholder "$why" --title "kitty graphics" --seconds "$PLACEHOLDER_SECONDS"
+		banner --placeholder "$why" --title "kitty graphics" --seconds "$(awk -v p="$PLACEHOLDER_SECONDS" \
+			-v c="$ACT7_SECONDS" 'BEGIN { print (c > 0 && c < p ? c : p) }')"
 		clear_screen
 		return
 	fi
 	local length=() sound=(--no-audio) shm=no
 	[ "$ACT7_SECONDS" = 0 ] || length=(--length="$ACT7_SECONDS")
-	[ "$audio" != 1 ] || sound=()
+	if [ "$audio" = 1 ]; then
+		sound=("${audio_opts[@]}")
+		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || sound+=(--af="lavfi=[afade=t=out:st=$(awk \
+			-v s="$ACT7_START" -v l="$ACT7_SECONDS" -v f="$ACT7_FADE" 'BEGIN { print s + l - f }'):d=$ACT7_FADE]")
+	fi
 	[ "$KITTY_SHM" != yes ] || shm=yes
 	# The scroller draws in its own process with one write per frame and the
 	# cursor saved and restored around it, so mpv's placement is kept.
@@ -878,6 +1012,7 @@ main() {
 			((n < first || n > last)) || prepare_act "$n"
 		done
 	fi
+	[ "$audio" != 1 ] || pick_audio
 
 	take_screen
 	read_geometry

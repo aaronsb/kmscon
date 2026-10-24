@@ -146,6 +146,8 @@ For some application like mpv, you need an additional wayland compositor, or the
 This software is licensed under the terms of an MIT-like license. Please see
 [`COPYING`](./COPYING) for further information.
 
+The photograph the sixel test pages draw, `fork/tier3/guest/screens/photo/street-sunset.jpg`, is Aaron Bockelie's, licensed CC BY 4.0; its credit is in the [`LICENSE`](./fork/tier3/guest/screens/photo/LICENSE) beside it.
+
 ## History
 
 This project was maintained in [Aetf's](https://github.com/Aetf/kmscon) fork for 11 years, before coming back here in 2025

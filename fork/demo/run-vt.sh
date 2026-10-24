@@ -4,12 +4,14 @@
 # ends, or this script is interrupted, or kmscon fails, the unit is started
 # again if it was running before. See docs/fork/demo.md.
 #
-#   sudo fork/demo/run-vt.sh [--dry-run] [--showcase=VIDEO ...] [N] [-- kmscon-option...]
+#   sudo fork/demo/run-vt.sh [--dry-run] [--kit=KIT | --showcase=VIDEO ...] [N] [-- kmscon-option...]
 #
 # N is the VT, 2-12, default 3. Options after -- go to kmscon, for display
 # settings of one machine (--mode=..., --no-use-original-mode, --font-size=...).
 # Only display, font, palette, text and input options are accepted, each as one
 # word: --name=value, or --name / --no-name for a switch.
+# --kit=KIT picks the demo's review kit (#123): text (the default), sixel,
+# kitty or all.
 # --showcase=VIDEO runs the Bad Apple!! showcase (fork/showcase/bad-apple.sh)
 # on VIDEO, an absolute path, in place of the demo; --showcase-from=N starts it
 # at act N and --showcase-audio plays the soundtrack.
@@ -24,7 +26,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,17s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,19s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -35,6 +37,7 @@ die() {
 
 dry=
 vt=
+kit=
 extra=()
 video=
 from=
@@ -42,6 +45,7 @@ audio=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
+	--kit=*) kit=${1#*=}; [ -n "$kit" ] || die "--kit takes text, sixel, kitty or all, not ''" ;;
 	--showcase=*) video=${1#*=}; [ -n "$video" ] || die "--showcase needs the video's path: --showcase=/path/to/video" ;;
 	--showcase-from=*) from=${1#*=} ;;
 	--showcase-audio) audio=1 ;;
@@ -111,6 +115,11 @@ for o in "${extra[@]}"; do
 done
 # The showcase's video is a path the session opens as the user; it reaches the
 # session as one word in its environment, never through a shell.
+case $kit in
+'' | text | sixel | kitty | all) ;;
+*) die "--kit takes text, sixel, kitty or all, not '$kit'" ;;
+esac
+[ -z "$kit" ] || [ -z "$video" ] || die "--kit goes with the demo, not with --showcase"
 if [ -n "$video" ]; then
 	[[ $video == /* ]] || die "--showcase needs an absolute path, not '$video'"
 	[ -z "$from" ] || [[ $from =~ ^[1-7]$ ]] || die "--showcase-from must be an act from 1 to 7, not '$from'"
@@ -219,7 +228,7 @@ EOF
 # build on the demo's title page, is set last, by env. The showcase also gets
 # its video, and the user's runtime directory, where the soundtrack finds the
 # user's audio server.
-session=(/usr/bin/env DEMO_LABEL="dev build $build" /bin/bash "$here/demo.sh")
+session=(/usr/bin/env DEMO_LABEL="dev build $build" ${kit:+DEMO_KIT="$kit"} /bin/bash "$here/demo.sh")
 if [ -n "$video" ]; then
 	session=(/usr/bin/env SHOWCASE_LABEL="dev build $build" BAD_APPLE="$video"
 		XDG_RUNTIME_DIR="/run/user/$uid" /bin/bash "$showcase")

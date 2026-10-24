@@ -13,7 +13,8 @@ Stdlib only. The work is split across the modules beside this one:
 Variants run one at a time, or with --jobs N up to N at once, each in its own
 worker process.
 
-    t3.py provision                       build fork/vm/base.qcow2 from the pinned image
+    t3.py provision                       build the base image from the pinned image, or
+                                          reuse it, and link fork/vm/base.qcow2 to it
     t3.py run [--jobs N] [VARIANT ...]    install the package, run the scenario, compare
                                           (default: the 2D variants)
     t3.py run --pkg-dir DIR --pkg-name NAME --compare-only
@@ -26,6 +27,7 @@ Paths are relative to the repository root, which is two levels above this file.
 
 import argparse
 import base64
+import fcntl
 import json
 import os
 import shutil
@@ -36,19 +38,38 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import t3_runner  # noqa: E402
 import t3_scenario  # noqa: E402
-from t3_common import BASE, GUEST, PKGOUT, REPORT, ROOT, VM, Logger, rel  # noqa: E402
-from t3_evaluate import KEYED, SCREENS, golden_for  # noqa: E402
+from t3_common import BASE, GUEST, PKGOUT, REPORT, ROOT, VM, Logger, base_image, rel  # noqa: E402
+from t3_evaluate import SAME_AS, golden_for  # noqa: E402
 from t3_qemu import Qemu, make_iso  # noqa: E402
 
 
 # --- provisioning -----------------------------------------------------------
 
 def provision(args, log):
-    with t3_runner.run_lock():
-        return _provision(args, log)
+    """Builds the base image for these guest files, pristine image and
+    archive date unless a checkout sharing fork/vm/images already has, then
+    points fork/vm/base.qcow2 at it. A lock beside the image keeps two
+    checkouts from building the same one at once; the second finds it built.
+    """
+    base = base_image(args.image, args.archive)
+    os.makedirs(os.path.dirname(base), exist_ok=True)
+    with open(base + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if os.path.exists(base):
+            log("base image already built: %s" % rel(base))
+        else:
+            with t3_runner.run_lock():
+                _provision(args, log, base)
+    link = BASE + ".link"
+    if os.path.lexists(link):
+        os.unlink(link)
+    os.symlink(os.path.relpath(base, os.path.dirname(BASE)), link)
+    os.replace(link, BASE)
+    log("%s -> %s" % (rel(BASE), os.readlink(BASE)))
+    return 0
 
 
-def _provision(args, log):
+def _provision(args, log, base):
     pristine = os.path.join(VM, "images", args.image)
     work = os.path.join(VM, "provision")
     shutil.rmtree(work, ignore_errors=True)
@@ -70,11 +91,13 @@ def _provision(args, log):
     iso = os.path.join(work, "seed.iso")
     make_iso(seed, "cidata", iso)
 
-    tmp = BASE + ".tmp"
+    tmp = base + ".tmp"
     if os.path.exists(tmp):
         os.unlink(tmp)
+    # The real path: a worktree reaches fork/vm/images through a link, and a
+    # shared base image must not name a worktree that may be removed.
     subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2",
-                    "-b", os.path.abspath(pristine), tmp, "16G"], check=True)
+                    "-b", os.path.realpath(pristine), tmp, "16G"], check=True)
     vm = Qemu(work, [(tmp, "qcow2", False), (iso, "raw", True)],
               "virtio-vga", log, net=True)
     try:
@@ -84,9 +107,8 @@ def _provision(args, log):
             raise RuntimeError("guest did not power off after provisioning")
     finally:
         vm.stop()
-    os.replace(tmp, BASE)
-    log("base image ready: %s" % BASE)
-    return 0
+    os.replace(tmp, base)
+    log("base image ready: %s" % rel(base))
 
 
 # --- a run ------------------------------------------------------------------
@@ -130,12 +152,13 @@ def _bless(args, log):
         report = json.load(f)
     for c in report["cases"]:
         variant, case = c["name"].split("/", 1)
-        # a screen or a case keyed from one; vt-restore's golden is cjk's
-        if (case not in SCREENS and case not in [k for _, k, _ in KEYED]) or not c["actual"]:
+        # Only a case with a golden of its own: not vt-switch, a check, nor
+        # a case compared with another's golden.
+        golden, _ = golden_for(variant, case)
+        if golden is None or case in SAME_AS or not c["actual"]:
             continue
         if args.variants and variant not in args.variants:
             continue
-        golden, _ = golden_for(variant, case)
         os.makedirs(os.path.dirname(golden), exist_ok=True)
         shutil.copy(os.path.join(ROOT, c["actual"]), golden)
         log("blessed %s" % rel(golden))

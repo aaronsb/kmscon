@@ -1,4 +1,5 @@
 #!/bin/bash
+# kit: sixel
 # look-for: Left: bars red, yellow, green, cyan, blue, magenta, white and grey
 # look-for: over a checkerboard, TEXT across the checkerboard as text. Right: a
 # look-for: blue disc in an orange ring, the text behind it showing past its edge.

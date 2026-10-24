@@ -1,4 +1,5 @@
 #!/bin/bash
+# kit: sixel
 # look-for: A short article: a bold, double-underlined title, a paragraph whose
 # look-for: words are styled as they describe themselves, a landscape centred
 # look-for: on its own rows, a paragraph about it, and a bar chart at the left

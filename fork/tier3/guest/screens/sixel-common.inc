@@ -116,6 +116,18 @@ block() {
 }
 
 
+# The row the cursor is on, counted from 1, in top: DSR 6's reply ESC [ row
+# ; col R, else 1. A page that places its pictures with CUP counts its rows
+# from top, so it draws the same below the VT demo's header as on the clear
+# screen tier 3 gives it.
+top_row() {
+	local reply
+	reply=$(ask "$esc[6n" R)
+	top=${reply##*[}
+	top=${top%;*}
+	[[ $top =~ ^[1-9][0-9]*$ ]] || top=1
+}
+
 # The terminal's size in cells, cols by rows: XTWINOPS 18's reply ESC [ 8 ;
 # rows ; cols t, else the tty's own, else 80x24.
 term_size() {

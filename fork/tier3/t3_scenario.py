@@ -260,8 +260,9 @@ def run_variant(variant, timing, pkgs, log):
             last = wait_stable(vm, path, want=lambda img, prev=last: img.data != prev.data)
             caps[name] = path
             phase(name)
-            # The cases kmscon's grabs draw from this screen, each a change
-            # from the capture before it
+            # The keyed cases of this screen, each captured once the screen
+            # has changed from the capture before it: a key that changes
+            # nothing fails its case.
             for screen, case, chords in KEYED:
                 if screen != name:
                     continue

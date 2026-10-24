@@ -102,6 +102,25 @@ considered:
     said: "yes"
     via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to Q1: on a display that needs a scaled copy of a picture (rotation, zoom, or a cell size other than the font's), may bbulk's scaled copy for an on-screen placement evict images in scrollback or unplaced, so that viewing a new picture can push older pictures out of scrollback and leave blank cells there when scrolled back, the way old lines drop off"
   - operator: aaronsb
+    said: "I have typically been using chafa"
+    via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to kmscon #145's question 1 (img2sixel writes nothing on Arch; which encoder draws A1's photographs)"
+  - operator: aaronsb
+    said: "Carry A2 at the two 7680x2160 variants as a known failure naming #139, in the capability-probe style: green while it fails, red once it passes with the entry still there"
+    via: "steering session, 2026-10-23, relayed by the team lead as the answer to kmscon #145's question 2"
+    paraphrase: true
+  - operator: aaronsb
+    said: "Change now: 85 plays a centred 1920x1080 window with dithering off; 86 and 87 say what tmux and mpv deliver; all three show mpv's shown and dropped counts on screen"
+    via: "Claude Code session, 2026-10-24, answering how pages 85-87 change; the operator picked the option from choices the session offered"
+    paraphrase: true
+  - operator: aaronsb
+    said: "Same, plus dither off in panes: A4 passes when every pane animates, tmux's pictures reach the screen, nothing is left after exit, and kmscon keeps up with what tmux sends; the frame rate is reported, not judged, and the page says tmux and mpv set it; the panes' mpv runs with --vo-sixel-dither=none"
+    via: "Claude Code session, 2026-10-24, after the second VT review of #145; the operator picked the option from choices the session offered"
+    paraphrase: true
+  - operator: aaronsb
+    said: "Pre-encoded feeder, new PR: tmux grids are compatibility only; a fork-written feeder judges kmscon's streaming"
+    via: "Claude Code session, 2026-10-24, answering how kmscon's image streaming is judged apart from tmux; the operator picked the option from choices the session offered"
+    paraphrase: true
+  - operator: aaronsb
     said: "As ADR-103 says"
     via: "Claude Code session, 2026-10-24, relayed by the team lead; an option label the team lead wrote, chosen by the operator, on the image helper's hardening: ADR-103's uid, gid and initgroups, PR_SET_NO_NEW_PRIVS, closed descriptors and memory limit, with a seccomp or landlock filter left to aaronsb/kmscon#153"
   - operator: aaronsb
@@ -152,6 +171,12 @@ considered:
     said: "Add the four performance limits of the one-pipeline design to ADR-103, after the merge"
     via: Claude Code session, 2026-10-24, after asking whether one pipeline with several protocol handlers limits performance; the operator picked the recommended option in a structured question
     paraphrase: true
+  - operator: aaronsb
+    said: "This pass the video performance is noticibly better and more consistent with frame delivery. I'm still marking it as incorrect, because 30 fps would be passing. we can decide if that's an unattainable criteria"
+    via: "the operator's VT review of #145 at f1071a0, 2026-10-24, rating tmux-2x2 and tmux-3x3; relayed verbatim by the team lead"
+  - operator: aaronsb
+    said: "I'm concerned we're evaluating tmux more than we're evaluating kmscon's ability to stream image data"
+    via: "Claude Code session, 2026-10-24, the A4 discussion after the second VT review of #145; relayed verbatim by the team lead"
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -439,6 +464,8 @@ Step 3, sixel:
 - **A2.** `mpv --vo=sixel` playing an animation full screen, Bad Apple!! for the showcase.
 - **A3.** The showcase's act 5: a small sixel video, then a deliberate glitch and a halt. Clearing the screen afterwards leaves no stale pixels.
 - **A4,** step 3's final scenario: tmux, which supports sixel from 3.4 when built with `--enable-sixel` (Arch builds it so), in a 2x2 and then a 3x3 grid of panes, each running `mpv --vo=sixel`. tmux sends every pane's pictures on to kmscon, so many sixel streams and placements change at once.
+  - Criterion, set 2026-10-24 (kmscon #145): A4 passes when every pane animates, tmux's pictures reach the screen, nothing is left after tmux exits, and kmscon keeps up with what tmux sends. The frame rate is reported, not judged: tmux and mpv set it. Each pane's mpv runs with `--vo-sixel-dither=none`. Until then the record named no criterion of A4's own; its observable read "tmux in a 3x3 grid of panes, each running mpv --vo=sixel, plays all nine and leaves no stale pixels when the panes close", and the demo pages asked for each pane's "counter rising by 30 a second". The operator's second VT review rated the grids wrong only for running under 30 frames a second ("30 fps would be passing. we can decide if that's an unattainable criteria"). With nothing reading the terminal, tmux and mpv bring 41-44% of the panes' frames through at 7680x2160, mpv alone reaches about 16 frames a second at the 2x2 pane's size, and at 3x3 tmux itself is the ceiling (ADR-104's A4 note). Shown that, the operator chose "Same, plus dither off in panes" (the considered entry of this date).
+  - Changed the same day: A4 is compatibility through tmux. Concerned that the grids were "evaluating tmux more than we're evaluating kmscon's ability to stream image data", the operator chose to judge kmscon's streaming of many pictures at once apart from any encoder or multiplexer, with a pre-encoded sixel feeder the fork writes (#161, the considered entry "Pre-encoded feeder, new PR"). A4 now passes when tmux's pictures reach the screen, every pane animates, and nothing is left after tmux exits. The frame rate and kmscon's CPU time per picture tmux sent are reported, not judged; "kmscon keeps up with what tmux sends" leaves A4 for #161. Tier 3 fails a grid when tmux sent kmscon no picture or the screen after it differs from its golden; that every pane animates is judged on the VT.
 
 Step 4, kitty:
 
@@ -612,6 +639,16 @@ Recorded as a considered entry above; what it changes:
 
 - **A picture on screen may evict the history** ("yes"). On a display that needs a scaled copy of a picture (a rotated display, a zoom, or placements made in a cell size other than the font's), bbulk makes that copy within the frame, and until now it evicted nothing outside its own renderer: while scrollback images held the budget, the picture on screen was left out. The scaled copy for an on-screen placement now takes its room in ADR-103's order after bbulk's own pictures the frame does not place: other displays' pictures their last frame did not draw, then libtsm's images unplaced, then those placed only in scrollback, least recently used first. It never evicts an image placed on a screen's own lines, nor one the frame draws, such as a scrollback image in view while the view is scrolled back; a picture that would need one is still left out, and retried only when the budget changes. Viewing a new picture on such a display can therefore push older pictures out of scrollback, which then show blank cells when scrolled back to, as old lines drop off the end of scrollback. A display that draws pictures at their own size makes no scaled copy and is unchanged. (2026-10-24: unchanged by the storage-quota rule the operator chose that day, which evicts kitty images on a screen's own lines only for a new image's reservation in libtsm's stores; see the Image store section.)
 - History is evicted only when the eviction lets the picture fit. Before anything is freed, bbulk counts what can be: the pictures other displays' last frames did not draw, and each screen's victims (libtsm's `tsm_screen_image_victims`, which evicts nothing) up to the first image the frame draws. When that falls short, nothing is evicted and the picture is left out until the budget changes, as libtsm's own reservation evicts nothing for an image it cannot fit. Every terminal's screens give room, main and alternate, each as far as its own first drawn image.
+
+## Notes (2026-10-23, operator answers from step 3e, kmscon #145)
+
+Recorded as considered entries above; what they change:
+
+- **A1 uses chafa and mpv, not img2sixel** ("I have typically been using chafa"). img2sixel writes nothing on Arch with libsixel 1.10.5 and gdk-pixbuf 2.44 (glycin), for any input: libsixel's `load_with_gdkpixbuf` (src/loader.c) calls `gdk_pixbuf_loader_get_pixbuf` right after the write and before `gdk_pixbuf_loader_close`, gets no picture from glycin, and returns success with no frame, which also skips its built-in loaders. A1's photographs are therefore drawn twice side by side for comparison ("we could use both as a comparison"), neither encoder the main one: by chafa (`chafa -f sixels`, sized in cells), the operator's everyday tool, and by libsixel's encoder by way of mpv (`--vo=sixel`, ffmpeg decoding). The page prints how many bytes img2sixel wrote, so a libsixel that reads images again shows by itself. This replaces "img2sixel pictures" in the Acceptance scenarios and img2sixel in Testing's tier 3 line.
+- **The photographs** are NASA Visible Earth images of the Earth by day and by night, 2048x1024 (`/usr/share/xplanet/images/earth.jpg` and `night.jpg` from xplanet 1.3.1, Arch extra). xplanet's images/README cites visibleearth.nasa.gov and says "These images are not copyrighted", NASA imagery being usable for educational and informational purposes. Nothing is downloaded at test time and no picture is committed.
+  - Changed 2026-10-24 (kmscon #145): A1 draws one photograph, the operator's own street at sunset (2040x1536), committed beside the screens as `fork/tier3/guest/screens/photo/street-sunset.jpg` under CC BY 4.0 with its credit in `photo/LICENSE`, in place of xplanet's two. The guest no longer installs xplanet. Nothing is downloaded at test time still; the picture is committed.
+- **A2 at 7680x2160 is a known failure** while kmscon is the bottleneck there (aaronsb/kmscon#139): tier 3's `mpv-sixel` case at both 7680x2160 variants passes with a note naming the issue while it fails, and fails once it passes with the entry still in place, in the style of the capability probes. Both entries were removed in the same PR, once aaronsb/kmscon#146 and #152 made A2 pass at 7680x2160 (ADR-104); the mechanism, `KNOWN_BOTTLENECKS` in tier 3's `t3_evaluate.py`, stays. ADR-104's "A1, A2 and A4 in tier 3" has the figures.
+  - Changed 2026-10-24 (kmscon #145, with the operator's approval): tier 3's `mpv-sixel` and the VT demo's page play A2 in a 1920x1080 window in the middle of the screen, the largest 16:9 window that fits on a smaller screen, with `--vo-sixel-dither=none`. Full screen at 7680x2160, mpv's own libsixel encoding holds it to about 4.4 frames a second with no terminal attached, so a full-screen run there measured mpv's encoder; at 1920x1080 without dithering mpv sends all 150 frames. The criterion, that kmscon is not the bottleneck, is unchanged. The A4 pages keep their panes as they were: at 7680x2160 under half of the panes' frames reach the screen (41-44% on the operator's machine, 23-30% in tier 3's guest), and at 3x3 tmux itself is the limit.
 
 ## Notes (2026-10-24, the host hook, the helper protocol and step 4's order)
 

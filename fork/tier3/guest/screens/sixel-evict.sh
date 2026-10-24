@@ -1,12 +1,15 @@
 #!/bin/bash
 # kit: sixel
-# look-for: The last of N pictures under its caption. Logo+= turns the screen
-# look-for: and the picture shows turned. Logo+- turns it back; then
-# look-for: Shift+PageUp to the top: picture 1's caption over blank cells,
-# look-for: picture 2 on drawn.
+# look-for: The last of N pictures under its caption. Logo+= once turns the
+# look-for: screen a quarter and the picture shows turned. Do not scroll while
+# look-for: turned. Logo+- once turns it back; then Shift+PageUp to the top:
+# look-for: picture 1's caption over blank cells, picture 2 on drawn.
 # wrong-looks-like: After Logo+=, the last picture missing, its caption over
 # wrong-looks-like: blank cells (left out for the budget); in scrollback, a
 # wrong-looks-like: picture after the first blank, or the first still drawn.
+# wrong-looks-like: Scrolling (wheel, Shift+Up, Shift+PageUp) while turned or
+# wrong-looks-like: upside down blanks more pictures by design (ADR-103 Q1):
+# wrong-looks-like: press r to redraw the page and repeat the keys exactly.
 # screen-text: none, sixel pictures do not print as rows
 # The image budget under pressure (ADR-103's Q1 note): a turned or zoomed
 # screen draws a scaled copy of each picture on it, and the copy for a
@@ -53,6 +56,6 @@ for ((k = 1; k <= n; k++)); do
 	printf '\n'
 	((k < n)) && printf '\n'
 done
-printf 'Logo+= turns the screen: the last picture stays drawn, turned.\n'
-printf 'Logo+- turns it back. Then Shift+PageUp to the top:\n'
-printf 'picture 1 blank under its caption, picture 2 on drawn.\n'
+printf 'Logo+= once turns the screen: the last picture stays drawn, turned.\n'
+printf 'Do not scroll while turned. Logo+- once turns it back. Then\n'
+printf 'Shift+PageUp to the top: picture 1 blank under its caption, picture 2 on drawn.\n'

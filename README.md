@@ -14,6 +14,7 @@ Kmscon requires the following software:
   - [libtsm](https://github.com/kmscon/libtsm): terminal emulator state machine
   - [libudev](https://www.freedesktop.org/software/systemd/man/libudev.html): providing input, video, etc. device hotplug support (>=v172)
   - [libxkbcommon](https://xkbcommon.org/): providing internationalized keyboard handling
+  - [zlib](https://zlib.net/) and [libpng](http://www.libpng.org/pub/png/libpng.html): kmscon-image-helper decodes the kitty graphics protocol's compressed and PNG images with them, as the session's user (ADR-103)
   - **linux-headers**: linux kernel headers for ABI definitions
 
 ### Optional dependencies

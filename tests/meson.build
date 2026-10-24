@@ -138,6 +138,31 @@ test_pty = executable(
 )
 test('test_pty', test_pty)
 
+# kmscon-image-helper over its socket, with no libtsm (ADR-103): the real one,
+# and a build with stops between each check and the step it guards
+test_image_helper_bin = executable(
+    'test_image_helper_bin',
+    '../src/image_helper.c',
+    c_args: '-DIMAGE_HELPER_TEST',
+    include_directories: src_inc,
+    dependencies: [libpng_deps, zlib_deps],
+)
+test_image_helper = executable(
+    'test_image_helper',
+    'test_image_helper.c',
+    include_directories: src_inc,
+    dependencies: [libpng_deps, zlib_deps],
+)
+test(
+    'test_image_helper',
+    test_image_helper,
+    args: [
+        kmscon_image_helper,
+        test_image_helper_bin,
+        meson.current_build_dir(),
+    ],
+)
+
 test_issue = executable(
     'test_issue',
     'test_issue.c',

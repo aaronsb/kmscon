@@ -58,6 +58,8 @@ threads_deps = dependency('threads')
 math_deps = meson.get_compiler('c').find_library('m', required: false)
 zlib_deps = dependency('zlib')
 zlib_deps_native = dependency('zlib', native: true)
+# kmscon-image-helper decodes PNG as the session's user (ADR-103)
+libpng_deps = dependency('libpng')
 
 python = find_program('python3')
 

@@ -99,6 +99,20 @@ considered:
   - operator: aaronsb
     said: "yes"
     via: "operator's reply in the steering session, 2026-10-23, relayed by the team lead, to Q1: on a display that needs a scaled copy of a picture (rotation, zoom, or a cell size other than the font's), may bbulk's scaled copy for an on-screen placement evict images in scrollback or unplaced, so that viewing a new picture can push older pictures out of scrollback and leave blank cells there when scrolled back, the way old lines drop off"
+  - operator: aaronsb
+    said: "As ADR-103 says"
+    via: "Claude Code session, 2026-10-24, relayed by the team lead; an option label the team lead wrote, chosen by the operator, on the image helper's hardening: ADR-103's uid, gid and initgroups, PR_SET_NO_NEW_PRIVS, closed descriptors and memory limit, with a seccomp or landlock filter left to aaronsb/kmscon#153"
+  - operator: aaronsb
+    said: "auto. this way we have first class support for systemd, elongind and friends, and bare"
+    via: "Claude Code session, 2026-10-24, relayed verbatim by the team lead, answering how the build finds the session's user: a meson feature for sd-login, default auto, using libsystemd's or libelogind's sd-login when present and the pty's owner otherwise"
+  - operator: aaronsb
+    said: "Build step 4 with two agents in parallel, libtsm's 4a with the host hook and kmscon's helper in 4b, once this interface is fixed"
+    via: Claude Code session, 2026-10-24, relayed by the team lead as a summary, on how step 4 is built
+    paraphrase: true
+  - operator: aaronsb
+    said: "The showcase improvements #85 to #87 are done with 4d"
+    via: "Claude Code session, 2026-10-24, relayed by the team lead as a summary, on when the showcase issues aaronsb/kmscon#85, #86 and #87 are taken up"
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -551,3 +565,169 @@ Recorded as a considered entry above; what it changes:
 
 - **A picture on screen may evict the history** ("yes"). On a display that needs a scaled copy of a picture (a rotated display, a zoom, or placements made in a cell size other than the font's), bbulk makes that copy within the frame, and until now it evicted nothing outside its own renderer: while scrollback images held the budget, the picture on screen was left out. The scaled copy for an on-screen placement now takes its room in ADR-103's order after bbulk's own pictures the frame does not place: other displays' pictures their last frame did not draw, then libtsm's images unplaced, then those placed only in scrollback, least recently used first. It never evicts an image placed on a screen's own lines, nor one the frame draws, such as a scrollback image in view while the view is scrolled back; a picture that would need one is still left out, and retried only when the budget changes. Viewing a new picture on such a display can therefore push older pictures out of scrollback, which then show blank cells when scrolled back to, as old lines drop off the end of scrollback. A display that draws pictures at their own size makes no scaled copy and is unchanged.
 - History is evicted only when the eviction lets the picture fit. Before anything is freed, bbulk counts what can be: the pictures other displays' last frames did not draw, and each screen's victims (libtsm's `tsm_screen_image_victims`, which evicts nothing) up to the first image the frame draws. When that falls short, nothing is evicted and the picture is left out until the budget changes, as libtsm's own reservation evicts nothing for an image it cannot fit. Every terminal's screens give room, main and alternate, each as far as its own first drawn image.
+
+## Notes (2026-10-24, the host hook, the helper protocol and step 4's order)
+
+The interface between libtsm and kmscon for files, shared memory, PNG and zlib, fixed so that libtsm's half and kmscon's half of step 4 can be built at once. It refines the Parsing, Host interface, The image helper, Kitty graphics protocol, Memory, Testing and Order of work sections; what they decide stands except where a bullet here says what it replaces.
+
+### Operator answers
+
+Recorded as considered entries above; what they change:
+
+- **The helper's hardening is as this record states** ("As ADR-103 says", an option the team lead wrote): the session user's uid, primary gid and `initgroups`, `PR_SET_NO_NEW_PRIVS`, working directory `/`, every descriptor closed but its socket, and a memory limit. A seccomp or landlock filter is a follow-up, aaronsb/kmscon#153, outside step 4.
+- **sd-login is found at build time** ("auto. this way we have first class support for systemd, elongind and friends, and bare"): the build option below defaults to auto, so a systemd or elogind system gets logind's answer and a system with neither gets the pty's owner, with no configuration.
+- **Step 4 is built by two agents in parallel** once this section lands: libtsm's 4a, which now takes the host hook, and kmscon's 4b, the helper and its wiring. Order of work, below, says what moves.
+- **The showcase's acts 6 and 7** (#85, #86, #87) are done with 4d.
+
+### libtsm: the host hook
+
+Declared in `libtsm.h` behind a feature macro, as sixel's calls are:
+
+```c
+#define TSM_VTE_IMAGE_HOST 1
+
+enum tsm_vte_image_medium {
+	TSM_VTE_IMAGE_DIRECT = 'd',	/* t=d: PNG or zlib data sent inline */
+	TSM_VTE_IMAGE_FILE = 'f',	/* t=f */
+	TSM_VTE_IMAGE_TEMP = 't',	/* t=t */
+	TSM_VTE_IMAGE_SHM = 's',	/* t=s */
+};
+
+struct tsm_vte_image_request {
+	uint64_t id;		/* names the request in tsm_vte_image_reply; from 1, per vte */
+	unsigned int medium;	/* enum tsm_vte_image_medium */
+	unsigned int format;	/* f: 24, 32 or 100 */
+	bool zlib;		/* o=z */
+	unsigned int width;	/* s, 0 when not given */
+	unsigned int height;	/* v, 0 when not given */
+	uint64_t offset;	/* O */
+	uint64_t size;		/* S, 0 when not given */
+	const char *name;	/* FILE, TEMP, SHM: the path or name, NUL-terminated; else NULL */
+	const uint8_t *data;	/* DIRECT: the payload, base64-decoded; else NULL */
+	size_t data_len;
+};
+
+typedef int (*tsm_vte_image_cb)(struct tsm_vte *vte,
+				const struct tsm_vte_image_request *req,
+				void *data);
+
+void tsm_vte_set_image_cb(struct tsm_vte *vte, tsm_vte_image_cb image_cb,
+			  void *image_data);
+
+int tsm_vte_image_reply(struct tsm_vte *vte, uint64_t id, int error,
+			unsigned int width, unsigned int height,
+			const uint8_t *rgba);
+```
+
+- **What reaches the hook.** A transmission (`a=t`, `a=T` or `a=q`) with `t=f`, `t=t` or `t=s`, and one with `t=d` whose format is `f=100` or that carries `o=z`. libtsm calls the hook once, at the ST of the command's last chunk, after checking its keys: a command libtsm refuses itself (`i` with `I`, a raw format without `s` and `v`, an action left to step 5) never reaches the host, and inline `f=24` or `f=32` without `o=z` stays in libtsm.
+- **The name.** The payload of `t=f`, `t=t` and `t=s` is the path or name in base64. libtsm decodes it, chunked or whole, into at most 4095 bytes. A longer name, or one holding a NUL byte, answers EBADF without a request, the same reply as an unreadable file.
+- **Inline PNG and zlib data** are base64-decoded into a buffer as they arrive, each growth reserved from the screen's image budget before it is allocated. A refused reservation fails the upload with ENOSPC, and the rest is ignored until ST. This replaces the Parsing section's EINVAL for PNG or compressed data past `image-storage-limit`: the budget is that bound, and its refusal is the storage-limit error. Raw data without `o=z` keeps its EINVAL past `s` x `v` x bytes per pixel.
+- **Ownership.** The request and everything it points to are libtsm's and valid only during the hook call; a host copies what it keeps. When the hook returns, libtsm frees the inline buffer and releases its reservation.
+- **The hook's answer.** 0 means the host took the request. libtsm keeps the command's keys and stops: the input call returns the bytes up to and including the command's ST, and every input call after it returns 0 and consumes nothing until the reply. A negative errno answers the request at once (-EBADF, -EINVAL and -ENOSPC answer their code, any other value EBADF) and parsing continues in the same call.
+- **The reply.** `tsm_vte_image_reply` names the request's `id` and gives either `error` 0 with `width`, `height` and `rgba`, or `error` -EBADF, -EINVAL or -ENOSPC (any other negative value answers EBADF), the rest then ignored. `rgba` is `width` x `height` pixels of straight-alpha 8-bit R, G, B, A, rows top to bottom with no padding, the `f=32` layout; libtsm reads it only during the call. With `error` 0, libtsm checks the size against `max-graphic-size`, and against `s` and `v` when the format is raw and they were given (EINVAL otherwise). Unless the action is `a=q`, it then reserves width x height x 4 plus `TSM_SCREEN_IMAGE_OVERHEAD` from the budget (which may evict, or refuse with ENOSPC), allocates, converts to premultiplied ARGB with the opaque flag, stores, places the image for `a=T`, and replies to the client as the Kitty graphics section says. `a=q` reserves and stores nothing and replies as a transmission would. The client's reply text is libtsm's: the host passes a code, never a message.
+- **Its return value:** 0 when the request is answered; -ENOENT when `id` is not the request outstanding, a stale reply after a cancel, and nothing happens; -EINVAL for a NULL `rgba` or a zero size with `error` 0; -EBUSY when called from inside the hook.
+- **The placement's cursor** is the cursor when the reply arrives. Input is paused, so that is the cursor at the command's ST unless the host resized the screen meanwhile, which clamps it as resize clamps any cursor.
+- **Cancelling.** `tsm_vte_reset`, `tsm_vte_hard_reset`, turning `kitty-graphics` off, and freeing the vte drop an outstanding request without a reply to the client. Installing or removing the hook while a request is out answers it EBADF.
+- **Without a hook,** as the Host interface section says, `t=f`, `t=t` and `t=s` answer EBADF and `f=100` or `o=z` answer EINVAL, at the command's ST; libtsm buffers no inline data for them.
+- **`tsm_vte_input`** never hands out a request: commands that need the host answer there as they do without a hook. A host that installs the hook feeds input through `tsm_vte_input_bounded`. Bytes passed to `tsm_vte_input` while a request is out are a host error, dropped with a warning. `tsm_vte_input_bounded`'s comment changes from "at least one when @len is not 0" to "at least one when @len is not 0 and no request is out".
+- **One request per vte** follows from the pause: while one is out nothing is parsed, so no second command reaches the hook, and commands keep their order.
+
+### kmscon: the pause and the helper's lifetime
+
+- `kmscon_pty` gains `kmscon_pty_pause` and `kmscon_pty_resume`. While paused, the pty neither reads nor hands its held bytes to the input callback; resuming hands them over from the next turn, as the held buffer does now, and then reads again. The terminal pauses its pty from inside the hook, taking effect when the input callback returns, and the bytes after the command's ST stay held. Other ptys, drawing, input and VT switching carry on.
+- In the hook, kmscon finds the session's user (The image helper, Identity), starts the helper when none runs or its user differs, sends the request, arms a 2-second timer and watches the helper's socket. A helper that cannot be started, or a send that fails, returns -EBADF from the hook, which answers the command at once and lets input continue.
+- A reply that passes kmscon's checks (below) ends the request: kmscon calls `tsm_vte_image_reply`, disarms the timer and resumes the pty.
+- **A failure ends the request with EBADF:** the timer firing, the helper's socket closing or failing, or a reply that fails a check. kmscon kills the helper (`SIGKILL`), reaps it, closes the socket, replies -EBADF to libtsm and resumes the pty. The next request starts a new helper, so a decoder fault on a hostile PNG costs the client an EBADF and the helper a restart.
+- **The helper is also restarted** when the session's user changes (this record), or when a request's `max_bytes` is larger than the one the running helper's memory limit was set from.
+- Closing the terminal (its child exits) or destroying it kills the helper and drops the request without a reply.
+
+### The helper protocol
+
+- **Transport.** `socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC)`. The helper's end is descriptor 3 across `exec`; descriptors 0, 1 and 2 are open on `/dev/null`, so a library's write to stderr cannot land in a file the helper opened; every other descriptor is closed. A message is one packet: a fixed header in host byte order, both ends being built from one tree for one machine, then its variable part, with at most one descriptor (`SCM_RIGHTS`). kmscon receives with `MSG_CMSG_CLOEXEC`, and a packet that is short, truncated (`MSG_TRUNC`, `MSG_CTRUNC`) or carries a descriptor it should not is a failed reply.
+- **The request,** kmscon to helper, 64 bytes with no padding:
+
+```c
+struct kmscon_image_request {
+	uint32_t version;	/* 1 */
+	uint32_t type;		/* 1, a kitty image; other values reserved, #77's fonts among them */
+	uint64_t id;		/* libtsm's request id */
+	uint8_t medium;		/* 'd', 'f', 't' or 's' */
+	uint8_t zlib;		/* o=z */
+	uint16_t format;	/* 24, 32 or 100 */
+	uint32_t width;		/* s, or 0 */
+	uint32_t height;	/* v, or 0 */
+	uint32_t name_len;	/* 1 to 4095 for 'f', 't' and 's'; 0 for 'd' */
+	uint64_t offset;	/* O */
+	uint64_t size;		/* S, or 0 */
+	uint32_t max_width;	/* max-graphic-size */
+	uint32_t max_height;
+	uint64_t max_bytes;	/* image-storage-limit, the whole budget */
+	/* name_len bytes of name follow, without a NUL */
+};
+```
+
+- For `'d'`, the packet carries a memfd holding the inline data, which kmscon writes and seals (`F_SEAL_SHRINK`, `F_SEAL_GROW`, `F_SEAL_WRITE`, `F_SEAL_SEAL`) before sending and closes once sent.
+- **Limits travel with each request,** so a changed `max-graphic-size`, or a budget `auto` recomputes, applies from the next request with no other message. The helper's memory limit (`RLIMIT_AS`) is set when it starts: three times `max_bytes`, for the data read, an inflated copy and the output, plus 64 MiB for code and libraries.
+- **What the helper does,** in order:
+  1. Reads the data: a file or shared memory under this record's rules, which stand, or the memfd for `'d'`. `size` 0, the spec's default, reads from `offset` to the end of the file or object; a non-zero `size` is the exact count, and a shorter file fails, as the Files section says.
+  2. Inflates it when `zlib` is set. For `'d'` with format 100, a non-zero `size` is the PNG data's size (the spec asks for `S` with PNG and compression), and the inflated data must be exactly that.
+  3. For format 100, reads the PNG header, refuses a size past `max_width` or `max_height` before allocating any pixels, and decodes with libpng to 8-bit RGBA, palette, grey, 16-bit and interlaced images expanded, with no gamma or colour-profile correction.
+  4. For formats 24 and 32, requires exactly `width` x `height` x 3 or 4 bytes after inflation, and expands 24 to RGBA with alpha 255.
+- **The helper's error codes:** EBADF for every read failure, the one reply this record fixes; EINVAL for data that is not what its keys say (a corrupt or truncated PNG or zlib stream, raw data of the wrong size, a size past `max-graphic-size`); ENOSPC for data read, inflated or decoded past `max_bytes`, checked before the memory is allocated. A `version` or `type` the helper does not know makes it exit, which kmscon reads as a failure.
+- **The reply,** helper to kmscon, 32 bytes:
+
+```c
+struct kmscon_image_reply {
+	uint32_t version;	/* 1 */
+	int32_t status;		/* 0, -EBADF, -EINVAL or -ENOSPC */
+	uint64_t id;		/* the request's */
+	uint32_t width;		/* with status 0 */
+	uint32_t height;
+	uint32_t reason_len;	/* 0 to 255 */
+	uint32_t reserved;	/* 0 */
+	/* reason_len bytes follow: why it failed, for kmscon's log */
+};
+```
+
+- With status 0 the packet carries a memfd of exactly width x height x 4 bytes of RGBA in the layout `tsm_vte_image_reply` takes, made with `MFD_ALLOW_SEALING` and sealed with `F_SEAL_SHRINK`, `F_SEAL_GROW` and `F_SEAL_WRITE` after the helper unmaps its writable mapping. An error reply carries no descriptor. kmscon logs the reason; the client gets only the one reply for its code.
+- **kmscon's checks,** before it reads a pixel; any failure is a failed reply: the version; the outstanding `id`; a status among the four; for status 0, exactly one descriptor, `fstat` showing a regular file of exactly width x height x 4 bytes computed in 64 bits, `F_GET_SEALS` holding at least shrink, grow and write (which only a memfd answers), width and height from 1 to `max_width` and `max_height`, width x height x 4 at most `max_bytes`, and, for a raw format with `s` and `v` given, width and height equal to them. It then maps the memfd `PROT_READ` and `MAP_PRIVATE`, passes it to `tsm_vte_image_reply`, and unmaps and closes it.
+- kmscon trusts the helper no more than the client: the helper runs as the user, who can trace it. The shrink seal keeps it from truncating the object under kmscon's read, which would fault the root process. For the same reason, the helper copies a client's `t=s` object into its own sealed memfd instead of passing the client's descriptor on.
+
+### Memory
+
+- The two copies kmscon holds while a request is out, the inline memfd it sends and the reply it maps, sit outside the budget, as bbulk's working memory does: at most one request per session, each copy at most `max_bytes`, and both gone when the request ends. The inline buffer in libtsm is reserved (above), and so is the stored image.
+
+### The `sd_login` build option
+
+```meson
+option('sd_login', type: 'feature', value: 'auto',
+  description: 'Find the image helper\'s user through sd-login (libsystemd or libelogind)')
+```
+
+- `auto` and `enabled` look for `libsystemd`, then `libelogind`; both provide `<systemd/sd-login.h>`, libelogind's pkg-config file adding its include directory. `enabled` with neither fails the configure, `auto` builds without, and `disabled` looks for neither. The result is `BUILD_ENABLE_SD_LOGIN` in `config.h` and a line in the build summary, as the other features have.
+- Only kmscon links it, for `sd_pid_get_session` on the pty's child and `sd_session_get_uid`; the helper never does. Built without it, or with the child in no logind session, the identity is the pty's owner, as this record says.
+- The name follows `meson.options`, where every option is snake case (`video_drm2d`, `font_freetype`).
+
+### tsm-replay's fixture host
+
+- Against a libtsm that declares `TSM_VTE_IMAGE_HOST`, tsm-replay installs a hook that records the request and returns 0. Its input loop then answers with `tsm_vte_image_reply` and feeds the rest, the path kmscon takes, pause and resume included.
+- Answers come from `cases/<case>.files/` beside the stream. A request names a fixture: the last component of its path or name for `t=f`, `t=t` and `t=s`, and `direct-<n>` for the case's nth inline request, counting from 1. tsm-replay answers, taking the first that applies:
+  1. from `<fixture>.error`, whose first word, `EBADF`, `EINVAL` or `ENOSPC`, is the error;
+  2. from `<fixture>.rgba`, a decoded image (width and height as little-endian 32-bit integers, then RGBA), which stands in for a PNG or compressed fixture, since tsm-replay links no decoder;
+  3. for a raw format without `o=z`, from `<fixture>` itself, honouring `O` and `S` and expanding `f=24`;
+  4. otherwise EBADF for the file media and EINVAL for inline data.
+- It deletes nothing and applies none of the helper's path rules, which kmscon's unit tests cover.
+- Each request is printed among the replies, as `host: <id> t=<medium> f=<format> o=<z or -> s=<width> v=<height> O=<offset> S=<size> name=<fixture> len=<data_len>`, so the goldens judge what libtsm hands out as well as what it answers the client. `gen-synthetic.py` writes the fixtures beside the streams.
+
+### Testing
+
+- **Tier 1 and libtsm's unit tests:** each medium reaching the hook and inline raw data staying in libtsm; a name too long or holding NUL; the pause, with bytes after the command's ST parsed only after the reply and in order, a put right after a file transmission among them; each error from the hook's return and from the reply; ENOSPC from the inline buffer's reservation and from the image's; `a=q` storing nothing; a reply past `max-graphic-size` or differing from `s` and `v`; and every case again with no hook. The unit tests also cover a stale `id`, -EBUSY from inside the hook, and each way of cancelling.
+- **kmscon's unit tests,** beside this record's refusal tests: each reply check (no descriptor, a memfd unsealed or missing one seal, a size one byte off, dimensions past the limits, a wrong `id` or version, a truncated packet) ends the request with EBADF and a new helper; the timeout, with a helper that never answers; PNG and zlib decoding, a PNG whose header claims a size past the limits refused before allocation among them; `S` 0 and non-zero; the memory limit; and the identity, logind's uid when built with sd-login and the pty's owner otherwise.
+
+### Order of work
+
+This replaces the step 4 list's 4a and 4b; 4c, 4d and 4e stand.
+
+1. **4a, libtsm kitty and the host hook,** in parallel with 4b once this section lands: what 4a listed, plus the calls above, the pause, the fixture host in `tsm-replay`, and their tier 1 cases and unit tests.
+2. **4b, the helper,** in kmscon: `kmscon-image-helper` with this protocol and this record's identity, file and shared memory rules, PNG and zlib; `kmscon_pty_pause` and `kmscon_pty_resume`; the hook's wiring in the terminal; the `sd_login` option; and the unit tests. Until the pin carries 4a, it builds against the 4a branch with `LIBTSM=`, and its unit tests drive the helper over its socket without libtsm.
+3. 4c follows both, after the pin moves. 4d also takes the showcase's acts 6 and 7 (#85, #86, #87).

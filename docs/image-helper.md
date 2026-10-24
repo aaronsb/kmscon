@@ -9,8 +9,8 @@ Nothing reaches the helper yet: kmscon turns the kitty graphics protocol on in a
 - kmscon starts one helper per terminal session at the session's first image request, and stops it when the session ends, when the session's user changes (a logout and a new login), or when it fails a request.
 - The helper reads only what a request bounds, decodes PNG and zlib, and answers each request with an outcome or the image. It knows nothing of the kitty protocol's keys: libtsm, kmscon's terminal library, turns them into plain bounds (where to start, the most to read, the fewest bytes the image needs).
 - Bytes a program sends past what the image needs are skipped, as kitty skips them. The helper counts the bytes it read or could have read and did not use (for an uncompressed file from its size, without reading them), and kmscon logs the count under `kmscon --debug`, never the file's name.
-- It refuses to open anything but a regular file, refuses files in `/proc`, `/sys`, `/dev` other than `/dev/shm`, and on kernel pseudo-filesystems wherever they are mounted, and deletes a temporary file only when its path lies in `/tmp`, `/dev/shm` or kmscon's `TMPDIR` and contains `tty-graphics-protocol`.
-- It starts stripped down: `no_new_privs` set, ambient capabilities cleared, working directory `/`, no descriptor open but its socket, an environment holding only `TMPDIR`, and a memory limit of three times `image-storage-limit` plus 64 MiB.
+- It refuses to open anything but a regular file, refuses files in `/proc`, `/sys`, `/dev` other than `/dev/shm`, and on kernel pseudo-filesystems wherever they are mounted, and deletes a temporary file only when its path lies in `/tmp`, `/dev/shm` or kmscon's `TMPDIR` and contains `tty-graphics-protocol`. It deletes a temporary file or shared memory object only when it owns it, so even a helper running as root leaves other users' files alone.
+- It starts stripped down: in a session of its own with no controlling terminal, every user and group id set to the target user's and checked, `no_new_privs` set, ambient capabilities cleared, working directory `/`, no descriptor open but its socket, an environment holding only `TMPDIR`, and a memory limit of three times `image-storage-limit` plus 64 MiB.
 - A request it does not answer within 2 seconds, or a reply that fails one of kmscon's checks, costs the program that sent it an error reply and the helper a restart.
 
 ## Which user it runs as
@@ -19,8 +19,8 @@ The helper runs as the session's user, never as the program in the foreground, s
 
 | Situation | Files, temporary files, shared memory | Inline PNG and zlib images |
 |---|---|---|
-| kmscon built with sd-login, and the terminal's login in a logind session | read as the session's user, root included when root logged in through PAM | decoded as the session's user |
-| logind running, and the terminal's child in no logind session (the login prompt), or its session's user not found | refused, without starting the helper | decoded as `kmscon-image`, else `nobody`, else refused |
+| kmscon built with sd-login, and the terminal's login in a logind session of its own, of class `user` | read as the session's user, root included when root logged in through PAM | decoded as the session's user |
+| logind running, and the terminal's child in no logind session of its own (the login prompt, or a session it shares with kmscon), or its session's class or user not found | refused, without starting the helper | decoded as `kmscon-image`, else `nobody`, else refused |
 | kmscon built without sd-login, or no logind running | read as the owner of the session's pty, as `login` sets it; refused when that owner is root | decoded as the pty's owner; when that owner is root, as `kmscon-image`, else `nobody`, else refused |
 
 sd-login comes from libsystemd or libelogind, and the build finds either on its own (the `sd_login` meson option, `auto` by default). Whether logind is running is read from its seats: none means not running, and an error counts as running, so an unknown state refuses files rather than reading them.
@@ -44,7 +44,8 @@ kmscon installs `kmscon-image.conf` into systemd's `sysusers.d` directory, and `
 - **Started without login.** On a system running logind, a kmscon session started with a command that does not log in, such as `--login=/bin/bash`, never belongs to a logind session, so file media are refused for the whole session, even when the shell runs as an ordinary user. Inline images still work.
 - **Root at the console.** Root logged in through PAM on a system running logind is a logind session, and the helper runs as root for it. On a system without logind, a root login cannot be told apart from the login prompt by the pty's owner, so root gets no file images there, only inline ones.
 - **A changed pty owner.** logind's answer comes first because it is the identity PAM authenticated. The pty's owner is file metadata that any root process in the session can change; when the two disagree, kmscon logs the disagreement and uses logind's.
-- **Not running as root.** A kmscon started as an ordinary user (with libseat) can start the helper only as that same user; a request for any other user is refused.
+- **Inside someone's session.** A kmscon started from a shell inside a logind session (`kmscon --vt=8 --switchvt` run by a logged-in user) hands that session to its login process, and a login on its VT then creates no session of its own. kmscon does not count a session it shares with its child, so that VT is treated as before login, whoever logs in there: no file images. The same holds for kmscon's own greeter session in a libseat build.
+- **Not running as root.** A kmscon started as an ordinary user (with libseat) starts the helper only when the session's user is kmscon's own user, and refuses every image request otherwise. The helper then runs with kmscon's user and group ids, all of them, real and saved included, and keeps kmscon's supplementary groups (`video` or `input`, say), which only root can change; `/dev` is refused by path in any case.
 
 ## Building and packaging
 

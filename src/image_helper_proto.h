@@ -93,10 +93,11 @@ struct kmscon_image_request {
  * KMSCON_IMAGE_OK, except for a discard, the packet carries a sealed memfd:
  * for a PNG request width x height x 4 bytes of straight-alpha RGBA, else
  * exactly min_bytes bytes with width and height 0. Any other reply carries
- * none. ignored counts the bytes the helper left past what it used, which
- * kmscon logs at debug level: without INFLATE or PNG, those past min_bytes
- * within the bounds, from fstat; with PNG, those read past the IEND chunk;
- * with INFLATE, those read past the end of the zlib stream.
+ * none. ignored counts the bytes read from the source that the helper left
+ * past what it used, which kmscon logs at debug level: without INFLATE or
+ * PNG, those past min_bytes within the bounds, from fstat; with INFLATE,
+ * with or without PNG, those past the end of the zlib stream; with PNG
+ * alone, those past the IEND chunk. Decoded bytes never count.
  */
 struct kmscon_image_reply {
 	uint32_t version; /* KMSCON_IMAGE_VERSION */

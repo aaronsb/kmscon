@@ -849,9 +849,15 @@ static int handle(struct job *j)
 	ret = req->flags & KMSCON_IMAGE_PNG ? decode_png(j, data, len, &png_rest)
 					    : out_bytes(j, data);
 	free(data);
-	/* step 7: past IEND, and past the end of the zlib stream that held it */
-	if (req->flags & (KMSCON_IMAGE_INFLATE | KMSCON_IMAGE_PNG))
-		j->ignored = (uint64_t)rest + png_rest;
+	/*
+	 * step 7, in bytes read from the source, never decoded bytes: with
+	 * INFLATE those past the zlib stream's end, IEND unconsulted, so the
+	 * count stays within read_max; with PNG alone those past IEND
+	 */
+	if (req->flags & KMSCON_IMAGE_INFLATE)
+		j->ignored = rest;
+	else if (req->flags & KMSCON_IMAGE_PNG)
+		j->ignored = png_rest;
 	return ret;
 }
 

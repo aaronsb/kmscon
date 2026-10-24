@@ -1116,10 +1116,11 @@ static uint8_t *with_junk(const void *data, size_t len, size_t extra)
 }
 
 /*
- * Step 7: ignored. A well-formed PNG or zlib payload reports 0, inline, from
- * a file and under every flag; bytes past IEND, or past the end of the zlib
- * stream, are counted; bytes inflated past min_bytes and never used are not,
- * and neither is a stream that stopped before its end showed. A PNG that
+ * Step 7: ignored, in bytes read from the source. A well-formed PNG or zlib
+ * payload reports 0, inline, from a file and under every flag; bytes past
+ * IEND with PNG alone, or past the end of the zlib stream with INFLATE, are
+ * counted; decoded bytes are not: neither bytes inflated past min_bytes,
+ * nor inflated bytes past IEND, nor a stream stopped before its end showed. A PNG that
  * ends without IEND after its image still decodes, with 0.
  */
 static void test_ignored(void)
@@ -1170,6 +1171,20 @@ static void test_ignored(void)
 	junk = with_junk(z, zlen, 3);
 	assert(ask_inline(&h, req_of('d', pz, 0), junk, zlen + 3, &rep) == KMSCON_IMAGE_OK);
 	assert(rep.r.ignored == 3);
+	expect_pixels(&rep, 3, 2, rgba);
+	free(junk);
+	free(z);
+	/*
+	 * junk past IEND inside the zlib stream is decoded bytes: not counted,
+	 * so a file's count stays within read_max
+	 */
+	junk = with_junk(png, len, 4096);
+	z = zip(junk, len + 4096, &zlen);
+	write_file(f, z, zlen);
+	r = req_of('f', pz, 0);
+	r.read_max = zlen;
+	assert(ask(&h, r, f, -1, &rep) == KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 0);
 	expect_pixels(&rep, 3, 2, rgba);
 	free(junk);
 	free(z);

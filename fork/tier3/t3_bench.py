@@ -156,6 +156,23 @@ def bottleneck(figures):
     return out
 
 
+def tmux_kept_up(figures):
+    """Why kmscon did not keep up with what tmux sent in a tmux grid, as
+    ADR-103 judges A4, or an empty list: its CPU time per sixel picture
+    tmux sent (parsing included) above the clip's frame interval. A4 judges
+    no frame rate: tmux and mpv set it. kmscon draws several panes'
+    pictures in one frame, so its presented rate is not set against the
+    pictures tmux sent."""
+    sixels, ms = figures.get("tmux_sixels"), figures.get("kmscon_cpu_ms")
+    if not sixels or ms is None:
+        return []
+    per = ms / sixels
+    if per > CLIP_FRAME_MS:
+        return ["kmscon's CPU time per picture tmux sent, %.1f ms, is over the clip's "
+                "%.1f ms frame interval" % (per, CLIP_FRAME_MS)]
+    return []
+
+
 # The flood screen's bounds (#147). A stream of sixel pictures changes the
 # screen only at each picture's end, so a draw tried after every pty read
 # finds nothing to draw and counts as skipped (#139); kmscon draws once per
@@ -182,7 +199,8 @@ def measure(serial_text, event_line, config):
     """The report entry of one benchmark screen: its figures, or why there
     are none. "error", which fails the case, is set when a build with the
     render timer configured logged no line for the window, when tmux sent
-    no sixel picture, and when the flood screen's figures are out of bounds
+    no sixel picture or kmscon did not keep up with it (tmux_kept_up), and
+    when the flood screen's figures are out of bounds
     (flood_verdict)."""
     window = bench_window(event_line or "")
     if window is None:
@@ -195,6 +213,12 @@ def measure(serial_text, event_line, config):
         if not counts["tmux_sixels"]:
             out["error"] = ("tmux sent kmscon no sixel picture: it drew placeholders, or "
                             "nothing played")
+        elif out.get("kmscon_cpu_ms") is not None:
+            out["kmscon_cpu_ms_per_tmux_sixel"] = round(
+                out["kmscon_cpu_ms"] / counts["tmux_sixels"], 3)
+            why = tmux_kept_up(out)
+            if why:
+                out["error"] = "kmscon did not keep up with tmux: " + "; ".join(why)
     if out["intervals"]:
         why = flood_verdict(out) if name == "flood" else []
         if why:

@@ -1117,10 +1117,11 @@ static uint8_t *with_junk(const void *data, size_t len, size_t extra)
 
 /*
  * Step 7: ignored, in bytes read from the source. A well-formed PNG or zlib
- * payload reports 0, inline, from a file and under every flag; bytes past
- * IEND with PNG alone, or past the end of the zlib stream with INFLATE, are
- * counted; decoded bytes are not: neither bytes inflated past min_bytes,
- * nor inflated bytes past IEND, nor a stream stopped before its end showed. A PNG that
+ * payload read whole reports 0, inline, from a file and under every flag;
+ * bytes past IEND with PNG alone, or those the inflater did not consume with
+ * INFLATE, are counted: past the zlib stream's end, or everything past the
+ * last byte fed when it stopped at min_bytes. Decoded bytes never count:
+ * neither bytes inflated past min_bytes nor inflated bytes past IEND. A PNG that
  * ends without IEND after its image still decodes, with 0.
  */
 static void test_ignored(void)
@@ -1191,9 +1192,25 @@ static void test_ignored(void)
 	free(png);
 
 	/*
+	 * Stopped at min_bytes before the stream ends: what was read past the
+	 * last byte fed counts, never the bytes inflated past min_bytes. A
+	 * stored (level 0) stream of 24 bytes is a 2-byte header, a 5-byte block
+	 * header, the 24 bytes and a 4-byte trailer: stopping at 16 leaves 8 of
+	 * them and the trailer, 12, unconsumed
+	 */
+	zlen = compressBound(sizeof(rgba));
+	z = malloc(zlen);
+	assert(z && compress2(z, &zlen, rgba, sizeof(rgba), 0) == Z_OK && zlen == 35);
+	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 16), z, zlen, &rep) ==
+	       KMSCON_IMAGE_OK);
+	assert(rep.r.ignored == 12);
+	expect_bytes(&rep, rgba, 16);
+	free(z);
+
+	/*
 	 * INFLATE alone: well-formed is 0, exactly min_bytes long or under EXACT;
-	 * bytes inflated past min_bytes are not counted; 3 bytes past the end of
-	 * a stream exactly min_bytes long are 3; from a file within read_max too
+	 * stopped early, it is the input left unfed; 3 bytes past the end of a
+	 * stream exactly min_bytes long are 3; from a file within read_max too
 	 */
 	z = zip(rgba, sizeof(rgba), &zlen);
 	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 24), z, zlen, &rep) ==
@@ -1206,7 +1223,7 @@ static void test_ignored(void)
 	expect_bytes(&rep, rgba, 24);
 	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 16), z, zlen, &rep) ==
 	       KMSCON_IMAGE_OK);
-	assert(rep.r.ignored == 0);
+	assert(rep.r.ignored > 0 && rep.r.ignored < zlen);
 	expect_bytes(&rep, rgba, 16);
 	junk = with_junk(z, zlen, 3);
 	assert(ask_inline(&h, req_of('d', KMSCON_IMAGE_INFLATE, 24), junk, zlen + 3, &rep) ==

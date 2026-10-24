@@ -500,8 +500,9 @@ static int inflate_failed(struct job *j, z_stream *zs, int zret)
  * is CORRUPT, found before the max_bytes bound. Otherwise a byte past
  * max_bytes is OVER_BUDGET. A stream that does not inflate, or ends before
  * its end is reached, is CORRUPT; fewer than min_bytes out is TOO_SHORT.
- * @rest is how many bytes of @in follow the stream's end, its trailer counted
- * in the stream, or 0 when inflating stopped before the end showed.
+ * @rest is how many bytes of @in the inflater did not consume: those past the
+ * stream's end, its trailer counted in the stream, or, where it stopped at
+ * min_bytes, everything past the last byte fed to it.
  */
 static int inflate_bounded(struct job *j, const uint8_t *in, size_t in_len, uint8_t **out,
 			   size_t *out_len, size_t *rest)
@@ -564,13 +565,14 @@ static int inflate_bounded(struct job *j, const uint8_t *in, size_t in_len, uint
 
 	/*
 	 * limit bytes out and the stream not ended: past them it is ignored,
-	 * though the stream's end may follow with no more output, which one
-	 * call with no room finds; or one byte more counts
+	 * though the stream's end, its trailer among it, may follow with no
+	 * more output, which one call with no room consumes; or one byte more
+	 * counts
 	 */
 	if (stop) {
 		inflate_feed(&zs, in_len);
-		if (inflate(&zs, Z_NO_FLUSH) == Z_STREAM_END)
-			*rest = in_len - zs.total_in;
+		inflate(&zs, Z_NO_FLUSH);
+		*rest = in_len - zs.total_in;
 		goto done;
 	}
 	zs.next_out = &probe;
@@ -851,7 +853,7 @@ static int handle(struct job *j)
 	free(data);
 	/*
 	 * step 7, in bytes read from the source, never decoded bytes: with
-	 * INFLATE those past the zlib stream's end, IEND unconsulted, so the
+	 * INFLATE those the inflater did not consume, IEND unconsulted, so the
 	 * count stays within read_max; with PNG alone those past IEND
 	 */
 	if (req->flags & KMSCON_IMAGE_INFLATE)

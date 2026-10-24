@@ -96,8 +96,8 @@ struct kmscon_image_request {
  * none. ignored counts the bytes read from the source that the helper left
  * past what it used, which kmscon logs at debug level: without INFLATE or
  * PNG, those past min_bytes within the bounds, from fstat; with INFLATE,
- * with or without PNG, those past the end of the zlib stream; with PNG
- * alone, those past the IEND chunk. Decoded bytes never count.
+ * with or without PNG, those the inflater did not consume; with PNG alone,
+ * those past the IEND chunk. Decoded bytes never count.
  */
 struct kmscon_image_reply {
 	uint32_t version; /* KMSCON_IMAGE_VERSION */

@@ -361,10 +361,6 @@ static void do_redraw_screen(struct screen *scr)
 	ret = kmscon_text_present(scr->txt);
 	if (ret && ret != -EBUSY)
 		log_warning("cannot swap display [%s] %d", display_name(scr->disp), ret);
-	/* the frame was drawn but not shown, and no flip will bring it back:
-	 * the next draw redraws every cell, and the next output turn draws */
-	if (ret)
-		kmscon_text_redraw_all(scr->txt);
 	render_timer_frame_end(scr->timer, !ret && scr->txt->frame_queued,
 			       scr->txt->frame_damage_px);
 }

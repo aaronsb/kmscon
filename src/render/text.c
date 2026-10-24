@@ -727,17 +727,25 @@ int kmscon_text_render(struct kmscon_text *txt)
  * the back buffer stays the back buffer. On a display with damage clips, a
  * commit without clips updates the whole plane.
  *
- * txt->frame_queued records whether it swapped.
+ * txt->frame_queued records whether it swapped. A frame whose swap failed was
+ * drawn but is not shown, and no flip will show it, so the next
+ * kmscon_text_draw() redraws every cell and kmscon_text_changed() is true
+ * until then.
  *
  * Returns: 0 on success, negative error code if the swap failed.
  */
 int kmscon_text_present(struct kmscon_text *txt)
 {
+	int ret;
+
 	txt->frame_queued = false;
 	if (kmscon_text_render(txt) == KMSCON_TEXT_UNCHANGED && !display_need_commit(txt->disp))
 		return 0;
 	txt->frame_queued = true;
-	return display_swap(txt->disp);
+	ret = display_swap(txt->disp);
+	if (ret)
+		kmscon_text_redraw_all(txt);
+	return ret;
 }
 
 /**

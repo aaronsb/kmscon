@@ -133,8 +133,13 @@ bool display_supports_damage(struct display *disp)
 	return output_of(disp)->damage;
 }
 
+/* what display_swap returns; a failed swap leaves the buffers as they were */
+static int swap_ret;
+
 int display_swap(struct display *disp)
 {
+	if (swap_ret)
+		return swap_ret;
 	output_of(disp)->d2d.current_rb ^= 1;
 	return 0;
 }
@@ -449,6 +454,110 @@ static void run(enum when when, bool cursor, bool damage)
 	free(before);
 }
 
+/* draws @con on @o and presents it, as terminal.c does; returns the present's result */
+static int draw_present(struct output *o, struct tsm_screen *con, struct tsm_vte *vte)
+{
+	struct tsm_screen_attr attr;
+
+	tsm_vte_get_def_attr(vte, &attr);
+	assert(kmscon_text_prepare(o->txt, &attr, false) == 0);
+	assert(kmscon_text_draw(o->txt, con, false) == 0);
+	return kmscon_text_present(o->txt);
+}
+
+static void feed(struct tsm_vte *vte, const char *s)
+{
+	tsm_vte_input(vte, s, strlen(s));
+}
+
+/*
+ * kmscon_text_changed (#139, #152): false right after a draw, and true after
+ * each thing that changes what the display would draw from the screen, until
+ * the draw that shows it: a cell written, the cursor moved, its style
+ * (DECSCUSR), a sixel placed, kmscon_text_redraw_all, another screen, a
+ * present whose swap failed, and a picture left out for the image budget once
+ * the budget has grown.
+ */
+static void test_changed(void)
+{
+	struct tsm_screen *con, *other;
+	struct tsm_vte *vte;
+	struct output o;
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, COLS, ROWS) == 0);
+	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
+	/* twice the font's cell, so bbulk scales the sixel into a picture */
+	assert(tsm_screen_set_cell_size(con, font->width * 2, font->height * 2) == 0);
+	tsm_screen_set_image_limit(con, 64 << 20);
+	tsm_vte_set_sixel(vte, true);
+	output_init(&o, false);
+
+	assert(kmscon_text_changed(o.txt, con));
+	assert(draw_present(&o, con, vte) == 0);
+	assert(!kmscon_text_changed(o.txt, con));
+
+	feed(vte, "x");
+	assert(kmscon_text_changed(o.txt, con));
+	assert(draw_present(&o, con, vte) == 0);
+	assert(!kmscon_text_changed(o.txt, con));
+
+	feed(vte, ESC "[5;5H");
+	assert(kmscon_text_changed(o.txt, con));
+	assert(draw_present(&o, con, vte) == 0);
+	assert(!kmscon_text_changed(o.txt, con));
+
+	feed(vte, ESC "[4 q");
+	assert(kmscon_text_changed(o.txt, con));
+	assert(draw_present(&o, con, vte) == 0);
+	assert(!kmscon_text_changed(o.txt, con));
+
+	kmscon_text_redraw_all(o.txt);
+	assert(kmscon_text_changed(o.txt, con));
+	assert(draw_present(&o, con, vte) == 0);
+	assert(!kmscon_text_changed(o.txt, con));
+
+	/* another screen, as after a VT's screen is swapped for another */
+	assert(tsm_screen_new(&other, NULL, NULL) == 0);
+	assert(tsm_screen_resize(other, COLS, ROWS) == 0);
+	assert(kmscon_text_changed(o.txt, other));
+	tsm_screen_unref(other);
+
+	/* drawn but not shown: the swap failed, and no flip will show it */
+	feed(vte, "y");
+	swap_ret = -EBUSY;
+	assert(draw_present(&o, con, vte) == -EBUSY);
+	swap_ret = 0;
+	assert(kmscon_text_changed(o.txt, con));
+	assert(draw_present(&o, con, vte) == 0);
+	assert(!kmscon_text_changed(o.txt, con));
+
+	/*
+	 * A sixel of 8x8 cells of the screen's size, scaled into a picture of
+	 * four times its pixels: with no room in the budget, it is left out;
+	 * the budget grows, and the screen has not changed
+	 */
+	image_budget_set_limit(0);
+	feed(vte, ESC "[1;1H" ESC "P0;1q\"1;1;160;160#1;2;100;0;0#1!160~-!160~-!160~-"
+		      "!160~-!160~-!160~-!160~-!160~-!160~-!160~-!160~-!160~-!160~-!160~-"
+		      "!160~-!160~-!160~-!160~-!160~-!160~-!160~-!160~-!160~-!160~-!160~-"
+		      "!160~-!160~~" ESC "\\");
+	assert(kmscon_text_changed(o.txt, con));
+	assert(draw_present(&o, con, vte) == 0);
+	assert(((struct bbulk *)o.txt->data)->starving);
+	assert(!kmscon_text_changed(o.txt, con));
+	image_budget_set_limit(64 << 20);
+	assert(kmscon_text_changed(o.txt, con));
+	assert(draw_present(&o, con, vte) == 0);
+	assert(!((struct bbulk *)o.txt->data)->starving);
+	assert(!kmscon_text_changed(o.txt, con));
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+
+	output_destroy(&o);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+}
+
 /* Replace the process's fontconfig with one that knows only the pinned files. */
 static void pin_fonts(void)
 {
@@ -495,6 +604,7 @@ int main(int argc, char **argv)
 	fb_h = ROWS * font->height;
 	fb_bytes = (size_t)fb_w * fb_h * 4;
 
+	test_changed();
 	for (int when = EVERY_READ; when <= RANDOM; when++)
 		for (int cursor = 0; cursor < 2; cursor++)
 			for (int damage = 0; damage < 2; damage++)

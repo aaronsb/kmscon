@@ -109,16 +109,16 @@ considered:
     via: "steering session, 2026-10-23, relayed by the team lead as the answer to kmscon #145's question 2"
     paraphrase: true
   - operator: aaronsb
-    said: "Change now (Recommended): 85 plays a centred 1920x1080 window with dithering off; 86 and 87 say what tmux and mpv deliver; all three show mpv's shown and dropped counts on screen"
-    via: Claude Code session, 2026-10-24, answering how pages 85-87 change
+    said: "Change now: 85 plays a centred 1920x1080 window with dithering off; 86 and 87 say what tmux and mpv deliver; all three show mpv's shown and dropped counts on screen"
+    via: "Claude Code session, 2026-10-24, answering how pages 85-87 change; the operator picked the option from choices the session offered"
     paraphrase: true
   - operator: aaronsb
     said: "Same, plus dither off in panes: A4 passes when every pane animates, tmux's pictures reach the screen, nothing is left after exit, and kmscon keeps up with what tmux sends; the frame rate is reported, not judged, and the page says tmux and mpv set it; the panes' mpv runs with --vo-sixel-dither=none"
-    via: "Claude Code session, 2026-10-24, after the second VT review of #145"
+    via: "Claude Code session, 2026-10-24, after the second VT review of #145; the operator picked the option from choices the session offered"
     paraphrase: true
   - operator: aaronsb
     said: "Pre-encoded feeder, new PR: tmux grids are compatibility only; a fork-written feeder judges kmscon's streaming"
-    via: Claude Code session, 2026-10-24, answering how kmscon's image streaming is judged apart from tmux
+    via: "Claude Code session, 2026-10-24, answering how kmscon's image streaming is judged apart from tmux; the operator picked the option from choices the session offered"
     paraphrase: true
   - operator: aaronsb
     said: "As ADR-103 says"
@@ -171,6 +171,12 @@ considered:
     said: "Add the four performance limits of the one-pipeline design to ADR-103, after the merge"
     via: Claude Code session, 2026-10-24, after asking whether one pipeline with several protocol handlers limits performance; the operator picked the recommended option in a structured question
     paraphrase: true
+  - operator: aaronsb
+    said: "This pass the video performance is noticibly better and more consistent with frame delivery. I'm still marking it as incorrect, because 30 fps would be passing. we can decide if that's an unattainable criteria"
+    via: "the operator's VT review of #145 at f1071a0, 2026-10-24, rating tmux-2x2 and tmux-3x3; relayed verbatim by the team lead"
+  - operator: aaronsb
+    said: "I'm concerned we're evaluating tmux more than we're evaluating kmscon's ability to stream image data"
+    via: "Claude Code session, 2026-10-24, the A4 discussion after the second VT review of #145; relayed verbatim by the team lead"
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"

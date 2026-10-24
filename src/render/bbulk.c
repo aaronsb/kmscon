@@ -1029,6 +1029,14 @@ static size_t bbulk_trimmable(struct image_budget_cache *cache)
 	return bytes;
 }
 
+/* a placement left out here may fit now: the budget has grown since */
+static bool bbulk_starved(struct kmscon_text *txt)
+{
+	struct bbulk *bb = txt->data;
+
+	return bb && bb->starving && bb->starved_gen != image_budget_gen();
+}
+
 /*
  * Between frames: the scaled pictures fit this display's limit. Pictures freed
  * to fit it do not try a placement left out here again, or two pictures over
@@ -1860,5 +1868,6 @@ struct kmscon_text_ops kmscon_text_bbulk_ops = {
 	.render = bbulk_render,
 	.abort = NULL,
 	.release = bbulk_release,
+	.starved = bbulk_starved,
 	.draws_images = true,
 };

@@ -143,6 +143,12 @@ struct kmscon_text_ops {
 	/* optional: free what the renderer keeps and can make again */
 	void (*release)(struct kmscon_text *txt);
 	/*
+	 * optional: a placement this display left out for the image budget
+	 * may fit now, so a draw would try it again though the screen has not
+	 * changed (kmscon_text_changed)
+	 */
+	bool (*starved)(struct kmscon_text *txt);
+	/*
 	 * It draws the frame's image placements (ADR-103). A terminal offers
 	 * sixel only while every display it draws on has a renderer that does.
 	 */

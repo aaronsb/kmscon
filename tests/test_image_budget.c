@@ -18,6 +18,12 @@
 #include "../src/render/image_budget.c"
 #include "../src/terminal_vte.c"
 
+#ifdef TSM_VTE_KITTY_GRAPHICS
+#define HAVE_KITTY true
+#else
+#define HAVE_KITTY false
+#endif
+
 #define W 64
 #define H 64
 /* what one W x H image holds: its pixels and libtsm's overhead */
@@ -310,6 +316,25 @@ static bool da1_sixel(struct tsm_vte *vte)
 	return strstr(reply, ";4;") || strstr(reply, ";4c");
 }
 
+#ifdef TSM_VTE_KITTY_GRAPHICS
+/* a kitty query of one f=32 pixel answers OK: the client's detection */
+static bool kitty_answers(struct tsm_vte *vte)
+{
+	static const char q[] = "\033_Ga=q,i=31,s=1,v=1,f=32;AAAAAA==\033\\";
+
+	reply_len = 0;
+	tsm_vte_input(vte, q, sizeof(q) - 1);
+	reply[reply_len] = 0;
+	return strstr(reply, "\033_Gi=31;OK\033\\");
+}
+#else
+static bool kitty_answers(struct tsm_vte *vte)
+{
+	(void)vte;
+	return false;
+}
+#endif
+
 /* 8 x 12 pixels of register 1 */
 static const char six[] = "\033Pq\"1;1;8;12#1;2;100;0;0#1!8~-#1!8~\033\\";
 
@@ -343,10 +368,11 @@ static void test_sixel(void)
 
 /*
  * A terminal's images: its screen joins the budget and leaves it; sixel is
- * offered (DA1 attribute 4) and pictures stored only while the configuration
- * asks for it, the limit is not 0, and every display the terminal draws on
- * draws image placements; a display that does not (gltex, until ADR-103 step
- * 3f) turns sixel off as if no-sixel were set.
+ * offered (DA1 attribute 4) and pictures stored, and the kitty graphics
+ * protocol answers a query, only while the configuration asks for each, the
+ * limit is not 0, and every display the terminal draws on draws image
+ * placements; a display that does not (gltex, until ADR-103 step 3f) turns
+ * both off as if no-sixel and no-kitty-graphics were set.
  */
 static void test_terminal(void)
 {
@@ -359,12 +385,13 @@ static void test_terminal(void)
 	assert(tsm_screen_resize(con, 40, 10) == 0);
 	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
 
-	assert(image_budget_add_terminal(&t, con, vte, true) == 0);
+	assert(image_budget_add_terminal(&t, con, vte, true, true) == 0);
 	assert(budget.n_screens == 1 && da1_sixel(vte));
+	assert(kitty_answers(vte) == HAVE_KITTY);
 
 	/* a display without placement drawing: off, and nothing stored */
 	image_budget_terminal_display(&t, false, true);
-	assert(!da1_sixel(vte));
+	assert(!da1_sixel(vte) && !kitty_answers(vte));
 	tsm_vte_input(vte, six, sizeof(six) - 1);
 	assert(image_budget_used() == 0 && tsm_screen_test_image_count(con) == 0);
 	/* one that draws them beside it: still off */
@@ -372,7 +399,7 @@ static void test_terminal(void)
 	assert(!da1_sixel(vte));
 	/* the first one gone: on, and a picture is stored */
 	image_budget_terminal_display(&t, false, false);
-	assert(da1_sixel(vte));
+	assert(da1_sixel(vte) && kitty_answers(vte) == HAVE_KITTY);
 	tsm_vte_input(vte, six, sizeof(six) - 1);
 	assert(image_budget_used() > 0 && tsm_screen_test_image_count(con) == 1);
 
@@ -390,20 +417,23 @@ static void test_terminal(void)
 	image_budget_terminal_display(&t, false, false);
 	assert(da1_sixel(vte) && tsm_screen_test_image_count(con) == 1);
 
-	/* leaving gives the bytes back and turns sixel off */
+	/* leaving gives the bytes back and turns both off */
 	image_budget_remove_terminal(&t);
 	assert(budget.n_screens == 0 && !budget.screens && image_budget_used() == 0);
-	assert(!da1_sixel(vte));
+	assert(!da1_sixel(vte) && !kitty_answers(vte));
 	image_budget_remove_terminal(&t);
 	tsm_vte_input(vte, "\033[2J", 4);
 
-	/* no-sixel, and image-storage-limit=0 */
-	assert(image_budget_add_terminal(&t, con, vte, false) == 0);
-	assert(!da1_sixel(vte));
+	/* no-sixel and no-kitty-graphics, each alone, and image-storage-limit=0 */
+	assert(image_budget_add_terminal(&t, con, vte, false, true) == 0);
+	assert(!da1_sixel(vte) && kitty_answers(vte) == HAVE_KITTY);
+	image_budget_remove_terminal(&t);
+	assert(image_budget_add_terminal(&t, con, vte, true, false) == 0);
+	assert(da1_sixel(vte) && !kitty_answers(vte));
 	image_budget_remove_terminal(&t);
 	image_budget_set_limit(0);
-	assert(image_budget_add_terminal(&t, con, vte, true) == 0);
-	assert(!da1_sixel(vte));
+	assert(image_budget_add_terminal(&t, con, vte, true, true) == 0);
+	assert(!da1_sixel(vte) && !kitty_answers(vte));
 	image_budget_remove_terminal(&t);
 	assert(budget.n_screens == 0);
 
@@ -433,7 +463,7 @@ static void test_terminal_teardown(void)
 	assert(tsm_screen_new(&con, NULL, NULL) == 0);
 	assert(tsm_screen_resize(con, 40, 10) == 0);
 	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
-	assert(image_budget_add_terminal(&t, con, vte, true) == 0);
+	assert(image_budget_add_terminal(&t, con, vte, true, true) == 0);
 	tsm_vte_input(vte, six, sizeof(six) - 1);
 	assert(image_budget_used() > 0 && image_budget_screens() == 1);
 	image_budget_free_terminal(&t);
@@ -443,7 +473,7 @@ static void test_terminal_teardown(void)
 	assert(tsm_screen_new(&con, NULL, NULL) == 0);
 	assert(tsm_screen_resize(con, 40, 10) == 0);
 	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
-	assert(image_budget_add_terminal(&lost, con, vte, true) == 0);
+	assert(image_budget_add_terminal(&lost, con, vte, true, true) == 0);
 	assert(unplaced(con, 1, false, &k) == 0);
 	tsm_vte_unref(vte);
 	tsm_screen_unref(con);
@@ -471,6 +501,7 @@ static void test_terminal_vte(void)
 {
 	struct kmscon_conf_t conf = {
 		.sixel = true,
+		.kitty_graphics = true,
 		.max_graphic_size = {1000, 1000},
 		.num_color_registers = 256,
 		.grapheme_width = TSM_WIDTH_UNICODE,
@@ -487,10 +518,12 @@ static void test_terminal_vte(void)
 	assert(terminal_vte_new(&vte, &t, con, &conf, vte_write, NULL) == -EINVAL);
 	assert(!vte && !t.con && image_budget_screens() == 0);
 
-	/* made with sixel on; a later step's unwind leaves nothing in the budget */
+	/* made with sixel and kitty graphics on; a later step's unwind leaves nothing in the budget
+	 */
 	conf.grapheme_width = TSM_WIDTH_UNICODE;
 	assert(terminal_vte_new(&vte, &t, con, &conf, vte_write, NULL) == 0);
 	assert(t.con == con && t.vte == vte && image_budget_screens() == 1);
+	assert(kitty_answers(vte) == HAVE_KITTY);
 	tsm_vte_input(vte, six, sizeof(six) - 1);
 	assert(image_budget_used() > 0);
 	image_budget_free_terminal(&t);

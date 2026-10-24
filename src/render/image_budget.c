@@ -340,14 +340,19 @@ void image_budget_remove_screen(struct tsm_screen *con)
 	}
 }
 
-/* sixel on @t's vte, or off, by the rule in image_budget.h */
+/* sixel and kitty graphics on @t's vte, or off, by the rule in image_budget.h */
 static void terminal_update(struct image_budget_terminal *t)
 {
-	tsm_vte_set_sixel(t->vte, t->sixel && image_budget_limit() && !t->blind);
+	bool images = image_budget_limit() && !t->blind;
+
+	tsm_vte_set_sixel(t->vte, t->sixel && images);
+#ifdef TSM_VTE_KITTY_GRAPHICS
+	tsm_vte_set_kitty_graphics(t->vte, t->kitty && images);
+#endif
 }
 
 int image_budget_add_terminal(struct image_budget_terminal *t, struct tsm_screen *con,
-			      struct tsm_vte *vte, bool sixel)
+			      struct tsm_vte *vte, bool sixel, bool kitty)
 {
 	int ret = image_budget_add_screen(con);
 
@@ -357,6 +362,7 @@ int image_budget_add_terminal(struct image_budget_terminal *t, struct tsm_screen
 	t->con = con;
 	t->vte = vte;
 	t->sixel = sixel;
+	t->kitty = kitty;
 	t->blind = 0;
 	terminal_update(t);
 	return 0;
@@ -367,6 +373,9 @@ void image_budget_remove_terminal(struct image_budget_terminal *t)
 	if (!t->con)
 		return;
 	tsm_vte_set_sixel(t->vte, false);
+#ifdef TSM_VTE_KITTY_GRAPHICS
+	tsm_vte_set_kitty_graphics(t->vte, false);
+#endif
 	image_budget_remove_screen(t->con);
 	tsm_screen_unref(t->con);
 	t->con = NULL;

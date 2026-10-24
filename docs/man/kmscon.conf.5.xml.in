@@ -634,8 +634,10 @@ font-name=Ubuntu Mono
                 protocol off. When a new picture would pass the limit, kmscon
                 frees scaled copies not on screen, then pictures no longer
                 placed, then pictures that are only in the scrollback, least
-                recently used first; a picture on the screen is never freed,
-                and a new one that still does not fit is dropped. Named after
+                recently used first, then kitty pictures on the screen, oldest
+                first; a sixel picture on the screen is never freed, and a new
+                picture that still does not fit is dropped (a kitty program
+                is answered <literal>ENOSPC</literal>). Named after
                 Ghostty's option, which applies to each screen instead.
                 (default: auto)</para>
         </listitem>
@@ -655,8 +657,15 @@ font-name=Ubuntu Mono
       <varlistentry>
         <term><option>kitty-graphics</option></term>
         <listitem>
-          <para>The kitty graphics protocol. It is not implemented yet, so
-                this option changes nothing. (default: on)</para>
+          <para>The kitty graphics protocol: a program transmits pictures
+                inline, or names a file, a temporary file or a shared memory
+                object, and places them at the cursor, above or below the
+                text. Files, shared memory, PNG and zlib data are read and
+                decoded by <command>kmscon-image-helper</command>, running as
+                the session's user; before anyone has logged in, files and
+                shared memory are refused. When off, kitty commands are
+                skipped without a reply, so a program's query finds no
+                support. (default: on)</para>
         </listitem>
       </varlistentry>
 
@@ -665,7 +674,8 @@ font-name=Ubuntu Mono
         <listitem>
           <para>The largest picture in pixels, as
                 <replaceable>width</replaceable>x<replaceable>height</replaceable>,
-                each from 1 to 65535; a sixel's pixels past it are dropped.
+                each from 1 to 65535; a sixel's pixels past it are dropped,
+                and a larger kitty picture is refused.
                 Named after xterm's <literal>maxGraphicSize</literal>.
                 (default: 10000x10000)</para>
         </listitem>

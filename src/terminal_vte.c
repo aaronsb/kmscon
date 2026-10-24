@@ -40,13 +40,14 @@ int terminal_vte_new(struct tsm_vte **vte, struct image_budget_terminal *images,
 	if (ret)
 		return ret;
 
-	/* images (ADR-103): the process's budget, and sixel by image_budget.h's rule */
+	/* images (ADR-103): the process's budget, and sixel and kitty graphics by
+	 * image_budget.h's rule */
 	if (tsm_vte_set_graphic_max_size(v, conf->max_graphic_size.width,
 					 conf->max_graphic_size.height) ||
 	    tsm_vte_set_sixel_registers(v, conf->num_color_registers,
 					conf->private_color_registers))
 		log_warning("cannot apply the sixel settings; libtsm's defaults stand");
-	ret = image_budget_add_terminal(images, con, v, conf->sixel);
+	ret = image_budget_add_terminal(images, con, v, conf->sixel, conf->kitty_graphics);
 	if (ret)
 		goto err_vte;
 
@@ -68,7 +69,7 @@ int terminal_vte_new(struct tsm_vte **vte, struct image_budget_terminal *images,
 	return 0;
 
 err_images:
-	/* before the vte goes: leaving the budget turns sixel off on it */
+	/* before the vte goes: leaving the budget turns images off on it */
 	image_budget_remove_terminal(images);
 err_vte:
 	tsm_vte_unref(v);

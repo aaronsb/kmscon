@@ -2,7 +2,7 @@
 
 The kitty graphics protocol lets a program name a file, a temporary file or a shared memory object for the terminal to read an image from, and send images compressed with zlib or encoded as PNG. kmscon runs as root, so it does none of that reading or decoding itself. A separate program, `kmscon-image-helper`, installed beside kmscon's modules (`/usr/lib/kmscon` in the fork's package), does it as an ordinary user and hands back the bytes or pixels in a sealed memory file, which kmscon checks before it uses them. [ADR-103](architecture/render/ADR-103-images-are-placements-that-travel-with-lines-sixel-and-the-kitty-graphics-protocol-feed-one-store.md) ("The image helper") is the full design.
 
-Nothing reaches the helper yet: kmscon turns the kitty graphics protocol on in a later step (ADR-103's 4c). This page describes what happens once it does.
+kmscon reaches the helper only while the kitty graphics protocol is on (`kitty-graphics`, on by default, in kmscon.conf(5)) and images are allowed (`image-storage-limit` not 0).
 
 ## What the helper does
 

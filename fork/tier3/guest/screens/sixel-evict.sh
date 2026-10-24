@@ -57,5 +57,5 @@ for ((k = 1; k <= n; k++)); do
 	((k < n)) && printf '\n'
 done
 printf 'Logo+= once turns the screen: the last picture stays drawn, turned.\n'
-printf 'Do not scroll while turned. Logo+- once turns it back. Then\n'
-printf 'Shift+PageUp to the top: picture 1 blank under its caption, picture 2 on drawn.\n'
+printf 'Do not scroll while turned. Logo+- once turns it back. Shift+PageUp\n'
+printf 'to the top: picture 1 blank under its caption, picture 2 on drawn.\n'

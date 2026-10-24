@@ -36,7 +36,7 @@ How much a terminal reads for a kitty `t=f`, `t=t` or `t=s` transmission, what i
 | direct, 2 bytes | `ENODATA:Insufficient image data: 2 < 3` | |
 | `a=t`, `t=t`, 3 or 47 bytes, `S=47` | OK | removed |
 
-- kitty reads from `O` to the lesser of `O` + `S` and the end, so `S` is a maximum; with no `S` it reads to the end.
+- kitty reads from `O` to the lesser of `O` + `S` and the end, so `S` bounds the read; with no `S` it reads to the end. The first probe showed only `S` past the data; a second, below, settles `S` short of it.
 - It needs at least the `s` x `v` x bytes per pixel the keys declare and ignores the excess, from a file and inline.
 - An offset past the end, and too few bytes from a file or object, answer EBADF; too few inline answer ENODATA.
 - It removes a `t=t` file and unlinks a `t=s` object even when the read fails, and leaves a `t=f` file.
@@ -71,3 +71,33 @@ A second black-box probe in kitty 0.49.2, at the request of the code review of a
 | `i` with `I` | `EINVAL:Must not specify both image id and image number` | `EINVAL:...` | no reply |
 
 kitty sends no reply at all under `q=2`, OK or error, and under `q=1` drops only OK. The spec's control-data table says "Set it to 1 to suppress OK responses and to 2 to suppress failure responses"; its Unicode placeholder section relies on `q=2` leaving "no responses from the terminal", which is what kitty does.
+
+## `S` short of the data, and icat's default mode (added 2026-10-24)
+
+A third round of black-box probes, kept in `session-artifacts-2026-10-24/build-4b/kprobe/round3/` beside the repository (scripts, the replies as JSON, a screenshot, the pty captures, a README), settles two points the first probe left half evidenced.
+
+**`S` below the data, in kitty 0.49.2.** Each medium (`t=f`, `t=t`, `t=s`) held 47 distinct bytes (byte i being (37 i + 11) mod 256), placed as `f=24` at 1x1 and scaled to 6x2 cells, the placed colour read back from a screenshot of the window:
+
+| Case | Reply, on each medium | Colour placed |
+|---|---|---|
+| `S=3`, a 1x1 needing 3 | OK | bytes 0 to 2 (11, 48, 85) |
+| `S=2`, a 1x1 needing 3 | `EBADF:Failed to read image file` | |
+| `O=10,S=3` | OK | bytes 10 to 12 (125, 162, 199) |
+| `O=10`, no `S` | OK | bytes 10 to 12 |
+| `S=3`, a 2x1 needing 6 | `EBADF:Failed to read image file` | |
+
+So kitty reads from `O` to the lesser of `O` + `S` and the end, takes the bytes the image needs from the start of that read, and answers EBADF when the read holds fewer, the same on all three media. The rule this record matches is now evidenced in full.
+
+**kitten icat's default mode,** run on a pty whose stand-in terminal answered icat's three detection queries as told:
+
+| Detection answers | 8x8 PNG of 75 bytes | 640x360 PNG of 692552 bytes |
+|---|---|---|
+| all OK | `a=T,q=2,f=100,t=f,...` naming the file: 388 bytes on the pty in all | the same by reference: 390 bytes |
+| `t=t` and `t=s` refused | `a=T,q=2,f=100,...` sent inline: 429 bytes | inline: 923851 bytes in 11 chunks |
+
+A terminal that answers icat's detection, whose queries carry an `S` longer than their 3 bytes, gets local images by file reference; one that refuses them, as an exact-`S` terminal does, gets every image as inline base64, about 1.33 times its size on the pty.
+
+**icat's chunk size.** icat's inline chunks carry 131072 bytes of base64, past the spec's "chunked up into chunks no larger than 4096 bytes". libtsm decodes chunks as they stream and sets no chunk-size limit, so it takes them; this is client evidence, not a rule.
+
+**`q` confirmed.** The same round found `q=1` dropping only OK (the failure still answered `ENODATA:Insufficient image data: 2 < 3`) and `q=2` dropping both, as the `q` section above records.
+

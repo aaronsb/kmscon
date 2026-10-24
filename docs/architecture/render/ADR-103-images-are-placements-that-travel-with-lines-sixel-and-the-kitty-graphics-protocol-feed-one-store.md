@@ -216,6 +216,10 @@ considered:
     said: "Separate login run: vt-demo shows the inline pages, and each file-media page prints the refusal with a note explaining why; to see file media work, the operator runs fork/demo/demo.sh kitty-files from a VT logged into normally (installed kmscon); changing vt-demo to a real login is filed as an issue"
     via: Claude Code session, 2026-10-24, AskUserQuestion on how to see file-based kitty images on the VT given the refuse-before-login rule; the operator picked the recommended option
     paraphrase: true
+  - operator: aaronsb
+    said: "Install over system kmscon: pacman -U the built package over Arch's kmscon and kmscon-terminfo, log in on a normal kmscon VT, run demo.sh kitty-files, then reinstall Arch's package to undo"
+    via: Claude Code session, 2026-10-24, AskUserQuestion after a harness login mode was found to need kmscon started outside the desktop session as a transient systemd unit; the operator picked this over make vt-login
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"

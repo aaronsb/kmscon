@@ -67,7 +67,7 @@ A fourth round of black-box probes in kitty 0.49.2, at the request of the code r
 
 A fifth round (`round5/`), at the request of the re-check of aaronsb/kmscon#164, sent `a=q` with `I=52` and no `i`, and with `i=51` as the control, on `t=t` (a file under `/tmp` named `tty-graphics-protocol-*`) and on `t=s` (an object in `/dev/shm`), each followed by DA1. With `I` alone kitty sent no reply, logged "Query graphics command without image id", and left both the file and the object in place; with `i` it answered `i=51;OK` and removed both. kitty refuses the command before it reads the medium.
 
-A sixth round (`round6/`), for aaronsb/libtsm#51's build, repeated round 5 with an `a=q` carrying neither `i` nor `I`: no reply, the same log line, and both media left in place. kitty refuses any `a=q` without `i` before it reads the medium.
+A sixth round (`round6/`), for aaronsb/libtsm#51's build, repeated round 5 with an `a=q` carrying neither `i` nor `I`: no reply, the same log line, and both media left in place. kitty refuses any `a=q` without `i` before it reads the medium. A second run of it (`probe6b_in_kitty.py`, round 4's harness with direct `t=d` commands) found no reply under `q` absent, 0, 1 and 2, for data that loads and for too few bytes, where the control with `i` answered `ENODATA` except under `q=2`.
 
 | Command | No `q`, or `q=0` | `q=1` | `q=2` |
 |---|---|---|---|
@@ -75,7 +75,7 @@ A sixth round (`round6/`), for aaronsb/libtsm#51's build, repeated round 5 with 
 | `a=q` with `i`, 2 bytes (too few) | `ENODATA:Insufficient image data: 2 < 3` | the same | no reply |
 | `a=q` with `i` and `I` | `EINVAL:Must not specify both image id and image number`, answered as `i=<i>,I=<I>` | the same | no reply |
 | `a=q` with `I` and no `i` | no reply; kitty logs "Query graphics command without image id"; a `t=t` file or `t=s` object is left in place (round 5) | no reply | no reply |
-| `a=q` with neither `i` nor `I` | no reply; the same log line; a `t=t` file or `t=s` object is left in place (round 6, without `q`) | not probed | not probed |
+| `a=q` with neither `i` nor `I` | no reply; the same log line; a `t=t` file or `t=s` object is left in place (round 6) | no reply, even with too few bytes (round 6b) | no reply (round 6b) |
 | `a=t` with `i` and `I` | as `a=q` with `i` and `I` | the same | no reply |
 
 kitty sends no reply at all under `q=2`, OK or error, and under `q=1` drops only OK, on `a=q` as on `a=t` (round 3, below, has the `a=t` pair that loads and that is too short). An `a=q` without `i` is answered by nothing, whatever `q` says. The spec's prose section "Suppressing responses from the terminal" says "Set it to 1 to suppress OK responses and to 2 to suppress failure responses"; the control-data table's row for `q` reads only "Suppress responses from the terminal to this graphics command."; and its Unicode placeholder section relies on `q=2` leaving "no responses from the terminal", which is what kitty does.

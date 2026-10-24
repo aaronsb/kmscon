@@ -121,6 +121,18 @@ considered:
   - operator: aaronsb
     said: "is a claim not backed by evidence"
     via: "Claude Code session, 2026-10-24, on the client probe results, relayed by the team lead: the operator's correction of their own suspicion, in the entry above, that the clients were written against an older spec; the principle stands without it"
+  - operator: aaronsb
+    said: "Question 1, the copies a load holds outside the budget: (a), they stay outside the budget, as bbulk's working memory does"
+    via: "Claude Code session, 2026-10-24, answering PR #155's open questions; the operator picked the recommended option in a structured question, relayed by the team lead"
+    paraphrase: true
+  - operator: aaronsb
+    said: "Question 2, the build option's name: (a), sd_login, following meson.options"
+    via: "Claude Code session, 2026-10-24, answering PR #155's open questions; the operator picked the recommended option in a structured question, relayed by the team lead"
+    paraphrase: true
+  - operator: aaronsb
+    said: "Question 3, images past the budget: (a), the spec's storage quota rule: evict unplaced images, then images placed only in scrollback, then kitty images placed on screen, least recently used first; on-screen sixel keeps the never-evict rule; covered-placement removal is not adopted and can be proposed later only on 4d evidence"
+    via: "Claude Code session, 2026-10-24, answering PR #155's open questions; the operator picked the recommended option in a structured question, relayed by the team lead"
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -136,7 +148,7 @@ observable:
 ## Summary
 
 - **Decided:** Steps 3 and 4 of ADR-101, made concrete.
-  - **Store and budget:** one image store per screen buffer. Every store and the renderer's scaled pictures draw on one budget per kmscon process, `image-storage-limit`. By default it is four frames of the process's displays in ARGB, at least 16 MiB and at most 192 MiB: 16 MiB at 1024x768 and 1366x768, 31.6 MiB at 1920x1080, 192 MiB at 7680x2160. Over budget, scaled pictures not on screen go first, then images with no placement, then images placed only in scrollback. An image placed on the screen is never evicted; a new image that still does not fit is refused.
+  - **Store and budget:** one image store per screen buffer. Every store and the renderer's scaled pictures draw on one budget per kmscon process, `image-storage-limit`. By default it is four frames of the process's displays in ARGB, at least 16 MiB and at most 192 MiB: 16 MiB at 1024x768 and 1366x768, 31.6 MiB at 1920x1080, 192 MiB at 7680x2160. Over budget, scaled pictures not on screen go first, then images with no placement, then images placed only in scrollback, then kitty images placed on the screen, least recently used first, as the kitty spec's storage quota rule asks. A sixel placed on the screen is never evicted; a new image that still does not fit is refused. (Changed 2026-10-24 from "an image placed on the screen is never evicted"; see the Notes of that date.)
   - **Placements:** each is anchored to the line holding its top row, so it travels into scrollback and back with the text. A sixel behaves as cell content: text written or erased over it removes that part, as foot does and as terminals that keep image tiles in cells behave. A kitty placement follows the kitty spec: of the erase commands only ED 2 touches it.
   - **Parsing:** sixel and kitty payloads are decoded as they stream in, never buffered whole.
   - **Files:** all four kitty media are supported. Opening files and shared memory, and decoding PNG and zlib, happen in a per-session helper process running as the session's user, never as the foreground process, as a desktop terminal reads as its desktop user. It follows the kitty spec's file rules and Ghostty's checks. kmscon, which runs as root, decodes only sixel and base64 itself.
@@ -189,8 +201,9 @@ Upstream's sixel request (kmscon/kmscon#138) carries a proposal to route sixel D
 - When a reservation would pass the budget, kmscon frees, in order, across every screen it runs:
   1. its own scaled pictures and textures that the current frame does not draw;
   2. images with no placement, transient ones first, least recently used first;
-  3. images whose placements all sit on lines in scrollback, least recently used first, together with those placements.
-- An image with a placement on a screen's own lines is never evicted. If the new image still does not fit, it is refused: kitty replies ENOSPC, and a sixel is dropped.
+  3. images whose placements all sit on lines in scrollback, least recently used first, together with those placements;
+  4. kitty images with a placement on a screen's own lines, least recently used first, together with all their placements.
+- A sixel image with a placement on a screen's own lines is never evicted. If the new image still does not fit, it is refused: kitty replies ENOSPC, and a sixel is dropped. (Step 4 and the sixel-only exemption changed on 2026-10-24, when this list ended at step 3 and no image on a screen's own lines was evicted; see the Notes of that date.)
 - Sixel images are anonymous. No kitty command addresses them, and one is freed when its last placement goes. A kitty image without placements stays until it is deleted or evicted, so a lowercase delete keeps its data, as the spec says.
 - Transmitting an id again replaces the image and deletes all its placements (spec).
 - With `image-storage-limit=0`, both protocols are parsed only to find where they end, DA1 omits attribute 4, and kitty commands get no reply, so the spec's detection (a query followed by DA1) reports no support.
@@ -754,7 +767,7 @@ What kmscon does where a surveyed client departs from the spec, and the clients 
 - **Unlinking.** The spec's unlink after reading stands for every `t=s` object. mpv reuses one name for every frame, so even with a spec name its frames would race that unlink; that is mpv's to fix. kitten icat, the only other surveyed client using `t=s`, names its objects by the spec and leaves them to the terminal, as the spec has it.
 - **mpv's `m=1` on whole `t=s` commands** is harmless under the `m` rule above.
 - **icat's `a=a` commands** carry `I` and no `q`, so until step 5 icat receives an EINVAL reply for each, as the spec's reply rules require.
-- **Anonymous frames piled at one cell** (mpv, chafa, viu) send nothing the spec forbids; what happens past the budget is open question 3.
+- **Anonymous frames piled at one cell** (mpv, chafa, viu) send nothing the spec forbids; past the budget, the spec's storage quota rule evicts their oldest frames (Operator answers to the open questions, below).
 
 ### Spec version annotations
 
@@ -768,20 +781,10 @@ What kmscon does where a surveyed client departs from the spec, and the clients 
 - **Compatibility measurements,** reported beside conformance and gating nothing: mpv direct, and mpv over shared memory, expected to show nothing; timg (PNG frames) and ncplayer (zlib frames) on the 30 fps clip at 1920x1080 and 7680x2160; chafa and viu on a GIF. Each records whether the client displays and its presented rate beside its own. timg and ncplayer put the helper on every frame, so their rates measure the helper's round trip at video rate, which no conformance run does. This replaces A8.
 - **icat on a GIF** shows its first frame only until step 5: its first frame is an `a=T`, and the rest are `a=a` and `a=f`, answered EINVAL, with each `a=f` object discarded. Its GIFs join step 5's scenarios.
 
-### Open questions
+### Operator answers to the open questions
 
-Three choices this section leaves to the operator. 4a and 4b build the recommended option of each; another answer changes only the rule its question names. Question 3 asks whether the spec's storage quota rule replaces this record's own; ADR-105 and ADR-106 say which clients it affects.
+The operator chose the recommended option of each, recorded as considered entries above:
 
-1. **The copies a load holds outside the budget.** While a file or PNG request is out, kmscon holds the inline data it sends the helper and the decoded reply it maps, each at most the budget, one request per session (Memory, above). On the small tier 3 machine that is up to 32 MiB beyond its 16 MiB budget, for the moment one image loads.
-   - (a) *They stay outside the budget,* as bbulk's working memory does. The budget bounds what is kept; a load briefly needs more.
-   - (b) *They count against it.* The budget becomes a hard ceiling on image memory, and any file or PNG image larger than half the budget is refused, since its copy and its stored image must fit at once.
-   - *Recommendation: (a).* The copies last one request, one per session, and a ceiling that refuses half-budget images costs more on small machines than the moment's overshoot.
-2. **The build option's name.** The brief named it `sd-login`; this section writes `sd_login`.
-   - (a) `sd_login`, following `meson.options`, where every option is snake case (`video_drm2d`, `font_freetype`).
-   - (b) `sd-login`, as the brief named it.
-   - *Recommendation: (a).*
-3. **Images past the budget: the spec's storage quota rule, or this record's.** The spec's storage quota section says: "When adding a new image, if the total size exceeds the quota, the terminal emulator should delete older images to make space for the new one." Its delete section adds that "when the terminal is running out of quota space for new images, existing images without placements will be preferentially deleted". The spec makes room for the new image by deleting older ones, unplaced ones first, and exempts no image. This record's rule, "an image placed on the screen is never evicted; a new image that still does not fit is refused", is the fork's own and runs the other way: past the budget, the new image loses. The clients it affects (ADR-105, ADR-106): mpv's video, and chafa's and viu's GIFs, place every frame as a new anonymous image at one cell with no delete, a use the spec allows. Under this record's rule they freeze once the budget holds them, about five 3840x2160 frames, or about 70 320x180 GIF frames in the small machine's 16 MiB, and every later frame is refused (silently, under `q=2`). timg and ncplayer replace or delete their frames and are unaffected either way.
-   - (a) *The spec's rule.* Past the budget, kmscon evicts in this record's order (scaled pictures, unplaced images, images placed only in scrollback), then kitty images placed on a screen's own lines, least recently used first, until the new image fits; ENOSPC remains only for an image larger than everything that can be freed. Ghostty's order is one reading of the spec. Sixel pictures on screen keep this record's rule: the quota text is the kitty protocol's, and a sixel is cell content. What a reader sees: a pile of frames keeps playing, its oldest frames, under the newer ones, evicted first. A pile holds the whole budget while it plays, so scrollback pictures are evicted before any frame on screen, and show blank cells when scrolled back to. A gallery larger than the budget loses its oldest picture on screen to blank cells, where today its newest is refused.
-   - (b) *This record's rule, as it stands.* Nothing on a screen's lines is evicted, and the new image is refused. Piles of frames freeze. This departs from the spec's "should".
-   - (c) *(a), plus covered-placement removal.* In addition, a kitty placement wholly covered by a newer opaque placement drawn above it is removed when the newer one is placed, and its image freed at once if it is anonymous. This is outside the spec, and in one case against it: the spec keeps a placement until a delete names it, so a client that deletes the top picture of a stack expects the lower one to show again, and under (c) finds nothing. What it gains is memory: opaque video holds one or two frames instead of the whole budget, and evicts no scrollback picture. It does nothing for a GIF with transparent pixels.
-   - *Recommendation: (a).* It is the spec's rule, and every surveyed client keeps playing under it. (c)'s gain is memory the operator already allotted as the budget (four frames of the displays, at most 192 MiB), and nothing shows it is needed; its cost is a rule outside the spec that breaks the spec's stacking in one case. If 4d's measurements show scrollback pictures lost to video in practice, (c) can be proposed then, on that evidence. This changes the store rule in this record's Summary, which is why it is asked rather than taken from the principle alone. 4a builds it with tier 1 cases for the order: unplaced, then scrollback, then placed kitty images least recently used first, and a placed sixel never.
+1. **The copies a load holds stay outside the budget,** as bbulk's working memory does (Memory, above). The budget bounds what is kept; a load briefly needs up to two more copies, each at most the budget, one request per session.
+2. **The build option is `sd_login`,** snake case as every option in `meson.options` is.
+3. **Images past the budget follow the spec's storage quota rule.** The spec says that when a new image passes the quota, "the terminal emulator should delete older images to make space for the new one". kmscon evicts, across every screen it runs: its scaled pictures the current frame does not draw, then images with no placement, then images placed only in scrollback, then kitty images placed on a screen's own lines, least recently used first, with their placements. A sixel placed on a screen's own lines is never evicted, since the quota text is the kitty protocol's and a sixel is cell content. ENOSPC remains for an image larger than everything that can be freed. The Summary's store and budget bullet and the Image store section's eviction list now say this; they said no image on a screen's own lines was evicted. Covered-placement removal (dropping a kitty placement wholly covered by a newer opaque one) is not adopted: it is outside the spec, and it can be proposed later only on 4d's evidence that video in practice pushes scrollback pictures out. The clients this serves (ADR-105, ADR-106): mpv's video and chafa's and viu's GIFs, which place every frame as a new anonymous image at one cell, keep playing past the budget instead of freezing. bbulk's scaled copies keep the rule of the 2026-10-23 Notes (Q1): the quota rule applies to a new image's reservation in libtsm's stores. 4a builds the order with tier 1 cases: unplaced, then scrollback, then placed kitty images least recently used first, and a placed sixel never.

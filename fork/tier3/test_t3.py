@@ -493,8 +493,13 @@ class BenchTest(unittest.TestCase):
         # only the second from 100.6 to 101.6 lies wholly inside the window
         self.assertEqual((got["intervals_inside"], got["flips_inside"]), (1, 60))
         self.assertEqual(got["skipped_per_s"], 200.0)      # 400 over the 2 s window
+        # A window with no skipped redraws: a rate of zero.
+        quiet = t3_bench.timer_lines("\n".join(
+            timer_line(t, 0, 0) for t in (101.0, 102.0, 103.0, 104.0)))
+        got = t3_bench.summarize(quiet, 20000, 100.0, 102.0)
+        self.assertEqual((got["skipped"], got["skipped_per_s"]), (0, 0.0))
 
-    FLOOD = "T3-BENCH flood lines=20 start=100.00 end=104.00"
+    FLOOD ="T3-BENCH flood lines=20 start=100.00 end=104.00"
 
     def flood(self, *lines):
         return t3_bench.measure("\n".join(lines), self.FLOOD, self.CONF)

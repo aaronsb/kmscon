@@ -38,11 +38,14 @@
  * A libtsm reservation that would pass the limit frees, in this order, across
  * every screen and renderer: the renderers' pictures that their last frame did
  * not draw; then libtsm's images, by tsm_screen_image_victim's rank (no
- * placement and transient, no placement, placed only in scrollback) and least
- * recently used first. An image placed on a screen's own lines is never
- * evicted; a reservation that still does not fit is refused. A renderer's own
- * picture, made within its frame, frees in the same order but spares every
- * image its frame draws, and frees nothing unless that makes it fit
+ * placement and transient, no placement, placed only in scrollback, and, with
+ * a libtsm that has kitty graphics, kitty images placed on a screen's own
+ * lines) and within a rank by last_use: least recently used first, and oldest
+ * transmission first for the kitty images on a screen. A sixel placed on a
+ * screen's own lines is never evicted; a reservation that still does not fit
+ * is refused. A renderer's own picture, made within its frame, frees in the
+ * same order but spares every image its frame draws and every image placed on
+ * a screen's own lines, and frees nothing unless that makes it fit
  * (image_budget_picture_room). One that does not fit is left out until the
  * room in the budget grows (image_budget_gen).
  */
@@ -106,8 +109,9 @@ typedef bool (*image_budget_drawn_cb)(struct tsm_screen *con, uint64_t key, void
  * own pictures gave what they can: the renderers' pictures their last frame
  * did not draw, then libtsm's images in ADR-103's order, each screen's as far
  * as the first that @drawn says the frame draws. An image placed on a screen's
- * own lines is never evicted. Nothing is freed unless what can be makes the
- * picture fit. Returns 0, or -ENOSPC when it does not fit.
+ * own lines is never evicted for a picture, kitty or sixel. Nothing is freed
+ * unless what can be makes the picture fit. Returns 0, or -ENOSPC when it does
+ * not fit.
  */
 int image_budget_picture_room(size_t bytes, image_budget_drawn_cb drawn, void *data);
 

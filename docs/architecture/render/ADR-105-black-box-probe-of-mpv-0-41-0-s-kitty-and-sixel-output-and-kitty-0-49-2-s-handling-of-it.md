@@ -13,7 +13,7 @@ related: []
 
 ## Scope and method
 
-What mpv sends for `--vo=kitty` and `--vo=sixel`, and what kitty does with it, recorded on 2026-10-24 for ADR-103's step 4. Both programs were run as black boxes; kitty's source was not opened (ADR-300). The spec cited is the kitty graphics protocol page, https://sw.kovidgoyal.net/kitty/graphics-protocol/, as read that day.
+What mpv sends for `--vo=kitty` and `--vo=sixel`, and what kitty does with it, recorded on 2026-10-24 for ADR-103's step 4. Both programs were run as black boxes; kitty's source was not opened (ADR-300). These are observations of clients, for compatibility: ADR-103's rules rest on the spec, and these records say which clients a rule affects (ADR-103, Notes of 2026-10-24). The spec cited is the kitty graphics protocol page, https://sw.kovidgoyal.net/kitty/graphics-protocol/, as read that day.
 
 - **mpv 0.41.0** played `av://lavfi:testsrc2=size=640x360:rate=30:duration=5` with `--no-config --really-quiet --no-input-terminal --ao=null --no-audio`, the flags of the step 3e acceptance runs, under `--vo=sixel`, `--vo=kitty`, and `--vo=kitty --vo-kitty-use-shm=yes`.
 - **The harness** gave mpv a pty sized with `TIOCSWINSZ` to 192x56 cells at 1920x1080 pixels and to 404x56 cells at 7680x2160, parsed every APC and DCS it wrote, and answered DA1, DSR and XTWINOPS had mpv asked; it asked nothing. A second sink only counted bytes, for the throughput ceiling. A variant unlinked each `t=s` object after reading it, as a spec-following terminal does. strace recorded mpv's calls on `/dev/shm`.

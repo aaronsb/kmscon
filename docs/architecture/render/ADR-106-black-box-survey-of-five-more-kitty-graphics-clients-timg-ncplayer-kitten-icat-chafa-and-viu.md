@@ -13,7 +13,7 @@ related: []
 
 ## Scope and method
 
-What five more kitty graphics clients send, recorded on 2026-10-24 beside ADR-105's probe of mpv, so ADR-103's rules for step 4 rest on more than one client. Every client and kitty were run as black boxes; neither kitty's nor any client's source was read (ADR-300).
+What five more kitty graphics clients send, recorded on 2026-10-24 beside ADR-105's probe of mpv, so ADR-103's rules for step 4 rest on more than one client. Every client and kitty were run as black boxes; neither kitty's nor any client's source was read (ADR-300). These are observations of clients, for compatibility: ADR-103's rules rest on the spec, and these records say which clients a rule affects (ADR-103, Notes of 2026-10-24).
 
 - **Clients:** timg 1.6.3 (`timg -pk`), ncplayer 3.0.17 from notcurses (`ncplayer -b pixel -q -t0`), kitten icat from kitty 0.49.2 (default, and `--transfer-mode=file`, `memory` and `stream`), chafa 1.18.3 (`chafa -f kitty`), and viu 1.6.1. Each showed a still PNG (640x360) and, where it plays them, a 20-frame GIF (320x180, 10 frames per second, no transparent colour) or the 640x360 30 fps clip ADR-105 used.
 - **The harness** acted as a kitty-like terminal on a pty sized to 192x56 cells at 1920x1080 pixels and 404x56 cells at 7680x2160. It answered DA1, DA2, DSR, XTVERSION, XTWINOPS and kitty queries (`a=q`) as kitty does, and read `t=f`, `t=t` and `t=s` media, unlinking `t=t` and `t=s` objects after reading them; runs with no replies, and with no unlinking, varied each. It decodes nothing, so its frame rates are bounds set by the client and the pty.

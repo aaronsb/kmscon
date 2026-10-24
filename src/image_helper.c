@@ -43,6 +43,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/magic.h>
 #include <linux/openat2.h>
 #include <png.h>
 #include <stdarg.h>
@@ -54,6 +55,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <zlib.h>
@@ -142,12 +144,38 @@ static bool fd_path(int fd, char *buf, size_t size)
 }
 
 /*
+ * @fd lies on a kernel pseudo-filesystem, wherever it is mounted: procfs or
+ * sysfs mounted outside /proc and /sys (a chroot's /mnt/proc) escapes the
+ * check by path, and reading such files can have effects or leak state
+ */
+static bool pseudo_fs(int fd)
+{
+	static const unsigned long magics[] = {
+		PROC_SUPER_MAGIC,    SYSFS_MAGIC,	    DEBUGFS_MAGIC,	 TRACEFS_MAGIC,
+		SECURITYFS_MAGIC,    CGROUP_SUPER_MAGIC,    CGROUP2_SUPER_MAGIC, DEVPTS_SUPER_MAGIC,
+		CONFIGFS_MAGIC,	     BPF_FS_MAGIC,	    PSTOREFS_MAGIC,	 EFIVARFS_MAGIC,
+		SELINUX_MAGIC,	     SMACK_MAGIC,	    BINFMTFS_MAGIC,	 NSFS_MAGIC,
+		ANON_INODE_FS_MAGIC, USBDEVICE_SUPER_MAGIC,
+	};
+	struct statfs fs;
+	size_t i;
+
+	if (fstatfs(fd, &fs))
+		return true;
+	for (i = 0; i < sizeof(magics) / sizeof(magics[0]); i++)
+		if ((unsigned long)fs.f_type == magics[i])
+			return true;
+	return false;
+}
+
+/*
  * Opens @path, under @dirfd and resolved as @resolve says, read-only into the
  * returned descriptor, or returns -errno, without opening anything but a
  * regular file: an O_PATH descriptor comes first, which opens nothing, and
- * only once fstat shows a regular file is the file itself opened through
- * /proc/self/fd. A FIFO or a device is never opened, so a writer waiting on a
- * FIFO is not let go and a device sees no open. @st describes the file opened.
+ * only once fstat shows a regular file, on no kernel pseudo-filesystem, is
+ * the file itself opened through /proc/self/fd. A FIFO or a device is never
+ * opened, so a writer waiting on a FIFO is not let go and a device sees no
+ * open. @st describes the file opened.
  */
 static int open_regular(int dirfd, const char *path, uint64_t resolve, struct stat *st)
 {
@@ -162,7 +190,7 @@ static int open_regular(int dirfd, const char *path, uint64_t resolve, struct st
 	pfd = syscall(SYS_openat2, dirfd, path, &how, sizeof(how));
 	if (pfd < 0)
 		return -errno;
-	if (fstat(pfd, st) || !S_ISREG(st->st_mode)) {
+	if (fstat(pfd, st) || !S_ISREG(st->st_mode) || pseudo_fs(pfd)) {
 		close(pfd);
 		return -EINVAL;
 	}

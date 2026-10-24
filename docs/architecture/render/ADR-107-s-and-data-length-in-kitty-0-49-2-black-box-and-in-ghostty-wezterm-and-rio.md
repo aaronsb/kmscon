@@ -59,3 +59,15 @@ Read at the commits above for each point the spec leaves open. Citations are to 
 - All three treat `S` as exact; none matches kitty on every point.
 - Ghostty and Rio also accept a shared memory name without a leading `/`, which the spec forbids. WezTerm does not require `tty-graphics-protocol` in a temporary file's path, and adds `/var/tmp` to the temporary directories.
 - kitten icat's detection queries hold 3 bytes with `S` set to the length of the name (47 for `t=t`, 19 for `t=s`), so under an exact `S` they fail. Its real transfers carry a correct `S`, and in memory mode it sends no queries.
+
+## `q` in kitty 0.49.2 (added 2026-10-24)
+
+A second black-box probe in kitty 0.49.2, at the request of the code review of aaronsb/kmscon#164, sent three `a=q` commands under `q` absent, `q=1` and `q=2`, each followed by DA1: one that loads (`f=24`, `s=1`, `v=1`, 3 bytes), one with too few bytes (2), and one with both `i` and `I`.
+
+| Command | No `q` | `q=1` | `q=2` |
+|---|---|---|---|
+| loads | `OK` | no reply | no reply |
+| too few bytes | `ENODATA:Insufficient image data: 2 < 3` | `ENODATA:...` | no reply |
+| `i` with `I` | `EINVAL:Must not specify both image id and image number` | `EINVAL:...` | no reply |
+
+kitty sends no reply at all under `q=2`, OK or error, and under `q=1` drops only OK. The spec's control-data table says "Set it to 1 to suppress OK responses and to 2 to suppress failure responses"; its Unicode placeholder section relies on `q=2` leaving "no responses from the terminal", which is what kitty does.

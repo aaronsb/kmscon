@@ -9,7 +9,8 @@
  *
  * - Each medium: inline PNG, inline zlib, a file, a temporary file (deleted)
  *   and shared memory (unlinked) are stored and placed with their pixels,
- *   and the client is answered OK.
+ *   and the client is answered OK; a file read from an offset, a length
+ *   given, as well.
  * - A refused t=t command is still discarded: the file is deleted, the client
  *   gets libtsm's refusal, and the helper keeps running.
  * - Before login (#167): every file medium, a discard among them, is answered
@@ -331,17 +332,26 @@ static size_t make_png(uint8_t *buf)
 
 static char tmpdir[] = "/tmp/kmscon-terminal-image-XXXXXX";
 
-/* a file under the test's directory holding px; its path */
-static const char *file_with_px(const char *name)
+/* a file under the test's directory holding px, @pad bytes of 0xee on each side; its path */
+static const char *file_with_px_at(const char *name, size_t pad)
 {
 	static char path[256];
+	uint8_t buf[64];
 	int fd;
 
+	assert(2 * pad + sizeof(px) <= sizeof(buf));
+	memset(buf, 0xee, sizeof(buf));
+	memcpy(buf + pad, px, sizeof(px));
 	snprintf(path, sizeof(path), "%s/%s", tmpdir, name);
 	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-	assert(fd >= 0 && write(fd, px, sizeof(px)) == sizeof(px));
+	assert(fd >= 0 && write(fd, buf, 2 * pad + sizeof(px)) == (ssize_t)(2 * pad + sizeof(px)));
 	close(fd);
 	return path;
+}
+
+static const char *file_with_px(const char *name)
+{
+	return file_with_px_at(name, 0);
 }
 
 static bool exists(const char *path)
@@ -387,6 +397,13 @@ static void test_media(void)
 	placed_px();
 	assert(exists(path) && id.file);
 
+	/* a file read from O for S bytes: px between padding */
+	path = file_with_px_at("image-at.rgba", 3);
+	kitty("a=T,t=f,f=32,s=2,v=1,O=3,S=8,i=30,z=6,C=1", b64(path, strlen(path)));
+	run_until(have_answer);
+	answered(30, "OK");
+	placed_px();
+
 	/* a temporary file, deleted once read */
 	path = file_with_px("tty-graphics-protocol-media");
 	kitty("a=T,t=t,f=32,s=2,v=1,i=4,z=4,C=1", b64(path, strlen(path)));
@@ -408,8 +425,8 @@ static void test_media(void)
 	assert(fd < 0 && errno == ENOENT);
 
 	/* one helper served them all, its user found again for each */
-	assert(tsm_screen_test_image_count(con) == 5 && id.calls == 5);
-	assert(image_host_pid(ti.host) == helper && replied == 5);
+	assert(tsm_screen_test_image_count(con) == 6 && id.calls == 6);
+	assert(image_host_pid(ti.host) == helper && replied == 6);
 	run_until(idle);
 	teardown();
 }

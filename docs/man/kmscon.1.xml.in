@@ -956,29 +956,120 @@
           command names, and its PNG and zlib images, are read and decoded by
           <command>kmscon-image-helper</command>, a separate process KMSCON
           starts per terminal session, so that KMSCON, which runs as root,
-          reads and decodes none of them itself. It runs as the
-          session's user: with sd-login, the user of the terminal's logind
-          session; without it, or with no logind running, the owner of the
-          session's pty.</para>
+          reads and decodes none of them itself. Why the rules below are as
+          they are is in the fork's docs/image-helper.md:
+          <ulink url="https://github.com/aaronsb/kmscon/blob/main/docs/image-helper.md"/></para>
 
-    <para>Before login (logind running and the terminal's child in no
-          session), and whenever the pty's owner is root on a system without
-          logind, files, temporary files and shared memory are refused.
-          Inline PNG and zlib images still decode, as the system user
-          <emphasis>kmscon-image</emphasis>, which KMSCON creates through a
-          sysusers.d entry, or as <emphasis>nobody</emphasis> where that user
-          does not exist; with neither, they are refused too. A session
-          started with a command that does not log in, on a system running
-          logind, is never in a logind session, so it reads no file images
-          at all. The fork's docs/image-helper.md explains the rules and the
-          dedicated user.</para>
+    <refsect2>
+      <title>Who the helper runs as</title>
+      <variablelist>
+        <varlistentry>
+          <term>Logged in</term>
+          <listitem>
+            <para>The session's user, never the program in the foreground,
+                  so <command>sudo</command> in a session reads no file as
+                  root. With sd-login and logind running, the user of the
+                  terminal's own logind session, of class
+                  <literal>user</literal>, <literal>user-early</literal>,
+                  <literal>user-light</literal> or
+                  <literal>user-early-light</literal>. Built without
+                  sd-login, or with no logind running, the owner of the
+                  session's pty, as
+                  <citerefentry><refentrytitle>login</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+                  sets it, unless that owner is root.</para>
+          </listitem>
+        </varlistentry>
+        <varlistentry>
+          <term>Before login</term>
+          <listitem>
+            <para>Files, temporary files and shared memory are refused with
+                  <literal>EBADF</literal>, and no helper starts. Inline PNG
+                  and zlib images still decode, as the system user
+                  <literal>kmscon-image</literal>, which has no login shell,
+                  home <filename>/</filename> and no files; as
+                  <literal>nobody</literal> when <literal>kmscon-image</literal>
+                  does not exist; and when neither exists, or either resolves
+                  to uid 0 or gid 0, they are refused too. The helper never
+                  runs as root by fallback: on a system without logind, a pty
+                  owned by root counts as before login.</para>
+          </listitem>
+        </varlistentry>
+      </variablelist>
+    </refsect2>
+
+    <refsect2>
+      <title>The kmscon-image user</title>
+      <para><filename>@SYSUSERS_DIR@/kmscon-image.conf</filename> declares the
+            user, and
+            <citerefentry><refentrytitle>systemd-sysusers</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+            creates it: <literal>systemd-sysusers.service</literal> at boot,
+            and a package's install hook. To check it:</para>
+      <programlisting>getent passwd kmscon-image</programlisting>
+      <para>On a system without systemd-sysusers, create the same user by
+            hand (use the path of
+            <citerefentry><refentrytitle>nologin</refentrytitle><manvolnum>8</manvolnum></citerefentry>
+            on the system):</para>
+      <programlisting>useradd --system --user-group --home-dir / --no-create-home \
+        --shell /usr/sbin/nologin \
+        --comment "kmscon image helper before login" kmscon-image</programlisting>
+      <para>Removing it with <command>userdel kmscon-image</command> is safe:
+            it owns no files, and KMSCON then uses <literal>nobody</literal>.
+            KMSCON looks the user up once, the first time it needs it, so
+            restart KMSCON (each <literal>kmsconvt@</literal> unit) after
+            creating or removing it.</para>
+    </refsect2>
+
+    <refsect2>
+      <title>The systemd service and login sessions</title>
+      <para><filename>kmsconvt@.service</filename> starts KMSCON on a VT, and
+            KMSCON runs <command>/bin/login -p</command> in each terminal
+            session unless <option>--login</option> names another command.
+            Logging in through <command>login</command> opens a logind
+            session (pam_systemd), and the helper runs as its user. A shell
+            that is not in a logind session of its own, of one of the classes
+            above, counts as before login, so file images are refused there:
+            a session started with a command that does not log in, such as
+            <option>--login=/bin/bash</option>, and a login on a KMSCON
+            started from inside another logind session, which inherits that
+            session instead of opening its own. Without logind, the helper
+            runs as the pty's owner, never root.</para>
+    </refsect2>
+  </refsect1>
+
+  <refsect1>
+    <title>Files</title>
+    <variablelist>
+      <varlistentry>
+        <term><filename>@IMAGE_HELPER@</filename></term>
+        <listitem>
+          <para>The image helper.</para>
+        </listitem>
+      </varlistentry>
+      <varlistentry>
+        <term><filename>@SYSUSERS_DIR@/kmscon-image.conf</filename></term>
+        <listitem>
+          <para>The sysusers.d entry for <literal>kmscon-image</literal>,
+                the helper's user before login.</para>
+        </listitem>
+      </varlistentry>
+      <varlistentry>
+        <term><filename>@UNIT_DIR@/kmsconvt@.service</filename></term>
+        <listitem>
+          <para>The systemd unit that runs KMSCON on a VT in place of
+                <literal>getty@.service</literal>.</para>
+        </listitem>
+      </varlistentry>
+    </variablelist>
   </refsect1>
 
   <refsect1>
     <title>See Also</title>
     <para>
       <citerefentry><refentrytitle>console</refentrytitle><manvolnum>4</manvolnum></citerefentry>,
-      <citerefentry><refentrytitle>Compose</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+      <citerefentry><refentrytitle>Compose</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
+      <citerefentry><refentrytitle>kmscon.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>,
+      <citerefentry><refentrytitle>systemd-sysusers</refentrytitle><manvolnum>8</manvolnum></citerefentry>,
+      <citerefentry><refentrytitle>pam_systemd</refentrytitle><manvolnum>8</manvolnum></citerefentry>
     </para>
   </refsect1>
 </refentry>

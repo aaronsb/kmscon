@@ -212,6 +212,14 @@ considered:
   - operator: aaronsb
     said: "option a"
     via: Claude Code session, 2026-10-24, asked whether a non-root kmscon should start the helper as its own uid when that is the session's user and refuse file media otherwise (option A, recommended), or refuse file media whenever kmscon is not root (option B)
+  - operator: aaronsb
+    said: "Separate login run: vt-demo shows the inline pages, and each file-media page prints the refusal with a note explaining why; to see file media work, the operator runs fork/demo/demo.sh kitty-files from a VT logged into normally (installed kmscon); changing vt-demo to a real login is filed as an issue"
+    via: Claude Code session, 2026-10-24, AskUserQuestion on how to see file-based kitty images on the VT given the refuse-before-login rule; the operator picked the recommended option
+    paraphrase: true
+  - operator: aaronsb
+    said: "Install over system kmscon: pacman -U the built package over Arch's kmscon and kmscon-terminfo, log in on a normal kmscon VT, run demo.sh kitty-files, then reinstall Arch's package to undo"
+    via: "Claude Code session, 2026-10-24, AskUserQuestion after a harness login mode was found to need kmscon started outside the desktop session as a transient systemd unit; the operator picked this over make vt-login, then added: \"I think our package is actually reliable enough to try\""
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -300,7 +308,7 @@ Upstream's sixel request (kmscon/kmscon#138) carries a proposal to route sixel D
   - a z-index and its kind, sixel or kitty;
   - the cell size in pixels it was made with, the unit of its pixel quantities;
   - an age.
-- **Size.** A kitty placement takes `c` and `r` when given. With both, the picture is letterboxed or pillarboxed inside them; with one, the other follows the source's aspect (spec). Without either, and for every sixel, the box is the picture's pixel size divided by the cell size, rounded up.
+- **Size.** A kitty placement takes `c` and `r` when given. With both, the picture is letterboxed or pillarboxed inside them; with one, the other follows the source's aspect (spec). Without either, and for every sixel, the box is the picture's pixel size divided by the cell size, rounded up. (Note 2026-10-24, from round 7 of the black-box probe, ADR-107: kitty 0.49.2 stretches an image to fill both `c` and `r`, against the spec's "When both are specified the image is letterboxed/pillarboxed to prevent distortion". The spec settles the point, so this bullet stands: the spec is the target, and kmscon letterboxes.)
 - **Scale.** The picture draws at its pixel size in the cell size it was made with. When the cell size changes (zoom, or a second display with another font size), the picture scales with its box, so it stays aligned with the text around it.
 - **Cell size.** kmscon tells libtsm the cell size in pixels, the same size it reports through `TIOCSWINSZ`. libtsm uses it for sixel cursor movement, kitty box sizes and XTWINOPS replies. A display with a different font size scales pictures by its own cell size.
 - **Finding placements.** Each line keeps the keys of the placements anchored on it. The frame walks the visible lines, plus as many lines above the top as the tallest placement has rows, so a placement whose top has left the view still draws its lower rows.
@@ -576,7 +584,7 @@ Step 4, the kitty graphics protocol:
 2. **4b, the helper,** built in parallel with 4a against the interface in the Notes of 2026-10-24. `kmscon-image-helper` with its identity, file and shared memory rules, PNG and zlib, and memfd results; the pty's pause and the hook's wiring in kmscon. Unit tests for every rule.
 
 (Changed 2026-10-24: the operator chose to build step 4 with two agents in parallel, relayed as a summary (a paraphrase in the considered entry): build step 4 with two agents in parallel, libtsm's 4a with the host hook and kmscon's helper in 4b, once this interface is fixed. So the host hook and the fixture host move from 4b to 4a. 4a's heading was "4a, libtsm kitty.", and 4b read: "**4b, the host and the helper.** The vte's host hook and the input call that reports what it consumed; `kmscon-image-helper` with its identity, file and shared memory rules, PNG and zlib, and memfd results. Unit tests for every rule, and the fixture host in `tsm-replay`.")
-3. **4c, kmscon.** Tier 2 screens for the lower two bands, text over pictures, and A6's banner over a changing picture.
+3. **4c, kmscon.** The pin moved to 4a's merge; `kitty-graphics` turned on by the rule sixel follows (on while set, `image-storage-limit` not 0 and every display drawing placements); the hook driven end to end through a vte, the pty and the real helper in a kmscon test, the refusal before login among it; tier 2 screens for the lower two bands, text over pictures, and A6's banner over a changing picture, sent as kitty commands through the vte; and the kitty kit's one demo page, the inline media in each band, which development.md asks of a visible change. 4d's demo adds the acceptance pages. (Clarified 2026-10-24, from the 4c build: this said "**4c, kmscon.** Tier 2 screens for the lower two bands, text over pictures, and A6's banner over a changing picture.", leaving the setting, the end-to-end test and the demo page, which the Notes of 2026-10-24 and development.md assign to the step that turns the protocol on, unnamed.)
 4. **4d, acceptance.** Tier 3 with viu and the spec-written client through each medium, the root-file refusal, and the demo; A5 through both media (inline with mpv and the spec-written client, shared memory with the spec-written client and kitten icat), A6 in both bands, and A7. (Changed 2026-10-24 with A5's clients: under the operator's principle that the spec is the target, "a poor player implementation isn't a spec we write against", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep `mpv --vo=kitty` inline as an A5 gate, an option they picked. This said "A5 through both media".)
 5. **4e, gltex** for the lower two bands, with 3f.
 

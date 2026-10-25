@@ -9,6 +9,9 @@ manpages = {
 
 data = configuration_data()
 data.set('CONFIG_DIR', prefix / sysconfdir)
+data.set('IMAGE_HELPER', prefix / moduledir / 'kmscon-image-helper')
+data.set('SYSUSERS_DIR', prefix / sysusersdir)
+data.set('UNIT_DIR', prefix / systemdsystemunitdir)
 
 foreach section, pages : manpages
     foreach page : pages

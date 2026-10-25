@@ -113,3 +113,9 @@ A terminal that answers icat's detection, whose queries carry an `S` longer than
 
 **`q` on `a=t`.** The same round, with direct `a=t` commands, found `q=1` dropping only OK (the failure still answered `ENODATA:Insufficient image data: 2 < 3`) and `q=2` dropping both; round 4, in the `q` section above, found the same for `a=q`. (Changed 2026-10-24: this was headed "`q` confirmed" and said "The same round found ...", without naming the action.)
 
+
+## `c` and `r` with an aspect unlike the image's (added 2026-10-24)
+
+Round 7 (session-artifacts-2026-10-24/build-4c/kprobe/round7, for aaronsb/kmscon#169), kitty 0.49.2 run as a black box under Xvfb at a 10x22 cell: a 100x100 image placed with `c=20,r=4` and with `c=4,r=12`, and a 200x50 image with `c=10,r=10`, each inside a box outlined in text cells. kitty stretched every image to fill its whole box, with no letterbox or pillarbox bars (`round7-kitty.png`).
+
+The spec settles this point, so it is not open: "When both are specified the image is letterboxed/pillarboxed to prevent distortion" (graphics-protocol, "Controlling displayed image layout", read 2026-10-24). kitty 0.49.2 departs from its spec here. ADR-103 keeps letterboxing (Placements, Size), and a client that relies on kitty's stretch draws a smaller, centred picture under kmscon.

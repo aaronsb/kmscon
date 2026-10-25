@@ -129,11 +129,14 @@ int image_budget_add_screen(struct tsm_screen *con);
 void image_budget_remove_screen(struct tsm_screen *con);
 
 /*
- * A terminal's images: its screen in the budget, and sixel on its vte while
- * the configuration asks for it, the limit is not 0, and every display the
- * terminal draws on has a renderer that draws image placements. Otherwise
- * sixel is off, as with no-sixel: DA1 omits attribute 4 and no new picture is
- * stored; pictures stored before stay until cleared or evicted. The limit is
+ * A terminal's images: its screen in the budget, and sixel and the kitty
+ * graphics protocol on its vte, each while the configuration asks for it, the
+ * limit is not 0, and every display the terminal draws on has a renderer that
+ * draws image placements. Otherwise each is off, as with no-sixel or
+ * no-kitty-graphics: for sixel DA1 omits attribute 4, a kitty command gets no
+ * reply, so a client's query finds no support, and no new picture is stored;
+ * pictures stored before stay until cleared or evicted. Turning kitty
+ * graphics off cancels a request the vte has out with the host. The limit is
  * set before terminals are made.
  *
  * The budget holds a reference on the screen from add to remove, so a screen
@@ -143,11 +146,12 @@ struct image_budget_terminal {
 	struct tsm_screen *con;
 	struct tsm_vte *vte;
 	bool sixel;	    /* sixel in the configuration */
+	bool kitty;	    /* kitty-graphics in the configuration */
 	unsigned int blind; /* displays drawn by a renderer without placements */
 };
 
 int image_budget_add_terminal(struct image_budget_terminal *t, struct tsm_screen *con,
-			      struct tsm_vte *vte, bool sixel);
+			      struct tsm_vte *vte, bool sixel, bool kitty);
 void image_budget_remove_terminal(struct image_budget_terminal *t);
 /*
  * The teardown of a terminal whose image_budget_add_terminal succeeded, in

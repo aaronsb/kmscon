@@ -259,7 +259,7 @@ struct kmscon_conf_t {
 	size_t image_storage_limit;
 	/* sixel graphics, decoded and advertised */
 	bool sixel;
-	/* the kitty graphics protocol, which nothing reads until ADR-103 step 4 */
+	/* the kitty graphics protocol, decoded and answered */
 	bool kitty_graphics;
 	/* the largest image in pixels */
 	struct kmscon_conf_graphic_size max_graphic_size;

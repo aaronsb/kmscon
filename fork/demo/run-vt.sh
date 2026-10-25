@@ -102,7 +102,7 @@ valued=" font-engine font-name font-size mode multi-monitor gpus term sb-size
 	palette-light-magenta palette-light-cyan palette-white palette-foreground
 	palette-background underline-color strike-color grapheme-width xkb-model
 	xkb-layout xkb-variant xkb-options xkb-repeat-delay xkb-repeat-rate
-	dpms-timeout render-timer image-storage-limit "
+	dpms-timeout render-timer image-storage-limit sync-timeout "
 switches=" drm hwaccel use-original-mode blink bell soft-cursor mouse
 	natural-scrolling force-decoration-colors backspace-delete verbose debug silent "
 declare -A unit_shift=([B]=0 [K]=10 [M]=20 [G]=30)
@@ -123,7 +123,7 @@ for o in "${extra[@]}"; do
 	elif [[ $o == --?* ]]; then
 		[[ $switches == *" ${name#no-} "* ]] && continue
 	fi
-	die "kmscon option '$o' is refused. Accepted: display, font, palette, text and input options, --render-timer and --image-storage-limit, one word each: --name=value (quoted as one word: --font-name=\"Monoid Nerd Font Mono\"), or --name / --no-name for a switch (see docs/fork/demo.md)"
+	die "kmscon option '$o' is refused. Accepted: display, font, palette, text and input options, --render-timer, --image-storage-limit and --sync-timeout, one word each: --name=value (quoted as one word: --font-name=\"Monoid Nerd Font Mono\"), or --name / --no-name for a switch (see docs/fork/demo.md)"
 done
 # The showcase's video is a path the session opens as the user; it reaches the
 # session as one word in its environment, never through a shell.

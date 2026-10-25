@@ -26,10 +26,10 @@ terminfo-dim                  missing #94        dim: SGR 2 is implemented
 terminfo-strike               missing #94        smxx/rmxx: SGR 9/29 are implemented (ADR-102)
 terminfo-styled-underline     missing #94        Smulx: SGR 4:0-5 are implemented (ADR-102)
 terminfo-underline-colour     missing #94        Setulc: SGR 58/59 are implemented (ADR-102)
-terminfo-truecolor            missing #94        RGB or Tc: SGR 38;2 and 48;2 are implemented
+terminfo-truecolor            works   -          Tc, setrgbf and setrgbb (upstream 114d109) for SGR 38;2 and 48;2
 terminfo-bracketed-paste      missing #94        BD/BE/PS/PE: mode 2004 is implemented
 terminfo-sgr-mouse            missing #94        XM: mode 1006 is implemented; kmous alone selects X10 mouse
-terminfo-sync                 missing libtsm#21  Sync, once mode 2026 exists
+terminfo-sync                 works   -          Sync for mode 2026 (ADR-201 step 5)
 terminfo-focus                missing libtsm#29  fe/fd, once mode 1004 exists
 terminfo-clipboard            missing #106       Ms, once OSC 52 exists
 
@@ -44,7 +44,7 @@ font-freetype-italic          missing #100       italic draws upright; pango sla
 font-freetype-synthetic-bold  missing #100       a family with no bold face draws bold as regular
 
 # modes and reports
-mode-2026-sync                missing libtsm#21  synchronized output: DECRQM ?2026 replies 0 (not recognised)
+mode-2026-sync                works   -          synchronized output: DECRQM ?2026 replies 2, 1 in a hold; the bounded call stops at its end (ADR-201)
 decrqm                        works   -          DECRQM answers every mode libtsm's mode table lists, 0 for the rest
 da1                           works   -          CSI c replies CSI ? ... c
 da1-level                     missing libtsm#31  DA1 reports level 60, not one of xterm's 61-65

@@ -321,6 +321,7 @@ def main():
                      ["--switchvt"], ["--switch"], ["--oneshot"], ["--no-oneshot"],
                      ["--asciicast=/x"], ["--grab-reboot=<Ctrl>r"], ["--blink=1"],
                      ["--render-timer", "log"], ["--image-storage-limit", "512M"],
+                     ["--sync-timeout", "1000"],
                      ["Nerd"], ["/path/x"], ["--font-name", "Monoid"],
                      ["--font-name=Monoid", "Nerd", "Font", "Mono"]):
             p = run_vt_with(opts)
@@ -338,6 +339,13 @@ def main():
             p = run_vt_with([f"--image-storage-limit={size}"])
             check(f"run-vt.sh accepts --image-storage-limit={size}",
                   "is refused" not in p.stderr and "up to 4G" not in p.stderr
+                  and (p.returncode == 0 or "nothing staged" in p.stderr
+                       or "does not exist" in p.stderr), p.stderr)
+        # sync-timeout names no file and runs nothing; kmscon holds it to 10 s
+        for value in ("0", "200", "1000", "10000"):
+            p = run_vt_with([f"--sync-timeout={value}"])
+            check(f"run-vt.sh accepts --sync-timeout={value}",
+                  "is refused" not in p.stderr
                   and (p.returncode == 0 or "nothing staged" in p.stderr
                        or "does not exist" in p.stderr), p.stderr)
         operator = ["--font-name=Monoid Nerd Font Mono", "--font-size=30", "--mode=7680x2160",

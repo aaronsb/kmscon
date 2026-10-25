@@ -412,15 +412,34 @@ static bool probe_sgr_super_subscript(struct term *t)
 
 /* --- modes and reports --- */
 
-/* synchronized output: DECRQM must know mode 2026 (1 set, 2 reset) */
+/*
+ * synchronized output, offered as kmscon offers it at sync-timeout above 0
+ * (terminal_sync_init; test_terminal_sync covers kmscon's side): DECRQM
+ * replies 2, then 1 in a hold, and the bounded call stops right after the
+ * byte that ends the hold, counting one frame
+ */
 static bool probe_mode_2026_sync(struct term *t)
 {
-	clear_reply(t);
-	feed(t, "\e[?2026$p");
-	if (strcmp(t->reply, "\e[?2026;1$y") && strcmp(t->reply, "\e[?2026;2$y"))
-		return fail("DECRQM ?2026 replied \"%s\", want \"\\e[?2026;1$y\" or ;2$y",
-			    shown(t->reply));
-	return true;
+#ifdef TSM_VTE_SYNC
+	const char *frame = "\e[?2026hab\e[?2026lcd";
+	uint64_t frames;
+	size_t n;
+
+	tsm_vte_set_sync(t->vte, true);
+	if (!reply_is(t, "\e[?2026$p", "\e[?2026;2$y"))
+		return false;
+	frames = tsm_vte_get_sync_frames(t->vte);
+	n = tsm_vte_input_bounded(t->vte, frame, strlen(frame));
+	if (n != strlen(frame) - 2)
+		return fail("the bounded call took %zu bytes of a frame, want %zu (up to its end)",
+			    n, strlen(frame) - 2);
+	if (tsm_vte_get_sync_frames(t->vte) != frames + 1)
+		return fail("the frame's end was not counted");
+	return reply_is(t, "\e[?2026h\e[?2026$p", "\e[?2026;1$y") &&
+	       reply_is(t, "\e[?2026l\e[?2026$p", "\e[?2026;2$y");
+#else
+	return fail("libtsm has no host interface for mode 2026 (TSM_VTE_SYNC)");
+#endif
 }
 
 /* DECRQM for a DEC private mode (DECTCEM, set) and an ANSI mode (IRM, reset) */

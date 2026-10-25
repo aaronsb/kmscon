@@ -297,6 +297,32 @@ static void test_end_without_begin(void)
 	render_timer_free(d.rt);
 }
 
+/* Redraws owed to a hold of mode 2026 and expired holds count per interval. */
+static void test_holds(void)
+{
+	struct fake_display d;
+	struct render_timer_stats st;
+
+	display_init(&d, 100, 100);
+	render_timer_held(d.rt);
+	render_timer_held(d.rt);
+	render_timer_held(d.rt);
+	render_timer_expired(d.rt);
+	display_frame(&d, MS, 0, true, 5);
+	render_timer_flip(d.rt);
+	d.clock.now += S;
+	assert(display_report(&d, &st));
+	assert(st.held == 3 && st.expired == 1 && st.flips == 1);
+
+	display_frame(&d, MS, 0, true, 5);
+	d.clock.now += S;
+	assert(display_report(&d, &st));
+	assert(st.held == 0 && st.expired == 0);
+	render_timer_held(NULL);
+	render_timer_expired(NULL);
+	render_timer_free(d.rt);
+}
+
 static void test_format(void)
 {
 	struct fake_display d;
@@ -317,7 +343,8 @@ static void test_format(void)
 		       "render-timer: display=pci-0000:00:01.0[Virtual-1] interval_ms=1002.000 "
 		       "presented_per_s=58.88 flips=59 frames=59 cpu_ms_mean=1.235 "
 		       "cpu_ms_median=1.235 cpu_ms_p95=1.235 cpu_ms_max=1.235 "
-		       "damage_px_mean=25954 damage_pct=2.47 skipped=1 skipped_cpu_ms=0.250"));
+		       "damage_px_mean=25954 damage_pct=2.47 skipped=1 skipped_cpu_ms=0.250 "
+		       "held=0 expired=0"));
 
 	/* a quiet line, and a display of no size */
 	d.clock.now += S;
@@ -326,7 +353,7 @@ static void test_format(void)
 	assert(!strcmp(line, "render-timer: display=x interval_ms=1000.000 presented_per_s=0.00 "
 			     "flips=0 frames=0 cpu_ms_mean=0.000 cpu_ms_median=0.000 "
 			     "cpu_ms_p95=0.000 cpu_ms_max=0.000 damage_px_mean=0 damage_pct=0.00 "
-			     "skipped=0 skipped_cpu_ms=0.000"));
+			     "skipped=0 skipped_cpu_ms=0.000 held=0 expired=0"));
 
 	/* a short buffer is cut, and terminated */
 	assert(render_timer_format(&st, "x", line, 8) == 0);
@@ -355,6 +382,12 @@ static void test_format_osd(void)
 	assert(render_timer_format_osd(&st, line, 4) == 0);
 	assert(!strcmp(line, "0.0"));
 	assert(render_timer_format_osd(&st, line, 0) < 0);
+
+	/* holds of mode 2026 join the line once there are any */
+	st.held = 12;
+	st.expired = 1;
+	assert(render_timer_format_osd(&st, line, sizeof(line)) == 0);
+	assert(!strcmp(line, "0.0 fps 0.000 ms 0.0% 12 held 1 expired"));
 }
 
 int main(void)
@@ -369,6 +402,7 @@ int main(void)
 	test_percentiles();
 	test_more_frames_than_samples();
 	test_end_without_begin();
+	test_holds();
 	test_format();
 	test_format_osd();
 	printf("test_render_timer: all passed\n");

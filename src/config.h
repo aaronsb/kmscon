@@ -155,6 +155,8 @@ struct kmscon_conf_t {
 	bool bell;
 	/* enable cursor and text blinking */
 	bool blink;
+	/* the longest a synchronized frame (mode 2026) is held, in ms; 0: not offered */
+	unsigned int sync_timeout;
 
 	/* Input Options */
 	/* input KBD model */

@@ -326,6 +326,16 @@ test_render_timer = executable(
 )
 test('test_render_timer', test_render_timer)
 
+# synchronized output's present rules (ADR-201 step 5) on a real vte and a fake clock
+test_terminal_sync = executable(
+    'test_terminal_sync',
+    'test_terminal_sync.c',
+    '../src/terminal_sync.c',
+    include_directories: src_inc,
+    dependencies: [libtsm_deps],
+)
+test('test_terminal_sync', test_terminal_sync)
+
 # Braille, sextant and octant sprites against tests/box_model.h, at every cell
 # size to 32x64 (#76)
 test_font_box = executable(

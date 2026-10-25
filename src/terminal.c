@@ -54,6 +54,7 @@
 #include "shl/misc.h"
 #include "terminal.h"
 #include "terminal_image.h"
+#include "terminal_sync.h"
 #include "terminal_vte.h"
 #include "video/video.h"
 
@@ -70,6 +71,8 @@ struct screen {
 
 	bool config_enabled;
 	bool pending;
+	/* the pending draw is for a display that lost its picture (terminal_sync.h) */
+	bool lost;
 	bool hw_cursor;
 	bool enabled;
 	bool scaled;
@@ -107,6 +110,11 @@ struct kmscon_terminal {
 	struct ev_fd *ptyfd;
 	/* the child's output was parsed this loop turn, and is drawn at its end */
 	bool redraw_owed;
+	/* synchronized output (mode 2026): when to present, and the hold's timer */
+	struct terminal_sync sync;
+	struct ev_timer *sync_timer;
+	/* the pty holds output the last input call left */
+	bool unparsed;
 	/* the screen in the image budget, and sixel while every display draws images */
 	struct image_budget_terminal images;
 	/* the cell size libtsm and TIOCSWINSZ were last given */
@@ -358,6 +366,7 @@ static void do_redraw_screen(struct screen *scr)
 	}
 
 	scr->pending = false;
+	scr->lost = false;
 
 	render_timer_frame_begin(scr->timer);
 	kmscon_conf_resolve_deco(scr->term->conf, scr->term->vte, &deco);
@@ -374,18 +383,32 @@ static void do_redraw_screen(struct screen *scr)
 			       scr->txt->frame_damage_px);
 }
 
-static void redraw_screen(struct screen *scr)
+/*
+ * A redraw request. @lost: the display no longer shows the last presented
+ * picture, so it draws the state as it is, through a hold of mode 2026.
+ */
+static void redraw_screen(struct screen *scr, bool lost)
 {
 	if (!scr->term->awake || !scr->enabled)
 		return;
 
-	if (display_is_swapping(scr->disp))
-		scr->pending = true;
-	else
+	switch (terminal_sync_draw(&scr->term->sync, display_is_swapping(scr->disp), lost)) {
+	case TERMINAL_SYNC_DRAW:
 		do_redraw_screen(scr);
+		break;
+	case TERMINAL_SYNC_FLIP:
+		scr->pending = true;
+		scr->lost |= lost;
+		break;
+	case TERMINAL_SYNC_OWED:
+		render_timer_held(scr->timer);
+		break;
+	case TERMINAL_SYNC_IDLE:
+		break;
+	}
 }
 
-static void redraw_all(struct kmscon_terminal *term)
+static void redraw_screens(struct kmscon_terminal *term, bool lost)
 {
 	struct screen *scr;
 
@@ -394,8 +417,13 @@ static void redraw_all(struct kmscon_terminal *term)
 
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		redraw_screen(scr);
+		redraw_screen(scr, lost);
 	}
+}
+
+static void redraw_all(struct kmscon_terminal *term)
+{
+	redraw_screens(term, false);
 }
 
 /*
@@ -421,7 +449,7 @@ static void terminal_turn_end(struct ev_eloop *eloop, void *unused, void *data)
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
 		if (kmscon_text_changed(scr->txt, term->console))
-			redraw_screen(scr);
+			redraw_screen(scr, false);
 	}
 }
 
@@ -507,8 +535,21 @@ static void display_pageflip(void *unused, void *unused2, void *data)
 
 	if (scr->term->awake)
 		render_timer_flip(scr->timer);
-	if (scr->pending)
+	/*
+	 * A hold begun since the draw was deferred waits for its own end; a
+	 * disabled screen's pending clear is drawn as for a lost picture.
+	 */
+	switch (terminal_sync_flipped(&scr->term->sync, scr->pending, scr->lost || !scr->enabled)) {
+	case TERMINAL_SYNC_DRAW:
+	case TERMINAL_SYNC_FLIP:
 		do_redraw_screen(scr);
+		break;
+	case TERMINAL_SYNC_OWED:
+		render_timer_held(scr->timer);
+		break;
+	case TERMINAL_SYNC_IDLE:
+		break;
+	}
 }
 
 static void blink_event(struct ev_timer *timer, uint64_t count, void *data)
@@ -545,6 +586,55 @@ static const struct render_timer_clock render_timer_clock = {
 	.cpu_ns = render_timer_cpu,
 };
 
+/*
+ * What the hold's rules ask for after an input call or at the timer: arm the
+ * timer for the hold's deadline, or disarm it and present at once. A display
+ * with a flip in flight presents when the flip completes.
+ */
+static bool sync_act(struct kmscon_terminal *term, enum terminal_sync_action action)
+{
+	struct itimerspec spec = {0};
+	struct screen *scr;
+	uint64_t ns;
+
+	switch (action) {
+	case TERMINAL_SYNC_NONE:
+		return false;
+	case TERMINAL_SYNC_ARM:
+		ns = terminal_sync_arm_ns(&term->sync, clock_ns(CLOCK_MONOTONIC));
+		spec.it_value.tv_sec = ns / 1000000000ULL;
+		spec.it_value.tv_nsec = ns % 1000000000ULL;
+		if (!ev_timer_update(term->sync_timer, &spec))
+			return false;
+		/* no hold without its timer */
+		log_warning("cannot arm the timer of a synchronized frame; presenting it as it is");
+		return sync_act(term, terminal_sync_cancel(&term->sync));
+	case TERMINAL_SYNC_EXPIRED:
+		log_debug("sync-timeout ended a synchronized frame; presenting it as it is");
+		dlist_for_each_entry(scr, &term->screens, list) render_timer_expired(scr->timer);
+		/* fall through */
+	case TERMINAL_SYNC_PRESENT:
+		ev_timer_update(term->sync_timer, NULL);
+		redraw_all(term);
+		return true;
+	}
+	return false;
+}
+
+/* the vte took input or was reset outside the pty's feed; true if it presented */
+static bool sync_check(struct kmscon_terminal *term)
+{
+	return sync_act(
+		term, terminal_sync_input(&term->sync, clock_ns(CLOCK_MONOTONIC), term->unparsed));
+}
+
+static void sync_timer_event(struct ev_timer *timer, uint64_t count, void *data)
+{
+	struct kmscon_terminal *term = data;
+
+	sync_act(term, terminal_sync_timer(&term->sync, clock_ns(CLOCK_MONOTONIC), term->unparsed));
+}
+
 static void render_timer_event(struct ev_timer *timer, uint64_t count, void *data)
 {
 	struct kmscon_terminal *term = data;
@@ -571,7 +661,7 @@ static void render_timer_event(struct ev_timer *timer, uint64_t count, void *dat
 			render_timer_format_osd(&st, line, sizeof(line));
 			if (kmscon_text_set_osd(scr->txt, line))
 				log_warning("render-timer: cannot draw the on-screen display");
-			redraw_screen(scr);
+			redraw_screen(scr, false);
 		}
 	}
 }
@@ -594,7 +684,8 @@ static void asciinema_write(const char *u8, size_t len, void *data)
 	if (!term->opened || !term->awake || !kmscon_session_get_foreground(term->session))
 		return;
 
-	if (terminal_image_input(&term->image, u8, len))
+	/* a frame end has presented already */
+	if (terminal_image_input(&term->image, u8, len) && !sync_check(term))
 		redraw_all(term);
 }
 
@@ -919,7 +1010,7 @@ static void terminal_update_size_notify(struct kmscon_terminal *term)
 	kmscon_pty_resize(term->pty, term->cols, term->rows, term->cell_w, term->cell_h);
 	if (resized) {
 		tsm_screen_resize(term->console, term->cols, term->rows);
-		redraw_all(term);
+		redraw_screens(term, true);
 	}
 	update_pointer_max_all(term);
 }
@@ -1449,6 +1540,7 @@ static void kmscon_issue_write(struct kmscon_terminal *term)
 
 	terminal_image_input(&term->image, issue, issue_len);
 	free(issue);
+	sync_check(term);
 }
 
 static int terminal_open(struct kmscon_terminal *term)
@@ -1460,6 +1552,7 @@ static int terminal_open(struct kmscon_terminal *term)
 		return -EALREADY;
 
 	tsm_vte_hard_reset(term->vte);
+	sync_check(term);
 	width = tsm_screen_get_width(term->console);
 	height = tsm_screen_get_height(term->console);
 	ret = kmscon_pty_open(term->pty, width, height, term->cell_w, term->cell_h,
@@ -1484,6 +1577,8 @@ static void terminal_close(struct kmscon_terminal *term)
 	terminal_image_close(&term->image);
 	kmscon_pty_close(term->pty);
 	term->opened = false;
+	term->unparsed = false;
+	sync_check(term);
 }
 
 void terminal_refresh_displays(struct kmscon_terminal *term)
@@ -1497,7 +1592,7 @@ void terminal_refresh_displays(struct kmscon_terminal *term)
 	{
 		display_set_need_redraw(scr->disp);
 	}
-	redraw_all(term);
+	redraw_screens(term, true);
 }
 
 void terminal_activate(struct kmscon_terminal *term)
@@ -1539,6 +1634,7 @@ void terminal_destroy(struct kmscon_terminal *term)
 	ev_eloop_rm_timer(term->blink_timer);
 	ev_eloop_rm_timer(term->blink_cursor);
 	ev_eloop_rm_timer(term->render_timer);
+	ev_eloop_rm_timer(term->sync_timer);
 	kmscon_asciinema_free(term->asciinema);
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 	input_unregister_key_cb(term->input, input_event, term);
@@ -1558,16 +1654,22 @@ void terminal_destroy(struct kmscon_terminal *term)
  * bytes of sixel can fill a large picture. What one call leaves is held by the
  * pty, which hands it back on later turns of its loop, so input, drawing and
  * VT switches are handled between the parts. Drawing waits for the end of the
- * turn (terminal_turn_end).
+ * turn (terminal_turn_end), except at the end of a synchronized frame: the
+ * call stops right after it, and the frame is presented before any byte of
+ * the next is parsed.
  */
 static size_t pty_input(struct kmscon_pty *pty, const char *u8, size_t len, void *data)
 {
 	struct kmscon_terminal *term = data;
+	size_t n;
 
 	if (!len)
 		return 0;
 	term->redraw_owed = true;
-	return tsm_vte_input_bounded(term->vte, u8, len);
+	n = tsm_vte_input_bounded(term->vte, u8, len);
+	term->unparsed = n < len;
+	sync_check(term);
+	return n;
 }
 
 static void pty_exit(struct kmscon_pty *pty, bool restart, void *data)
@@ -1674,9 +1776,19 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 	if (ret)
 		goto err_ptyfd;
 
-	ret = input_register_key_cb(term->input, input_event, term);
+	/* armed while a synchronized frame is held */
+	ret = ev_eloop_new_timer(term->eloop, &term->sync_timer, NULL, sync_timer_event, term);
 	if (ret)
 		goto err_turn;
+	if (terminal_sync_init(&term->sync, term->vte, term->conf->sync_timeout) !=
+	    term->conf->sync_timeout)
+		log_warning("sync-timeout=%u is above the limit; holding a synchronized frame for "
+			    "%u ms at most",
+			    term->conf->sync_timeout, TERMINAL_SYNC_MAX_MS);
+
+	ret = input_register_key_cb(term->input, input_event, term);
+	if (ret)
+		goto err_sync;
 
 	if (term->conf->mouse) {
 		ret = input_register_pointer_cb(term->input, pointer_event, term);
@@ -1720,6 +1832,8 @@ err_pointer:
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 err_input:
 	input_unregister_key_cb(term->input, input_event, term);
+err_sync:
+	ev_eloop_rm_timer(term->sync_timer);
 err_turn:
 	ev_eloop_unregister_post_cb(term->eloop, terminal_turn_end, term);
 err_ptyfd:

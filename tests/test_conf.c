@@ -256,6 +256,20 @@ static void test_parse_blink(void)
 	assert(conf->blink);
 }
 
+/* sync-timeout is 200 ms by default; 0 turns mode 2026 off (ADR-201) */
+static void test_parse_sync_timeout(void)
+{
+	struct conf_ctx *ctx;
+	struct kmscon_conf_t *conf;
+
+	conf = parse_conf(&ctx, "\n");
+	assert(conf && conf->sync_timeout == 200);
+	conf = parse_conf(&ctx, "sync-timeout=0\n");
+	assert(conf && conf->sync_timeout == 0);
+	conf = parse_conf(&ctx, "sync-timeout=1000\n");
+	assert(conf && conf->sync_timeout == 1000);
+}
+
 /* render-timer takes foot's values; none is the default */
 static void test_parse_render_timer(void)
 {
@@ -375,6 +389,7 @@ int main()
 	test_parse_text();
 	test_parse_comment();
 	test_parse_blink();
+	test_parse_sync_timeout();
 	test_parse_render_timer();
 	test_parse_images();
 

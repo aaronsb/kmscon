@@ -15,7 +15,7 @@ from t3_common import GOLDEN, GUEST, RUNDIR, rel
 # stays last: vt-restore is compared with the last screen's golden, and its
 # golden is the cjk one (test_t3.py holds the two together).
 SCREENS = ["sgr", "colour-forms", "underline-styles", "underline-colour", "strike",
-           "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "sixel",
+           "boxdraw", "blocks", "mosaic", "wide-margin", "combining", "emoji", "sync-hold", "sixel",
            "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict", "photos",
            "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "kitty", "kitty-photo", "kitty-files", "kitty-layers", "s1-scroll", "flood", "cjk"]
 # Cases captured after a screen is drawn, by pressing keys: each is (screen,

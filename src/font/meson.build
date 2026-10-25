@@ -38,8 +38,8 @@ if enable_font_unifont
     #
     # Unifont Generator
     # This generates the unifont sources from raw hex-encoded font data.
-    # Built only for mod-unifont, so a build without it needs no zlib on the
-    # build machine (ADR-103, The zlib-free variant).
+    # Built only for mod-unifont, so a build without it does not look zlib up
+    # for the build machine (ADR-103, The zlib-free variant).
     #
     zlib_deps_native = dependency('zlib', native: true)
 

@@ -104,8 +104,8 @@ def run_program(cmd, name):
 
 
 def read_terminfo(src, tic, infocmp, tput):
-    """(capability names, {(capability, parameters): tput's output}) of the
-    entry compiled from @src; the second is empty without @tput."""
+    """(capability names, {(capability, parameters): tput's CompletedProcess})
+    of the entry compiled from @src; the second is empty without @tput."""
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([tic, "-x", "-o", tmp, src], check=True, capture_output=True)
         out = subprocess.run([infocmp, "-x", "-1", "-A", tmp, "kmscon"], check=True,
@@ -115,9 +115,9 @@ def read_terminfo(src, tic, infocmp, tput):
             env = dict(os.environ, TERMINFO=tmp)
             for checks in TERMINFO_STRINGS.values():
                 for cap, params, _ in checks:
-                    res = subprocess.run([tput, "-T", "kmscon", cap, *params], env=env,
-                                         capture_output=True, text=True)
-                    strings[cap, params] = res.stdout if res.returncode == 0 else None
+                    strings[cap, params] = subprocess.run(
+                        [tput, "-T", "kmscon", cap, *params], env=env,
+                        capture_output=True, text=True)
     caps = set()
     for line in out.splitlines():
         if not line.startswith("\t"):
@@ -135,14 +135,21 @@ def run_terminfo(caps, name):
     return False, f"the kmscon entry lacks {want}"
 
 
+# tput's exits for a capability the entry does not define: 1 for a standard
+# one, 4 for an extended one, whose name is unknown unless the entry has it
+TPUT_UNDEFINED = (1, 4)
+
+
 def run_terminfo_strings(strings, name):
     for cap, params, want in TERMINFO_STRINGS[name]:
-        got = strings[cap, params]
+        res = strings[cap, params]
         call = f"tput {cap} {' '.join(params)}"
-        if got is None:
-            return False, f"{call} fails: the kmscon entry lacks {cap}"
-        if got != want:
-            return False, f"{call} prints {got!r}, want {want!r}"
+        if res.returncode in TPUT_UNDEFINED:
+            return False, f"the kmscon entry lacks {cap}"
+        if res.returncode != 0:
+            return None, f"{call} exited {res.returncode}: {res.stderr.strip()}"
+        if res.stdout != want:
+            return False, f"{call} prints {res.stdout!r}, want {want!r}"
     return True, ""
 
 

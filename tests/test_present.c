@@ -30,9 +30,10 @@
  *
  * The last part replays terminal.c's present rules on a fake clock, with
  * coalescing without mode 2026 (ADR-201 step 6) and without it: a bulk
- * write, frames in 16 KB and 4 KB write() calls, a write ending on a read's
- * boundary, frames in mode 2026, and a key's echo, on a display with flips
- * and one without. It prints presents per second and mixed cells per
+ * write at 60 and 144 Hz, frames in 16 KB and 4 KB write() calls, a large
+ * write and then quiet, small output, frames in mode 2026, and a key's echo,
+ * on a display with flips and one without, and three of them on a real pty.
+ * It prints presents per second and mixed cells per
  * present (cells showing neither the write's end nor what came before it
  * where the write changes them), and checks the rule's bounds.
  */
@@ -40,13 +41,19 @@
 #undef NDEBUG
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <fontconfig/fontconfig.h>
 #include <inttypes.h>
 #include <libtsm.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <termios.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "../src/font/font.c"
 #include "../src/font/font_box.c"
@@ -65,7 +72,6 @@
 #undef LOG_SUBSYSTEM
 #include "../src/video/drm2d_render.c"
 #include "config.h"
-#include "pty.h"
 #include "terminal_sync.h"
 
 void shl_module_ref(struct shl_module *module) {}
@@ -75,7 +81,7 @@ void shl_module_unref(struct shl_module *module) {}
 #define ROWS 30
 #define FONT_PX 16
 #define FRAMES 48
-#define NREAD KMSCON_NREAD
+#define NREAD 16384 /* KMSCON_NREAD, src/misc/pty.c */
 #define ESC "\x1b"
 
 static unsigned int fb_w, fb_h;
@@ -575,19 +581,27 @@ static void test_changed(void)
  * terminal.c's present rules replayed on a fake clock, with the real vte,
  * terminal_sync and renderer: the program's writes arrive as write() calls
  * of a set size at a set pace; each loop turn takes what an earlier input
- * call left, or reads NREAD bytes at a time until the pty is empty or 50
- * reads are done, as src/misc/pty.c does; parsing and drawing cost fixed
- * times. At each turn's end the screen is drawn as terminal_turn_end does,
- * by the rule (coalesced) or at once (as before the rule). A display with
- * flips shows a present at the next refresh and defers a draw asked for
- * meanwhile to that flip, as on DRM; one without shows it at once.
+ * call left, or reads until the pty is empty or 50 reads are done, as
+ * src/misc/pty.c does. A read takes at most KREAD bytes, what a Linux pty
+ * hands over, and one that takes less leaves n_tty empty until the next turn.
+ * Parsing and drawing cost fixed times. At each turn's end the screen is drawn as terminal_turn_end
+ * does, by the rule (coalesced) or at once (as before the rule). A display with flips shows a
+ * present at the next refresh and defers a draw asked for meanwhile to that flip, as on DRM; one
+ * without shows it at once.
  */
 
 #define US 1000ULL
 #define MS (1000 * US)
-#define REFRESH_NS (1000000000ULL / 60)
-#define PARSE_NS_PER_KB (10 * US) /* 100 MB/s */
+#define REFRESH_NS (1000000000ULL / 60) /* unless a schedule sets its own */
+#define PARSE_NS_PER_KB (10 * US)	/* 100 MB/s */
 #define DRAW_NS (3 * MS)
+#define KREAD 4095 /* the most a read takes from a Linux pty (n_tty's buffer) */
+
+/*
+ * The bytes in a turn that count as part way through a write; COALESCE_N in
+ * the environment sets another, to measure it against terminal.c's.
+ */
+static size_t coalesce_n = TERMINAL_SYNC_COALESCE_BYTES;
 #define ECHO_NS (200 * US) /* from a key press to its echo arriving */
 
 struct write {
@@ -607,6 +621,7 @@ enum why {
 
 struct sim {
 	bool coalesce, flips;
+	uint64_t refresh_ns, draw_ns;
 	char *data;
 	struct write w[512];
 	unsigned int nw;
@@ -617,7 +632,9 @@ struct sim {
 	size_t read, parsed;
 	char rbuf[NREAD];
 	size_t held_off, held_len;
-	bool unparsed, read_full, redraw_owed;
+	bool unparsed, redraw_owed;
+	size_t turn_bytes;	/* parsed since the last turn's end */
+	uint64_t turn_first_ns; /* when the turn's first input call began */
 
 	struct tsm_screen *con;
 	struct tsm_vte *vte;
@@ -625,7 +642,7 @@ struct sim {
 	uint64_t sync_due;
 	struct output o;
 	bool swapping, pending;
-	uint64_t flip_at, coalesce_due, presented_ns, waited_ns;
+	uint64_t flip_at, coalesce_due, presented_ns, owed_ns, due_ns;
 
 	/* the screen as it is once the write in progress is parsed whole */
 	struct tsm_screen *ref_con;
@@ -643,6 +660,7 @@ struct sim {
 	uint64_t min_mid_gap;	  /* before a draw the rule made part way through a write */
 	uint64_t echo_latency;	  /* from the echo's arrival to its present */
 	enum why last_why;	  /* what made the last present */
+	uint64_t shown_at[64];	  /* when the first presents were shown */
 	uint64_t parsed_ns;	  /* when the last byte was parsed */
 	unsigned int failures;
 };
@@ -718,16 +736,19 @@ static void sim_draw(struct sim *s, enum why why, bool mid)
 	uint64_t shown;
 	bool partial;
 
+	uint64_t start = s->t;
+
 	s->pending = false;
-	s->waited_ns = 0;
-	s->t += DRAW_NS;
+	s->owed_ns = 0;
+	s->due_ns = 0;
+	s->t += s->draw_ns;
 	if (!output_frame(&s->o, s->con, s->vte))
 		return;
-	s->presented_ns = s->t;
+	s->presented_ns = start;
 	shown = s->t;
 	if (s->flips) {
 		s->swapping = true;
-		s->flip_at = (s->t / REFRESH_NS + 1) * REFRESH_NS;
+		s->flip_at = (s->t / s->refresh_ns + 1) * s->refresh_ns;
 		shown = s->flip_at;
 	}
 
@@ -738,11 +759,13 @@ static void sim_draw(struct sim *s, enum why why, bool mid)
 		s->first_ns = s->t;
 	if (s->presents && s->prev_partial && shown - s->prev_shown_ns > s->max_partial_gap)
 		s->max_partial_gap = shown - s->prev_shown_ns;
-	/* from the last present to this draw's start, which the rule decided */
-	if (s->presents && mid && s->t - DRAW_NS - s->prev_ns < s->min_mid_gap)
-		s->min_mid_gap = s->t - DRAW_NS - s->prev_ns;
+	/* between the starts of the draws, which the rule decides */
+	if (s->presents && mid && start - s->prev_ns < s->min_mid_gap)
+		s->min_mid_gap = start - s->prev_ns;
 	if (s->key_ns && !s->echo_latency && s->parsed == s->total)
 		s->echo_latency = shown - (s->key_ns + ECHO_NS);
+	if (s->presents < sizeof(s->shown_at) / sizeof(s->shown_at[0]))
+		s->shown_at[s->presents] = shown;
 	s->presents++;
 	s->mid_presents += mid;
 	s->mixed_presents += mixed > 0;
@@ -750,7 +773,7 @@ static void sim_draw(struct sim *s, enum why why, bool mid)
 	if (mixed > s->max_mixed)
 		s->max_mixed = mixed;
 	s->last_ns = s->t;
-	s->prev_ns = s->t;
+	s->prev_ns = start;
 	s->prev_shown_ns = shown;
 	s->prev_partial = partial;
 	s->last_why = why;
@@ -795,9 +818,10 @@ static bool sim_input(struct sim *s, const char *u8, size_t len)
 	size_t n;
 
 	s->redraw_owed = true;
-	if (!s->unparsed)
-		s->read_full = len >= NREAD;
+	if (!s->turn_bytes)
+		s->turn_first_ns = s->t;
 	n = tsm_vte_input_bounded(s->vte, u8, len);
+	s->turn_bytes += n;
 	s->t += n * PARSE_NS_PER_KB / 1024;
 	s->parsed += n;
 	if (s->parsed == s->total)
@@ -821,25 +845,31 @@ static bool sim_input(struct sim *s, const char *u8, size_t len)
 /* terminal_turn_end */
 static void sim_turn_end(struct sim *s)
 {
-	bool mid = s->read_full || s->unparsed;
-	uint64_t due;
+	bool mid = s->turn_bytes >= coalesce_n || s->unparsed;
+	uint64_t first = s->turn_first_ns, due;
 
+	s->turn_bytes = 0;
+	s->turn_first_ns = 0;
 	if (!s->redraw_owed)
 		return;
 	s->redraw_owed = false;
 	if (!kmscon_text_changed(s->o.txt, s->con))
 		return;
 	due = s->coalesce ? terminal_sync_coalesce(&s->sync, mid, s->t, s->presented_ns,
-						   s->waited_ns, REFRESH_NS)
+						   s->owed_ns ? s->owed_ns : first, s->refresh_ns)
 			  : 0;
 	if (!due) {
+		/* coalesce_end */
+		s->owed_ns = 0;
+		s->due_ns = 0;
 		sim_redraw(s, WHY_TURN, mid);
+		s->coalesce_due = s->due_ns;
 		return;
 	}
-	if (!s->waited_ns)
-		s->waited_ns = s->t;
-	if (!s->coalesce_due || due < s->coalesce_due)
-		s->coalesce_due = due;
+	if (!s->owed_ns)
+		s->owed_ns = first ? first : s->t;
+	/* coalesce_arm */
+	s->due_ns = s->coalesce_due = due;
 }
 
 static void sim_run(struct sim *s)
@@ -863,8 +893,11 @@ static void sim_run(struct sim *s)
 		}
 		if (s->coalesce_due && s->coalesce_due <= s->t) {
 			s->coalesce_due = 0;
-			if (s->waited_ns)
+			if (s->owed_ns && s->due_ns <= s->t) {
+				s->owed_ns = 0;
+				s->due_ns = 0;
 				sim_redraw(s, WHY_TIMER, true);
+			}
 		}
 		if (s->sync_due && s->sync_due <= s->t) {
 			s->sync_due = 0;
@@ -883,11 +916,14 @@ static void sim_run(struct sim *s)
 
 				if (!n)
 					break;
-				if (n > NREAD)
-					n = NREAD;
+				if (n > KREAD)
+					n = KREAD;
 				memcpy(s->rbuf, s->data + s->read, n);
 				s->read += n;
 				if (!sim_input(s, s->rbuf, n))
+					break;
+				/* the next read finds n_tty empty until its buffer is refilled */
+				if (n < KREAD)
 					break;
 			}
 		}
@@ -916,6 +952,8 @@ static void sim_init(struct sim *s, bool coalesce, bool flips)
 	memset(s, 0, sizeof(*s));
 	s->coalesce = coalesce;
 	s->flips = flips;
+	s->refresh_ns = REFRESH_NS;
+	s->draw_ns = DRAW_NS;
 	s->min_mid_gap = UINT64_MAX;
 	assert(tsm_screen_new(&s->con, NULL, NULL) == 0);
 	assert(tsm_screen_resize(s->con, COLS, ROWS) == 0);
@@ -953,6 +991,7 @@ struct sched {
 	size_t wsize;
 	uint64_t wgap_ns;
 	bool sync;
+	uint64_t refresh_ns, draw_ns; /* 0: REFRESH_NS, DRAW_NS */
 };
 
 static char *sched_data(const struct sched *sc, struct write *w, size_t *total)
@@ -1019,6 +1058,10 @@ static void sim_sched(const struct sched *sc, bool flips, struct sim *b, struct 
 		struct sim *s = runs[i];
 
 		sim_init(s, i == 1, flips);
+		if (sc->refresh_ns)
+			s->refresh_ns = sc->refresh_ns;
+		if (sc->draw_ns)
+			s->draw_ns = sc->draw_ns;
 		s->nw = sc->writes;
 		assert(s->nw <= sizeof(s->w) / sizeof(s->w[0]));
 		s->data = sched_data(sc, s->w, &s->total);
@@ -1043,24 +1086,40 @@ static void sim_done(struct sim *s)
  * kmscon parses, so every read is full. A present part way through comes at
  * most once a refresh, and never two refreshes after the one before.
  */
-static void test_coalesce_bulk(bool flips)
+static void test_coalesce_bulk_at(const struct sched *sc, bool flips, bool controls)
 {
-	static const struct sched sc = {"bulk write", 1, 300, 0, 128 * 1024, 30 * US, false};
 	const char *display = flips ? "flips" : "no flips";
 	struct sim b, a;
 
-	sim_sched(&sc, flips, &b, &a);
-	if (a.mid_presents < 2)
-		sim_fail(sc.name, display, "the write never presented part way through");
-	if (a.min_mid_gap < REFRESH_NS)
-		sim_fail(sc.name, display, "two presents part way through came within a refresh");
-	if (a.max_partial_gap > 2 * REFRESH_NS)
-		sim_fail(sc.name, display, "two refreshes in a row were skipped mid-write");
-	if (!flips && b.min_mid_gap >= REFRESH_NS)
-		sim_fail(sc.name, display,
+	sim_sched(sc, flips, &b, &a);
+	if (controls && a.mid_presents < 2)
+		sim_fail(sc->name, display, "the write never presented part way through");
+	if (a.min_mid_gap < a.refresh_ns)
+		sim_fail(sc->name, display, "two presents part way through came within a refresh");
+	if (a.max_partial_gap > 2 * a.refresh_ns)
+		sim_fail(sc->name, display, "two refreshes in a row were skipped mid-write");
+	if (controls && !flips && b.min_mid_gap >= b.refresh_ns)
+		sim_fail(sc->name, display,
 			 "control: before the rule, presents came a refresh apart");
 	sim_done(&b);
 	sim_done(&a);
+}
+
+/*
+ * The bulk write at 60 Hz, and at 144 Hz with a draw of more than half a
+ * refresh, where a refresh counted from the draw's end rather than its start
+ * skips two refreshes in a row.
+ */
+static void test_coalesce_bulk(bool flips)
+{
+	static const struct sched at60 = {"bulk write", 1, 300, 0, 128 * 1024, 30 * US, false};
+	static const struct sched at144 = {
+		"bulk write, 144 Hz", 1,     300, 0, 128 * 1024, 30 * US, false,
+		1000000000ULL / 144,  6 * MS};
+
+	test_coalesce_bulk_at(&at60, flips, true);
+	/* a draw and a turn take longer than a refresh: every turn's end is past the deadline */
+	test_coalesce_bulk_at(&at144, flips, false);
 }
 
 /*
@@ -1082,16 +1141,17 @@ static void test_coalesce_frames(bool flips)
 		sim_fail(sc.name, display, "control: before the rule, no cell was presented mixed");
 	if (a.mixed_cells)
 		sim_fail(sc.name, display, "a frame was presented part written");
-	if (a.max_partial_gap > 2 * REFRESH_NS)
+	if (a.max_partial_gap > 2 * a.refresh_ns)
 		sim_fail(sc.name, display, "two refreshes in a row were skipped mid-write");
 	sim_done(&b);
 	sim_done(&a);
 }
 
 /*
- * The same frames as 4 KB write() calls: every read is short, so the rule
- * holds nothing back, and presents are as before (ADR-201's cost: a write
- * slower than kmscon reads still tears).
+ * The same frames as 4 KB write() calls, slower than kmscon parses: each
+ * turn reads one call, under the threshold, so the rule holds nothing back
+ * and presents are as before (ADR-201's cost: a write slower than kmscon
+ * reads still tears).
  */
 static void test_coalesce_short(bool flips)
 {
@@ -1102,49 +1162,70 @@ static void test_coalesce_short(bool flips)
 
 	sim_sched(&sc, flips, &b, &a);
 	if (a.presents != b.presents || a.mixed_cells != b.mixed_cells)
-		sim_fail(sc.name, display, "short reads were held back");
+		sim_fail(sc.name, display, "turns under the threshold were held back");
 	sim_done(&b);
 	sim_done(&a);
 }
 
 /*
- * A write that ends exactly on a read's boundary: every read is full, the
- * last one too, and no more output comes to end the wait. The timer
- * presents the write whole within one refresh of the last present.
+ * A large write, two screens in one write() call, and nothing after it: the
+ * turn that reads it parses more than the threshold, so it waits, and with
+ * no more output to end the wait the timer presents it whole within one
+ * refresh.
  */
-static void test_coalesce_boundary(bool flips)
+static void test_coalesce_large(bool flips)
 {
-	static const struct sched sc = {
-		"write on a read boundary", 1, 2, 0, NREAD, 300 * US, false};
+	static const struct sched sc = {"large write, then quiet", 1, 2, 0, 0, 0, false};
 	const char *display = flips ? "flips" : "no flips";
-	struct sim *runs[2], b, a;
+	struct sim b, a;
 
-	runs[0] = &b;
-	runs[1] = &a;
-	for (int i = 0; i < 2; i++) {
-		struct sim *s = runs[i];
-		size_t len, whole;
-
-		sim_init(s, i == 1, flips);
-		s->nw = 1;
-		s->data = sched_data(&sc, s->w, &len);
-		/* padded with NUL, which the vte ignores, to whole reads */
-		whole = (len + NREAD - 1) / NREAD * NREAD;
-		assert(whole >= 2 * NREAD && whole <= 2 * sc.frames * 48 * 1024);
-		memset(s->data + len, 0, whole - len);
-		s->w[0].len = s->total = whole;
-		sim_run(s);
-		assert(s->parsed == s->total);
-		if (cells_differing(&s->o, &s->ref))
-			sim_fail(sc.name, display, "the screen is left part written");
-	}
-	sim_report(sc.name, display, &b, &a);
+	sim_sched(&sc, flips, &b, &a);
+	if (a.mixed_cells)
+		sim_fail(sc.name, display, "the write was presented part written");
 	if (a.last_why != WHY_TIMER)
 		sim_fail(sc.name, display, "the write's end was not presented by the timer");
-	else if (a.last_ns - a.parsed_ns > REFRESH_NS + DRAW_NS)
+	else if (a.last_ns - a.parsed_ns > a.refresh_ns + a.draw_ns)
 		sim_fail(sc.name, display, "the timer presented more than a refresh late");
 	sim_done(&b);
 	sim_done(&a);
+}
+
+/*
+ * Small output, as a shell's: lines of text from one byte to just under the
+ * threshold, each one write() call 50 ms after the last. Every one presents
+ * at the same moment as without the rule.
+ */
+static void test_coalesce_small(bool flips)
+{
+	static const size_t sizes[] = {1, 100, 2000, 4095, 8000, 12000, 16000};
+	const char *display = flips ? "flips" : "no flips";
+	struct sim runs[2];
+
+	for (int i = 0; i < 2; i++) {
+		struct sim *s = &runs[i];
+		size_t n = 0;
+
+		sim_init(s, i == 1, flips);
+		s->data = malloc(64 * 1024);
+		assert(s->data);
+		for (unsigned int k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++) {
+			s->w[k] = (struct write){k * 50 * MS, n, sizes[k], 0, 0};
+			for (size_t j = 0; j < sizes[k]; j++)
+				s->data[n++] = j % 80 == 78 ? '\r' : j % 80 == 79 ? '\n' : 'a' + k;
+		}
+		s->nw = sizeof(sizes) / sizeof(sizes[0]);
+		s->total = n;
+		sim_run(s);
+	}
+	fprintf(stderr, "test_present: %-24s %-8s %u presents before, %u after\n", "small output",
+		display, runs[0].presents, runs[1].presents);
+	if (runs[1].presents != runs[0].presents ||
+	    memcmp(runs[1].shown_at, runs[0].shown_at, sizeof(runs[0].shown_at)))
+		sim_fail("small output", display, "small output waited for the rule");
+	for (int i = 0; i < 2; i++) {
+		free(runs[i].data);
+		sim_free(&runs[i]);
+	}
 }
 
 /*
@@ -1220,16 +1301,270 @@ static void test_coalesce_echo(bool flips)
 		sim_fail("key echo", display, "the echo waited");
 }
 
+/*
+ * The same rules on a real pty: a child writes the schedule's write() calls
+ * into the pty at their times, and the test reads it as src/misc/pty.c does
+ * (NREAD bytes a read, up to 50 reads a turn, until a read finds nothing),
+ * parses with the real vte, and decides each turn's draw by the rule on the
+ * real clock, a draw taking DRAW_NS. Reads are what the kernel hands over,
+ * so the read sizes and turns are realistic; times vary run to run, so only
+ * the last present is checked, and the rest is printed. Mixed cells are
+ * counted afterwards, from the bytes parsed at each present.
+ */
+
+struct real {
+	bool coalesce;
+	size_t at[4096]; /* the bytes parsed at each present */
+	unsigned int presents;
+	uint64_t ns; /* from the first write to the last present */
+	unsigned int turns, reads, full_reads, capped_turns, last_full_turns;
+	/* turns ending part way through a write, and of the signals, which turns each flags */
+	unsigned int mid_turns, cap_mid, cap_end, big_mid, big_end;
+	uint64_t mixed_cells, max_mixed;
+};
+
+static uint64_t real_now(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
+static void real_until(uint64_t t)
+{
+	while (real_now() < t)
+		;
+}
+
+/* the child: each write's calls at their times, then a pause before closing */
+static void real_writer(int fd, const char *data, const struct write *w, unsigned int nw,
+			uint64_t t0)
+{
+	for (unsigned int k = 0; k < nw; k++) {
+		size_t call = w[k].wsize ? w[k].wsize : w[k].len;
+
+		for (size_t off = 0, j = 0; off < w[k].len; off += call, j++) {
+			size_t n = w[k].len - off < call ? w[k].len - off : call;
+
+			real_until(t0 + w[k].start_ns + j * w[k].wgap_ns);
+			for (size_t done = 0; done < n;) {
+				ssize_t r = write(fd, data + w[k].off + off + done, n - done);
+
+				if (r < 0 && errno != EINTR && errno != EAGAIN)
+					_exit(1);
+				done += r > 0 ? r : 0;
+			}
+		}
+	}
+	usleep(300 * 1000);
+	_exit(0);
+}
+
+static void real_present(struct real *r, size_t parsed, uint64_t *presented)
+{
+	*presented = real_now();
+	real_until(*presented + DRAW_NS);
+	if (r->presents < sizeof(r->at) / sizeof(r->at[0]))
+		r->at[r->presents] = parsed;
+	r->presents++;
+}
+
+static void real_run(const struct sched *sc, bool coalesce, struct real *r)
+{
+	static char buf[NREAD];
+	struct write w[512];
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	struct terminal_sync sync;
+	struct termios tio;
+	size_t total, parsed = 0;
+	uint64_t t0, presented = 0, owed = 0, due = 0;
+	char *data;
+	int m, sl;
+	pid_t pid;
+
+	memset(r, 0, sizeof(*r));
+	r->coalesce = coalesce;
+	data = sched_data(sc, w, &total);
+	m = posix_openpt(O_RDWR | O_NOCTTY);
+	assert(m >= 0 && grantpt(m) == 0 && unlockpt(m) == 0);
+	sl = open(ptsname(m), O_RDWR | O_NOCTTY);
+	assert(sl >= 0);
+	assert(tcgetattr(sl, &tio) == 0);
+	cfmakeraw(&tio);
+	assert(tcsetattr(sl, TCSANOW, &tio) == 0);
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, COLS, ROWS) == 0);
+	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
+	terminal_sync_init(&sync, vte, 200);
+
+	t0 = real_now() + 20 * MS;
+	pid = fork();
+	assert(pid >= 0);
+	if (!pid) {
+		close(m);
+		real_writer(sl, data, w, sc->writes, t0);
+	}
+	close(sl);
+	assert(fcntl(m, F_SETFL, fcntl(m, F_GETFL) | O_NONBLOCK) == 0);
+
+	while (parsed < total || owed) {
+		struct pollfd pfd = {m, POLLIN, 0};
+		uint64_t now = real_now();
+		int timeout = 2000;
+		unsigned int num, last = 0, n_reads = 0;
+		size_t turn_bytes = 0;
+		uint64_t first = 0;
+		bool mid;
+
+		if (owed)
+			timeout = due > now ? (int)((due - now + MS - 1) / MS) : 0;
+		if (poll(&pfd, 1, timeout) < 0 && errno != EINTR)
+			break;
+		if (owed && real_now() >= due) {
+			owed = 0;
+			real_present(r, parsed, &presented);
+		}
+		for (num = 50; num; num--) {
+			ssize_t n;
+
+			if (!first)
+				first = real_now();
+			n = read(m, buf, sizeof(buf));
+
+			if (n <= 0)
+				break;
+			assert(tsm_vte_input_bounded(vte, buf, n) == (size_t)n);
+			parsed += n;
+			turn_bytes += n;
+			last = n;
+			n_reads++;
+			r->full_reads += n >= NREAD;
+		}
+		if (!n_reads) {
+			if (!owed && parsed < total && poll(&pfd, 1, 0) == 0 &&
+			    waitpid(pid, NULL, WNOHANG) == pid)
+				break;
+			continue;
+		}
+		r->turns++;
+		r->reads += n_reads;
+		r->capped_turns += !num;
+		r->last_full_turns += last >= NREAD;
+		{
+			unsigned int k = 0;
+
+			while (k < sc->writes && parsed >= w[k].off + w[k].len)
+				k++;
+			mid = k < sc->writes && parsed != w[k].off;
+		}
+		r->mid_turns += mid;
+		if (!num)
+			mid ? r->cap_mid++ : r->cap_end++;
+		if (turn_bytes >= coalesce_n)
+			mid ? r->big_mid++ : r->big_end++;
+		/* terminal_turn_end, with terminal.c's signal */
+		now = real_now();
+		due = coalesce ? terminal_sync_coalesce(&sync, turn_bytes >= coalesce_n, now,
+							presented, owed ? owed : first, REFRESH_NS)
+			       : 0;
+		if (!due) {
+			owed = 0;
+			real_present(r, parsed, &presented);
+		} else if (!owed) {
+			owed = first;
+		}
+	}
+	r->ns = presented + DRAW_NS - t0;
+	waitpid(pid, NULL, 0);
+	close(m);
+	assert(parsed == total);
+
+	/* the cells each present showed mixed, against the end of the write in progress */
+	{
+		struct sim s;
+		size_t fed = 0;
+
+		sim_init(&s, false, false);
+		for (unsigned int i = 0; i < r->presents && i < sizeof(r->at) / sizeof(r->at[0]);
+		     i++) {
+			unsigned int mixed;
+
+			tsm_vte_input(s.vte, data + fed, r->at[i] - fed);
+			fed = r->at[i];
+			while (s.ref_writes < sc->writes && w[s.ref_writes].off < fed) {
+				tsm_vte_input(s.ref_vte, data + w[s.ref_writes].off,
+					      w[s.ref_writes].len);
+				s.ref_writes++;
+			}
+			output_frame(&s.o, s.con, s.vte);
+			output_frame(&s.ref, s.ref_con, s.ref_vte);
+			mixed = cells_differing(&s.o, &s.ref);
+			r->mixed_cells += mixed;
+			if (mixed > r->max_mixed)
+				r->max_mixed = mixed;
+		}
+		if (cells_differing(&s.o, &s.ref) || fed != total)
+			sim_fail(sc->name, "real pty", "the screen is left part written");
+		sim_free(&s);
+	}
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+	free(data);
+}
+
+static void real_sched(const struct sched *sc)
+{
+	struct real b, a;
+
+	real_run(sc, false, &b);
+	real_run(sc, true, &a);
+	fprintf(stderr,
+		"test_present: %-24s real pty before: %4u presents, %6.1f/s, %7.1f mixed cells per "
+		"present (max %5" PRIu64 ") | after: %4u presents, %6.1f/s, %7.1f mixed cells per "
+		"present (max %5" PRIu64 ")\n",
+		sc->name, b.presents, b.presents * 1e9 / b.ns,
+		b.presents ? (double)b.mixed_cells / b.presents : 0.0, b.max_mixed, a.presents,
+		a.presents * 1e9 / a.ns, a.presents ? (double)a.mixed_cells / a.presents : 0.0,
+		a.max_mixed);
+	fprintf(stderr,
+		"test_present: %-24s real pty reads: %u in %u turns, %u full (%d bytes), %u turns "
+		"at the 50-read cap, %u turns ending on a full read\n",
+		sc->name, b.reads, b.turns, b.full_reads, NREAD, b.capped_turns, b.last_full_turns);
+	fprintf(stderr,
+		"test_present: %-24s real pty signals: %u turns end mid-write; 50-read cap flags "
+		"%u "
+		"of them and %u write ends; %d bytes in a turn flags %u of them and %u write "
+		"ends\n",
+		sc->name, b.mid_turns, b.cap_mid, b.cap_end, (int)coalesce_n, b.big_mid, b.big_end);
+}
+
+static void test_coalesce_real(void)
+{
+	static const struct sched scheds[] = {
+		{"bulk write", 1, 300, 0, 128 * 1024, 30 * US, false},
+		{"frames, 16 KB writes", 24, 3, 50 * MS, NREAD, 300 * US, false},
+		{"frames, 4 KB writes", 24, 3, 50 * MS, 4096, 80 * US, false},
+	};
+
+	for (size_t i = 0; i < sizeof(scheds) / sizeof(scheds[0]); i++)
+		real_sched(&scheds[i]);
+}
+
 static void test_coalesce(void)
 {
 	for (int flips = 0; flips < 2; flips++) {
 		test_coalesce_bulk(flips);
 		test_coalesce_frames(flips);
 		test_coalesce_short(flips);
-		test_coalesce_boundary(flips);
+		test_coalesce_large(flips);
+		test_coalesce_small(flips);
 		test_coalesce_sync(flips);
 		test_coalesce_echo(flips);
 	}
+	test_coalesce_real();
 }
 
 /* Replace the process's fontconfig with one that knows only the pinned files. */
@@ -1262,6 +1597,8 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	font_dir = argv[1];
+	if (getenv("COALESCE_N"))
+		coalesce_n = strtoul(getenv("COALESCE_N"), NULL, 0);
 
 	ret = kmscon_font_register(&kmscon_font_freetype_ops);
 	assert(ret == 0);

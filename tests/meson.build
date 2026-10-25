@@ -496,6 +496,7 @@ if enable_font_freetype and enable_video_drm2d
         'test_present',
         test_present,
         args: [meson.current_source_dir() / 'fonts'],
+        timeout: 120,
     )
 
     # ADR-103's S1 to S6 drawn into memory; run by make bench-compose, not a test

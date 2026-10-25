@@ -1,7 +1,8 @@
 # Upstream kmscon through tier 3, for the comparison page that sets upstream
 # beside the fork (docs/fork/conformance.md, "Comparison pages"). Upstream is
-# packaged with the fork's recipe and run in the same guest, on the same
-# variants and screens, as `make tier3` runs the fork.
+# packaged with the fork's recipe and run in the same guest, on the fork's 2D
+# variants and the same screens. The GL variant is left out: upstream's pin
+# lacks 9e12309, so its gltex can draw a black screen (#17).
 #
 #   make upstream-src     check out upstream kmscon and libtsm at the pins below
 #                         in fork/build/upstream/kmscon, libtsm as its
@@ -28,6 +29,9 @@ UP_LIBTSM_REV := ef2365d0f9f1a370d721a82470d69c3646fe97f0
 UP_KMSCON := fork/build/upstream/kmscon
 UP_LIBTSM := $(UP_KMSCON)/subprojects/libtsm
 UP_PKGOUT := fork/build/pkg-upstream
+# The variants tier3-upstream runs when VARIANTS is empty: the 2D ones of
+# DEFAULT_VARIANTS in fork/tier3/t3_scenario.py, in its order.
+UP_VARIANTS := 2d-1280x800 2d-7680x2160 2d-1366x768-potato 2d-7680x2160-font32
 # Recursive, so the version is read after upstream-src has checked out the tree.
 UP_PKGVER  = $(shell git -C $(UP_KMSCON) describe --tags --long | sed 's/^v//;s/-\([0-9]*\)-g/.r\1.g/')
 
@@ -55,4 +59,4 @@ tier3-upstream: tier3-image upstream-src ## Tier 3 on upstream kmscon and libtsm
 	$(call T3_ENV,$(UP_KMSCON),$(UP_LIBTSM),$(UP_KMSCON_URL),$(UP_LIBTSM_URL)) \
 		$(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) --deadline $(T3_DEADLINE) \
 		--pkg-target pkg-upstream --pkg-dir $(UP_PKGOUT) --pkg-name kmscon-upstream \
-		--compare-only $(VARIANTS)
+		--compare-only $(or $(VARIANTS),$(UP_VARIANTS))

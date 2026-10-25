@@ -408,7 +408,9 @@ class VariantTest(unittest.TestCase):
         # gltex draws image placements (ADR-103 steps 3f and 4e), so the GL
         # variant runs every case, the image screens and their keyed cases
         # included, as the 2D variants do; the no-images check it ran while
-        # gltex drew none is gone with its flag.
+        # gltex drew none is gone with its flag. Its goldens are blessed, so
+        # it is in the default run.
+        self.assertIn("gl-1280x800", t3_scenario.DEFAULT_VARIANTS)
         self.assertNotIn("draws_images", t3_scenario.VARIANTS["gl-1280x800"])
         self.assertNotIn("no-images", t3_evaluate.CASES)
         for name in t3_evaluate.IMAGE_SCREENS:

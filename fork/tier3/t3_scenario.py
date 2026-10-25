@@ -71,12 +71,15 @@ VARIANTS = {
 }
 
 # What `t3.py run` runs when no variant is named, in the order workers take
-# them: with JOBS=2 the longest, 2d-7680x2160, starts at once, and the
-# potato and then 2d-7680x2160-font32 follow 2d-1280x800 as workers free.
-# gl-1280x800 runs only when named (`make tier3-gl`) until its goldens are
-# blessed; its black screen, aaronsb/kmscon#17, was gltex's and is fixed.
+# them: with JOBS=2 the longest, 2d-7680x2160, starts at once, the potato
+# and then 2d-7680x2160-font32 follow 2d-1280x800 as workers free, and
+# gl-1280x800 follows the potato, so the worker that runs three variants
+# runs the three shortest.
+# gl-1280x800 joined once its goldens were blessed; its black screen,
+# aaronsb/kmscon#17, was gltex's and is fixed. fork/upstream.mk's UP_VARIANTS
+# copies the 2D ones, as upstream's pin predates that fix.
 DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160", "2d-1366x768-potato",
-                    "2d-7680x2160-font32"]
+                    "2d-7680x2160-font32", "gl-1280x800"]
 
 # Seconds a screen may take to draw; a benchmark scrolls for longer.
 SCREEN_TIMEOUT = 60

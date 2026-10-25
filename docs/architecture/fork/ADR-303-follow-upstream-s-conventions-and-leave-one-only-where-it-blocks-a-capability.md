@@ -31,7 +31,7 @@ basis:
   - operator: aaronsb
     level: guided
     said: "if you consider images, gpu path (with cpu fall back) and modes, then we've basically maintained consistency with upstream kmscon and libtsm. it should be relatively straightforward to bring their changes into our fork moving forward, and when we have some turns in our history of doing that, thats when I bring up the work we've been doing and show it."
-    via: Claude Code session, 2026-10-25, relayed verbatim by the team lead
+    via: Claude Code session, 2026-10-25, relayed verbatim by the team lead while ADR-303 was in review
   - precedent: ADR-108
   - precedent: ADR-101
   - precedent: ADR-102
@@ -90,7 +90,7 @@ The record does not assume upstream will converge on the fork's work. The operat
 
 The fork is in its heavy development phase, proving the planned capabilities against their criteria. Cleanup, and shaping the fork for a possible upstream merge, come in a later phase: "we need to prove the merit of our implementation - all the planned capabilities we're working on right now. when we figure that out and it fits our criteira [sic], the heavy development phase will be relatively complete - thats when cleaning it up and making it appealing for a possible upstream merge happens (which is why its not in this session)". Offering work upstream is therefore not a reason this record gives, and the record adds no upstreaming work now; as the operator put it earlier, "let's avoid growing beyond getting all the parts working first. publishing shape and prepping for upstream merge isn't our focus yet".
 
-Following upstream's conventions is what keeps regular upstream syncs straightforward, and a history of such syncs comes before the fork's work is shown upstream. The operator judges that the fork has kept that consistency so far, and sets the order: "if you consider images, gpu path (with cpu fall back) and modes, then we've basically maintained consistency with upstream kmscon and libtsm. it should be relatively straightforward to bring their changes into our fork moving forward, and when we have some turns in our history of doing that, thats when I bring up the work we've been doing and show it." Presenting the fork's work upstream is the operator's step, taken after that history exists.
+Following upstream's conventions is what keeps regular upstream syncs straightforward, and a history of such syncs comes before the fork's work is shown upstream. The operator judges that the fork has kept that consistency so far, and sets the order: "if you consider images, gpu path (with cpu fall back) and modes, then we've basically maintained consistency with upstream kmscon and libtsm. it should be relatively straightforward to bring their changes into our fork moving forward, and when we have some turns in our history of doing that, thats when I bring up the work we've been doing and show it." Routine upstream syncs during development, such as [development.md](../../fork/development.md)'s bring-home sync, build that history and are part of this phase; shaping the fork for an upstream merge is not. Presenting the fork's work upstream is the operator's step, taken after that history exists.
 
 This record makes explicit a practice the fork's merged work already follows:
 

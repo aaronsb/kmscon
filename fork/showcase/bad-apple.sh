@@ -109,7 +109,7 @@ cue() {
 : "${BANNER_ROWS:=12}"           #   the scroller's rows along the bottom
 : "${BANNER_FPS:=40}"            #   frames a second; it moves one column a frame
 : "${BANNER_SECONDS:=0}"         #   --banner-only runs this long (0: until q)
-: "${KITTY_TRANSPORT:=zlib}"     #   how each frame travels: raw, zlib, png or shm (fork/showcase/kitty.py)
+: "${KITTY_TRANSPORT:=png}"      #   how each frame travels: raw, zlib, png or shm (fork/showcase/kitty.py)
 : "${KITTY_WIDTH:=480}"          #   frames are decoded this many pixels wide; the terminal scales them up
 : "${ACT7_REPORT:=}"             #   a file to append the player's frame rate to
 : "${PLACEHOLDER_SECONDS:=6}"    # a placeholder (act 5 or 7) stays this long

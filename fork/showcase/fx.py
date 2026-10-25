@@ -2,10 +2,11 @@
 """The drawing commands of fork/showcase/bad-apple.sh (#75).
 
 Everything that draws more than a line of text runs through here: the video
-acts' frame caches and their player (frames.py), the effects (effects.py),
-the scenes of letters, typing, placeholders and cats (scenes.py), all drawn
-through the painters of screen.py. Standard library only; ffmpeg, img2txt and
-toilet are run as programs.
+acts' frame caches and their player (frames.py), act 7's kitty graphics
+player (kitty.py), the effects (effects.py), the scenes of letters, typing,
+placeholders and cats (scenes.py), all drawn through the painters of
+screen.py. Standard library only; ffmpeg, img2txt and toilet are run as
+programs.
 
 Keys: q ends the show (exit status 10, which bad-apple.sh takes as "quit");
 Ctrl-C exits 130. The terminal's mode is left as the caller set it, except
@@ -115,8 +116,8 @@ def parser():
     p.add_argument("--video", required=True)
     p.add_argument("--start", type=float, default=0)
     p.add_argument("--seconds", type=float, default=0, help="0: to the end")
-    p.add_argument("--transport", default="zlib", choices=kitty.TRANSPORTS)
-    p.add_argument("--fallback", default="zlib,raw", help="transports to try when the first is refused")
+    p.add_argument("--transport", default="png", choices=kitty.TRANSPORTS)
+    p.add_argument("--fallback", default="png,raw", help="transports to try when the first is refused")
     p.add_argument("--width", type=int, default=480, help="frames are decoded this many pixels wide")
     p.add_argument("--level", type=int, default=1, help="zlib's level for zlib and png")
     p.add_argument("--cell-w", type=int, default=10)

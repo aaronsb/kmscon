@@ -15,7 +15,7 @@ id is deleted (d=I, which frees its data), all in one write, so the picture
 is never without its copies and the terminal never holds more than two
 images of the player's.
 
-The transports, one per frame (--transport):
+The transports (--transport; png by default, the cheapest inline one):
   raw   f=24 RGB inline (t=d), base64 in chunks of 4096 (m=1)
   zlib  the same compressed with zlib (o=z): Bad Apple is nearly all black
         and white, so a frame shrinks many times

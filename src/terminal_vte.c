@@ -52,6 +52,8 @@ int terminal_vte_new(struct tsm_vte **vte, struct image_budget_terminal *images,
 		goto err_vte;
 
 	tsm_vte_set_backspace_sends_delete(v, conf->backspace_delete);
+	/* DECRQM ?12 tells the truth only if libtsm knows the cursor can't blink */
+	tsm_vte_set_cursor_blink(v, conf->blink);
 
 	ret = tsm_vte_set_palette(v, conf->palette);
 	if (ret)

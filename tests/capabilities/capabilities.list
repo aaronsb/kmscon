@@ -44,7 +44,7 @@ font-freetype-italic          missing #100       italic draws upright; pango sla
 font-freetype-synthetic-bold  missing #100       a family with no bold face draws bold as regular
 
 # modes and reports
-mode-2026-sync                missing libtsm#21  synchronized output: DECRQM ?2026 gets no reply
+mode-2026-sync                missing libtsm#21  synchronized output: DECRQM ?2026 replies 0 (not recognised)
 decrqm                        works   -          DECRQM answers every mode libtsm's mode table lists, 0 for the rest
 da1                           works   -          CSI c replies CSI ? ... c
 da1-level                     missing libtsm#31  DA1 reports level 60, not one of xterm's 61-65

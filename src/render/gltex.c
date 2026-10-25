@@ -55,7 +55,9 @@
  * image budget (image_budget.c) as bbulk's scaled pictures do: one that does
  * not fit is left out until the room in the budget grows, and those no frame
  * has drawn since go, least recently used first, once the textures pass
- * image_budget_cache_limit, or when the budget asks for room.
+ * image_budget_cache_limit, or when the budget asks for room. Upstream draws
+ * each cell opaque in one pass per atlas; this departure is recorded in
+ * ADR-103's gltex section (ADR-303).
  */
 
 #define GL_GLEXT_PROTOTYPES

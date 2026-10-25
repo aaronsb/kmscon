@@ -28,22 +28,50 @@
  * Fragment Shader
  * A basic fragment shader which applies a 2D texture and blends foreground and
  * background colors.
+ *
+ * kmscon fork (ADR-102 step 6): a cell is its underline, then its glyph, then
+ * its strike-through, over its background, as bbulk composes it. The glyph
+ * comes from an alpha atlas, tinted with the foreground, or from an RGBA atlas
+ * (colour set), premultiplied and untinted. The decoration sprites are cells
+ * of the alpha atlas bound to deco, at the cells decopos.y and decopos.z name
+ * (a blank one for none), each tinted with its own colour and repeated in
+ * every cell of a wide glyph; decopos.x is the x within the quad's cells,
+ * small enough to stay exact under a 16-bit mediump. A frame without the
+ * sprites has decorated 0. Upstream samples one alpha atlas and tints it; this
+ * departure is recorded in ADR-102's corrections from step 6 (ADR-303).
  */
 
 precision mediump float;
 
 uniform sampler2D atlas;
+uniform sampler2D deco;
+uniform bool colour;
 uniform float advance_htex;
 uniform float advance_vtex;
+uniform float deco_htex;
+uniform float deco_vtex;
+uniform float decorated;
 
 varying vec2 texpos;
 varying vec3 fgcol;
 varying vec3 bgcol;
+varying vec3 ulcol;
+varying vec3 stcol;
+varying vec3 decopos;
 
 void main()
 {
 	vec2 pos = vec2(texpos.x * advance_htex, texpos.y * advance_vtex);
-	float alpha = texture2D(atlas, pos).a;
-	vec3 val = alpha * fgcol + (1.0 - alpha) * bgcol;
-	gl_FragColor = vec4(val, 1.0);
+	vec4 tex = texture2D(atlas, pos);
+	vec4 glyph = colour ? tex : vec4(tex.a * fgcol, tex.a);
+	float x = fract(decopos.x);
+	float y = texpos.y * deco_vtex;
+	float u = texture2D(deco, vec2((decopos.y + x) * deco_htex, y)).a * decorated;
+	float s = texture2D(deco, vec2((decopos.z + x) * deco_htex, y)).a * decorated;
+
+	/* the text layer, premultiplied: underline, glyph, strike-through */
+	vec4 text = vec4(u * ulcol, u);
+	text = glyph + (1.0 - glyph.a) * text;
+	text = vec4(s * stcol, s) + (1.0 - s) * text;
+	gl_FragColor = vec4(text.rgb + (1.0 - text.a) * bgcol, 1.0);
 }

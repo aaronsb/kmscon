@@ -33,11 +33,11 @@ Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex);
 
 | Feature | Built in | Guarding tests | Paths | Gap and action |
 |---|---|---|---|---|
-| Decoration sprites: underline styles, strike, SGR 58 colour | #33 | tier 2 `underline`, `strike`, `wide-deco`, `combining`, `redraw`; tier 3 `underline-styles`, `underline-colour`, `strike`, `sgr`; `test_bbulk.c` underline cursor colour | FT/BB/D2, PG/BB/D2 | gltex stubbed: #116 |
-| Decoration config keys (`underline-color`, `strike-color`, `force-decoration-colors`) | #33 | `test_conf.c`; tier 2 `deco-config`, `deco-force` | FT/BB/D2 | gltex: #116; pango: #117 |
+| Decoration sprites: underline styles, strike, SGR 58 colour | #33 | tier 2 `underline`, `strike`, `wide-deco`, `combining`, `redraw`; tier 3 `underline-styles`, `underline-colour`, `strike`, `sgr`; `test_bbulk.c` underline cursor colour; `test_gltex.c` `test_decorations`, `test_underline_cursor`, `test_deco_flush` | FT/BB/D2, PG/BB/D2, GT stub | gltex on real GL: the tier 3 GL goldens are not blessed yet |
+| Decoration config keys (`underline-color`, `strike-color`, `force-decoration-colors`) | #33 | `test_conf.c`; tier 2 `deco-config`, `deco-force`; `test_gltex.c` `test_decorations` | FT/BB/D2, GT stub | pango: #117 |
 | Cell-exact block elements and box drawing | #59 | tier 2 `blocks`, `blocks-spaced`, `box` (gap checks); tier 3 `blocks`, `boxdraw` | FT/BB/D2, PG/BB/D2 | drawn in `font.c` before any engine, so every engine shares the sprites; gltex: #116 |
 | Braille, sextants and octants as cell-exact sprites | #91 | `test_font_box` (meson); tier 2 `mosaic`, `mosaic-spaced` (mosaic check); tier 3 `mosaic` | FT/BB/D2, PG/BB/D2 | drawn in `font.c` before any engine, like the box sprites; gltex: #116 |
-| Colour emoji, fit rule, presentation, `emoji-color` | #72 | `test_font_freetype.c` `test_wants_colour`, `test_colour_fit`, `test_colour_up_flow`; tier 2 `emoji`, `emoji-spaced`, `emoji-mono`, `vs16`; tier 3 `emoji` | FT/BB/D2, PG/BB/D2 | pango with colour off and missing glyph: #71, #117; gltex: #68, #116 |
+| Colour emoji, fit rule, presentation, `emoji-color` | #72 | `test_font_freetype.c` `test_wants_colour`, `test_colour_fit`, `test_colour_up_flow`; tier 2 `emoji`, `emoji-spaced`, `emoji-mono`, `vs16`; tier 3 `emoji`; `test_gltex.c` `test_colour_glyph` | FT/BB/D2, PG/BB/D2, GT stub | pango with colour off and missing glyph: #71, #117; gltex on real GL: the tier 3 GL goldens are not blessed yet |
 | COLR glyphs | #72 | `test_font_freetype.c` `test_colour_table_text_face` | FT (shared `font_colour.c`) | no pixel screen; pango: #117 |
 | Combining marks shaped by HarfBuzz | #33 | `test_font_freetype.c` cluster tests; tier 2 `combining`; tier 3 `combining` | FT/BB, PG/BB | gltex: #116 |
 | Blink: both phases, both buffers | #66 | `test_blink.c` `test_phases`, `test_buffers`; `test_gltex.c` `test_blink`; `test_conf.c` | FT/BB/D2 fake, GT stub | terminal.c's timer: #120 |

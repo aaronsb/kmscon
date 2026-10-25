@@ -34,6 +34,13 @@
  * texture sizes so we need to use multiple atlases. As there is no way to pass
  * a varying amount of textures to a shader, we need to render the screen for
  * each atlas we have.
+ *
+ * kmscon fork (ADR-102 step 6): an atlas holds alpha masks or premultiplied
+ * RGBA colour glyphs, and the shader tints the first and draws the second as
+ * it is. Underlines and strike-through are deco.c's sprites, cells of an alpha
+ * atlas, which the shader draws under and over the glyph in their own colours.
+ * Upstream has alpha atlases only and no decorations; this departure is
+ * recorded in ADR-102's corrections from step 6 (ADR-303).
  */
 
 #define GL_GLEXT_PROTOTYPES
@@ -63,6 +70,7 @@ struct atlas {
 	struct dlist list;
 
 	GLuint tex;
+	GLenum format; /* GL_ALPHA: masks; GL_RGBA: colour glyphs */
 	unsigned int height;
 	unsigned int width;
 	unsigned int count;
@@ -84,13 +92,16 @@ struct gl_glyph {
 
 /*
  * A quad queued for the frame, a cell or the pointer: @atlas's cells @texoff
- * to @texoff + @texw drawn over @x1, @y1 to @x2, @y2.
+ * to @texoff + @texw drawn over @x1, @y1 to @x2, @y2, with the decoration
+ * sprites at cells @ulcell and @strikecell of the decoration atlas tinted
+ * @ul and @strike (the blank sprite for none).
  */
 struct gltex_quad {
 	struct atlas *atlas;
 	GLfloat x1, y1, x2, y2;
 	GLfloat texoff, texw;
-	struct tsm_screen_color fg, bg;
+	GLfloat ulcell, strikecell;
+	struct tsm_screen_color fg, bg, ul, strike;
 };
 
 #define GLYPH_WIDTH(gly) ((gly)->buf.width)
@@ -103,6 +114,9 @@ struct gltex_quad {
  * flushes (see gltex_flush()).
  */
 #define GLTEX_CACHE_SCREENS 4
+
+/* the shader's vertex attributes, gltex_set()'s attr */
+#define GLTEX_ATTRS 7
 
 struct gltex {
 	struct shl_hashtable *glyphs;
@@ -127,6 +141,20 @@ struct gltex {
 	GLfloat *cache_texpos;
 	GLfloat *cache_fgcol;
 	GLfloat *cache_bgcol;
+	GLfloat *cache_ulcol;
+	GLfloat *cache_strikecol;
+	GLfloat *cache_deco;
+
+	/*
+	 * The decoration sprites, each kind at cell deco_off + its kind of
+	 * deco_atlas, KMSCON_DECO_NONE blank. They are uploaded for the first
+	 * cell drawn after a flush, which drops them with the glyphs. An upload
+	 * that fails is tried once a frame (deco_tried), and the frame is drawn
+	 * without decorations.
+	 */
+	struct atlas *deco_atlas;
+	unsigned int deco_off;
+	bool deco_tried;
 
 	GLfloat advance_x;
 	GLfloat advance_y;
@@ -140,6 +168,11 @@ struct gltex {
 	GLuint uni_atlas;
 	GLuint uni_advance_htex;
 	GLuint uni_advance_vtex;
+	GLuint uni_colour;
+	GLuint uni_deco;
+	GLuint uni_deco_htex;
+	GLuint uni_deco_vtex;
+	GLuint uni_decorated;
 
 	unsigned int sw;
 	unsigned int sh;
@@ -183,8 +216,12 @@ static void free_quads(struct gltex *gt)
 	free(gt->cache_texpos);
 	free(gt->cache_fgcol);
 	free(gt->cache_bgcol);
+	free(gt->cache_ulcol);
+	free(gt->cache_strikecol);
+	free(gt->cache_deco);
 	gt->quads = NULL;
 	gt->cache_pos = gt->cache_texpos = gt->cache_fgcol = gt->cache_bgcol = NULL;
+	gt->cache_ulcol = gt->cache_strikecol = gt->cache_deco = NULL;
 	gt->quads_num = gt->quads_size = 0;
 }
 
@@ -196,8 +233,11 @@ static int alloc_quads(struct gltex *gt, unsigned int n)
 	gt->cache_texpos = malloc(sizeof(GLfloat) * n * 2 * 6);
 	gt->cache_fgcol = malloc(sizeof(GLfloat) * n * 3 * 6);
 	gt->cache_bgcol = malloc(sizeof(GLfloat) * n * 3 * 6);
+	gt->cache_ulcol = malloc(sizeof(GLfloat) * n * 3 * 6);
+	gt->cache_strikecol = malloc(sizeof(GLfloat) * n * 3 * 6);
+	gt->cache_deco = malloc(sizeof(GLfloat) * n * 3 * 6);
 	if (!gt->quads || !gt->cache_pos || !gt->cache_texpos || !gt->cache_fgcol ||
-	    !gt->cache_bgcol) {
+	    !gt->cache_bgcol || !gt->cache_ulcol || !gt->cache_strikecol || !gt->cache_deco) {
 		free_quads(gt);
 		return -ENOMEM;
 	}
@@ -241,7 +281,8 @@ static int gltex_set(struct kmscon_text *txt)
 	struct gltex *gt = txt->data;
 	int ret, vlen, flen;
 	const char *vert, *frag;
-	static char *attr[] = {"position", "texture_position", "fgcolor", "bgcolor"};
+	static char *attr[] = {"position", "texture_position", "fgcolor",   "bgcolor",
+			       "ulcolor",  "strikecolor",      "decoration"};
 	GLint s;
 
 	if (!display_has_opengl(txt->disp))
@@ -264,7 +305,7 @@ static int gltex_set(struct kmscon_text *txt)
 	flen = _binary_gltex_atlas_frag_size;
 	gl_clear_error();
 
-	ret = gl_shader_new(&gt->shader, vert, vlen, frag, flen, attr, 4);
+	ret = gl_shader_new(&gt->shader, vert, vlen, frag, flen, attr, GLTEX_ATTRS);
 	if (ret)
 		goto err_htable;
 
@@ -274,6 +315,11 @@ static int gltex_set(struct kmscon_text *txt)
 	gt->uni_atlas = gl_shader_get_uniform(gt->shader, "atlas");
 	gt->uni_advance_htex = gl_shader_get_uniform(gt->shader, "advance_htex");
 	gt->uni_advance_vtex = gl_shader_get_uniform(gt->shader, "advance_vtex");
+	gt->uni_colour = gl_shader_get_uniform(gt->shader, "colour");
+	gt->uni_deco = gl_shader_get_uniform(gt->shader, "deco");
+	gt->uni_deco_htex = gl_shader_get_uniform(gt->shader, "deco_htex");
+	gt->uni_deco_vtex = gl_shader_get_uniform(gt->shader, "deco_vtex");
+	gt->uni_decorated = gl_shader_get_uniform(gt->shader, "decorated");
 
 	if (gl_has_error(gt->shader)) {
 		log_warning("cannot create shader");
@@ -344,8 +390,8 @@ static void gltex_unset(struct kmscon_text *txt)
 	}
 }
 
-/* returns an atlas with at least 1 free glyph position; NULL on error */
-static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num)
+/* returns a @format atlas with @num free glyph positions; NULL on error */
+static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num, GLenum format)
 {
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
@@ -356,7 +402,7 @@ static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num)
 	/* an atlas with room, which after a flush may be an old one */
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{
-		if (atlas->fill + num <= atlas->count)
+		if (atlas->format == format && atlas->fill + num <= atlas->count)
 			return atlas;
 	}
 
@@ -389,22 +435,26 @@ try_next:
 	gl_clear_error();
 
 	glBindTexture(GL_TEXTURE_2D, atlas->tex);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, width, height, 0, GL_ALPHA, GL_UNSIGNED_BYTE,
-		     NULL);
+	glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, NULL);
 
 	err = glGetError();
 	if (err != GL_NO_ERROR) {
-		if (newsize > 1) {
+		if (newsize > num) {
 			--newsize;
 			goto try_next;
 		}
 		gl_clear_error();
-		log_warning("OpenGL textures too small for a single glyph (%d)", err);
+		log_warning("OpenGL textures too small for %u glyph cells (%d)", num, err);
+		goto err_tex;
+	}
+	if (newsize < num) {
+		log_warning("OpenGL textures too small for %u glyph cells", num);
 		goto err_tex;
 	}
 
 	log_debug("new atlas of size %ux%u for %zu", width, height, newsize);
 
+	atlas->format = format;
 	atlas->count = newsize;
 	atlas->width = width;
 	atlas->height = height;
@@ -422,56 +472,118 @@ err_free:
 }
 
 /*
- * Until gltex composes decoration sprites itself (ADR-102, step 6), it bakes
- * them into the glyph mask, drawn in the foreground colour as before: every
- * underline style and strike-through, without decoration colours.
+ * Upload @w x @h pixels of @format at @atlas's cell @cell. A GL error is
+ * reported and fails it, with a hint to disable the GL renderer.
  */
-static void bake_deco(struct kmscon_text *txt, struct kmscon_glyph *glyph, enum kmscon_deco kind)
+static int upload(struct kmscon_text *txt, struct atlas *atlas, unsigned int cell, unsigned int w,
+		  unsigned int h, GLenum format, const void *data)
 {
-	struct kmscon_font_deco m;
-	struct kmscon_glyph *sprite;
-	unsigned int fw = FONT_WIDTH(txt), x, y;
+	GLenum err;
 
-	kmscon_font_get_deco(txt->font, &m);
-	sprite = kmscon_deco_render(kind, fw, FONT_HEIGHT(txt), &m);
-	if (!sprite)
-		return;
-	for (y = 0; y < glyph->buf.height && y < sprite->buf.height; y++)
-		for (x = 0; x < glyph->buf.width; x++) {
-			uint8_t v = sprite->buf.data[y * fw + x % fw];
-			uint8_t *d = &glyph->buf.data[y * glyph->buf.width + x];
+	gl_clear_error();
 
-			if (v > *d)
-				*d = v;
-		}
-	free(sprite);
+	glBindTexture(GL_TEXTURE_2D, atlas->tex);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	glTexSubImage2D(GL_TEXTURE_2D, 0, FONT_WIDTH(txt) * cell, 0, w, h, format, GL_UNSIGNED_BYTE,
+			data);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+
+	/* Check for GL-errors
+	 * As OpenGL is a state-machine, we cannot really tell which call failed
+	 * without adding a glGetError() after each call. This is totally
+	 * overkill so let us at least catch the error afterwards.
+	 * We also add a hint to disable OpenGL if this does not work. This
+	 * should _always_ work but OpenGL is kind of a black-box that isn't
+	 * verbose at all and many things can go wrong. */
+
+	err = glGetError();
+	if (err != GL_NO_ERROR) {
+		gl_clear_error();
+		log_warning("cannot load glyph data into OpenGL texture (%d: %s); disable the "
+			    "GL-renderer if this does not work reliably",
+			    err, gl_err_to_str(err));
+		return -EFAULT;
+	}
+	return 0;
 }
 
 /*
- * Until gltex has an RGBA atlas (ADR-102, step 6), a colour glyph goes into
- * the alpha atlas as its alpha, drawn in the foreground like text: the right
- * shape and size, without its colours.
+ * The decoration sprites (deco.c) as cells of an alpha atlas, uploaded once
+ * after each flush; see struct gltex. Each is drawn tinted, under the glyph
+ * or over it, by the shader.
  */
-static void colour_to_mask(struct kmscon_glyph *glyph)
+static int get_deco(struct kmscon_text *txt)
 {
-	const uint32_t *px = (const uint32_t *)glyph->buf.data;
+	struct gltex *gt = txt->data;
+	struct kmscon_font_deco m;
+	struct kmscon_glyph *sprite;
+	struct atlas *atlas;
+	unsigned int fw = FONT_WIDTH(txt), fh = FONT_HEIGHT(txt), w = fw * KMSCON_DECO_COUNT;
+	unsigned int kind, y;
+	uint8_t *strip;
+	int ret = -ENOMEM;
+
+	if (gt->deco_atlas)
+		return 0;
+	if (gt->deco_tried)
+		return -EAGAIN;
+	gt->deco_tried = true;
+
+	strip = calloc(w, fh);
+	if (!strip)
+		return -ENOMEM;
+	kmscon_font_get_deco(txt->font, &m);
+	for (kind = KMSCON_DECO_NONE + 1; kind < KMSCON_DECO_COUNT; kind++) {
+		sprite = kmscon_deco_render(kind, fw, fh, &m);
+		if (!sprite)
+			goto out;
+		for (y = 0; y < fh; y++)
+			memcpy(&strip[y * w + kind * fw], &sprite->buf.data[y * fw], fw);
+		free(sprite);
+	}
+
+	atlas = get_atlas(txt, KMSCON_DECO_COUNT, GL_ALPHA);
+	if (!atlas)
+		goto out;
+	ret = upload(txt, atlas, atlas->fill, w, fh, GL_ALPHA, strip);
+	if (ret)
+		goto out;
+
+	gt->deco_atlas = atlas;
+	gt->deco_off = atlas->fill;
+	atlas->fill += KMSCON_DECO_COUNT;
+	gt->cells += KMSCON_DECO_COUNT;
+out:
+	free(strip);
+	return ret;
+}
+
+/*
+ * A colour glyph's premultiplied ARGB32 pixels rewritten in place as the bytes
+ * GL_RGBA reads: R, G, B, A.
+ */
+static void argb_to_rgba(struct kmscon_glyph *glyph)
+{
+	uint8_t *b = glyph->buf.data;
 	size_t i, n = (size_t)glyph->buf.width * glyph->buf.height;
 
-	if (glyph->buf.format != VIDEO_FORMAT_ARGB32)
-		return;
-	/* byte i is written after pixel i, at or past it, has been read */
-	for (i = 0; i < n; i++)
-		glyph->buf.data[i] = px[i] >> 24;
-	glyph->buf.format = VIDEO_FORMAT_A8;
+	for (i = 0; i < n; i++, b += 4) {
+		uint32_t v = *(const uint32_t *)b;
+
+		b[0] = v >> 16;
+		b[1] = v >> 8;
+		b[2] = v;
+		b[3] = v >> 24;
+	}
 }
 
 static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16_t flags,
-				   unsigned int width, unsigned int underline, bool strike)
+				   unsigned int width)
 {
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
 	struct gl_glyph *glglyph;
-	GLenum err;
+	GLenum format;
 	struct kmscon_font *font = txt->font;
 	unsigned int num;
 	struct kmscon_glyph *glyph;
@@ -481,20 +593,17 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 	uint32_t one;
 	size_t len;
 	uint64_t id;
-	uint8_t extra;
 
 	attr.italic = !!(flags & TSM_FRAME_ITALIC);
 	attr.bold = !!(flags & TSM_FRAME_BOLD);
 
 	if (!key)
 		key = ' ';
-	extra = (underline & 7) | (strike ? 8 : 0);
 	k.key = key;
 	k.bold = attr.bold;
 	k.italic = attr.italic;
 	k.width = width;
-	k.extra = extra;
-	id = kmscon_glyph_key_hash(key, attr.bold, attr.italic, width, extra);
+	id = kmscon_glyph_key_hash(key, attr.bold, attr.italic, width, 0);
 
 	if (shl_hashtable_find(gt->glyphs, (void **)&glglyph, id)) {
 		if (kmscon_glyph_key_equal(&glglyph->key, &k))
@@ -515,44 +624,24 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 		free(glglyph);
 		return NULL;
 	}
-	colour_to_mask(glyph);
-	if (underline > KMSCON_DECO_NONE && underline < KMSCON_DECO_STRIKE)
-		bake_deco(txt, glyph, underline);
-	if (strike)
-		bake_deco(txt, glyph, KMSCON_DECO_STRIKE);
+	/* a colour glyph goes to an RGBA atlas, drawn untinted */
+	format = GL_ALPHA;
+	if (glyph->buf.format == VIDEO_FORMAT_ARGB32) {
+		argb_to_rgba(glyph);
+		format = GL_RGBA;
+	}
 
 	glglyph->key = k;
 	glglyph->double_width = glyph->double_width;
 
 	num = kmscon_glyph_cwidth(glyph);
-	atlas = get_atlas(txt, num);
+	atlas = get_atlas(txt, num, format);
 	if (!atlas)
 		goto err_free;
 
-	gl_clear_error();
-
-	glBindTexture(GL_TEXTURE_2D, atlas->tex);
-	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-	glTexSubImage2D(GL_TEXTURE_2D, 0, FONT_WIDTH(txt) * atlas->fill, 0, GLYPH_WIDTH(glyph),
-			GLYPH_HEIGHT(glyph), GL_ALPHA, GL_UNSIGNED_BYTE, GLYPH_DATA(glyph));
-	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-
-	/* Check for GL-errors
-	 * As OpenGL is a state-machine, we cannot really tell which call failed
-	 * without adding a glGetError() after each call. This is totally
-	 * overkill so let us at least catch the error afterwards.
-	 * We also add a hint to disable OpenGL if this does not work. This
-	 * should _always_ work but OpenGL is kind of a black-box that isn't
-	 * verbose at all and many things can go wrong. */
-
-	err = glGetError();
-	if (err != GL_NO_ERROR) {
-		gl_clear_error();
-		log_warning("cannot load glyph data into OpenGL texture (%d: %s); disable the "
-			    "GL-renderer if this does not work reliably",
-			    err, gl_err_to_str(err));
+	if (upload(txt, atlas, atlas->fill, GLYPH_WIDTH(glyph), GLYPH_HEIGHT(glyph), format,
+		   GLYPH_DATA(glyph)))
 		goto err_free;
-	}
 
 	glglyph->atlas = atlas;
 	glglyph->texoff = atlas->fill;
@@ -611,6 +700,7 @@ static void gltex_flush(struct kmscon_text *txt)
 		atlas->fill = 0;
 	}
 	gt->cells = 0;
+	gt->deco_atlas = NULL;
 }
 
 static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
@@ -625,6 +715,7 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 
 	if (gt->cells > gt->max_cells)
 		gltex_flush(txt);
+	gt->deco_tried = false;
 
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{
@@ -638,27 +729,14 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	return 0;
 }
 
-/* queue a quad for the frame; -ERANGE once the frame holds its maximum */
-static int queue_quad(struct gltex *gt, struct atlas *atlas, GLfloat x1, GLfloat y1, GLfloat x2,
-		      GLfloat y2, unsigned int texoff, GLfloat texw, struct tsm_screen_color fg,
-		      struct tsm_screen_color bg)
+/* queue quad @q for the frame; -ERANGE once the frame holds its maximum */
+static int queue_quad(struct gltex *gt, const struct gltex_quad *q)
 {
-	struct gltex_quad *q;
-
 	if (gt->quads_num >= gt->quads_size)
 		return -ERANGE;
 
-	q = &gt->quads[gt->quads_num++];
-	q->atlas = atlas;
-	q->x1 = x1;
-	q->y1 = y1;
-	q->x2 = x2;
-	q->y2 = y2;
-	q->texoff = texoff;
-	q->texw = texw;
-	q->fg = fg;
-	q->bg = bg;
-	++atlas->cache_num;
+	gt->quads[gt->quads_num++] = *q;
+	++q->atlas->cache_num;
 	return 0;
 }
 
@@ -668,6 +746,7 @@ static void write_quad(struct gltex *gt, unsigned int i, const struct gltex_quad
 	GLfloat *pos = &gt->cache_pos[i * 2 * 6];
 	GLfloat *tex = &gt->cache_texpos[i * 2 * 6];
 	GLfloat t1 = q->texoff, t2 = q->texoff + q->texw;
+	static const GLfloat right[6] = {0, 0, 1, 0, 1, 1}; /* vertex at x2 */
 	int j, idx;
 
 	pos[0] = q->x1;
@@ -706,41 +785,87 @@ static void write_quad(struct gltex *gt, unsigned int i, const struct gltex_quad
 		gt->cache_bgcol[idx + 0] = q->bg.r / 255.0;
 		gt->cache_bgcol[idx + 1] = q->bg.g / 255.0;
 		gt->cache_bgcol[idx + 2] = q->bg.b / 255.0;
+		gt->cache_ulcol[idx + 0] = q->ul.r / 255.0;
+		gt->cache_ulcol[idx + 1] = q->ul.g / 255.0;
+		gt->cache_ulcol[idx + 2] = q->ul.b / 255.0;
+		gt->cache_strikecol[idx + 0] = q->strike.r / 255.0;
+		gt->cache_strikecol[idx + 1] = q->strike.g / 255.0;
+		gt->cache_strikecol[idx + 2] = q->strike.b / 255.0;
+		/* the vertex's x within the quad's cells: 0 or @texw */
+		idx = i * 3 * 6 + j * 3;
+		gt->cache_deco[idx + 0] = right[j] * q->texw;
+		gt->cache_deco[idx + 1] = q->ulcell;
+		gt->cache_deco[idx + 2] = q->strikecell;
 	}
 }
 
 /*
  * Draw @cell at @posx, @posy with glyph key @key (0: none), @cwidth cells wide
- * (a wide glyph in the last column is cut at the margin by the atlas).
+ * (a wide glyph in the last column is cut at the margin by the atlas), and its
+ * underline and strike-through in their colours, as bbulk draws them.
+ * @ul_cursor: @cell's underline is an underline cursor, which is no
+ * decoration and draws in the foreground.
+ * When the glyph cannot be had, the cell is drawn without it and -ENOMEM
+ * returned, as bbulk does.
  */
 static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
-			   unsigned int posx, unsigned int posy, unsigned int cwidth)
+			   unsigned int posx, unsigned int posy, unsigned int cwidth,
+			   bool ul_cursor)
 {
 	struct gltex *gt = txt->data;
 	struct gl_glyph *glglyph;
-	float gl_x1, gl_x2, gl_y1, gl_y2;
+	struct gltex_quad q = {0};
+	unsigned int i, n = 1;
 	float width;
+	int ret = 0, r;
 
-	glglyph = find_glyph(txt, key, cell->flags, cwidth, cell->underline,
-			     cell->flags & TSM_FRAME_STRIKE);
-	if (!glglyph)
-		return -ENOMEM;
+	glglyph = find_glyph(txt, key, cell->flags, cwidth);
+	if (!glglyph) {
+		/* a blank in each of its cells, which fits where a wide glyph
+		 * fits no texture, keeps its background and decorations */
+		glglyph = find_glyph(txt, ' ', cell->flags, 1);
+		if (!glglyph)
+			return -ENOMEM;
+		n = cwidth;
+		ret = -ENOMEM;
+	}
 
 	width = glglyph->double_width ? 2.0 : 1.0;
 
-	gl_x1 = gt->off_x + gt->advance_x * posx - 1.0;
-	gl_x2 = gl_x1 + width * gt->advance_x;
-	gl_y1 = 1.0 - gt->off_y - gt->advance_y * posy;
-	gl_y2 = gl_y1 - gt->advance_y;
+	q.atlas = glglyph->atlas;
+	q.y1 = 1.0 - gt->off_y - gt->advance_y * posy;
+	q.y2 = q.y1 - gt->advance_y;
+	q.texoff = glglyph->texoff;
+	q.texw = width;
+	q.fg = cell->fg;
+	q.bg = cell->bg;
+	/* without the sprites this frame, the cell is drawn undecorated */
+	if (!get_deco(txt)) {
+		q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
+		if (cell->underline > TSM_UNDERLINE_NONE && cell->underline < KMSCON_DECO_STRIKE) {
+			q.ulcell = gt->deco_off + cell->underline;
+			q.ul = ul_cursor ? cell->fg : kmscon_text_ul_color(txt, cell);
+		}
+		if (cell->flags & TSM_FRAME_STRIKE) {
+			q.strikecell = gt->deco_off + KMSCON_DECO_STRIKE;
+			q.strike = kmscon_text_strike_color(txt, cell);
+		}
+	}
 
-	return queue_quad(gt, glglyph->atlas, gl_x1, gl_y1, gl_x2, gl_y2, glglyph->texoff, width,
-			  cell->fg, cell->bg);
+	for (i = 0; i < n; i++) {
+		q.x1 = gt->off_x + gt->advance_x * (posx + i) - 1.0;
+		q.x2 = q.x1 + width * gt->advance_x;
+		r = queue_quad(gt, &q);
+		if (r)
+			return r;
+	}
+	return ret;
 }
 
 /*
  * The frame's image placements (ADR-103 step 3f): here gltex will compose the
- * three bands, a texture per image key, once ADR-102 step 6 gives it an RGBA
- * path (#68). Until then it draws none, and kmscon_text_gltex_ops leaves
+ * three bands, a texture per image key, on the RGBA path ADR-102 step 6 gave
+ * it (#68). Until step 3f it draws none, and kmscon_text_gltex_ops leaves
  * draws_images false, so no terminal gltex draws for offers sixel.
  */
 static void gltex_draw_placements(struct kmscon_text *txt, const struct tsm_frame *frame)
@@ -753,7 +878,7 @@ static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 {
 	unsigned int posx, posy, cols, rows, width;
 	const struct tsm_frame_cell *fc, *cell;
-	bool is_cursor;
+	bool is_cursor, ul_cursor;
 	uint64_t key;
 
 	cols = min(txt->cols, frame->cols);
@@ -778,12 +903,15 @@ static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 				/* the bar, at the left of the cell; a wide cell's
 				 * second half is left empty */
 				if (width == 2 && posx + 1 < cols)
-					gltex_draw_cell(txt, cell, 0, posx + 1, posy, 1);
+					gltex_draw_cell(txt, cell, 0, posx + 1, posy, 1, false);
 				key = FONT_VBAR;
 				width = 1;
 			}
+			ul_cursor = is_cursor &&
+				    (frame->cursor.style == TSM_SCREEN_CURSOR_UNDERLINE_BLINK ||
+				     frame->cursor.style == TSM_SCREEN_CURSOR_UNDERLINE_STEADY);
 
-			gltex_draw_cell(txt, cell, key, posx, posy, width);
+			gltex_draw_cell(txt, cell, key, posx, posy, width, ul_cursor);
 		}
 	}
 	gltex_draw_placements(txt, frame);
@@ -794,11 +922,10 @@ static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned 
 {
 	struct gltex *gt = txt->data;
 	struct gl_glyph *glyph;
-	struct tsm_screen_color fg, bg;
-	float gl_x1, gl_x2, gl_y1, gl_y2;
+	struct gltex_quad q = {0};
 	unsigned int sw, sh;
 
-	glyph = find_glyph(txt, 'I', 0, 1, TSM_UNDERLINE_NONE, false);
+	glyph = find_glyph(txt, 'I', 0, 1);
 	if (!glyph)
 		return -ENOMEM;
 
@@ -816,20 +943,24 @@ static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned 
 	if (y > sh)
 		y = sh;
 
-	gl_x1 = gt->off_x + x * 2.0 / sw - 1.0 - gt->advance_x / 2.0;
-	gl_y1 = 1.0 - gt->off_y - y * 2.0 / sh + gt->advance_y / 2.0;
-	gl_x2 = gl_x1 + gt->advance_x;
-	gl_y2 = gl_y1 - gt->advance_y;
-
-	fg = (struct tsm_screen_color){gt->attr.fr, gt->attr.fg, gt->attr.fb};
-	bg = (struct tsm_screen_color){gt->attr.br, gt->attr.bg, gt->attr.bb};
-	return queue_quad(gt, glyph->atlas, gl_x1, gl_y1, gl_x2, gl_y2, glyph->texoff, 1.0, fg, bg);
+	q.atlas = glyph->atlas;
+	q.x1 = gt->off_x + x * 2.0 / sw - 1.0 - gt->advance_x / 2.0;
+	q.y1 = 1.0 - gt->off_y - y * 2.0 / sh + gt->advance_y / 2.0;
+	q.x2 = q.x1 + gt->advance_x;
+	q.y2 = q.y1 - gt->advance_y;
+	q.texoff = glyph->texoff;
+	q.texw = 1.0;
+	q.fg = (struct tsm_screen_color){gt->attr.fr, gt->attr.fg, gt->attr.fb};
+	q.bg = (struct tsm_screen_color){gt->attr.br, gt->attr.bg, gt->attr.bb};
+	if (!get_deco(txt))
+		q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
+	return queue_quad(gt, &q);
 }
 
 static int gltex_render(struct kmscon_text *txt)
 {
 	struct gltex *gt = txt->data;
-	struct atlas *atlas;
+	struct atlas *atlas, *deco;
 	struct gltex_quad *q;
 	unsigned int i, off = 0;
 	float mat[16];
@@ -858,10 +989,25 @@ static int gltex_render(struct kmscon_text *txt)
 	glUniform1f(gt->uni_cos, gt->cos);
 	glUniform1f(gt->uni_sin, gt->sin);
 
-	glEnableVertexAttribArray(0);
-	glEnableVertexAttribArray(1);
-	glEnableVertexAttribArray(2);
-	glEnableVertexAttribArray(3);
+	for (i = 0; i < GLTEX_ATTRS; i++)
+		glEnableVertexAttribArray(i);
+
+	/*
+	 * every quad's decoration sprites come from the one atlas on unit 1.
+	 * A frame without them (see get_deco) is drawn undecorated, and unit 1
+	 * still holds an atlas: an incomplete texture samples as alpha 1.
+	 */
+	deco = gt->deco_atlas;
+	if (!deco && !dlist_empty(&gt->atlases))
+		deco = dlist_first(&gt->atlases, struct atlas, list);
+	if (deco) {
+		glActiveTexture(GL_TEXTURE1);
+		glBindTexture(GL_TEXTURE_2D, deco->tex);
+		glUniform1i(gt->uni_deco, 1);
+		glUniform1f(gt->uni_deco_htex, deco->advance_htex);
+		glUniform1f(gt->uni_deco_vtex, deco->advance_vtex);
+	}
+	glUniform1f(gt->uni_decorated, gt->deco_atlas ? 1.0 : 0.0);
 
 	glActiveTexture(GL_TEXTURE0);
 	glUniform1i(gt->uni_atlas, 0);
@@ -870,6 +1016,9 @@ static int gltex_render(struct kmscon_text *txt)
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, gt->cache_texpos);
 	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_fgcol);
 	glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_bgcol);
+	glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_ulcol);
+	glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_strikecol);
+	glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_deco);
 
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{
@@ -877,15 +1026,14 @@ static int gltex_render(struct kmscon_text *txt)
 			continue;
 
 		glBindTexture(GL_TEXTURE_2D, atlas->tex);
+		glUniform1i(gt->uni_colour, atlas->format == GL_RGBA);
 		glUniform1f(gt->uni_advance_htex, atlas->advance_htex);
 		glUniform1f(gt->uni_advance_vtex, atlas->advance_vtex);
 		glDrawArrays(GL_TRIANGLES, 6 * atlas->cache_off, 6 * atlas->cache_num);
 	}
 
-	glDisableVertexAttribArray(0);
-	glDisableVertexAttribArray(1);
-	glDisableVertexAttribArray(2);
-	glDisableVertexAttribArray(3);
+	for (i = 0; i < GLTEX_ATTRS; i++)
+		glDisableVertexAttribArray(i);
 
 	if (gl_has_error(gt->shader)) {
 		log_warning("rendering console caused OpenGL errors");

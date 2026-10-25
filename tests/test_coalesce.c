@@ -315,6 +315,7 @@ static void sim_turn_end(struct sim *s)
 static void sim_run(struct sim *s)
 {
 	bool key_done = !s->key_ns;
+	unsigned int stalled = 0;
 
 	for (;;) {
 		uint64_t next = UINT64_MAX;
@@ -381,8 +382,15 @@ static void sim_run(struct sim *s)
 			next = s->key_ns;
 		if (next == UINT64_MAX)
 			break;
-		if (next > s->t)
+		/* a deadline that nothing ends would hold the clock still for good */
+		if (next > s->t) {
 			s->t = next;
+			stalled = 0;
+		} else if (++stalled == 1000) {
+			fprintf(stderr, "test_coalesce: the clock stopped at %" PRIu64 " ns\n",
+				s->t);
+			abort();
+		}
 	}
 }
 

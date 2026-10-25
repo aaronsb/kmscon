@@ -735,6 +735,102 @@ static void test_schedule(void)
 	term_free(&m.t);
 }
 
+/* the time to arm for, folded over @n displays as the terminal folds them */
+static uint64_t retry_arm(const struct terminal_retry *r, unsigned int n, bool awake, uint64_t now)
+{
+	uint64_t arm = 0;
+
+	for (unsigned int i = 0; i < n; i++)
+		arm = terminal_retry_earliest(arm, &r[i], awake, now);
+	return arm;
+}
+
+#define SEC (1000 * MS)
+#define NOW (10 * SEC)
+
+/* nothing to try, or in the background: the timer is disarmed (#206) */
+static void test_retry_idle(void)
+{
+	struct terminal_retry r[2] = {0};
+
+	assert(retry_arm(r, 2, true, NOW) == 0);
+	assert(!terminal_retry_ask(&r[0], NOW));
+	r[0].due = NOW + SEC;
+	assert(retry_arm(r, 2, false, NOW) == 0);
+	assert(retry_arm(r, 2, true, NOW) == NOW + SEC);
+	assert(!terminal_retry_ask(&r[0], NOW));
+}
+
+/* the first display recovered, and the second's time slipped into the past */
+static void test_retry_slipped(void)
+{
+	struct terminal_retry r[2] = {0};
+
+	r[1].due = NOW - 5 * MS;
+	assert(retry_arm(r, 2, true, NOW) == NOW + TERMINAL_RETRY_MIN_NS);
+}
+
+/*
+ * The timer expired for the first display, and another display's failed
+ * frame armed it again before the callback ran, which drops the expiry
+ * (ev_timer_update() in eloop.c); then the timer asks the first a frame, once
+ */
+static void test_retry_rearmed(void)
+{
+	struct terminal_retry r[2] = {0};
+
+	r[0].due = NOW - 1;
+	r[1].due = NOW + SEC / 2;
+	assert(retry_arm(r, 2, true, NOW) == NOW + TERMINAL_RETRY_MIN_NS);
+
+	assert(terminal_retry_ask(&r[0], NOW));
+	assert(r[0].asked == NOW - 1 && r[0].asked_ns == NOW);
+	assert(!terminal_retry_ask(&r[0], NOW));
+	/* no spin while the frame is on its way */
+	assert(retry_arm(r, 1, true, NOW) == NOW + TERMINAL_RETRY_ASK_NS);
+	assert(retry_arm(r, 2, true, NOW) == NOW + SEC / 2);
+
+	/* the frame tried the set and failed: its time moved a second on */
+	r[0].due = NOW + 2 * MS + SEC;
+	assert(retry_arm(r, 1, true, NOW + 2 * MS) == r[0].due);
+}
+
+/*
+ * Asked a frame while disabled, so the frame is dropped and the time stays,
+ * then set again, failing again: the new set's time counts at once
+ */
+static void test_retry_set_again(void)
+{
+	struct terminal_retry r = {0};
+
+	r.due = NOW - 2 * MS;
+	assert(terminal_retry_ask(&r, NOW));
+	r.due = NOW + 10 * MS + SEC;
+	assert(retry_arm(&r, 1, true, NOW + 10 * MS) == r.due);
+}
+
+/*
+ * OSC setForeground: asked a frame, the session left the foreground before
+ * it drew, and came back through terminal_activate(), whose redraw ran
+ * before the session was foreground again (seat.c), so it drew nothing: the
+ * frame is asked again a second after the first ask
+ */
+static void test_retry_foreground(void)
+{
+	struct terminal_retry r = {0};
+	uint64_t t;
+
+	r.due = NOW - 2 * MS;
+	assert(terminal_retry_ask(&r, NOW));
+	assert(retry_arm(&r, 1, false, NOW + 100 * MS) == 0);
+	t = retry_arm(&r, 1, true, NOW + 300 * MS);
+	assert(t == NOW + TERMINAL_RETRY_ASK_NS);
+	assert(!terminal_retry_ask(&r, t - 1));
+	assert(terminal_retry_ask(&r, t) && r.asked_ns == t);
+	/* past that second already: armed for at once */
+	assert(retry_arm(&r, 1, true, t + 2 * SEC) == t + 2 * SEC + TERMINAL_RETRY_MIN_NS);
+}
+
 int main(void)
 {
 	test_offer();
@@ -749,6 +845,11 @@ int main(void)
 	test_timeout_limit();
 	test_coalesce();
 	test_schedule();
+	test_retry_idle();
+	test_retry_slipped();
+	test_retry_rearmed();
+	test_retry_set_again();
+	test_retry_foreground();
 	printf("test_terminal_sync: ok\n");
 	return 0;
 }

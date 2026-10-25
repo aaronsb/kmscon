@@ -215,4 +215,47 @@ void terminal_coalesce_turn_end(struct terminal_coalesce *c);
 /* @d's wait ends without a draw of its own: the timer fired, or cannot run. */
 void terminal_coalesce_end(struct terminal_coalesce_display *d);
 
+/*
+ * Trying a failed font set again (#206). A display whose kmscon_text_set()
+ * failed tries the set again in a frame's kmscon_text_prepare(), from the
+ * time kmscon_text_retry_due() gives. A display with no output and no blink
+ * draws no frame, so the terminal keeps a timer for that time and asks the
+ * display for a frame when it fires. The terminal keeps one struct
+ * terminal_retry for each display, reads @due into it before each call, arms
+ * the timer for the earliest terminal_retry_earliest() gives, and when the
+ * timer fires asks for a frame of each display terminal_retry_ask() names.
+ *
+ * A due time already past is armed for TERMINAL_RETRY_MIN_NS from now: the
+ * timer may have expired unread when it was armed again (a timer armed again
+ * drops its expiry), or the display that recovered was the one armed for. A
+ * display the timer has asked a frame of is not asked again for the same due
+ * time until TERMINAL_RETRY_ASK_NS has passed: a frame that tries the set
+ * moves the due time (a second on, or to none), and one that a flip or a
+ * hold of mode 2026 defers, or that a session not yet in the foreground
+ * drops, is asked again then. A session held out of the foreground (OSC
+ * setBackground, another session on screen) is asked once a second for as
+ * long as that lasts: a bounded wakeup, not a spin. The terminal reads no due
+ * time for a disabled display, whose frames are dropped until the size update
+ * that enables it sets its text again.
+ */
+#define TERMINAL_RETRY_MIN_NS (1000000000ULL / 1000)
+#define TERMINAL_RETRY_ASK_NS 1000000000ULL
+
+struct terminal_retry {
+	uint64_t due;	   /* kmscon_text_retry_due(): the set may be tried from then; 0: none */
+	uint64_t asked;	   /* the due time the timer last asked a frame for; 0: none */
+	uint64_t asked_ns; /* when it asked */
+};
+
+/*
+ * The time to arm the timer for, given @arm_ns, the earliest of the displays
+ * before @r (0: none), and @r, at @now_ns; @awake: the terminal draws. 0:
+ * none, the timer is disarmed.
+ */
+uint64_t terminal_retry_earliest(uint64_t arm_ns, const struct terminal_retry *r, bool awake,
+				 uint64_t now_ns);
+
+/* The timer fired at @now_ns: true to ask @r's display for a frame, which @r records. */
+bool terminal_retry_ask(struct terminal_retry *r, uint64_t now_ns);
+
 #endif /* KMSCON_TERMINAL_SYNC_H */

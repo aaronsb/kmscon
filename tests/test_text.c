@@ -2,7 +2,8 @@
  * Lightweight test for kmscon_text_set / kmscon_text_unset, for one console
  * drawn on two displays: each display's frame marks the cells changed since
  * that display's own last frame, and for a set that fails: the text's frames
- * try it again, once a second on text.c's clock, which the test stands in for.
+ * try it again, once a second on text.c's clock, which the test stands in for,
+ * and the text says when the next try may run.
  * We avoid linking the whole tree by stubbing external deps.
  */
 
@@ -317,6 +318,68 @@ static void test_set_again(void)
 	tsm_screen_unref(con);
 }
 
+/*
+ * A screen with no output and no blink draws no frame of its own, so the
+ * retry would wait for some later redraw: kmscon_text_retry_due() says when
+ * the next try may run, and the terminal asks for a frame then (#206). With
+ * the console unchanged throughout, the frame at each due time tries the set,
+ * a failed try moves the time a second on, a frame before it neither tries
+ * nor moves it, and the frame whose try succeeds draws every cell; then, as
+ * after an unset, nothing is due.
+ */
+static void test_set_again_quiet(void)
+{
+	struct kmscon_text txt;
+	struct kmscon_font font = {.width = 8};
+	struct tsm_screen_attr attr = {0};
+	struct tsm_screen *con;
+	uint64_t due;
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, COLS, ROWS) == 0);
+	memset(&txt, 0, sizeof(txt));
+	txt.ops = &failing_ops;
+	txt.disp = (struct display *)0x1;
+	failing_set_calls = 0;
+	font_refs = 0;
+	fake_now_ns = 7000000000ULL;
+	assert(!kmscon_text_retry_due(&txt));
+
+	fail_sets = 2;
+	assert(kmscon_text_set(&txt, &font) == -EIO);
+	due = kmscon_text_retry_due(&txt);
+	assert(due == fake_now_ns + KMSCON_TEXT_SET_RETRY_NS);
+
+	/* a frame before the due time, as a resize asks for: no try, the time stays */
+	fake_now_ns = due - 1;
+	assert(kmscon_text_prepare(&txt, &attr, false) == -EINVAL);
+	assert(failing_set_calls == 1 && kmscon_text_retry_due(&txt) == due);
+
+	/* the frame asked for at the due time tries, fails, and moves the time on */
+	fake_now_ns = due;
+	assert(kmscon_text_prepare(&txt, &attr, false) == -EINVAL);
+	assert(failing_set_calls == 2);
+	due = kmscon_text_retry_due(&txt);
+	assert(due == fake_now_ns + KMSCON_TEXT_SET_RETRY_NS);
+
+	/* the next one succeeds, and its frame draws every cell of the unchanged console */
+	fake_now_ns = due;
+	assert(kmscon_text_prepare(&txt, &attr, false) == 0);
+	assert(failing_set_calls == 3 && txt.font == &font);
+	assert(!kmscon_text_retry_due(&txt));
+	draw_full(&txt, con);
+	kmscon_text_unset(&txt);
+
+	/* a failed set that is unset leaves nothing due */
+	fail_sets = 1;
+	assert(kmscon_text_set(&txt, &font) == -EIO);
+	assert(kmscon_text_retry_due(&txt));
+	kmscon_text_unset(&txt);
+	assert(!kmscon_text_retry_due(&txt) && font_refs == 0);
+
+	tsm_screen_unref(con);
+}
+
 int main(void)
 {
 	struct kmscon_text txt = {0};
@@ -344,5 +407,6 @@ int main(void)
 
 	test_two_displays();
 	test_set_again();
+	test_set_again_quiet();
 	return 0;
 }

@@ -75,6 +75,8 @@ struct screen {
 	bool lost;
 	/* a draw of the child's output waiting for its write to end (terminal_sync.h) */
 	struct terminal_coalesce_display coalesce;
+	/* its failed font set, for the timer that asks for a frame to try it again */
+	struct terminal_retry retry;
 	bool hw_cursor;
 	bool enabled;
 	bool scaled;
@@ -122,6 +124,8 @@ struct kmscon_terminal {
 	/* ends the earliest wait for a write's end; armed for coalesce_due, 0: disarmed */
 	struct ev_timer *coalesce_timer;
 	uint64_t coalesce_due;
+	/* asks for a frame when a screen whose font set failed may try it again */
+	struct ev_timer *set_retry_timer;
 	/* the screen in the image budget, and sixel while every display draws images */
 	struct image_budget_terminal images;
 	/* the cell size libtsm and TIOCSWINSZ were last given */
@@ -364,12 +368,41 @@ static uint64_t clock_ns(clockid_t id)
 	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
+/*
+ * Arms the timer for the earliest time a screen whose kmscon_text_set()
+ * failed may try it again, or disarms it (terminal_retry_earliest()). The set
+ * is tried again in a frame's kmscon_text_prepare(), and a screen with no
+ * output and no blink draws no frame, so without the timer it stayed frozen
+ * until something else redrew it (#206). Nothing draws in the background, so
+ * there the timer is disarmed.
+ */
+static void set_retry_arm(struct kmscon_terminal *term)
+{
+	struct itimerspec spec = {0};
+	struct screen *scr;
+	uint64_t now = clock_ns(CLOCK_MONOTONIC), due = 0;
+
+	dlist_for_each_entry(scr, &term->screens, list)
+	{
+		scr->retry.due = scr->enabled ? kmscon_text_retry_due(scr->txt) : 0;
+		due = terminal_retry_earliest(due, &scr->retry, term->awake, now);
+	}
+	/* 0 disarms a timer */
+	if (due) {
+		spec.it_value.tv_sec = (due - now) / 1000000000ULL;
+		spec.it_value.tv_nsec = (due - now) % 1000000000ULL;
+	}
+	if (ev_timer_update(term->set_retry_timer, &spec))
+		log_warning("cannot arm the timer that tries a failed font set again; the next "
+			    "redraw tries it");
+}
+
 static void do_redraw_screen(struct screen *scr)
 {
 	struct tsm_screen_attr attr;
 	struct kmscon_text_deco deco;
 	uint64_t start;
-	bool presented;
+	bool presented, retrying;
 	int ret;
 
 	if (!scr->term->awake || !kmscon_session_get_foreground(scr->term->session))
@@ -384,6 +417,7 @@ static void do_redraw_screen(struct screen *scr)
 
 	scr->pending = false;
 	scr->lost = false;
+	retrying = kmscon_text_retry_due(scr->txt);
 
 	start = clock_ns(CLOCK_MONOTONIC);
 	render_timer_frame_begin(scr->timer);
@@ -399,8 +433,12 @@ static void do_redraw_screen(struct screen *scr)
 	 */
 	if (kmscon_text_prepare(scr->txt, &attr, scr->term->blinking)) {
 		render_timer_frame_end(scr->timer, false, 0);
+		set_retry_arm(scr->term);
 		return;
 	}
+	/* the set succeeded again: the timer no longer waits for this screen */
+	if (retrying)
+		set_retry_arm(scr->term);
 	kmscon_text_draw(scr->txt, scr->term->console, scr->term->cursor_blinking);
 	draw_pointer(scr);
 
@@ -647,6 +685,29 @@ static void display_pageflip(void *unused, void *unused2, void *data)
 	case TERMINAL_SYNC_IDLE:
 		break;
 	}
+}
+
+/*
+ * Each screen whose failed font set may be tried again, and that the timer
+ * has not asked a frame of for that time already (terminal_retry_ask()), is
+ * redrawn, through the same requests as a blink's: a flip in flight or a hold
+ * of mode 2026 defers the frame, and a frame whose set still fails is no draw
+ * for coalescing (do_redraw_screen()). A screen whose set succeeded has
+ * nothing to try and is not redrawn.
+ */
+static void set_retry_event(struct ev_timer *timer, uint64_t count, void *data)
+{
+	struct kmscon_terminal *term = data;
+	struct screen *scr;
+	uint64_t now = clock_ns(CLOCK_MONOTONIC);
+
+	dlist_for_each_entry(scr, &term->screens, list)
+	{
+		scr->retry.due = scr->enabled ? kmscon_text_retry_due(scr->txt) : 0;
+		if (terminal_retry_ask(&scr->retry, now))
+			redraw_screen(scr, false);
+	}
+	set_retry_arm(term);
 }
 
 static void blink_event(struct ev_timer *timer, uint64_t count, void *data)
@@ -1070,6 +1131,8 @@ static bool terminal_update_size(struct kmscon_terminal *term)
 		if (scr->enabled)
 			kmscon_text_resize(scr->txt, term->cols, term->rows);
 	}
+	/* every kmscon_text_set() is above: one that failed is tried again on time */
+	set_retry_arm(term);
 
 	if (cols == term->cols && rows == term->rows)
 		return false;
@@ -1700,6 +1763,8 @@ void terminal_activate(struct kmscon_terminal *term)
 	terminal_image_play(&term->image, true);
 
 	terminal_refresh_displays(term);
+	/* a failed set waiting in the background is tried again now, or on time */
+	set_retry_arm(term);
 }
 
 void terminal_deactivate(struct kmscon_terminal *term)
@@ -1715,6 +1780,8 @@ void terminal_deactivate(struct kmscon_terminal *term)
 		ev_timer_disable(term->blink_cursor);
 	}
 	terminal_image_play(&term->image, false);
+	/* not awake: disarms the timer of a failed font set */
+	set_retry_arm(term);
 }
 
 void terminal_destroy(struct kmscon_terminal *term)
@@ -1729,6 +1796,7 @@ void terminal_destroy(struct kmscon_terminal *term)
 	ev_eloop_rm_timer(term->render_timer);
 	ev_eloop_rm_timer(term->sync_timer);
 	ev_eloop_rm_timer(term->coalesce_timer);
+	ev_eloop_rm_timer(term->set_retry_timer);
 	kmscon_asciinema_free(term->asciinema);
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 	input_unregister_key_cb(term->input, input_event, term);
@@ -1890,9 +1958,14 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 	if (ret)
 		goto err_sync;
 
-	ret = input_register_key_cb(term->input, input_event, term);
+	/* armed while a screen whose font set failed waits to try it again */
+	ret = ev_eloop_new_timer(term->eloop, &term->set_retry_timer, NULL, set_retry_event, term);
 	if (ret)
 		goto err_coalesce;
+
+	ret = input_register_key_cb(term->input, input_event, term);
+	if (ret)
+		goto err_set_retry;
 
 	if (term->conf->mouse) {
 		ret = input_register_pointer_cb(term->input, pointer_event, term);
@@ -1936,6 +2009,8 @@ err_pointer:
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 err_input:
 	input_unregister_key_cb(term->input, input_event, term);
+err_set_retry:
+	ev_eloop_rm_timer(term->set_retry_timer);
 err_coalesce:
 	ev_eloop_rm_timer(term->coalesce_timer);
 err_sync:

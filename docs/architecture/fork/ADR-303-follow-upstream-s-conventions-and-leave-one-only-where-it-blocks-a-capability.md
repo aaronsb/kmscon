@@ -17,6 +17,17 @@ basis:
 agent:
   name: claude
   model: claude-opus-5-5
+considered:
+  - operator: aaronsb
+    said: "Picked \"Yes\" to: when kmscon already has a way of doing something, new work uses it even when a fresh design would be cleaner or cheap to build, and the fork goes its own way only when kmscon's way would stop the new feature or hobble it."
+    via: Claude Code session, 2026-10-25, the team lead put both probes to the operator as multiple-choice questions
+    paraphrase: true
+    covers: [inconvenient-not-enough]
+  - operator: aaronsb
+    said: "Picked \"User-visible only\": internal departures (an interface, file layout) are recorded without asking; anything users would notice (a changed default, a new or renamed option, a different fallback) comes to the operator before merge."
+    via: Claude Code session, 2026-10-25, the team lead put both probes to the operator as multiple-choice questions
+    paraphrase: true
+    covers: [sign-off]
 status: proposed
 date: 2026-10-25
 deciders:

@@ -161,6 +161,8 @@ static unsigned int n_uploads;
 #define STRIP_W (KMSCON_DECO_COUNT * FAKE_CELL_W)
 static unsigned int strip_uploads;
 static bool fail_strip;
+/* the next uploads that fail, any of them */
+static unsigned int fail_uploads;
 
 static unsigned int bytes_per_pixel(GLenum format)
 {
@@ -311,6 +313,11 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
 			       (const uint8_t *)pixels + (size_t)y * width * bpp,
 			       (size_t)width * bpp);
 	}
+	if (fail_uploads) {
+		fail_uploads--;
+		gl_error = GL_INVALID_OPERATION;
+		return;
+	}
 	if (width == STRIP_W) {
 		strip_uploads++;
 		if (fail_strip) {
@@ -428,9 +435,11 @@ bool display_has_opengl(struct display *disp)
 	return true;
 }
 void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y) {}
+/* while set, display_use() fails, as with no GL context */
+static bool fail_display_use;
 int display_use(struct display *disp)
 {
-	return 0;
+	return fail_display_use ? -EFAULT : 0;
 }
 
 /* ---- font and text ---- */
@@ -2496,8 +2505,56 @@ static struct bytes resolve(struct kmscon_text *txt)
 }
 
 /*
+ * Each of the last frame's @n cells samples its own glyph: the texels of its
+ * quad are the font's pixels for the cell's key, as RGBA bytes for a colour
+ * glyph, and clear past a glyph smaller than its cells.
+ */
+static void assert_own_texels(struct kmscon_text *txt, const struct gcell *cells, unsigned int n)
+{
+	struct gltex *gt = txt->data;
+	unsigned int cw = FONT_WIDTH(txt), ch = FONT_HEIGHT(txt), rendered = n_rendered;
+	unsigned int i, x, y, bpp;
+	struct kmscon_font_attr attr = {0};
+	const uint32_t *cps;
+	uint32_t one;
+	size_t len;
+
+	assert(gt->quads_num == n);
+	for (i = 0; i < n; i++) {
+		const struct gltex_quad *q = &gt->quads[i];
+		const struct fake_tex *t = &texs[q->atlas->tex];
+		struct kmscon_glyph *g;
+
+		attr.bold = !!(cells[i].flags & TSM_FRAME_BOLD);
+		attr.italic = !!(cells[i].flags & TSM_FRAME_ITALIC);
+		cps = kmscon_text_get_cluster(txt, cells[i].key, &one, &len);
+		g = kmscon_font_render(txt->font, &attr, cps, len, cells[i].width);
+		assert(g);
+		bpp = g->buf.format == VIDEO_FORMAT_ARGB32 ? 4 : 1;
+		if (bpp == 4)
+			argb_to_rgba(g);
+		assert(bytes_per_pixel(q->atlas->format) == bpp && q->texw == cells[i].width);
+		for (y = 0; y < ch; y++)
+			for (x = 0; x < cw * cells[i].width; x++) {
+				const uint8_t *px =
+					&t->data[((size_t)y * t->w + (size_t)q->texoff * cw + x) *
+						 bpp];
+				bool in = x < g->buf.width && y < g->buf.height;
+
+				for (unsigned int b = 0; b < bpp; b++)
+					assert(px[b] ==
+					       (in ? g->buf.data[(y * g->buf.width + x) * bpp + b]
+						   : 0));
+			}
+		free(g);
+	}
+	n_rendered = rendered;
+}
+
+/*
  * The last frame of @txt, whose cache has drawn whatever it has, resolves as
- * the same @n cells drawn by a gltex with an empty cache.
+ * the same @n cells drawn by a gltex with an empty cache, and each cell
+ * samples its own glyph.
  */
 static void assert_as_cold(struct kmscon_text *txt, const struct gcell *cells, unsigned int n)
 {
@@ -2505,6 +2562,7 @@ static void assert_as_cold(struct kmscon_text *txt, const struct gcell *cells, u
 	struct bytes warm, fresh;
 	bool colour = colour_clusters;
 
+	assert_own_texels(txt, cells, n);
 	warm = resolve(txt);
 	open_cache(&cold, txt->font, txt->orientation);
 	colour_clusters = colour;
@@ -2582,6 +2640,8 @@ static void test_cache_cold_oracle(void)
 			cache_frame(&txt, cells, n);
 			if (f % 10 == 9)
 				assert_as_cold(&txt, cells, n);
+			else
+				assert_own_texels(&txt, cells, n);
 		}
 		close_cache(&txt);
 	}
@@ -2595,7 +2655,7 @@ static void test_cache_cold_oracle(void)
  * drawn, as gltex walks its atlases.
  */
 #define REF_SLOTS 4096
-#define REF_STRIPS 512
+#define REF_STRIPS (1 << 15) /* made over the run, given back or not */
 
 struct ref_slot {
 	uint64_t key; /* 0: empty */
@@ -2751,7 +2811,7 @@ static void cache_model(unsigned int glyphs, size_t max_bytes)
 static void test_cache_model(void)
 {
 	cache_model(UINT_MAX, CACHE_BOUND);
-	cache_model(12, SIZE_MAX);
+	cache_model(4, SIZE_MAX);
 }
 
 /* @n distinct glyphs from @cp, @width cells wide, as many a frame as fit */
@@ -2764,6 +2824,7 @@ static void draw_distinct(struct kmscon_text *txt, uint64_t cp, unsigned int wid
 		for (k = 0; k < per && i + k < n; k++)
 			cells[k] = (struct gcell){cp + i + k, width};
 		cache_frame(txt, cells, k);
+		assert_resident(txt->data, cells, k);
 	}
 }
 
@@ -2788,7 +2849,8 @@ static void test_cache_count_governs(void)
 }
 
 /*
- * In 19x41 cells, 7680x2160 with font size 30, an RGBA strip is 2048x64 and
+ * In 19x41 cells, as 7680x2160 with font size 30 has (drawn here at 1280x800,
+ * as the strips do not depend on the screen), an RGBA strip is 2048x64 and
  * holds 53 colour glyphs two cells wide in 512 KiB: 8192 of them would take
  * 155 strips, 77.5 MiB, so the ceiling clamps the pool at 128 strips, 64 MiB,
  * 6784 glyphs. The alpha pool one cell wide in the same cells stops at its
@@ -3221,6 +3283,80 @@ static void test_cache_reset(void)
 	close_cache(&txt);
 }
 
+/*
+ * An upload GL refuses into a slot step 3 took: the evicted glyph is gone
+ * from the cache, the slot stays empty at the back of its list, the cell is
+ * drawn blank with its background (a space would take the same slot and its
+ * upload fails too), and the next glyph the cache misses takes that slot.
+ */
+static void test_cache_upload_failure(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 1};
+	struct gcell cells[NARROW_CAP];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gl_glyph *lru, *back;
+	struct kmscon_glyph_key k0 = {.key = NARROW_CP, .width = 1};
+	unsigned int i;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < NARROW_CAP; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+	cache_frame(&txt, cells, NARROW_CAP);
+	lru = lookup(gt, kmscon_glyph_key_hash(NARROW_CP, false, false, 1, 0), &k0);
+	assert(lru && lru == dlist_last(&gt->pools[0].lru, struct gl_glyph, lru));
+
+	assert(gltex_prepare(&txt, &attr) == 0);
+	fail_uploads = 2;
+	assert(gltex_draw_cell(&txt, &fc, 'X', 0, 0, 1, false) == -ENOMEM);
+	assert(!fail_uploads);
+	assert(!lookup(gt, kmscon_glyph_key_hash(NARROW_CP, false, false, 1, 0), &k0));
+	back = dlist_last(&gt->pools[0].lru, struct gl_glyph, lru);
+	assert(back == lru && !back->held);
+	assert(gt->quads_num == 1 && gt->quads[0].atlas == gt->deco_atlas &&
+	       gt->quads[0].texoff == KMSCON_DECO_NONE && colour_eq(gt->quads[0].bg, fc.bg));
+
+	assert(gltex_draw_cell(&txt, &fc, 'Y', 1, 0, 1, false) == 0);
+	assert(slot_of(&gt->quads[1]) == lru && lru->held && lru->key.key == 'Y');
+	assert(gltex_render(&txt) == 0);
+	close_cache(&txt);
+}
+
+/*
+ * A rotation whose set fails, as with no GL context, leaves a gltex that
+ * draws nothing until a set succeeds: gltex_rotate() says so, and
+ * gltex_prepare() and gltex_draw() refuse instead of using what the unset
+ * freed. The next rotation draws as from an empty cache.
+ */
+static void test_cache_failed_rotate(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct gcell cells[40];
+	struct kmscon_text txt;
+	unsigned int f, n = 0;
+
+	rnd_state = 5;
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	for (f = 0; f < 50; f++) {
+		n = random_frame(cells, 40);
+		cache_frame(&txt, cells, n);
+	}
+	fail_display_use = true;
+	assert(gltex_rotate(&txt, OR_RIGHT) < 0);
+	fail_display_use = false;
+	assert(gltex_prepare(&txt, &attr) == -EINVAL);
+	assert(gltex_draw(&txt, make_frame(0), false) == -EINVAL);
+
+	assert(gltex_rotate(&txt, OR_RIGHT) == 0);
+	((struct gltex *)txt.data)->pool_max_glyphs = UINT_MAX;
+	((struct gltex *)txt.data)->pool_max_bytes = CACHE_BOUND;
+	cache_frame(&txt, cells, n);
+	assert_as_cold(&txt, cells, n);
+	close_cache(&txt);
+}
+
 /* the four pools' textures, and whether any is past @max[] */
 static size_t pools_bytes(struct gltex *gt, const size_t *max)
 {
@@ -3537,6 +3673,8 @@ static const struct {
 	{"give_back", test_cache_give_back},
 	{"release", test_cache_release},
 	{"hard_stop", test_cache_hard_stop},
+	{"upload_failure", test_cache_upload_failure},
+	{"failed_rotate", test_cache_failed_rotate},
 	{"measure", test_cache_measure},
 };
 

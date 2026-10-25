@@ -199,7 +199,9 @@ static void count_free(void *value)
  * caller. A million inserts each followed by its remove hold no more heap at
  * the end than one entry's worth per thousand; an entry left behind on each
  * remove is 16 MB. The table's own free_value is not called for a removed
- * value, and is called for the one left at the end.
+ * value, and is called for the one left at the end. Under ASan mallinfo2()
+ * measures nothing and the heap check passes whatever happens; LeakSanitizer
+ * (make asan) catches the leak there.
  */
 START_TEST(test_hashtable_remove)
 {

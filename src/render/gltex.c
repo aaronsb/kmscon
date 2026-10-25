@@ -41,8 +41,9 @@
  * atlas, which the shader draws under and over the glyph in their own colours.
  * Upstream has alpha atlases only and no decorations; this departure is
  * recorded in ADR-102's corrections from step 6 (ADR-303). The glyph cache
- * keeps the atlases within a bound in glyphs and bytes, reusing the least
- * recently drawn glyph's slot; its section below says how.
+ * bounds the atlases: each pool of strips holds its count of glyphs within a
+ * byte ceiling, past that only what one frame draws, under a hard stop, and
+ * reuses the least recently drawn glyph's slot; its section below says how.
  *
  * Images (ADR-103 steps 3f and 4e) are the frame's placements, in three bands,
  * drawn in layers: the clear to the default background, the lowest band, the
@@ -202,9 +203,11 @@ struct gltex_pic {
 #define GLTEX_POOLS 4
 
 /*
- * A pool holds this many glyphs (pool_full()), so its bytes grow with the
- * font, up to its share of GLTEX_CACHE_MAX_BYTES, which caps what big cells
- * cost. Build with -DGLTEX_CACHE_MAX_BYTES=... to change the ceiling.
+ * A pool is full at this many glyphs (pool_full()), so its bytes grow with
+ * the font, or at its share of GLTEX_CACHE_MAX_BYTES, which caps what big
+ * cells cost; past full it takes only what one frame draws, and gives that
+ * back (pool_give_back()). Build with -DGLTEX_CACHE_MAX_BYTES=... to change
+ * the ceiling.
  */
 #define GLTEX_POOL_GLYPHS 8192
 #ifndef GLTEX_CACHE_MAX_BYTES
@@ -235,6 +238,7 @@ struct gltex {
 	/* the glyph cache: the slots holding a glyph, by id, and the pools */
 	struct htable glyphs;
 	struct pool pools[GLTEX_POOLS];
+	/* the bounds, per gltex so a test can shrink them */
 	unsigned int pool_max_glyphs; /* GLTEX_POOL_GLYPHS */
 	size_t pool_max_bytes;	      /* GLTEX_CACHE_MAX_BYTES / GLTEX_POOLS */
 	size_t cache_hard_bytes;      /* GLTEX_CACHE_HARD_BYTES */
@@ -568,8 +572,10 @@ err_quads:
 	free_quads(gt);
 err_img_shader:
 	gl_shader_unref(gt->img_shader);
+	gt->img_shader = NULL;
 err_shader:
 	gl_shader_unref(gt->shader);
+	gt->shader = NULL;
 	return ret;
 }
 
@@ -604,6 +610,9 @@ static void gltex_unset(struct kmscon_text *txt)
 
 		gl_clear_error();
 	}
+	/* not set: gltex_prepare() refuses until gltex_set() succeeds again */
+	gt->img_shader = NULL;
+	gt->shader = NULL;
 }
 
 /*
@@ -815,7 +824,9 @@ static void argb_to_rgba(struct kmscon_glyph *glyph)
  * cells side by side.
  *
  * A pool keeps its slots on one list, the most recently drawn first and the
- * empty ones last. Drawing a glyph moves it to the front. A glyph not yet
+ * empty ones last: a slot is emptied only at the back, and a new strip's
+ * empty slots join the back only when none is empty. Drawing a glyph moves it
+ * to the front; "this frame" is gt->frame_count, which gltex_prepare() steps. A glyph not yet
  * cached is drawn from the font into the slot at the back of its pool's list
  * (take_slot()):
  *
@@ -853,6 +864,10 @@ static void argb_to_rgba(struct kmscon_glyph *glyph)
  * keys with one hash are both cached.
  *
  * The decoration sprites have a strip of their own (get_deco()), in no pool.
+ *
+ * Upstream's LRU for bbulk's glyphs, shl_lru, is not used: it would evict a
+ * glyph the frame has queued and free it where its slot must be reused, a
+ * departure recorded in ADR-102 (ADR-303).
  */
 
 static size_t glyph_rehash(const void *elem, void *priv)
@@ -1059,7 +1074,7 @@ static struct gl_glyph *take_slot(struct kmscon_text *txt, struct pool *pool)
 	if (back && !back->held)
 		return back;
 
-	/* 2 and 4 */
+	/* the first strip, 2, or 4 */
 	if (!back || !pool_full(gt, pool->slots, pool->bytes) || drawn_this_frame(gt, back)) {
 		if (pool_grow(txt, pool))
 			return NULL;
@@ -1181,8 +1196,7 @@ static int gltex_rotate(struct kmscon_text *txt, enum Orientation orientation)
 	txt->orientation = orientation;
 
 	gltex_unset(txt);
-	gltex_set(txt);
-	return 0;
+	return gltex_set(txt);
 }
 
 static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
@@ -1192,6 +1206,9 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	unsigned int i;
 	int ret;
 
+	/* a gltex whose set failed, as a rotation's can, draws nothing */
+	if (!gt->shader)
+		return -EINVAL;
 	ret = display_use(txt->disp);
 	if (ret)
 		return ret;
@@ -1932,6 +1949,9 @@ static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 	const struct tsm_frame_cell *fc, *cell;
 	bool is_cursor, ul_cursor;
 	uint64_t key;
+
+	if (!gt->shader)
+		return -EINVAL;
 
 	cols = min(txt->cols, frame->cols);
 	rows = min(txt->rows, frame->rows);

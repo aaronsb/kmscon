@@ -666,7 +666,11 @@ font-name=Ubuntu Mono
                 shared memory are refused, and PNG and zlib data are decoded
                 by a helper running as <literal>kmscon-image</literal>, else
                 <literal>nobody</literal>, else refused; without logind, a pty
-                owned by root counts as before login. When off, kitty commands
+                owned by root counts as before login.
+                <citerefentry><refentrytitle>kmscon</refentrytitle><manvolnum>1</manvolnum></citerefentry>,
+                Images and the Image Helper, says how the
+                <literal>kmscon-image</literal> user is created and checked
+                and which sessions count as logged in. When off, kitty commands
                 are skipped without a reply, so a program's query finds no
                 support. (default: on)</para>
         </listitem>

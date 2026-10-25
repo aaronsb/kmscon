@@ -33,13 +33,34 @@ At a login prompt nobody has logged in yet, and the terminal belongs to root. Re
 
 A temporary file or shared memory object a program names at the login prompt is left where it is, since no helper may delete files before anyone has logged in.
 
-## Why a dedicated user
+## Why a dedicated user, and what happens without one
 
-Before login there is no session user to decode as. Root is ruled out for the reason above. `nobody` would work, but it is shared: NFS root squashing maps remote root to it, and some daemons run as it, so a fault in the PNG or zlib decoder running as `nobody` could reach whatever else runs as `nobody`. A user of kmscon's own, `kmscon-image`, keeps the decoder apart from all of that. It owns no files, has home `/` and no login shell, and only ever runs the helper.
+Before login there is no session user to read or decode as, and the terminal belongs to root. kmscon answers that with two rules: file media are refused before login whatever users exist, and inline PNG and zlib images decode as a user that can do nothing else.
 
-kmscon installs `kmscon-image.conf` into systemd's `sysusers.d` directory, and `systemd-sysusers` creates the user, normally when the package is installed. On a system without `systemd-sysusers` nothing creates it, and kmscon uses `nobody` unless a package or the administrator creates `kmscon-image`. If neither user exists, or a name service resolves either to uid 0 or gid 0, inline images before login are refused too. The pre-login user runs with its primary group only, with no supplementary groups, and kmscon looks it up once, the first time it needs it, so a slow network name service cannot stall the login prompt on every image.
+- **Without any separate user.** Had the helper simply taken the pty's owner, it would run as root at every login prompt, and on a system without logind for as long as the pty stays root's. Any program at that prompt, or an escape sequence printed to the console (a hostile file someone `cat`s, a message a service writes), could name `/etc/shadow` or another user's file and have it read and drawn on the screen. It could have the helper delete root's temporary files and shared memory objects that match the name rules above. And a bug in the PNG or zlib decoder would run as root. Refusing file media before login, and never reading as root by fallback, close the first two; decoding as a user other than root closes the third.
+- **With `nobody`.** Inline images decode and file media stay refused, so this works, but the identity is shared. NFS root squashing maps a remote root to `nobody`, and some daemons run as it, so a fault in the decoder running as `nobody` could reach whatever those share: files a client's root wrote over NFS, and those daemons' processes.
+- **With `kmscon-image`.** The decoder runs as a user that owns no files, can read nothing private, shares its uid with nothing, and only ever runs the helper. File media stay refused before login whichever user decodes.
+- **Logged in.** None of this applies: the helper runs as the session's user and can read only what that user can, as the user's own programs could.
+
+`kmscon-image` has home `/` and no login shell. If neither user exists, or a name service resolves either to uid 0 or gid 0, inline images before login are refused too. The pre-login user runs with its primary group only, with no supplementary groups. kmscon looks it up once, the first time it needs it, so a slow network name service cannot stall the login prompt on every image; a missing user is remembered too, so restart kmscon (each `kmsconvt@` unit) after creating or removing it.
+
+### Creating and checking it
+
+kmscon installs `kmscon-image.conf` into systemd's `sysusers.d` directory (`/usr/lib/sysusers.d` in the fork's package), and `systemd-sysusers` creates the user from it: `systemd-sysusers.service` at boot, and a package's install hook (pacman runs it when the fork's package is installed). `getent passwd kmscon-image` shows whether it exists.
+
+On a system without `systemd-sysusers` nothing creates it, and kmscon uses `nobody` unless a package or the administrator creates `kmscon-image`. The same user by hand, with the system's path to `nologin`:
+
+```sh
+useradd --system --user-group --home-dir / --no-create-home \
+        --shell /usr/sbin/nologin \
+        --comment "kmscon image helper before login" kmscon-image
+```
+
+`userdel kmscon-image` removes it safely: it owns no files, and kmscon then decodes as `nobody`.
 
 ## What this means for login and sessions
+
+`kmsconvt@.service` starts kmscon on a VT, and kmscon runs `/bin/login -p` in each terminal session unless `--login` names another command. Logging in there opens a logind session through pam_systemd, of class `user` (`user-early` for root, since systemd 256), and the helper runs as its user.
 
 - **Started without login.** On a system running logind, a kmscon session started with a command that does not log in, such as `--login=/bin/bash`, never belongs to a logind session, so file media are refused for the whole session, even when the shell runs as an ordinary user. Inline images still work.
 - **Root at the console.** Root logged in through PAM on a system running logind is a logind session, and the helper runs as root for it. On a system without logind, a root login cannot be told apart from the login prompt by the pty's owner, so root gets no file images there, only inline ones.

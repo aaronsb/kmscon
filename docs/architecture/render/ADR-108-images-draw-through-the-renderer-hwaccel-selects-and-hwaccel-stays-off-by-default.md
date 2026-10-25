@@ -31,6 +31,9 @@ considered:
     said: "1. yes 2. yes, but that's an intermediate phase that only happens while we're working on it. once gltex draws, I don't think we'll encounter this state. we use the same option path that kmscon respects for hardware rendering (not a seperate switch for graphics)"
     via: Claude Code session, 2026-10-24, answering the two probes of ADR-108 as put to them in plain words
     covers: [default-stays-off, images-off-meanwhile]
+  - operator: aaronsb
+    said: "hwaccel off is cpu path for things, hwaccel on is gpu path for things."
+    via: Claude Code session, 2026-10-24, stating the principle after answering ADR-108's probes
 observable:
   - "With hwaccel at its default (off), kmscon's log reads `backend [drm2d] text renderer [bbulk]` for each display, and sixel and kitty images draw as they did before this record"
   - "With hwaccel on and a display that has OpenGL, once gltex draws placements (ADR-103 steps 3f and 4e), the log reads `backend [drm3d] text renderer [gltex]` and the same images show; until then, programs are offered no image support on that terminal (no DA1 attribute 4), under ADR-103's rule that images are offered only while every display draws placements"

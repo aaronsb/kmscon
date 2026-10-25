@@ -225,7 +225,7 @@ observable:
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
   - "A kitty client run by the logged-in user that names a root-only file with t=f gets EBADF:Failed to read image file, the same reply as for a missing file"
   - "mpv --vo=sixel and mpv --vo=kitty (inline) play an animation full screen on drm2d with bbulk at 1366x768, 1920x1080 and 7680x2160, and the render timer's presented rate matches mpv's output rate; the spec-written client, inline and over shared memory, and kitten icat --transfer-mode=memory do the same; mpv --vo=kitty --vo-kitty-use-shm=yes is measured for compatibility only (changed 2026-10-24: under the operator's principle that the spec is the target, \"a poor player implementation isn't a spec we write against\", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep mpv --vo=kitty inline as a gate, an option they picked; this said: \"mpv --vo=sixel and mpv --vo=kitty (inline and with --vo-kitty-use-shm=yes) play an animation full screen on drm2d with bbulk at 1366x768, 1920x1080 and 7680x2160, and the render timer's presented rate matches mpv's output rate\")"
-  - "The 2d-1366x768-hamster tier 3 variant (1 vCPU, 512 MB) runs the image screens and S1 to S6 on every tier 3 run"
+  - "The 2d-1366x768-potato tier 3 variant (renamed from 2d-1366x768-hamster, Notes of 2026-10-23; edited 2026-10-24) (1 vCPU, 512 MB) runs the image screens and S1 to S6 on every tier 3 run"
   - "tmux in a 3x3 grid of panes, each running mpv --vo=sixel, plays all nine and leaves no stale pixels when the panes close"
   - "The tier 2 screens for each composition band, and the render timer's figures for acceptance scenarios A1 to A7 recorded as an evidence record"
 ---
@@ -457,6 +457,7 @@ A frame is drawn in ADR-101's order, shown in figure A: the default background; 
 - Each image key gets a texture, uploaded when a placement of it is first drawn. An image larger than `GL_MAX_TEXTURE_SIZE` is uploaded scaled down to fit. Textures of images not drawn recently are freed once the total passes the bound bbulk's cache uses.
 - One draw per layer: clear to the default background, lowest-band quads, non-default cell backgrounds, middle-band quads, glyphs and decorations, top-band quads.
 - Image uploads take the same path that fails under virgl in #17, so the GL variant's image screens stay outside the default tier 3 run until #17 is resolved.
+- (Added 2026-10-24: ADR-108 amends this section. Images join kmscon's existing `hwaccel` convention: with `hwaccel` off, its default, the CPU draws text and images (drm2d or fbdev, with bbulk); with it on, the GPU draws them (drm3d with gltex), and bbulk only where OpenGL is unavailable. The CPU path is the proven default, and the GPU path is what `hwaccel` on means. The operator said: "hwaccel off is cpu path for things, hwaccel on is gpu path for things.", and earlier: "I want hw accel to follow the same behavior as kmscon does, which is conservative and off. and when on, image rendering takes the same hardware available path. this way we're not changing expected behaviors". Nothing above is replaced.)
 
 ### Memory
 
@@ -490,7 +491,7 @@ A frame is drawn in ADR-101's order, shown in figure A: the default background; 
 
 bbulk composes on the CPU. Most consoles are 1366x768 or 1920x1080 on modest machines; 7680x2160, 16.6 million pixels and 66 MB per ARGB frame, is the stress case ADR-101 named. Every scenario runs on drm2d with bbulk at 1366x768, 1920x1080 and 7680x2160, in tier 3 and on the operator's hardware, with the render timer on.
 
-**Machines.** Tier 3 gains a small variant, `2d-1366x768-hamster`: 1 vCPU, 512 MB of memory, 1366x768, drm2d and bbulk. It runs the image screens and the S1 to S6 scenarios on every tier 3 run, so a regression on small machines shows in the harness. Its vCPU is a core of the host, so it bounds parallelism and memory rather than reproducing slow hardware; real low-end hardware is measured when it is at hand.
+**Machines.** Tier 3 gains a small variant, `2d-1366x768-potato` (renamed from `2d-1366x768-hamster`, Notes of 2026-10-23; edited 2026-10-24): 1 vCPU, 512 MB of memory, 1366x768, drm2d and bbulk. It runs the image screens and the S1 to S6 scenarios on every tier 3 run, so a regression on small machines shows in the harness. Its vCPU is a core of the host, so it bounds parallelism and memory rather than reproducing slow hardware; real low-end hardware is measured when it is at hand.
 
 **Synthetic scenarios,** drawn through bbulk into the in-memory display tier 2 uses and through drm2d in tier 3:
 
@@ -523,7 +524,7 @@ The public post's footage is captured with ffmpeg's `kmsgrab` device. Runs with 
 
 ### Targets
 
-- **Common sizes, on the small machine** (`2d-1366x768-hamster`, and the same limits at 1920x1080 on one vCPU):
+- **Common sizes, on the small machine** (`2d-1366x768-potato`, renamed from `2d-1366x768-hamster` in the Notes of 2026-10-23 and edited 2026-10-24, and the same limits at 1920x1080 on one vCPU):
   - S1: within 5% of main at every size, on every variant.
   - S4: kmscon's CPU time per frame at most 10 ms at 1366x768 and 16 ms at 1920x1080. At 30 frames per second that is 30% and 48% of the one vCPU, leaving the rest to the program sending the video.
   - S5: at most one and a half times S4's figure at the same size.
@@ -562,7 +563,7 @@ Each setting takes the name an existing terminal gives it, written in kmscon.con
 - **Unit tests** (kmscon) for the helper: each refusal (`/proc`, `/sys`, `/dev`, a FIFO, a socket, a device, a directory, a symlink loop, a symlink swapped between check and open, a file shorter than `S`, `t=t` outside a temporary directory or without the name, shared memory names with extra slashes or too long) answers byte-identical EBADF; refused temporary files survive; accepted `t=t` files and `t=s` objects are removed.
 - **Fuzzing.** The sixel decoder and the kitty command parser run in kmscon's root process on bytes any program sends. Each has a fuzz target, run for a fixed budget before a change to it lands.
 - **Tier 2** (pixels): each band with text over and under it; the lowest band under default and non-default backgrounds; transparent and opaque sixels; a sixel split by text; a region scroll clipping a placement; scaled and letterboxed placements; a changed cell size. Incremental frames on a display with damage clips: a placement added, moved and removed leaves no stale pixels, the failure that ruled out the community patch (ADR-101); a changing picture under a text band that scrolls every frame, as A6; a sixel cleared by ED 2 after a run of frames, as A3.
-- **Tier 3** (VM): the guest gains img2sixel (libsixel) and viu (MIT), both in Arch's extra repository, and the fork's spec-written client for `t=f`, `t=t` and `t=s`. Screens: a picture from img2sixel, scrolled into scrollback and back, then cleared; kitty pictures through each medium; text over a middle-band picture; a root-owned file refused to the logged-in user, also under `sudo`; the acceptance scenarios that tier 3 can run (mpv, tmux), with the render timer logging. bbulk variants first, `2d-1366x768-hamster` among them; GL after #17 and ADR-102 step 6.
+- **Tier 3** (VM): the guest gains img2sixel (libsixel) and viu (MIT), both in Arch's extra repository, and the fork's spec-written client for `t=f`, `t=t` and `t=s`. Screens: a picture from img2sixel, scrolled into scrollback and back, then cleared; kitty pictures through each medium; text over a middle-band picture; a root-owned file refused to the logged-in user, also under `sudo`; the acceptance scenarios that tier 3 can run (mpv, tmux), with the render timer logging. bbulk variants first, `2d-1366x768-potato` (renamed from `2d-1366x768-hamster`, Notes of 2026-10-23; edited 2026-10-24) among them; GL after #17 and ADR-102 step 6.
 - **Demo.** The VT demo gains an images section, and its screens become tier 3 screens as the others did. The showcase's acts 5 and 7 (#75) run on top.
 
 ### Order of work
@@ -572,7 +573,7 @@ Each item lands behind the harness, with goldens changed only in their own commi
 Step 3, the image layer and sixel:
 
 1. **3a, libtsm store and placements.** The store, placements, every screen event in the table, the frame's placement list, the image call, and the cell size from the host. Unit tests build placements through a test-only call; `tsm-replay` prints them.
-2. **3b, kmscon composition, the render timer, and the first measurement.** bbulk's bands, scaled-picture cache, opaque fast path and placement damage, after #67. The render timer comes next, as the first placement bbulk draws, so the measuring tool exists before anything it measures. Then the harness change: `fork/tier3` variants gain their own vCPU count and memory, which are fixed at 4 and 4096 MB for every variant today (`t3_qemu.py`), and `2d-1366x768-hamster` joins the default run. Then S1 to S6 at 1366x768, 1920x1080 and 7680x2160, recorded as an evidence record that confirms or replaces the targets. Tier 2 screens for each band draw placements made through libtsm's test-only call.
+2. **3b, kmscon composition, the render timer, and the first measurement.** bbulk's bands, scaled-picture cache, opaque fast path and placement damage, after #67. The render timer comes next, as the first placement bbulk draws, so the measuring tool exists before anything it measures. Then the harness change: `fork/tier3` variants gain their own vCPU count and memory, which are fixed at 4 and 4096 MB for every variant today (`t3_qemu.py`), and `2d-1366x768-potato` (renamed from `2d-1366x768-hamster`, Notes of 2026-10-23; edited 2026-10-24) joins the default run. Then S1 to S6 at 1366x768, 1920x1080 and 7680x2160, recorded as an evidence record that confirms or replaces the targets. Tier 2 screens for each band draw placements made through libtsm's test-only call.
 3. **3c, libtsm sixel.** DCS streaming, the decoder, registers, modes 80, 1070 and 8452, DA1 attribute 4, XTSMGRAPHICS, XTWINOPS 14, 16 and 18. A fuzz target. Tier 1 cases from img2sixel streams.
 4. **3d, kmscon wiring.** The cell size to libtsm and `TIOCSWINSZ`, and the settings. Tier 2 sixel screens.
 5. **3e, acceptance.** Tier 3 sixel screens and the demo section; A1, A2 and A3; then A4, step 3's final scenario.
@@ -644,7 +645,7 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 
 ## Notes (2026-10-23)
 
-- The small tier 3 variant this record calls `2d-1366x768-hamster` is named `2d-1366x768-potato`, the potato computer, at the operator's request: "We should call it potato computer not hamster." It is the same machine (1 vCPU, 512 MB, 1366x768, drm2d and bbulk), and what this record decides about it stands.
+- The small tier 3 variant this record called `2d-1366x768-hamster` is named `2d-1366x768-potato`, the potato computer, at the operator's request: "We should call it potato computer not hamster." It is the same machine (1 vCPU, 512 MB, 1366x768, drm2d and bbulk), and what this record decides about it stands. (Changed 2026-10-24: this said "this record calls"; the five passages that used the old name, the observable, Machines, Targets, Testing and step 3b, now say `2d-1366x768-potato`, each noting the old name.)
 
 ## Notes (2026-10-23, operator answers from the step 3a and 3c reviews)
 

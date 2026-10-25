@@ -390,13 +390,24 @@ static void do_redraw_screen(struct screen *scr)
 	kmscon_conf_resolve_deco(scr->term->conf, scr->term->vte, &deco);
 	kmscon_text_set_decorations(scr->txt, &deco);
 	tsm_vte_get_def_attr(scr->term->vte, &attr);
-	kmscon_text_prepare(scr->txt, &attr, scr->term->blinking);
+	/*
+	 * a renderer that cannot draw this frame, as gltex until its set
+	 * succeeds, or a text whose kmscon_text_set() failed until the set
+	 * kmscon_text_prepare() tries again succeeds (#206), draws and swaps
+	 * nothing: the display keeps its picture, and the frame is no draw for
+	 * coalescing (terminal_coalesce_drawn())
+	 */
+	if (kmscon_text_prepare(scr->txt, &attr, scr->term->blinking)) {
+		render_timer_frame_end(scr->timer, false, 0);
+		return;
+	}
 	kmscon_text_draw(scr->txt, scr->term->console, scr->term->cursor_blinking);
 	draw_pointer(scr);
 
 	ret = kmscon_text_present(scr->txt);
 	if (ret && ret != -EBUSY)
 		log_warning("cannot swap display [%s] %d", display_name(scr->disp), ret);
+	render_timer_misses(scr->timer, scr->txt->frame_misses);
 	presented = !ret && scr->txt->frame_queued;
 	terminal_coalesce_drawn(&scr->term->coalesce, &scr->coalesce, start,
 				clock_ns(CLOCK_MONOTONIC), presented);
@@ -1489,6 +1500,9 @@ static void hw_cursor_show(struct kmscon_terminal *term, int32_t x, int32_t y)
 	{
 		int32_t sx, sy;
 
+		/* a text whose set failed has no font to place the pointer by (#211) */
+		if (!scr->txt->font)
+			continue;
 		if (scr->hw_cursor) {
 			if (!scr->scaled)
 				text_show_cursor(scr->txt, x, y);

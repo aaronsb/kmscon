@@ -47,6 +47,7 @@ int main()
 {
 	char *search_path = ISSUE_DEFAULT_PATH;
 	const char *ip;
+	char *ips;
 	size_t buf_len;
 	struct addr_book *book;
 	char *buf = kmscon_issue_get_buffer(search_path, "faketty1", &buf_len);
@@ -65,8 +66,12 @@ int main()
 	printf("ipv4: %s\n", ip ? ip : "(none)");
 	ip = issue_network_get_best_ip(book, NULL, true);
 	printf("ipv6: %s\n", ip ? ip : "(none)");
-	printf("good ips: %s\n", issue_network_get_all_ip(book, true));
-	printf("all ips: %s\n", issue_network_get_all_ip(book, false));
+	ips = issue_network_get_all_ip(book, true);
+	printf("good ips: %s\n", ips);
+	free(ips);
+	ips = issue_network_get_all_ip(book, false);
+	printf("all ips: %s\n", ips);
+	free(ips);
 
 	issue_network_free_book(book);
 	return 0;

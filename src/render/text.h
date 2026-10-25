@@ -117,6 +117,18 @@ struct kmscon_text {
 	bool measure;
 	bool frame_queued;
 	uint64_t frame_damage_px;
+	/* the glyphs the renderer drew from the font since kmscon_text_prepare() */
+	unsigned int frame_misses;
+
+	/*
+	 * The font a kmscon_text_set() that failed was given, referenced until
+	 * a set succeeds or an unset: kmscon_text_prepare() tries the set
+	 * again with it (#206). @set_tried_ns: the last try, on text.c's clock;
+	 * @set_failed_logged: a try since the failed set has failed and said so.
+	 */
+	struct kmscon_font *set_font;
+	uint64_t set_tried_ns;
+	bool set_failed_logged;
 
 	struct kmscon_text_overlay *overlay; /* NULL: none */
 	uint64_t overlay_count;		     /* the overlays made, for their keys */

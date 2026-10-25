@@ -139,6 +139,7 @@ static inline int shl_hashtable_insert(struct shl_hashtable *tbl, uint64_t key, 
 	return 0;
 }
 
+/* Remove @key's entry; its value stays the caller's, not passed to free_value. */
 static inline void shl_hashtable_remove(struct shl_hashtable *tbl, uint64_t key)
 {
 	struct htable_iter i;
@@ -154,6 +155,7 @@ static inline void shl_hashtable_remove(struct shl_hashtable *tbl, uint64_t key)
 	     entry = htable_nextval(&tbl->tbl, &i, hash)) {
 		if (tbl->equal_cb(key, entry->key)) {
 			htable_delval(&tbl->tbl, &i);
+			free(entry);
 			return;
 		}
 	}

@@ -43,6 +43,33 @@ printf '%b' "${APPEND:-}" >>"$FEEDBACK"
 exit "${STATUS:-0}"
 """
 
+# run-vt.sh's loginctl for a dry run's session checks and its watch of a login
+# (RUN_VT_LOGINCTL): list-sessions call k prints word k of $SEQ (the last word
+# past the end): - no session, F a failure, N one session on VT N, N:STATE one
+# in that state (active by default), and N! (or N:STATE!) one that show-session
+# fails for. Each session's id carries its VT and state, which show-session
+# reads back.
+FAKE_RUN_VT_LOGINCTL = """#!/bin/bash
+case $1 in
+list-sessions)
+	n=$(( $(cat "$COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" >"$COUNT"
+	read -ra seq <<<"$SEQ"; w=${seq[n - 1]:-${seq[-1]}}
+	case $w in
+	-) ;;
+	F) echo "Failed to list sessions" >&2; exit 1 ;;
+	*) bad=; [[ $w != *! ]] || bad=_x; w=${w%!}
+		vt=${w%%:*}; st=active; [[ $w != *:* ]] || st=${w#*:}; echo "c${vt}_${st}${bad} 1000 tester seat0" ;;
+	esac ;;
+show-session)
+	for id; do :; done; id=${id#c}
+	[[ $id != *_x ]] || { echo "Failed to get session" >&2; exit 1; }
+	case "$*" in
+	*VTNr*) printf 'VTNr=%s\nState=%s\n' "${id%%_*}" "${id#*_}" ;;
+	*) printf 'tester\ntty\n' ;;
+	esac ;;
+esac
+"""
+
 HEADER = "time\trun\tlabel\tterm\tsize\tsection\trating\tnote\n"
 
 
@@ -71,6 +98,7 @@ class Case:
         env.update(
             VT_DEMO_ACTIVE=self.active,
             VT_DEMO_LOGINCTL=self.loginctl,
+            VT_DEMO_TEST="1",
             VT_DEMO_SUDO="",
             VT_DEMO_RUN_VT=self.run_vt,
             VT_DEMO_FEEDBACK=self.feedback,
@@ -167,7 +195,7 @@ def main():
         check("no KIT passes no --kit", p.returncode == 0 and "--kit" not in p.stdout, p.stdout)
         p = c.run(["6"], VT_DEMO_KIT="bogus")
         check("KIT=bogus is refused",
-              p.returncode != 0 and "KIT=bogus: text, sixel, kitty or all" in p.stderr, p.stderr)
+              p.returncode != 0 and "KIT=bogus: text, sixel, kitty, glyphs or all" in p.stderr, p.stderr)
         video = os.path.join(tmp, "kit.mkv")
         open(video, "w").close()
         p = c.run(["6"], VT_DEMO_KIT="sixel", VT_DEMO_SHOWCASE=video)
@@ -242,8 +270,9 @@ def main():
         p = c.run(["6"], dry=False, STATUS="130", APPEND="")
         check("run-vt.sh's 130 (Ctrl-C) is kept", p.returncode == 130, p.stdout + p.stderr)
         p = c.run(["6"], dry=False, APPEND=esc(line("20261022T110000-9", "stock x", "10-sgr", "right")))
-        check("no dev-build answers fails the run",
-              p.returncode != 0 and "no answers from this run" in p.stderr, p.stdout + p.stderr)
+        check("no dev-build answers fails the run, naming the results file",
+              p.returncode != 0 and "no answers from this run" in p.stderr
+              and f"results: {c.feedback}" in p.stdout, p.stdout + p.stderr)
         p = c.run(["6"], dry=False, APPEND="")
         check("a clean log reports zero",
               "health: 0 'atomic commit failed', 0 'vt_timeout'" in p.stdout
@@ -288,10 +317,19 @@ def main():
         cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
         check("AUDIO_DEVICE names the soundtrack's output to run-vt.sh",
               p.returncode == 0 and "--showcase-audio=pipewire/bt\\ sink 6" in cmd, p.stdout + p.stderr)
+        # make showcase AUDIO_DEVICE=... alone plays the soundtrack through it
+        # (#207); AUDIO=0 or no says no sound, and the device is ignored.
         p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO_DEVICE="pipewire/x")
-        check("AUDIO_DEVICE without AUDIO=1 is reported as ignored",
-              p.returncode == 0 and "ignored without AUDIO=1" in p.stderr and "--showcase-audio" not in p.stdout,
+        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
+        check("AUDIO_DEVICE alone plays the soundtrack through that output",
+              p.returncode == 0 and "--showcase-audio=pipewire/x 6" in cmd and "ignored" not in p.stderr,
               p.stdout + p.stderr)
+        for value in ("0", "no"):
+            p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO=value,
+                      VT_DEMO_SHOWCASE_AUDIO_DEVICE="pipewire/x")
+            check(f"AUDIO_DEVICE with AUDIO={value} is reported as ignored",
+                  p.returncode == 0 and f"ignored with AUDIO={value}" in p.stderr
+                  and "--showcase-audio" not in p.stdout, p.stdout + p.stderr)
         p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO="loud")
         check("AUDIO=loud is refused", p.returncode != 0 and "AUDIO=loud" in p.stderr, p.stderr)
         p = c.run(["6"], VT_DEMO_SHOWCASE=os.path.join(tmp, "missing.mkv"))
@@ -306,6 +344,81 @@ def main():
               p.stdout + p.stderr + repr(args))
         p = c.run(["6"], dry=False, VT_DEMO_SHOWCASE=video, STATUS="130", APPEND="")
         check("a showcase cut short keeps run-vt.sh's status", p.returncode == 130, p.stdout + p.stderr)
+
+        # make vt-login (#207): run-vt.sh --login before the VT, with the
+        # kmscon options; a login records answers only if a demo was run in
+        # it, so a run without any ends with the health check and status 0.
+        p = c.run([], VT_DEMO_LOGIN="1", VT_DEMO_VT="8", VT_DEMO_ARGS="--font-size=30")
+        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
+        check("VT_DEMO_LOGIN reaches run-vt.sh as --login before the VT",
+              p.returncode == 0 and cmd.endswith("run-vt.sh --login 8 -- --font-size=30"),
+              p.stdout + p.stderr)
+        p = c.run([], VT_DEMO_LOGIN="1", sessions=[5])
+        check("VT_DEMO_LOGIN without VT= picks a free VT",
+              p.returncode == 0 and "run-vt.sh --login 6 --" in p.stdout, p.stdout + p.stderr)
+        p = c.run(["8"], VT_DEMO_LOGIN="1", sessions=[8])
+        check("VT_DEMO_LOGIN on a VT with a session is refused",
+              p.returncode != 0 and "VT 8 refused: logind session c8" in p.stderr, p.stderr)
+        for extra, why in (({"VT_DEMO_KIT": "sixel"}, "KIT goes with the demo"),
+                           ({"VT_DEMO_SHOWCASE": video}, "the showcase goes"),
+                           ({"VT_DEMO_LOGIN": "maybe"}, "VT_DEMO_LOGIN=maybe")):
+            p = c.run(["8"], **{"VT_DEMO_LOGIN": "1", **extra})
+            check(f"VT_DEMO_LOGIN with {' '.join(f'{k}={v}' for k, v in extra.items())} is refused",
+                  p.returncode != 0 and why in p.stderr, p.stdout + p.stderr)
+        p = c.run(["8"], dry=False, VT_DEMO_LOGIN="1", APPEND="")
+        with open(c.args_out) as f:
+            args = f.read().splitlines()
+        check("a login run without answers ends with the health check and status 0",
+              p.returncode == 0 and "health: 0" in p.stdout and "results:" not in p.stdout
+              and "no answers" not in p.stderr and args == ["--login", "8", "--"],
+              p.stdout + p.stderr + repr(args))
+        p = c.run(["8"], dry=False, VT_DEMO_LOGIN="1",
+                  APPEND=esc(line("20261025T200000-3", "dev build v1", "10-sgr", "wrong", "smeared")))
+        check("a login run prints the answers of a demo run in it",
+              p.returncode == 0 and "run       20261025T200000-3" in p.stdout and "smeared" in p.stdout
+              and "results: " in p.stdout, p.stdout + p.stderr)
+        # A login ends at its logout or at Ctrl-C; run-vt.sh's 130 is a normal end.
+        p = c.run(["8"], dry=False, VT_DEMO_LOGIN="1", STATUS="130", APPEND="")
+        check("a login run ended with Ctrl-C is a normal end",
+              p.returncode == 0 and "vt-login: ended with Ctrl-C" in p.stdout
+              and "kmscon failed" not in p.stderr, p.stdout + p.stderr)
+        p = c.run(["8"], dry=False, VT_DEMO_LOGIN="1", STATUS="1", APPEND="")
+        check("a login run whose kmscon failed fails",
+              p.returncode == 1 and "exited with status 1" in p.stderr, p.stdout + p.stderr)
+
+        # sudo and run-vt.sh come from the environment only in a dry run or
+        # under VT_DEMO_TEST: a stale export must not decide what runs as root.
+        stubs = os.path.join(tmp, "stubs")
+        os.makedirs(stubs, exist_ok=True)
+        sudo_log = os.path.join(tmp, "sudo-args")
+        with open(os.path.join(stubs, "sudo"), "w") as f:
+            f.write(f'#!/bin/sh\nprintf "%s\\n" "$@" >"{sudo_log}"\nexit 1\n')
+        os.chmod(os.path.join(stubs, "sudo"), 0o755)
+        if os.path.exists(c.args_out):
+            os.unlink(c.args_out)
+        p = c.run(["6"], dry=False, VT_DEMO_TEST="", PATH=stubs + ":" + os.environ["PATH"], APPEND="")
+        check("a stray VT_DEMO_SUDO and VT_DEMO_RUN_VT are ignored outside a dry run or the tests",
+              p.returncode != 0 and "sudo failed" in p.stderr and os.path.exists(sudo_log)
+              and read(sudo_log).splitlines() == ["-v"] and not os.path.exists(c.args_out),
+              p.stdout + p.stderr)
+        p = c.run(["6"], VT_DEMO_TEST="")
+        check("a dry run takes VT_DEMO_RUN_VT, since it runs nothing",
+              p.returncode == 0 and f"+ {c.run_vt} 6 --" in p.stdout, p.stdout + p.stderr)
+
+        # make vt-login hands KIT on, to be refused; make's demo step is skipped.
+        make = shutil.which("make")
+        base = dict(os.environ, VT_DEMO_DRY_RUN="1", VT_DEMO_TEST="1", VT_DEMO_ACTIVE=c.active,
+                    VT_DEMO_LOGINCTL=c.loginctl, VT_DEMO_SUDO="", VT_DEMO_RUN_VT=c.run_vt,
+                    SESSIONS="", GONE="")
+        for k in ("MAKEFLAGS", "MAKELEVEL", "MFLAGS"):
+            base.pop(k, None)
+        for args, ok, why in ((["KIT=sixel"], False, "KIT goes with the demo"),
+                              ([], True, "run-vt.sh --login 8 --")):
+            p = subprocess.run([make or "make", "-s", "-C", root, "-o", "demo", "-o", "pkg", "vt-login", "VT=8", *args],
+                               env=base, capture_output=True, text=True, timeout=60) if make else None
+            out = (p.stdout + p.stderr) if p else "make not found"
+            check(f"make vt-login {' '.join(args) or '(no KIT)'} {'runs' if ok else 'is refused'}",
+                  p is not None and (p.returncode == 0) == ok and why in out, out)
 
         # run-vt.sh lets through only allowlisted kmscon options, by exact name
         # (getopt_long takes unique prefixes), each one word: a separate word
@@ -368,8 +481,8 @@ def main():
                           (["--showcase-from=2"], "go with --showcase=VIDEO")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
             check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
-        for opts, why in ((["--kit=bogus"], "--kit takes text, sixel, kitty or all"),
-                          (["--kit="], "--kit takes text, sixel, kitty or all"),
+        for opts, why in ((["--kit=bogus"], "--kit takes text, sixel, kitty, glyphs or all"),
+                          (["--kit="], "--kit takes text, sixel, kitty, glyphs or all"),
                           (["--kit=sixel", "--showcase=/v.mkv"], "--kit goes with the demo")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
             check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
@@ -454,6 +567,197 @@ def main():
               and not any(w.startswith("XDG_RUNTIME_DIR=") for w in words[:env_at])
               and words[-2:] == ["/bin/bash", os.path.join(copy, "fork/demo/demo.sh")],
               p.stdout + p.stderr)
+
+        # --login (#207): kmscon's own login, /bin/login through PAM, as the
+        # session, in the same mount namespace; no setpriv and no env, since
+        # the login decides who runs, and no --oneshot, so a logout or login's
+        # timeout brings a new prompt. The kmscon options keep their allowlist.
+        def run_vt_copy(*args, **env):
+            return subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run", *args],
+                                  capture_output=True, text=True, timeout=30,
+                                  env=dict(os.environ, SUDO_USER="nobody",
+                                           RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir"), **env))
+
+        p = run_vt_copy("--login", "8", "--", "--font-size=30", "--hwaccel")
+        unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
+        words = shlex.split(unshare[2:]) if unshare else []
+        kmscon = os.path.join(copy, "fork/build/demo-root/usr/bin/kmscon")
+        check("run-vt.sh --login runs kmscon's login in the private mount namespace",
+              p.returncode == 0
+              and words[:9] == ["unshare", "--mount", "--propagation", "private", "--", "/bin/sh", "-c",
+                                'mount --bind "$1" "$2" && shift 2 && exec "$@"', "sh"]
+              and words[9:11] == [os.path.join(copy, "fork/build/demo-root/usr/lib/kmscon"),
+                                  os.path.join(tmp, "moduledir")]
+              and words[11:] == [kmscon, "--vt=tty8", "--no-switchvt", "--configdir",
+                                 os.path.join(copy, "fork/demo"), "--font-size=30", "--hwaccel",
+                                 "--login", "--", "/bin/login", "-p"],
+              p.stdout + p.stderr)
+        tell = p.stdout[:p.stdout.find("+ unshare ")]
+        check("run-vt.sh --login says what to run once logged in, before kmscon starts",
+              "Ctrl-Alt-F8" in tell and "log in" in tell
+              and "DEMO_LABEL='dev build v10-test' fork/demo/demo.sh" in tell
+              and "DEMO_KIT=sixel" in tell and "fork/showcase/bad-apple.sh --audio" in tell
+              and "log out to end it" in tell and "Ctrl-C here ends it" in tell
+              and os.path.realpath(copy) in tell, tell)
+        # The VT's console units, whichever of kmsconvt@, getty@ or autovt@
+        # runs there, are checked, stopped and started again on exit.
+        for name in ("kmsconvt", "getty", "autovt"):
+            check(f"run-vt.sh --login checks {name}@tty8",
+                  f"+ systemctl is-active --quiet {name}@tty8.service" in p.stdout, p.stdout)
+        order = [p.stdout.find(s) for s in ("+ systemctl stop kmsconvt@tty8.service", "+ unshare ",
+                                            "+ systemctl start kmsconvt@tty8.service")]
+        check("run-vt.sh stops the VT's active units before kmscon and starts them after",
+              0 <= order[0] < order[1] < order[2], p.stdout)
+        # Whichever units run are stopped before kmscon and started after it.
+        for active in ("getty@tty8.service autovt@tty8.service", "kmsconvt@tty8.service getty@tty8.service"):
+            p = run_vt_copy("--login", "8", RUN_VT_ACTIVE=active)
+            order = [p.stdout.find(s) for s in (f"+ systemctl stop {active}\n", "+ unshare ",
+                                                f"+ systemctl start {active}\n")]
+            check(f"run-vt.sh stops {active} before kmscon and starts them after",
+                  p.returncode == 0 and 0 <= order[0] < order[1] < order[2]
+                  and f"when it ends, {active} is started again" in p.stdout, p.stdout + p.stderr)
+        p = run_vt_copy("--login", "8", RUN_VT_ACTIVE="")
+        check("run-vt.sh with no unit active stops and starts none",
+              p.returncode == 0 and "systemctl stop" not in p.stdout and "systemctl start" not in p.stdout
+              and "nothing to restore" in p.stdout, p.stdout + p.stderr)
+
+        # The session check fails closed: no list, no run.
+        fake = os.path.join(tmp, "run-vt-loginctl")
+        with open(fake, "w") as f:
+            f.write(FAKE_RUN_VT_LOGINCTL)
+        os.chmod(fake, 0o755)
+        count = os.path.join(tmp, "loginctl-count")
+
+        def run_vt_seq(seq, *args, **env):
+            if os.path.exists(count):
+                os.unlink(count)
+            return run_vt_copy(*args, RUN_VT_LOGINCTL=fake, SEQ=seq, COUNT=count, **env)
+
+        p = run_vt_seq("F", "--login", "8")
+        check("run-vt.sh refuses when loginctl cannot list the sessions",
+              p.returncode != 0 and "whether a session is on VT 8 is unknown" in p.stderr
+              and "+ unshare" not in p.stdout, p.stdout + p.stderr)
+        # A session show-session fails for is gone only when a second list no
+        # longer has it; one still listed leaves the VT unknown, so no run.
+        p = run_vt_seq("8! 8!", "8")
+        check("run-vt.sh refuses when loginctl cannot read a session still listed",
+              p.returncode != 0 and "whether a session is on VT 8 is unknown" in p.stderr
+              and "+ unshare" not in p.stdout and int(read(count)) == 2, p.stdout + p.stderr)
+        p = run_vt_seq("8! -", "8")
+        check("run-vt.sh takes a session it cannot read, gone from a second list, as ended",
+              p.returncode == 0 and "+ unshare" in p.stdout and int(read(count)) == 2, p.stdout + p.stderr)
+        for seq in ("8", "8:closing"):
+            p = run_vt_seq(seq, "8")
+            check(f"run-vt.sh refuses VT 8 with a session there ({seq})",
+                  p.returncode != 0 and "logind session c8_" in p.stderr and "is on VT 8" in p.stderr
+                  and "+ unshare" not in p.stdout, p.stdout + p.stderr)
+        p = run_vt_seq("4", "8")
+        check("run-vt.sh takes VT 8 with a session on another VT",
+              p.returncode == 0 and "+ unshare" in p.stdout, p.stdout + p.stderr)
+
+        # With --login, the first logout ends the run: the watch sees no
+        # session, then one, then none open (or only a closing one), and stops
+        # kmscon (here a stand-in) and restarts the unit. Before any login, and
+        # through a poll whose list fails or whose session cannot be read while
+        # still listed, it keeps going.
+        for seq, name in (("- - 8 F 8 -", "a logout"), ("- 8 8:online 8:closing", "a session left closing"),
+                          ("- 8 8! 8! 8 -", "a logout after a session it could not read"),
+                          ("- 8 8! -", "a logout seen as a session gone from a second list")):
+            p = run_vt_seq(seq, "--login", "8", RUN_VT_CHILD="exec sleep 60")
+            after = p.stdout[p.stdout.find("+ unshare "):]
+            check(f"run-vt.sh --login ends at {name} and restores the unit",
+                  p.returncode == 0 and "vt-login: session ended" in after
+                  and after.find("vt-login: session ended") < after.find("+ kill -TERM ")
+                  < after.find("+ systemctl start kmsconvt@tty8.service")
+                  and int(read(count)) == len(seq.split()), p.stdout + p.stderr)
+        p = run_vt_seq("-", "--login", "8", RUN_VT_CHILD="sleep 3")
+        check("run-vt.sh --login keeps going while nobody has logged in",
+              "session ended" not in p.stdout and int(read(count)) >= 3, p.stdout + p.stderr)
+        # kmscon ending on its own is a failure in a login run, status 0
+        # included: that is its limit on logins failing in a row.
+        check("run-vt.sh --login fails when kmscon ends on its own with status 0",
+              p.returncode == 1 and "kmscon exited with status 0" in p.stderr, p.stdout + p.stderr)
+        # A kmscon crash after the login is no logout, even when the poll
+        # after it finds the session gone.
+        p = run_vt_seq("- 8 -", "--login", "8", RUN_VT_CHILD="sleep 1.5; exit 3")
+        check("run-vt.sh --login takes a kmscon crash after a login for a crash",
+              p.returncode == 3 and "kmscon exited with status 3" in p.stderr
+              and "session ended" not in p.stdout, p.stdout + p.stderr)
+        # A watch whose polls keep failing says so, once, and keeps going.
+        p = run_vt_seq("- F", "--login", "8", RUN_VT_CHILD="sleep 12.5")
+        check("run-vt.sh --login warns once after 10 failed polls in a row",
+              p.stderr.count("loginctl failed 10 polls in a row") == 1 and "session ended" not in p.stdout
+              and int(read(count)) >= 12, p.stdout + p.stderr)
+        p = run_vt_seq("-", "8", RUN_VT_CHILD="exit 0")
+        check("run-vt.sh without --login does not watch the sessions",
+              p.returncode == 0 and int(read(count)) == 1, p.stdout + p.stderr)
+
+        # The dry run's stand-ins are for the tests: as root, each is refused,
+        # so a root dry run runs nothing its caller chose. id -u is the check.
+        rootbin = os.path.join(tmp, "rootbin")
+        os.makedirs(rootbin, exist_ok=True)
+        with open(os.path.join(rootbin, "id"), "w") as f:
+            f.write(f'#!/bin/sh\n[ "$*" = -u ] && echo 0 || exec {shutil.which("id")} "$@"\n')
+        os.chmod(os.path.join(rootbin, "id"), 0o755)
+        planted = os.path.join(tmp, "planted-by-child")
+        for var, value in (("RUN_VT_CHILD", f"touch {planted}"), ("RUN_VT_LOGINCTL", fake),
+                           ("RUN_VT_ACTIVE", ""), ("RUN_VT_MODULEDIR", os.path.join(tmp, "moduledir"))):
+            env = dict(os.environ, SUDO_USER="nobody", PATH=rootbin + ":" + os.environ["PATH"],
+                       SEQ="-", COUNT=count, **{var: value})
+            p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run", "--login", "8"],
+                               capture_output=True, text=True, timeout=30, env=env)
+            check(f"run-vt.sh as root refuses {var}",
+                  p.returncode != 0 and f"{var} is for the tests" in p.stderr
+                  and "+ unshare" not in p.stdout and not os.path.exists(planted), p.stdout + p.stderr)
+        p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run", "--login", "8"],
+                           capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, SUDO_USER="nobody", PATH=rootbin + ":" + os.environ["PATH"]))
+        check("run-vt.sh as root takes a dry run without the stand-ins",
+              "is for the tests" not in p.stderr
+              and (p.returncode == 0 or "does not exist" in p.stderr), p.stdout + p.stderr)
+
+        # restore() stops kmscon only while it is this script's running job:
+        # a PID that kmscon left and another process took is not killed. A
+        # private PID namespace makes the reuse happen: once the stand-in
+        # kmscon has exited, the stand-in loginctl starts a process on its PID
+        # (ns_last_pid) and stops the script, whose PID there is 1.
+        reuse = os.path.join(tmp, "reuse-loginctl")
+        with open(reuse, "w") as f:
+            f.write("""#!/bin/bash
+[ "$1" = list-sessions ] || exit 0
+[ -s "$PIDFILE" ] && [ ! -e "$TAKEN" ] && ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null || exit 0
+echo $(( $(cat "$PIDFILE") - 1 )) >/proc/sys/kernel/ns_last_pid
+setsid sleep 30 </dev/null >/dev/null 2>&1 &
+echo "$!" >"$TAKEN"
+kill -TERM 1
+""")
+        os.chmod(reuse, 0o755)
+        pidfile, taken = os.path.join(tmp, "child-pid"), os.path.join(tmp, "taken-pid")
+        ns = ["unshare", "--user", f"--map-user={os.getuid()}", f"--map-group={os.getgid()}", "--keep-caps",
+              "--pid", "--fork", "--mount-proc", "--"]
+        if subprocess.run([*ns, "true"], capture_output=True).returncode != 0:
+            print("skip  run-vt.sh leaves a PID kmscon left to its new owner: no user and PID namespace here")
+        else:
+            p = subprocess.run([*ns, "bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run", "--login", "8"],
+                               capture_output=True, text=True, timeout=30,
+                               env=dict(os.environ, SUDO_USER="nobody", RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir"),
+                                        RUN_VT_LOGINCTL=reuse, PIDFILE=pidfile, TAKEN=taken,
+                                        RUN_VT_CHILD='echo $$ >"$PIDFILE"'))
+            same = os.path.exists(taken) and read(taken).strip() == read(pidfile).strip()
+            check("run-vt.sh leaves a PID kmscon left to its new owner",
+                  p.returncode == 143 and same and "+ kill -TERM" not in p.stdout,
+                  p.stdout + p.stderr + f"\nchild {read(pidfile) if os.path.exists(pidfile) else '?'}"
+                  f" taken {read(taken) if os.path.exists(taken) else '?'}")
+
+        for opts, why in ((["--login", "--kit=sixel"], "--login runs no demo"),
+                          (["--login", "--showcase=/v.mkv"], "--login runs no demo"),
+                          (["--login", "--showcase-audio"], "go with --showcase=VIDEO")):
+            p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "8"], capture_output=True, text=True, timeout=30)
+            check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
+        for bad in ("--login=/bin/sh", "--lo", "Nerd"):
+            p = run_vt_copy("--login", "8", "--", bad)
+            check(f"run-vt.sh --login refuses the kmscon option {bad}",
+                  p.returncode != 0 and f"kmscon option '{bad}' is refused" in p.stderr, p.stderr)
 
         p = subprocess.run(["bash", run_vt, "--dry-run", "05"], capture_output=True, text=True, timeout=30)
         check("run-vt.sh refuses VT 05", p.returncode != 0 and "not '05'" in p.stderr, p.stderr)

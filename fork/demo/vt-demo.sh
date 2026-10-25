@@ -14,20 +14,27 @@
 # it; run-vt.sh refuses the same VTs again before it stops anything.
 #
 # VT_DEMO_KIT picks the demo's review kit (#123): text (run-vt.sh's default),
-# sixel, kitty or all.
+# sixel, kitty, glyphs or all.
 #
 # VT_DEMO_SHOWCASE names a video and runs the Bad Apple!! showcase
 # (fork/showcase/bad-apple.sh) in place of the demo, as make showcase does;
 # VT_DEMO_SHOWCASE_FROM starts it at an act and VT_DEMO_SHOWCASE_AUDIO (yes or
-# 1; no, 0 or empty for none) plays the soundtrack, through
+# 1; no or 0 for none) plays the soundtrack, through
 # VT_DEMO_SHOWCASE_AUDIO_DEVICE when set (an mpv audio device; the show asks
-# otherwise). The showcase records no answers, so its run ends with the
-# health check alone.
+# otherwise), which plays it without VT_DEMO_SHOWCASE_AUDIO too. The showcase
+# records no answers, so its run ends with the health check alone.
+#
+# VT_DEMO_LOGIN=1 (yes or 1), as make vt-login sets it, runs kmscon's own
+# login prompt in place of the demo (run-vt.sh --login). Its run ends with the
+# health check, and with the answers of a dev build demo run in that login,
+# if any.
 #
 # VT_DEMO_DRY_RUN=1 picks the VT and prints the run-vt.sh command without
-# running it. For the tests, VT_DEMO_ACTIVE, VT_DEMO_LOGINCTL, VT_DEMO_SUDO
-# (empty: no sudo), VT_DEMO_RUN_VT and VT_DEMO_FEEDBACK replace the sysfs file,
-# loginctl, sudo, run-vt.sh and the feedback file.
+# running it. For the tests, VT_DEMO_ACTIVE, VT_DEMO_LOGINCTL and
+# VT_DEMO_FEEDBACK replace the sysfs file, loginctl and the feedback file, and
+# VT_DEMO_SUDO (empty: no sudo) and VT_DEMO_RUN_VT replace sudo and run-vt.sh.
+# Those two decide what runs as root, so they count only in a dry run or with
+# VT_DEMO_TEST=1, never from a stale export in the operator's shell.
 set -euo pipefail
 
 usage() {
@@ -44,8 +51,8 @@ vt=${VT_DEMO_VT:-}
 extra=()
 session=()
 case ${VT_DEMO_KIT:-} in
-'' | text | sixel | kitty | all) ;;
-*) die "KIT=$VT_DEMO_KIT: text, sixel, kitty or all" ;;
+'' | text | sixel | kitty | glyphs | all) ;;
+*) die "KIT=$VT_DEMO_KIT: text, sixel, kitty, glyphs or all" ;;
 esac
 [ -z "${VT_DEMO_KIT:-}" ] || [ -z "${VT_DEMO_SHOWCASE:-}" ] ||
 	die "KIT goes with the demo, not with the showcase"
@@ -56,15 +63,29 @@ if [ -n "${VT_DEMO_SHOWCASE:-}" ]; then
 		die "BAD_APPLE=$VT_DEMO_SHOWCASE is not a readable file"
 	session=(--showcase="$video")
 	[ -z "${VT_DEMO_SHOWCASE_FROM:-}" ] || session+=(--showcase-from="$VT_DEMO_SHOWCASE_FROM")
-	case ${VT_DEMO_SHOWCASE_AUDIO:-} in
+	# A device named is a soundtrack asked for, unless AUDIO says no.
+	audio=${VT_DEMO_SHOWCASE_AUDIO:-}
+	[ -n "$audio" ] || [ -z "${VT_DEMO_SHOWCASE_AUDIO_DEVICE:-}" ] || audio=1
+	case $audio in
 	yes | 1) session+=(--showcase-audio${VT_DEMO_SHOWCASE_AUDIO_DEVICE:+="$VT_DEMO_SHOWCASE_AUDIO_DEVICE"}) ;;
 	no | 0 | '')
 		[ -z "${VT_DEMO_SHOWCASE_AUDIO_DEVICE:-}" ] ||
-			echo "vt-demo: AUDIO_DEVICE=$VT_DEMO_SHOWCASE_AUDIO_DEVICE is ignored without AUDIO=1" >&2
+			echo "vt-demo: AUDIO_DEVICE=$VT_DEMO_SHOWCASE_AUDIO_DEVICE is ignored with AUDIO=$audio" >&2
 		;;
 	*) die "AUDIO=$VT_DEMO_SHOWCASE_AUDIO: yes or 1 plays the soundtrack, no or 0 does not" ;;
 	esac
 fi
+login=
+case ${VT_DEMO_LOGIN:-} in
+'') ;;
+yes | 1)
+	login=1
+	[ -z "${VT_DEMO_KIT:-}" ] || die "KIT goes with the demo, not with a login: DEMO_KIT=$VT_DEMO_KIT before demo.sh, once logged in"
+	[ -z "${VT_DEMO_SHOWCASE:-}" ] || die "the showcase goes with make showcase, or by hand once logged in, not with a login"
+	session=(--login)
+	;;
+*) die "VT_DEMO_LOGIN=$VT_DEMO_LOGIN: yes or 1 runs a login prompt" ;;
+esac
 if [ -n "${VT_DEMO_ARGS:-}" ]; then
 	printf '%s' "$VT_DEMO_ARGS" | xargs -r printf '%s\0' >/dev/null ||
 		die "DEMO_ARGS cannot be split into words: $VT_DEMO_ARGS"
@@ -83,8 +104,12 @@ here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 dry=${VT_DEMO_DRY_RUN:-}
 active_file=${VT_DEMO_ACTIVE:-/sys/class/tty/tty0/active}
 loginctl=${VT_DEMO_LOGINCTL:-loginctl}
-sudo=${VT_DEMO_SUDO-sudo}
-run_vt=${VT_DEMO_RUN_VT:-$here/run-vt.sh}
+sudo=sudo
+run_vt=$here/run-vt.sh
+if [ -n "$dry" ] || [ "${VT_DEMO_TEST:-}" = 1 ]; then
+	sudo=${VT_DEMO_SUDO-sudo}
+	run_vt=${VT_DEMO_RUN_VT:-$run_vt}
+fi
 # run-vt.sh starts the demo with a cleared environment, so the dev build's
 # answers always go to demo.sh's default file; DEMO_FEEDBACK would not reach it.
 feedback=${VT_DEMO_FEEDBACK:-/tmp/kmscon-demo/feedback.tsv}
@@ -207,12 +232,18 @@ fi
 echo "kmscon log: $log"
 echo
 
-if [ ${#session[@]} -eq 0 ]; then
+# The demo's answers; a login's, when a demo was run in it.
+if [ ${#session[@]} -eq 0 ] || { [ -n "$login" ] && [ -n "$run" ]; }; then
 	[ -z "$run" ] || "$here/feedback.sh" --file "$feedback" --run "$run"
 	echo
 	echo "results: $(readlink -m "$feedback")"
 fi
 
+# A login ends at its logout or at Ctrl-C (130); either is a normal end.
+if [ -n "$login" ] && [ "$status" -eq 130 ]; then
+	echo "vt-login: ended with Ctrl-C"
+	status=0
+fi
 if [ "$status" -ne 0 ]; then
 	echo "vt-demo: run-vt.sh exited with status $status: kmscon failed or the demo was cut short" >&2
 	exit "$status"

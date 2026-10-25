@@ -703,7 +703,7 @@ static int conf_parse_screens(struct conf_option *opt, bool on, const char *arg)
 		if (!matched)
 			return -EINVAL;
 	} else if (strlen(arg) < MAX_DISPLAY_NAME_LEN - 1) {
-		strncpy(config, arg, sizeof(config));
+		snprintf(config, sizeof(config), "%s", arg);
 	}
 
 	log_debug("matched:%d gpu=%s connector=%s config %s\n", matched, gpu, connector, config);

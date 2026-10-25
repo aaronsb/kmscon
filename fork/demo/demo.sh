@@ -22,8 +22,8 @@
 #                          such as cjk; with none, the sections of the kit
 #                          run
 #
-# DEMO_KIT picks the review kit (#123): text (the default), sixel, kitty or
-# all. A section's "# kit:" line names its kit; one without it is text.
+# DEMO_KIT picks the review kit (#123): text (the default), sixel, kitty,
+# glyphs or all. A section's "# kit:" line names its kit; one without it is text.
 #
 # DEMO_LABEL names the terminal on the title page and in the feedback;
 # run-vt.sh sets it to "dev build <git describe>". DEMO_NOPROMPT=1 shows the
@@ -323,8 +323,8 @@ kit_of() {
 }
 
 case $kit in
-text | sixel | kitty | all) ;;
-*) echo "demo: DEMO_KIT=$kit: the kits are text, sixel, kitty or all" >&2; exit 2 ;;
+text | sixel | kitty | glyphs | all) ;;
+*) echo "demo: DEMO_KIT=$kit: the kits are text, sixel, kitty, glyphs or all" >&2; exit 2 ;;
 esac
 sections=()
 for f in "$here"/sections/*.sh; do

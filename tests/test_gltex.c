@@ -1,15 +1,18 @@
 /*
- * The gltex glyph cache stays bounded. A cluster's frame key carries the
- * screen's generation, so a screen that re-creates its clusters asks for new
- * keys every frame; the atlases must not grow with them. Its memory stays
- * linear in the cell count at a 4K cell grid. The GL stubs hold gltex to the
- * GLES 2 texture rules a real driver enforces (#17). Blinking cells lose their glyph
- * in the hidden phase. Decorations are the real decoration sprites (deco.c),
- * drawn in their own colours, and colour glyphs go to an RGBA atlas drawn
- * untinted (ADR-102 step 6). Each pixel of a cell samples its own texel's
- * centre, GL_NEAREST, at the precision the cell shader asks for (#197). The
- * GL and display calls are stubs: the test
- * counts the textures gltex creates, keeps the pixels it uploads, records each
+ * The gltex glyph cache (ADR-102) holds each kind of glyph in its own pool of
+ * strips within a bound in glyphs and bytes and reuses the least recently
+ * drawn glyph's slot, never one the frame being drawn uses; the tests from
+ * "the glyph cache" on are its specification, and a reference LRU in the
+ * test checks it frame by frame. A cluster's frame key carries the screen's generation, so a
+ * screen that re-creates its clusters asks for new keys every frame; they age
+ * out. Its memory stays linear in the cell count at a 4K cell grid. The GL
+ * stubs hold gltex to the GLES 2 texture rules a real driver enforces (#17).
+ * Blinking cells lose their glyph in the hidden phase. Decorations are the
+ * real decoration sprites (deco.c), drawn in their own colours, and colour
+ * glyphs go to an RGBA atlas drawn untinted (ADR-102 step 6). Each pixel of a
+ * cell samples its own texel's centre, GL_NEAREST, at the precision the cell
+ * shader asks for (#197). The GL and display calls are stubs: the test counts
+ * the textures gltex creates, keeps the pixels it uploads, records each
  * draw's textures and uniforms, and checks where its glyphs land in them and
  * in the frame. We include the implementation to reach its statics.
  *
@@ -25,9 +28,12 @@
 #include <GLES2/gl2.h>
 #include <assert.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "../src/font/font.h"
 #include "../src/render/deco.h"
 #include "../src/render/image_budget.h"
@@ -119,7 +125,7 @@ static struct fake_tex {
 	GLint filter;  /* GL_TEXTURE_MIN_FILTER, which MAG_FILTER must match */
 	GLint mag;
 	uint8_t *data; /* the pixels glTexImage2D gave it, or NULL */
-} texs[4096], strays[16];
+} texs[16384], strays[16];
 static unsigned int n_tex_images; /* glTexImage2D calls with pixels */
 static unsigned int n_tex_rgba;	  /* glTexImage2D calls for RGBA storage */
 static bool fail_teximage;	  /* glTexImage2D of RGBA storage raises GL_OUT_OF_MEMORY */
@@ -155,6 +161,8 @@ static unsigned int n_uploads;
 #define STRIP_W (KMSCON_DECO_COUNT * FAKE_CELL_W)
 static unsigned int strip_uploads;
 static bool fail_strip;
+/* the next uploads that fail, any of them */
+static unsigned int fail_uploads;
 
 static unsigned int bytes_per_pixel(GLenum format)
 {
@@ -270,9 +278,9 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
 		t->data = malloc(n);
 		memcpy(t->data, pixels, n);
 		n_tex_images++;
-	} else if (format == GL_RGBA) {
-		/* filled by glTexSubImage2D, as a picture with padded rows is */
-		t->data = calloc((size_t)width * height, 4);
+	} else {
+		/* filled by glTexSubImage2D: an atlas, or a picture with padded rows */
+		t->data = calloc((size_t)width * height, bytes_per_pixel(format));
 	}
 }
 void glTexParameteri(GLenum target, GLenum pname, GLint param)
@@ -297,10 +305,19 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
 	assert(t->live && t->w && level == 0 && format == t->format && type == GL_UNSIGNED_BYTE);
 	assert(xoffset >= 0 && yoffset >= 0 && width > 0 && height > 0);
 	assert(xoffset + width <= t->w && yoffset + height <= t->h);
-	if (t->data && format == GL_RGBA)
+	if (t->data) {
+		unsigned int bpp = bytes_per_pixel(format);
+
 		for (GLsizei y = 0; y < height; y++)
-			memcpy(&t->data[((size_t)(yoffset + y) * t->w + xoffset) * 4],
-			       (const uint8_t *)pixels + (size_t)y * width * 4, (size_t)width * 4);
+			memcpy(&t->data[((size_t)(yoffset + y) * t->w + xoffset) * bpp],
+			       (const uint8_t *)pixels + (size_t)y * width * bpp,
+			       (size_t)width * bpp);
+	}
+	if (fail_uploads) {
+		fail_uploads--;
+		gl_error = GL_INVALID_OPERATION;
+		return;
+	}
 	if (width == STRIP_W) {
 		strip_uploads++;
 		if (fail_strip) {
@@ -348,9 +365,11 @@ const char *gl_err_to_str(GLenum err)
 {
 	return "stub";
 }
+/* while set, GL reports an error after making a shader, as a driver can */
+static bool fail_shader;
 bool gl_has_error(struct gl_shader *shader)
 {
-	return false;
+	return fail_shader;
 }
 static unsigned int n_shaders;
 static char cell_frag[16384]; /* the cell shader's fragment source, as it was last given */
@@ -378,12 +397,17 @@ void gl_shader_use(struct gl_shader *shader)
 {
 	program = shader;
 }
-/* as shl's: bound, and filtered GL_LINEAR */
+/*
+ * as shl's: bound, and filtered GL_LINEAR; named in order, and once the names
+ * run out, by a name GL has deleted, as a driver reuses them
+ */
 void gl_tex_new(GLuint *tex, size_t num)
 {
 	for (size_t i = 0; i < num; i++) {
 		tex[i] = ++n_textures;
-		assert(tex[i] < sizeof(texs) / sizeof(*texs));
+		if (tex[i] >= sizeof(texs) / sizeof(*texs))
+			for (tex[i] = 1; texs[tex[i]].live; tex[i]++)
+				assert(tex[i] + 1 < sizeof(texs) / sizeof(*texs));
 		texs[tex[i]] = (struct fake_tex){
 			.name = tex[i], .live = true, .filter = GL_LINEAR, .mag = GL_LINEAR};
 		bound_tex = tex[i];
@@ -412,21 +436,39 @@ bool display_has_opengl(struct display *disp)
 {
 	return true;
 }
-void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y) {}
+/* the cursor offsets gltex gave the display: how many, and the last */
+static unsigned int cursor_offsets;
+static int32_t cursor_x, cursor_y;
+void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y)
+{
+	cursor_offsets++;
+	cursor_x = x;
+	cursor_y = y;
+}
+/* while set, display_use() fails, as with no GL context; display_uses counts its calls */
+static bool fail_display_use;
+static unsigned int display_uses;
 int display_use(struct display *disp)
 {
-	return 0;
+	display_uses++;
+	return fail_display_use ? -EFAULT : 0;
 }
 
 /* ---- font and text ---- */
+/* the text's size in cells, from the display turned by its orientation, as text.c's */
 unsigned int kmscon_text_get_cols(struct kmscon_text *txt, unsigned int font_width)
 {
-	return disp_w / font_width;
+	bool upright = txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN;
+
+	return (upright ? disp_w : disp_h) / font_width;
 }
 unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_height)
 {
-	return disp_h / font_height;
+	bool upright = txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN;
+
+	return (upright ? disp_h : disp_w) / font_height;
 }
+
 /*
  * The colour glyph's pixel at @x, @y, ARGB: its alpha varies,
  * and its red, green and blue differ so that a swap of any two shows.
@@ -437,32 +479,65 @@ unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_hei
 #define COLOUR_PX(x, y) ((uint32_t)((x) * 16 + (y)) << 24 | 0x804000)
 
 /*
+ * While set, the font draws each glyph as a pattern of its codepoint, style
+ * and pixel (patterned_px()), so a cell drawn from another glyph's slot, or
+ * from what a slot's last glyph left, shows in the texels; and codepoints from
+ * COLOUR_FIRST up to the next plane are colour glyphs, as clusters are while
+ * colour_clusters is set too.
+ */
+static bool patterned;
+static bool colour_clusters;
+#define COLOUR_FIRST 0x1f300
+/* a glyph the font draws three pixels narrower and two shorter than its cells */
+#define SHORT_CP 0xe000
+
+static uint32_t patterned_px(uint32_t cp, const struct kmscon_font_attr *attr, unsigned int x,
+			     unsigned int y)
+{
+	uint32_t v = cp * 2654435761u ^ (attr->bold << 7 | attr->italic << 6);
+
+	return (v + x * 0x9e3779b9u + y * 0x85ebca6bu) | 0x01010101u;
+}
+
+/*
  * A blank mask, or for COLOUR_CP an ARGB glyph, as the font gives a colour
- * emoji (ADR-102 step 4c).
+ * emoji (ADR-102 step 4c); patterned, see above. A glyph is its font's cells,
+ * @cwidth of them.
  */
 struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
 					const uint32_t *cps, size_t len, unsigned int cwidth)
 {
-	unsigned int w = cwidth * FAKE_CELL_W, x, y;
+	unsigned int w = cwidth * font->width, h = font->height, x, y;
+	bool colour =
+		cps[0] == COLOUR_CP ||
+		(patterned && ((cps[0] >= COLOUR_FIRST && cps[0] < 0x20000) || cps[0] >= 0x40000));
 	struct kmscon_glyph *g;
 
 	n_rendered++;
 	if (len == 1 && cps[0] == FAIL_CP)
 		return NULL;
-	if (len == 1 && cps[0] == COLOUR_CP) {
+	if (cps[0] == SHORT_CP) {
+		w -= 3;
+		h -= 2;
+	}
+	if (colour) {
 		uint32_t *px;
 
-		g = calloc(1, sizeof(*g) + w * FAKE_CELL_H * 4);
+		g = calloc(1, sizeof(*g) + w * h * 4);
 		g->buf.format = VIDEO_FORMAT_ARGB32;
 		px = (uint32_t *)g->buf.data;
-		for (y = 0; y < FAKE_CELL_H; y++)
+		for (y = 0; y < h; y++)
 			for (x = 0; x < w; x++)
-				px[y * w + x] = COLOUR_PX(x, y);
+				px[y * w + x] = patterned ? patterned_px(cps[0], attr, x, y)
+							  : COLOUR_PX(x, y);
 	} else {
-		g = calloc(1, sizeof(*g) + w * FAKE_CELL_H);
+		g = calloc(1, sizeof(*g) + w * h);
+		for (y = 0; patterned && y < h; y++)
+			for (x = 0; x < w; x++)
+				g->buf.data[y * w + x] = patterned_px(cps[0], attr, x, y);
 	}
 	g->buf.width = w;
-	g->buf.height = FAKE_CELL_H;
+	g->buf.height = h;
 	g->double_width = cwidth == 2;
 	return g;
 }
@@ -479,11 +554,16 @@ void kmscon_font_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out
 {
 	*out = fake_deco;
 }
-/* a codepoint names itself; every cluster is 'c' */
+/*
+ * A codepoint names itself; every cluster is 'c', or, patterned, a codepoint
+ * of its own past the BMP, a colour one while colour_clusters is set.
+ */
 const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, uint32_t *one,
 					size_t *len)
 {
 	*one = key < TSM_FRAME_CLUSTER_KEY ? key : 'c';
+	if (key >= TSM_FRAME_CLUSTER_KEY && patterned)
+		*one = (colour_clusters ? 0x40000 : 0x30000) + (uint32_t)(key & 0xffff);
 	*len = 1;
 	return one;
 }
@@ -524,88 +604,17 @@ int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
 
 #include "../src/render/gltex.c"
 
+/* a size the terminal gives, through kmscon_text_resize()'s check in text.c, copied */
+static void text_resize(struct kmscon_text *txt, unsigned int cols, unsigned int rows)
+{
+	if (!cols || cols > txt->max_cols || !rows || rows > txt->max_rows)
+		return;
+	gltex_resize(txt, cols, rows);
+}
+
 static void vte_write(struct tsm_vte *vte, const char *u8, size_t len, void *data) {}
 
 static struct kmscon_font fake_font = {.width = FAKE_CELL_W, .height = FAKE_CELL_H};
-
-static unsigned int count_atlases(struct gltex *gt)
-{
-	struct atlas *atlas;
-	unsigned int n = 0;
-
-	dlist_for_each_entry(atlas, &gt->atlases, list)
-	{
-		n++;
-	}
-	return n;
-}
-
-/*
- * One frame: @n glyphs under fresh cluster keys starting at @next (a screen
- * that re-created its clusters), plus 'A', which is the same every frame. No
- * two glyphs of the frame may share an atlas cell.
- */
-static void draw_frame(struct kmscon_text *txt, uint64_t *next, unsigned int n)
-{
-	static struct gl_glyph *seen[FAKE_COLS * FAKE_ROWS + 1];
-	struct tsm_screen_attr attr = {0};
-	struct gl_glyph *a, *g;
-	unsigned int i, j;
-
-	assert(gltex_prepare(txt, &attr) == 0);
-
-	a = find_glyph(txt, 'A', 0, 1);
-	assert(a);
-	seen[0] = a;
-	for (i = 1; i <= n; i++) {
-		g = find_glyph(txt, (*next)++, 0, 1 + i % 2);
-		assert(g);
-		assert(g->texoff + (g->double_width ? 2 : 1) <= g->atlas->count);
-		for (j = 0; j < i; j++)
-			assert(seen[j]->atlas != g->atlas || seen[j]->texoff != g->texoff);
-		seen[i] = g;
-	}
-	/* a second look within the frame is a hit */
-	j = n_rendered;
-	assert(find_glyph(txt, 'A', 0, 1) == a);
-	assert(n_rendered == j);
-}
-
-static void test_bounded(void)
-{
-	struct kmscon_text txt = {0};
-	struct gltex *gt;
-	uint64_t next = TSM_FRAME_CLUSTER_KEY;
-	unsigned int i;
-
-	txt.font = &fake_font;
-	txt.disp = (struct display *)0x1;
-	txt.orientation = OR_NORMAL;
-	assert(gltex_init(&txt) == 0);
-	assert(gltex_set(&txt) == 0);
-	gt = txt.data;
-
-	/* 80x30 cells, so 4 * 2401 cells between flushes */
-	assert(gt->max_cells == 9604);
-
-	for (i = 0; i < 2000; i++)
-		draw_frame(&txt, &next, FAKE_COLS);
-
-	/*
-	 * 2000 frames of 80 new glyphs, alternately one and two cells wide, hand
-	 * out 240000 cells; unbounded that is over 900 atlases of 256 cells. A
-	 * flush comes once more than 9604 cells are out, so at most 9604 plus
-	 * one frame's 121 are; with one cell lost at the end of each atlas to a
-	 * glyph two cells wide, they fit in 39 atlases.
-	 */
-	fprintf(stderr, "atlases %u, textures %u\n", count_atlases(gt), n_textures);
-	assert(count_atlases(gt) <= 39);
-	assert(n_textures == count_atlases(gt));
-	assert(gt->cells <= 9604 + 121);
-
-	gltex_unset(&txt);
-	gltex_destroy(&txt);
-}
 
 /* bytes in use on the heap, the blocks malloc maps on its own included */
 static size_t heap_in_use(void)
@@ -792,8 +801,8 @@ static void assert_drawn(struct kmscon_text *txt, const struct tsm_frame *frame,
  * GL_INVALID_OPERATION and the screen stayed black. The test checks the
  * outcome. The display leaves a margin so off_x and off_y are not zero: with
  * c5b2fa5's fields after the list head, that is what let its lookup pass the
- * room check, and that plant fails here (#180). Today the queue follows the
- * head, and the old lookup alone fails test_bounded instead.
+ * room check, and that plant fails here (#180). Today an atlas is only ever
+ * made for the glyph cache's pools or the sprites, never looked up.
  */
 static void test_first_glyph(void)
 {
@@ -819,7 +828,7 @@ static void test_first_glyph(void)
 	assert(!dlist_empty(&gt->atlases));
 	assert(g->atlas == dlist_first(&gt->atlases, struct atlas, list));
 	assert(g->atlas->tex == n_textures && texs[g->atlas->tex].w);
-	assert(g->texoff == 0 && g->atlas->fill == 1);
+	assert(g->texoff == 0 && g->held && g->atlas->pool == pool_of(gt, GL_ALPHA, 1));
 
 	gltex_unset(&txt);
 	gltex_destroy(&txt);
@@ -926,8 +935,7 @@ static void assert_sprites(struct gltex *gt)
 
 	assert(gt->deco_atlas && gt->deco_atlas->format == GL_ALPHA);
 	for (unsigned int j = 0; j < n_uploads; j++)
-		if (uploads[j].tex == gt->deco_atlas->tex &&
-		    uploads[j].x == (GLint)(gt->deco_off * FAKE_CELL_W))
+		if (uploads[j].tex == gt->deco_atlas->tex && uploads[j].x == 0)
 			strip = &uploads[j];
 	assert(strip && strip->format == GL_ALPHA);
 	assert(strip->w == KMSCON_DECO_COUNT * FAKE_CELL_W && strip->h == FAKE_CELL_H);
@@ -1050,9 +1058,9 @@ static void test_decorations(void)
 			q = quad_at(gt, col);
 			/* 'I', after SGR 0, is in the default foreground */
 			assert(i == 9 || colour_eq(q->fg, fg));
-			assert(q->ulcell == gt->deco_off + want[i].ul);
+			assert(q->ulcell == want[i].ul);
 			strike = want[i].strike ? KMSCON_DECO_STRIKE : KMSCON_DECO_NONE;
-			assert(q->strikecell == gt->deco_off + strike);
+			assert(q->strikecell == strike);
 			ul = txt.deco.ul_fg ? fg : txt.deco.ul;
 			if (i == 7 && !txt.deco.force)
 				ul = red; /* SGR 58 */
@@ -1096,45 +1104,10 @@ static void test_underline_cursor(void)
 
 	draw_bytes(&txt, bytes, sizeof(bytes) - 1, true);
 	q = quad_at(gt, 1);
-	assert(q->ulcell == gt->deco_off + KMSCON_DECO_SINGLE);
+	assert(q->ulcell == KMSCON_DECO_SINGLE);
 	assert(colour_eq(q->ul, q->fg) && !colour_eq(q->ul, txt.deco.ul));
 	/* the cell before it is no cursor and has no underline */
-	assert(quad_at(gt, 0)->ulcell == gt->deco_off + KMSCON_DECO_NONE);
-
-	gltex_unset(&txt);
-	gltex_destroy(&txt);
-}
-
-/*
- * A flush drops the decoration sprites with the glyphs, as their cells are
- * refilled; the next frame uploads them again, counted against the cache
- * bound, and its quads name the new cells.
- */
-static void test_deco_flush(void)
-{
-	static const char bytes[] = "\x1b[?25l\x1b[4mA";
-	struct kmscon_text txt = {0};
-	struct gltex *gt;
-
-	txt.font = &fake_font;
-	txt.disp = (struct display *)0x1;
-	txt.orientation = OR_NORMAL;
-	assert(gltex_init(&txt) == 0);
-	assert(gltex_set(&txt) == 0);
-	gt = txt.data;
-
-	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
-	assert(gt->deco_atlas);
-	gltex_flush(&txt);
-	assert(!gt->deco_atlas && !gt->cells);
-
-	keep_uploads = true;
-	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
-	keep_uploads = false;
-	assert_sprites(gt);
-	assert(gt->cells >= KMSCON_DECO_COUNT);
-	assert(quad_at(gt, 0)->ulcell == gt->deco_off + KMSCON_DECO_SINGLE);
-	free_uploads();
+	assert(quad_at(gt, 0)->ulcell == KMSCON_DECO_NONE);
 
 	gltex_unset(&txt);
 	gltex_destroy(&txt);
@@ -1241,8 +1214,8 @@ static void test_strip_failure(void)
 	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
 	assert(strip_uploads == 2 && gt->deco_atlas);
 	q = quad_at(gt, 0);
-	assert(q->ulcell == gt->deco_off + KMSCON_DECO_SINGLE);
-	assert(q->strikecell == gt->deco_off + KMSCON_DECO_STRIKE);
+	assert(q->ulcell == KMSCON_DECO_SINGLE);
+	assert(q->strikecell == KMSCON_DECO_STRIKE);
 	n_draws = 0;
 	assert(gltex_render(&txt) == 0);
 	check_render(gt);
@@ -1283,7 +1256,7 @@ static void test_glyph_fallback(void)
 		q = quad_at(gt, col);
 		assert(q->atlas == blank->atlas && q->texoff == blank->texoff && q->texw == 1.0);
 		assert(colour_eq(q->bg, (struct tsm_screen_color){1, 2, 3}));
-		assert(q->ulcell == gt->deco_off + KMSCON_DECO_SINGLE);
+		assert(q->ulcell == KMSCON_DECO_SINGLE);
 		assert(colour_eq(q->ul, txt.deco.ul));
 	}
 	a = find_glyph(&txt, 'A', 0, 1);
@@ -2383,17 +2356,1505 @@ static void test_atlas_sampling(void)
 	check_sampling(10, 19);
 }
 
+/* ---- the glyph cache (ADR-102) ---- */
+
+/*
+ * The cache tests draw with patterned glyphs on strips of eight cells (a
+ * 64-texel GL_MAX_TEXTURE_SIZE) under a bound of 2 KiB a pool, with no bound
+ * on its glyph count but where a test sets one: an alpha pool
+ * takes two strips of 1 KiB, sixteen narrow slots or eight wide ones, and an
+ * RGBA pool one strip of 4 KiB, eight narrow slots or four wide ones. A few
+ * frames then reach every step of take_slot().
+ */
+#define CACHE_TEX 64
+#define CACHE_BOUND 2048
+#define NARROW_CAP 16 /* alpha one cell wide */
+#define WIDE_CAP 8    /* alpha two cells wide */
+
+/* the glyphs of each kind the cache tests draw: codepoints apart, see glyph_kind() */
+#define NARROW_CP 0x100
+#define WIDE_CP 0x4e01 /* past FAIL_CP */
+#define EMOJI_CP 0x1f400
+#define EMOJI_NARROW_CP 0x1f300
+
+/* a cell a cache test draws: @key, @width cells wide, with @flags and @underline */
+struct gcell {
+	uint64_t key;
+	unsigned int width;
+	uint16_t flags;
+	uint8_t underline;
+};
+
+static void open_cache(struct kmscon_text *txt, struct kmscon_font *font,
+		       enum Orientation orientation)
+{
+	memset(txt, 0, sizeof(*txt));
+	txt->font = font;
+	txt->disp = (struct display *)0x1;
+	txt->orientation = orientation;
+	max_texture_size = CACHE_TEX;
+	patterned = true;
+	assert(gltex_init(txt) == 0);
+	assert(gltex_set(txt) == 0);
+	((struct gltex *)txt->data)->pool_max_glyphs = UINT_MAX;
+	((struct gltex *)txt->data)->pool_max_bytes = CACHE_BOUND;
+}
+
+static void close_cache(struct kmscon_text *txt)
+{
+	gltex_unset(txt);
+	gltex_destroy(txt);
+	max_texture_size = 2048;
+	patterned = false;
+	colour_clusters = false;
+}
+
+/*
+ * One frame: @n cells from the top left, a wide one taking two columns, each
+ * drawn with its glyph (gltex_draw_cell() returns 0: none is left blank),
+ * then rendered.
+ */
+static void cache_frame(struct kmscon_text *txt, const struct gcell *cells, unsigned int n)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}};
+	unsigned int i, x = 0, y = 0;
+
+	assert(gltex_prepare(txt, &attr) == 0);
+	txt->frame_misses = 0;
+	for (i = 0; i < n; i++) {
+		if (x + cells[i].width > txt->cols) {
+			x = 0;
+			y++;
+		}
+		assert(y < txt->rows);
+		fc.width = cells[i].width;
+		fc.flags = cells[i].flags;
+		fc.underline = cells[i].underline;
+		assert(gltex_draw_cell(txt, &fc, cells[i].key, x, y, cells[i].width, false) == 0);
+		x += cells[i].width;
+	}
+	n_draws = 0;
+	assert(gltex_render(txt) == 0);
+}
+
+/* the slot quad @q draws from */
+static struct gl_glyph *slot_of(const struct gltex_quad *q)
+{
+	struct atlas *atlas = q->atlas;
+
+	assert(atlas->pool && atlas->slots);
+	assert((unsigned int)q->texoff % atlas->pool->cells == 0);
+	return &atlas->slots[(unsigned int)q->texoff / atlas->pool->cells];
+}
+
+/*
+ * Each of the last frame's @n cells was drawn from a slot that holds its
+ * glyph at render: the quad's slot is held, under the cell's key.
+ */
+static void assert_resident(struct gltex *gt, const struct gcell *cells, unsigned int n)
+{
+	struct gl_glyph *slot;
+	unsigned int i;
+
+	assert(gt->quads_num == n);
+	for (i = 0; i < n; i++) {
+		slot = slot_of(&gt->quads[i]);
+		assert(slot->held && slot->key.key == cells[i].key);
+		assert(slot->key.width == cells[i].width);
+	}
+}
+
+struct bytes {
+	uint8_t *p;
+	size_t n, size;
+};
+
+static void put(struct bytes *b, const void *data, size_t len)
+{
+	if (b->n + len > b->size) {
+		b->size = (b->n + len) * 2;
+		b->p = realloc(b->p, b->size);
+		assert(b->p);
+	}
+	memcpy(b->p + b->n, data, len);
+	b->n += len;
+}
+
+/* @w x @h texels of @atlas from cell @cell, a row at a time */
+static void put_texels(struct bytes *b, const struct atlas *atlas, unsigned int cell,
+		       unsigned int cw, unsigned int w, unsigned int h)
+{
+	const struct fake_tex *t = &texs[atlas->tex];
+	unsigned int bpp = bytes_per_pixel(atlas->format), y;
+
+	assert(t->live && t->data && cell * cw + w <= (unsigned int)t->w);
+	for (y = 0; y < h; y++)
+		put(b, &t->data[((size_t)y * t->w + cell * cw) * bpp], (size_t)w * bpp);
+}
+
+/*
+ * What the last frame's quads sample, in the order they were queued: each
+ * quad's place, colours and width, its glyph's texels from its atlas, of its
+ * format, and the texels of its underline and strike-through sprites. The
+ * cell shader's output is a function of these alone (check_sampling holds
+ * its sampling to them), so two frames that resolve alike draw alike, pixel
+ * for pixel, wherever their glyphs sit in the atlases.
+ */
+static struct bytes resolve(struct kmscon_text *txt)
+{
+	struct gltex *gt = txt->data;
+	unsigned int cw = FONT_WIDTH(txt), ch = FONT_HEIGHT(txt), i;
+	struct bytes b = {0};
+
+	for (i = 0; i < gt->quads_num; i++) {
+		const struct gltex_quad *q = &gt->quads[i];
+		const struct tsm_screen_color *c[] = {&q->fg, &q->bg, &q->ul, &q->strike};
+		uint8_t colour = q->atlas->format == GL_RGBA;
+
+		put(&b, &q->x1, sizeof(q->x1));
+		put(&b, &q->y1, sizeof(q->y1));
+		put(&b, &q->texw, sizeof(q->texw));
+		put(&b, &colour, 1);
+		for (unsigned int j = 0; j < 4; j++) {
+			put(&b, &c[j]->r, 1);
+			put(&b, &c[j]->g, 1);
+			put(&b, &c[j]->b, 1);
+		}
+		put_texels(&b, q->atlas, q->texoff, cw, cw * q->texw, ch);
+		if (gt->deco_atlas) {
+			put_texels(&b, gt->deco_atlas, q->ulcell, cw, cw, ch);
+			put_texels(&b, gt->deco_atlas, q->strikecell, cw, cw, ch);
+		}
+	}
+	return b;
+}
+
+/*
+ * Each of the last frame's @n cells samples its own glyph: the texels of its
+ * quad are the font's pixels for the cell's key, as RGBA bytes for a colour
+ * glyph, and clear past a glyph smaller than its cells.
+ */
+static void assert_own_texels(struct kmscon_text *txt, const struct gcell *cells, unsigned int n)
+{
+	struct gltex *gt = txt->data;
+	unsigned int cw = FONT_WIDTH(txt), ch = FONT_HEIGHT(txt), rendered = n_rendered;
+	unsigned int i, x, y, bpp;
+	struct kmscon_font_attr attr = {0};
+	const uint32_t *cps;
+	uint32_t one;
+	size_t len;
+
+	assert(gt->quads_num == n);
+	for (i = 0; i < n; i++) {
+		const struct gltex_quad *q = &gt->quads[i];
+		const struct fake_tex *t = &texs[q->atlas->tex];
+		struct kmscon_glyph *g;
+
+		attr.bold = !!(cells[i].flags & TSM_FRAME_BOLD);
+		attr.italic = !!(cells[i].flags & TSM_FRAME_ITALIC);
+		cps = kmscon_text_get_cluster(txt, cells[i].key, &one, &len);
+		g = kmscon_font_render(txt->font, &attr, cps, len, cells[i].width);
+		assert(g);
+		bpp = g->buf.format == VIDEO_FORMAT_ARGB32 ? 4 : 1;
+		if (bpp == 4)
+			argb_to_rgba(g);
+		assert(bytes_per_pixel(q->atlas->format) == bpp && q->texw == cells[i].width);
+		for (y = 0; y < ch; y++)
+			for (x = 0; x < cw * cells[i].width; x++) {
+				const uint8_t *px =
+					&t->data[((size_t)y * t->w + (size_t)q->texoff * cw + x) *
+						 bpp];
+				bool in = x < g->buf.width && y < g->buf.height;
+
+				for (unsigned int b = 0; b < bpp; b++)
+					assert(px[b] ==
+					       (in ? g->buf.data[(y * g->buf.width + x) * bpp + b]
+						   : 0));
+			}
+		free(g);
+	}
+	n_rendered = rendered;
+}
+
+/*
+ * The last frame of @txt, whose cache has drawn whatever it has, resolves as
+ * the same @n cells drawn by a gltex with an empty cache, and each cell
+ * samples its own glyph.
+ */
+static void assert_as_cold(struct kmscon_text *txt, const struct gcell *cells, unsigned int n)
+{
+	struct kmscon_text cold;
+	struct bytes warm, fresh;
+	bool colour = colour_clusters;
+
+	assert_own_texels(txt, cells, n);
+	warm = resolve(txt);
+	open_cache(&cold, txt->font, txt->orientation);
+	colour_clusters = colour;
+	cache_frame(&cold, cells, n);
+	fresh = resolve(&cold);
+	assert(warm.n == fresh.n && warm.n);
+	assert(!memcmp(warm.p, fresh.p, warm.n));
+	free(warm.p);
+	free(fresh.p);
+	gltex_unset(&cold);
+	gltex_destroy(&cold);
+	max_texture_size = CACHE_TEX;
+	patterned = true;
+	colour_clusters = colour;
+}
+
+/* a seeded generator, so a failure repeats */
+static uint32_t rnd_state;
+
+static uint32_t rnd(uint32_t n)
+{
+	rnd_state = rnd_state * 1103515245u + 12345u;
+	return (rnd_state >> 8) % n;
+}
+
+/* the pool a cache test's glyph @key, @width cells wide, goes to */
+static unsigned int glyph_kind(uint64_t key, unsigned int width)
+{
+	return (key >= COLOUR_FIRST ? 2 : 0) + width - 1;
+}
+
+/*
+ * A random frame of up to @max cells, from a small set of glyphs of every
+ * kind, so frames share glyphs and every pool hits, misses and evicts.
+ */
+static unsigned int random_frame(struct gcell *cells, unsigned int max)
+{
+	unsigned int n = 1 + rnd(max), i;
+
+	for (i = 0; i < n; i++) {
+		switch (rnd(4)) {
+		case 0:
+			cells[i] = (struct gcell){NARROW_CP + rnd(24), 1};
+			break;
+		case 1:
+			cells[i] = (struct gcell){WIDE_CP + rnd(12), 2};
+			break;
+		case 2:
+			cells[i] = (struct gcell){EMOJI_NARROW_CP + rnd(12), 1};
+			break;
+		default:
+			cells[i] = (struct gcell){EMOJI_CP + rnd(8), 2};
+			break;
+		}
+	}
+	return n;
+}
+
+/*
+ * #1: after any frames, a screen drawn equals, pixel for pixel, the same
+ * screen drawn from an empty cache. Three seeds of 300 random frames each,
+ * compared every tenth frame.
+ */
+static void test_cache_cold_oracle(void)
+{
+	struct gcell cells[40];
+	struct kmscon_text txt;
+	unsigned int seed, f, n;
+
+	for (seed = 1; seed <= 3; seed++) {
+		rnd_state = seed;
+		open_cache(&txt, &fake_font, OR_NORMAL);
+		for (f = 0; f < 300; f++) {
+			n = random_frame(cells, 40);
+			cache_frame(&txt, cells, n);
+			if (f % 10 == 9)
+				assert_as_cold(&txt, cells, n);
+			else
+				assert_own_texels(&txt, cells, n);
+		}
+		close_cache(&txt);
+	}
+}
+
+/*
+ * #2: a reference LRU, a plain list per pool of its slots, the most recently
+ * drawn first and the empty ones last, each slot knowing its strip. Glyphs
+ * are looked up and placed as take_slot()'s comment says, and strips given
+ * back as pool_give_back()'s says, newest first among the least recently
+ * drawn, as gltex walks its atlases.
+ */
+#define REF_SLOTS 4096
+#define REF_STRIPS (1 << 15) /* made over the run, given back or not */
+
+struct ref_slot {
+	uint64_t key; /* 0: empty */
+	uint64_t last;
+	unsigned int strip;
+};
+
+struct ref_pool {
+	struct ref_slot s[REF_SLOTS];
+	unsigned int n;			 /* slots, in list order */
+	uint64_t strip_last[REF_STRIPS]; /* the frame that last drew from each strip */
+	bool strip_live[REF_STRIPS];
+	unsigned int strips; /* made, live or not */
+	unsigned int live;
+	size_t strip_bytes;
+	unsigned int strip_slots;
+	bool overshot; /* it took a strip past full */
+};
+
+/* the reference's bound: a pool is full at this many slots or bytes */
+static unsigned int ref_glyphs;
+static size_t ref_bytes;
+
+static bool ref_full(const struct ref_pool *rp, unsigned int live)
+{
+	return live * rp->strip_slots >= ref_glyphs || live * rp->strip_bytes >= ref_bytes;
+}
+
+/* slot @i goes to the front, holding @key, drawn in @frame */
+static void ref_front(struct ref_pool *rp, unsigned int i, uint64_t key, uint64_t frame)
+{
+	struct ref_slot slot = rp->s[i];
+
+	memmove(&rp->s[1], &rp->s[0], i * sizeof(*rp->s));
+	slot.key = key;
+	slot.last = frame;
+	rp->s[0] = slot;
+	rp->strip_last[slot.strip] = frame;
+}
+
+static void ref_draw(struct ref_pool *rp, uint64_t key, uint64_t frame)
+{
+	unsigned int i, k;
+
+	for (i = 0; i < rp->n && rp->s[i].key != key; i++)
+		;
+	if (i < rp->n) {
+		ref_front(rp, i, key, frame);
+		return;
+	}
+	/* a miss: an empty slot, else a strip, else the back's slot */
+	if (!rp->n ||
+	    (rp->s[rp->n - 1].key && (!ref_full(rp, rp->live) || rp->s[rp->n - 1].last == frame))) {
+		rp->overshot |= ref_full(rp, rp->live);
+		assert(rp->strips < REF_STRIPS && rp->n + rp->strip_slots <= REF_SLOTS);
+		for (k = 0; k < rp->strip_slots; k++)
+			rp->s[rp->n++] = (struct ref_slot){0, 0, rp->strips};
+		rp->strip_last[rp->strips] = 0;
+		rp->strip_live[rp->strips++] = true;
+		rp->live++;
+	}
+	ref_front(rp, rp->n - 1, key, frame);
+}
+
+/* at the start of the frame after @last */
+static void ref_give_back(struct ref_pool *rp, uint64_t last)
+{
+	unsigned int t, i, j, oldest;
+
+	for (;;) {
+		oldest = REF_STRIPS;
+		for (t = rp->strips; t-- > 0;) {
+			if (!rp->strip_live[t] || rp->strip_last[t] == last)
+				continue;
+			if (oldest == REF_STRIPS || rp->strip_last[t] < rp->strip_last[oldest])
+				oldest = t;
+		}
+		if (oldest == REF_STRIPS || !ref_full(rp, rp->live - 1))
+			return;
+		for (i = j = 0; i < rp->n; i++)
+			if (rp->s[i].strip != oldest)
+				rp->s[j++] = rp->s[i];
+		rp->n = j;
+		rp->strip_live[oldest] = false;
+		rp->live--;
+	}
+}
+
+/* gltex's pool @pool holds what @rp holds, in its order, in as many strips */
+static void assert_as_ref(const struct pool *pool, const struct ref_pool *rp)
+{
+	const struct gl_glyph *slot;
+	unsigned int i = 0;
+
+	dlist_for_each_entry(slot, &pool->lru, lru)
+	{
+		assert(i < rp->n && slot->held == !!rp->s[i].key);
+		assert(!slot->held || slot->key.key == rp->s[i].key);
+		i++;
+	}
+	assert(i == rp->n);
+	assert(pool->slots == rp->live * rp->strip_slots &&
+	       pool->bytes == rp->live * rp->strip_bytes);
+	/* not full before its last strip, unless a frame of all its glyphs needed it */
+	assert(rp->overshot || rp->live <= 1 || !ref_full(rp, rp->live - 1));
+}
+
+/*
+ * #2: seeded random frames of narrow, wide and colour glyphs. After every
+ * frame each pool holds the glyphs the reference LRU holds, in its order and
+ * in as many slots and bytes, and every cell drew from a slot that held its
+ * glyph. Run with the pools bounded in bytes, then in glyphs.
+ */
+static void cache_model(unsigned int glyphs, size_t max_bytes)
+{
+	static const size_t bytes[] = {1024, 1024, 4096, 4096};
+	static struct ref_pool ref[GLTEX_POOLS];
+	struct gcell cells[40];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int f, i, k, n, overshoots = 0;
+
+	rnd_state = 42;
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	gt->pool_max_glyphs = ref_glyphs = glyphs;
+	gt->pool_max_bytes = ref_bytes = max_bytes;
+	memset(ref, 0, sizeof(ref));
+	for (k = 0; k < GLTEX_POOLS; k++) {
+		ref[k].strip_bytes = bytes[k];
+		ref[k].strip_slots = CACHE_TEX / FAKE_CELL_W / (k % 2 + 1);
+	}
+
+	for (f = 0; f < 3000; f++) {
+		for (k = 0; k < GLTEX_POOLS; k++)
+			ref_give_back(&ref[k], gt->frame_count);
+		n = random_frame(cells, 40);
+		cache_frame(&txt, cells, n);
+		assert_resident(gt, cells, n);
+		for (i = 0; i < n; i++)
+			ref_draw(&ref[glyph_kind(cells[i].key, cells[i].width)], cells[i].key,
+				 gt->frame_count);
+		for (k = 0; k < GLTEX_POOLS; k++)
+			assert_as_ref(&gt->pools[k], &ref[k]);
+	}
+	for (k = 0; k < GLTEX_POOLS; k++)
+		overshoots += ref[k].overshot;
+	fprintf(stderr, "cache model: 3000 frames, strips %u %u %u %u, %u pools past full\n",
+		ref[0].live, ref[1].live, ref[2].live, ref[3].live, overshoots);
+	/* the run reached step 4 and give-back, not only steps 1 to 3 */
+	assert(overshoots > 0);
+	close_cache(&txt);
+}
+
+static void test_cache_model(void)
+{
+	cache_model(UINT_MAX, CACHE_BOUND);
+	cache_model(4, SIZE_MAX);
+}
+
+/* @n distinct glyphs from @cp, @width cells wide, as many a frame as fit */
+static void draw_distinct(struct kmscon_text *txt, uint64_t cp, unsigned int width, unsigned int n)
+{
+	static struct gcell cells[FAKE_COLS * FAKE_ROWS];
+	unsigned int per = txt->cols / width * txt->rows, i, k;
+
+	for (i = 0; i < n; i += k) {
+		for (k = 0; k < per && i + k < n; k++)
+			cells[k] = (struct gcell){cp + i + k, width};
+		cache_frame(txt, cells, k);
+		assert_resident(txt->data, cells, k);
+	}
+}
+
+/*
+ * The defaults: a pool holds GLTEX_POOL_GLYPHS glyphs, so it grows with the
+ * font, up to a fourth of GLTEX_CACHE_MAX_BYTES, whichever is less. In 8x16
+ * cells, 1920x1080 with a small font, the count governs: the alpha pool one
+ * cell wide stops at 8192 slots, 32 strips of 256 in 1 MiB, far under its
+ * 64 MiB.
+ */
+static void test_cache_count_governs(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	assert(gt->pool_max_glyphs == 8192 && gt->pool_max_bytes == 64 << 20);
+	draw_distinct(&txt, 0x100, 1, 8192 + 100);
+	assert(gt->pools[0].slots == 8192 && gt->pools[0].bytes == 32 * 2048 * 16);
+	close_txt(&txt);
+}
+
+/*
+ * In 19x41 cells, as 7680x2160 with font size 30 has (drawn here at 1280x800,
+ * as the strips do not depend on the screen), an RGBA strip is 2048x64 and
+ * holds 53 colour glyphs two cells wide in 512 KiB: 8192 of them would take
+ * 155 strips, 77.5 MiB, so the ceiling clamps the pool at 128 strips, 64 MiB,
+ * 6784 glyphs. The alpha pool one cell wide in the same cells stops at its
+ * count, 77 strips of 107, 9.6 MiB.
+ */
+static void test_cache_ceiling_clamps(void)
+{
+	struct kmscon_font big = {.width = 19, .height = 41};
+	struct kmscon_text txt;
+	struct gltex *gt;
+
+	disp_w = 1280;
+	disp_h = 800;
+	open_txt(&txt, OR_NORMAL);
+	txt.font = &big;
+	gltex_unset(&txt);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+	patterned = true;
+	colour_clusters = true; /* clusters, as there are not 7000 emoji codepoints */
+	draw_distinct(&txt, TSM_FRAME_CLUSTER_KEY, 2, 7000);
+	colour_clusters = false;
+	assert(gt->pools[3].slots == 128 * 53 && gt->pools[3].bytes == (size_t)64 << 20);
+	draw_distinct(&txt, 0x100, 1, 8300);
+	assert(gt->pools[0].slots == 77 * 107 && gt->pools[0].bytes == (size_t)77 * 2048 * 64);
+	patterned = false;
+	close_txt(&txt);
+	disp_w = 640;
+	disp_h = 480;
+}
+
+/*
+ * #3: a working set exactly the pool's capacity, sixteen narrow glyphs, drawn
+ * whole and then one a frame: after the first frame nothing is drawn from the
+ * font again, in exactly the two strips the bound allows.
+ */
+static void test_cache_exact_capacity(void)
+{
+	struct gcell cells[NARROW_CAP];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int f, i, misses;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < NARROW_CAP; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+	cache_frame(&txt, cells, NARROW_CAP);
+	assert(txt.frame_misses == NARROW_CAP);
+
+	misses = 0;
+	for (f = 0; f < 10; f++) {
+		cache_frame(&txt, cells, NARROW_CAP);
+		misses += txt.frame_misses;
+	}
+	for (f = 0; f < 3 * NARROW_CAP; f++) {
+		cache_frame(&txt, &cells[f % NARROW_CAP], 1);
+		misses += txt.frame_misses;
+	}
+	assert(misses == 0);
+	assert(gt->pools[0].bytes == CACHE_BOUND);
+	close_cache(&txt);
+}
+
+/*
+ * #4: a working set one past the capacity, drawn one a frame in a cycle:
+ * LRU's worst case, where the glyph drawn is always the one just evicted, so
+ * every draw misses; each cell still draws its own glyph.
+ */
+static void test_cache_capacity_plus_one(void)
+{
+	struct gcell cell;
+	struct kmscon_text txt;
+	unsigned int f, misses = 0, rounds = 5;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	for (f = 0; f < rounds * (NARROW_CAP + 1); f++) {
+		cell = (struct gcell){NARROW_CP + f % (NARROW_CAP + 1), 1};
+		cache_frame(&txt, &cell, 1);
+		misses += txt.frame_misses;
+		assert_resident(txt.data, &cell, 1);
+		if (f % 7 == 0)
+			assert_as_cold(&txt, &cell, 1);
+	}
+	fprintf(stderr, "capacity %u, working set %u in a cycle: %u draws, %u misses\n", NARROW_CAP,
+		NARROW_CAP + 1, rounds * (NARROW_CAP + 1), misses);
+	assert(misses == rounds * (NARROW_CAP + 1));
+	close_cache(&txt);
+}
+
+/*
+ * #5: one frame needs more glyphs than the cache holds: a screen of distinct
+ * CJK, 1200 wide glyphs where the pool's bound holds eight. The pool takes
+ * strips past its bound (step 4), and every cell draws its own glyph. It
+ * keeps them while frames draw from them: the next screen of other glyphs
+ * reuses their slots and takes no more.
+ */
+static void test_cache_frame_overshoot(void)
+{
+	static struct gcell cells[FAKE_COLS / 2 * FAKE_ROWS];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int i, n = FAKE_COLS / 2 * FAKE_ROWS, before;
+	size_t bytes;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < n; i++)
+		cells[i] = (struct gcell){WIDE_CP + i, 2};
+	before = n_textures;
+	cache_frame(&txt, cells, n);
+	assert_resident(gt, cells, n);
+	/* 300 strips of four, and the sprites' */
+	bytes = gt->pools[1].bytes;
+	assert(bytes == (size_t)n / 4 * 1024 && n_textures - before == n / 4 + 1);
+	assert_as_cold(&txt, cells, n);
+
+	for (i = 0; i < n; i++)
+		cells[i] = (struct gcell){WIDE_CP + n + i, 2};
+	cache_frame(&txt, cells, n);
+	assert_resident(gt, cells, n);
+	assert(gt->pools[1].bytes == bytes);
+	close_cache(&txt);
+}
+
+/*
+ * #6: a glyph queued earlier in a frame keeps its slot through the frame. A,
+ * cached by the last frame, is drawn first, then twenty glyphs the cache does
+ * not hold, more than the pool's sixteen slots: they evict around it, and A's
+ * cell still draws A.
+ */
+static void test_cache_same_frame(void)
+{
+	struct gcell cells[21];
+	struct kmscon_text txt;
+	unsigned int i;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	cells[0] = (struct gcell){'A', 1};
+	cache_frame(&txt, cells, 1);
+	for (i = 1; i < 21; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+	cache_frame(&txt, cells, 21);
+	assert(txt.frame_misses == 20);
+	assert_resident(txt.data, cells, 21);
+	assert_as_cold(&txt, cells, 21);
+	close_cache(&txt);
+}
+
+/*
+ * No two glyphs the cache holds share a cell of an atlas, and every slot lies
+ * whole in its strip, on a boundary of its pool's width.
+ */
+static void assert_slots_apart(struct gltex *gt)
+{
+	struct atlas *atlas;
+	unsigned int i, n;
+
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		if (!atlas->pool)
+			continue;
+		n = atlas->count / atlas->pool->cells;
+		for (i = 0; i < n; i++) {
+			assert(atlas->slots[i].atlas == atlas);
+			assert(atlas->slots[i].texoff == i * atlas->pool->cells);
+			assert(atlas->slots[i].texoff + atlas->pool->cells <= atlas->count);
+			assert(!atlas->slots[i].held ||
+			       atlas->slots[i].key.width == atlas->pool->cells);
+		}
+	}
+}
+
+/*
+ * #7: narrow and wide glyphs do not starve each other: a pool full of one
+ * width leaves the other its own strips. Narrow glyphs fill their pool, wide
+ * ones churn through theirs, and the narrow ones are all still cached; then
+ * the same the other way round. A wide glyph always has both its cells.
+ */
+static void test_cache_narrow_wide(void)
+{
+	struct gcell narrow[NARROW_CAP], wide[WIDE_CAP], churn;
+	struct kmscon_text txt;
+	unsigned int i, order;
+
+	for (i = 0; i < NARROW_CAP; i++)
+		narrow[i] = (struct gcell){NARROW_CP + i, 1};
+	for (i = 0; i < WIDE_CAP; i++)
+		wide[i] = (struct gcell){WIDE_CP + i, 2};
+
+	for (order = 0; order < 2; order++) {
+		open_cache(&txt, &fake_font, OR_NORMAL);
+		cache_frame(&txt, order ? wide : narrow, order ? WIDE_CAP : NARROW_CAP);
+		for (i = 0; i < 100; i++) {
+			churn = order ? (struct gcell){NARROW_CP + 100 + i, 1}
+				      : (struct gcell){WIDE_CP + 100 + i, 2};
+			cache_frame(&txt, &churn, 1);
+			assert_slots_apart(txt.data);
+		}
+		cache_frame(&txt, order ? wide : narrow, order ? WIDE_CAP : NARROW_CAP);
+		assert(txt.frame_misses == 0);
+		assert_as_cold(&txt, order ? wide : narrow, order ? WIDE_CAP : NARROW_CAP);
+		close_cache(&txt);
+	}
+}
+
+/*
+ * #8: colour glyphs churn without pushing out the text on screen. Each frame
+ * draws a line of text and six colour glyphs it has never drawn: the text is
+ * drawn from the font once, the alpha pools stay as they are, and the RGBA
+ * pool takes the one strip past its bound six glyphs a frame need, then no
+ * more.
+ */
+static void test_cache_colour_alpha(void)
+{
+	static const char text[] = "hello, world";
+	struct gcell cells[sizeof(text) - 1 + 6];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int f, i, t = sizeof(text) - 1;
+	size_t alpha = 0, rgba = 0;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < t; i++)
+		cells[i] = (struct gcell){(uint8_t)text[i], 1};
+	for (f = 0; f < 50; f++) {
+		for (i = 0; i < 6; i++)
+			cells[t + i] = (struct gcell){EMOJI_CP + f * 6 + i, 2};
+		cache_frame(&txt, cells, t + 6);
+		/* the text's nine glyphs ("l" thrice, "o" twice) once */
+		assert(txt.frame_misses == (f ? 6 : 9 + 6));
+		if (f == 1) {
+			alpha = gt->pools[0].bytes;
+			rgba = gt->pools[3].bytes;
+			assert(rgba == 2 * 4096);
+		}
+		if (f > 1)
+			assert(gt->pools[0].bytes == alpha && gt->pools[3].bytes == rgba);
+	}
+	assert_as_cold(&txt, cells, t + 6);
+	close_cache(&txt);
+}
+
+/*
+ * #9: a glyph smaller than its slot leaves nothing of the slot's last glyph.
+ * The pool is filled with whole glyphs, then a glyph three texels narrower
+ * and two shorter takes the least recently drawn one's slot: those texels are
+ * clear, the rest are its own. (A wide glyph never gives its slot to a narrow
+ * one: their pools differ, which assert_slots_apart() checks.)
+ */
+static void test_cache_slot_cleared(void)
+{
+	struct gcell cells[NARROW_CAP + 1];
+	struct kmscon_font_attr attr = {0};
+	struct kmscon_text txt;
+	struct gltex *gt;
+	const struct fake_tex *t;
+	struct gl_glyph *slot;
+	unsigned int i, x, y, x0;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < NARROW_CAP; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+	cache_frame(&txt, cells, NARROW_CAP);
+	cells[NARROW_CAP] = (struct gcell){SHORT_CP, 1};
+	cache_frame(&txt, &cells[NARROW_CAP], 1);
+	assert(txt.frame_misses == 1);
+
+	slot = slot_of(&gt->quads[0]);
+	t = &texs[slot->atlas->tex];
+	x0 = slot->texoff * FAKE_CELL_W;
+	for (y = 0; y < FAKE_CELL_H; y++)
+		for (x = 0; x < FAKE_CELL_W; x++) {
+			uint8_t want = x < FAKE_CELL_W - 3 && y < FAKE_CELL_H - 2
+					       ? (uint8_t)patterned_px(SHORT_CP, &attr, x, y)
+					       : 0;
+
+			assert(t->data[y * t->w + x0 + x] == want);
+		}
+	assert_slots_apart(gt);
+	close_cache(&txt);
+}
+
+/*
+ * #10: the decoration sprites stay through any churn. An underlined, struck
+ * cell is drawn with two thousand frames of glyphs of every kind: the sprites'
+ * strip is the one uploaded first, uploaded once, its cells deco.c's sprites,
+ * and the cell resolves as from an empty cache.
+ */
+static void test_cache_deco_kept(void)
+{
+	struct gcell cells[41];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct atlas *deco;
+	GLuint tex;
+	unsigned int f, n, uploads;
+
+	rnd_state = 7;
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	uploads = strip_uploads;
+	cells[0] = (struct gcell){'A', 1, TSM_FRAME_STRIKE, TSM_UNDERLINE_SINGLE};
+	cache_frame(&txt, cells, 1);
+	deco = gt->deco_atlas;
+	assert(deco);
+	tex = deco->tex;
+	for (f = 0; f < 2000; f++) {
+		n = random_frame(&cells[1], 40);
+		cache_frame(&txt, cells, n + 1);
+	}
+	assert(gt->deco_atlas == deco && deco->tex == tex && texs[tex].live);
+	assert(strip_uploads == uploads + 1);
+	assert(gt->quads[0].ulcell == KMSCON_DECO_SINGLE &&
+	       gt->quads[0].strikecell == KMSCON_DECO_STRIKE);
+	assert_as_cold(&txt, cells, n + 1);
+	assert(!deco->pool); /* in no pool, on no list */
+	close_cache(&txt);
+}
+
+/* how many slots the pools' strips have */
+static size_t cache_slots(struct gltex *gt)
+{
+	struct atlas *atlas;
+	size_t n = 0;
+
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		if (atlas->pool)
+			n += atlas->count / atlas->pool->cells;
+	}
+	return n;
+}
+
+/*
+ * #11: a cluster rewritten 10,000 times, through libtsm: a combining mark on
+ * a prompt line, then a ZWJ sequence drawn in colour. libtsm gives the
+ * cluster a new key each time; each frame draws only it from the font, the
+ * prompt's glyphs stay cached, the dead keys age out of the cache, which never
+ * holds more glyphs than it has slots, and the pools stay within the bound.
+ */
+static void test_cache_cluster_churn(void)
+{
+	static const char prompt[] = "\x1b[?25l$ ok ";
+	/* e and a combining acute; woman, ZWJ, rocket */
+	static const char *const clusters[] = {
+		"e\xcc\x81",
+		"\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x9a\x80",
+	};
+	struct tsm_frame_age age = {0};
+	struct tsm_screen_attr attr = {0};
+	const struct tsm_frame *frame;
+	struct kmscon_text txt;
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+	struct gltex *gt;
+	unsigned int c, i, k;
+	uint64_t key, last = 0;
+
+	for (c = 0; c < 2; c++) {
+		open_cache(&txt, &fake_font, OR_NORMAL);
+		colour_clusters = c;
+		gt = txt.data;
+		assert(tsm_screen_new(&con, NULL, NULL) == 0);
+		assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
+		assert(tsm_screen_resize(con, 12, 2) == 0);
+		tsm_vte_input(vte, prompt, sizeof(prompt) - 1);
+
+		for (i = 0; i < 10000; i++) {
+			tsm_vte_input(vte, "\r\x1b[5C", 5);
+			tsm_vte_input(vte, clusters[c], strlen(clusters[c]));
+			frame = tsm_screen_frame_since(con, &age);
+			assert(frame);
+			assert(gltex_prepare(&txt, &attr) == 0);
+			txt.frame_misses = 0;
+			assert(gltex_draw(&txt, frame, false) == 0);
+			n_draws = 0;
+			assert(gltex_render(&txt) == 0);
+
+			key = tsm_frame_cell_at(frame, 5, 0)->key;
+			assert(key >= TSM_FRAME_CLUSTER_KEY && key != last);
+			last = key;
+			/* the new cluster, and in the first frame the prompt and blanks */
+			assert(txt.frame_misses == 1 || (!i && txt.frame_misses <= 6));
+			assert(gt->glyphs.elems <= cache_slots(gt));
+			for (k = 0; k < GLTEX_POOLS; k++)
+				assert(gt->pools[k].bytes <= CACHE_BOUND + 4096);
+		}
+		assert(drawn_at(gt, 0, 0, &(struct atlas *){0}, &(float){0}) == 1);
+		tsm_vte_unref(vte);
+		tsm_screen_unref(con);
+		close_cache(&txt);
+	}
+}
+
+/*
+ * #13: a font size change and a rotation in the middle of churn set the
+ * renderer up again, as kmscon_text_set() and gltex_rotate() do: every
+ * glyph, slot and strip of the old cache goes (ASan finds what is left or
+ * used after), and the cache refills at the new size and orientation, drawing
+ * as from an empty cache.
+ */
+static void test_cache_reset(void)
+{
+	struct kmscon_font big = {.width = 10, .height = 19};
+	struct gcell cells[40];
+	struct kmscon_text txt;
+	unsigned int f, n = 0, step;
+
+	rnd_state = 99;
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	for (step = 0; step < 3; step++) {
+		for (f = 0; f < 200; f++) {
+			n = random_frame(cells, 40);
+			cache_frame(&txt, cells, n);
+		}
+		assert_as_cold(&txt, cells, n);
+		if (step == 0) {
+			gltex_unset(&txt);
+			txt.font = &big;
+			assert(gltex_set(&txt) == 0);
+		} else if (step == 1) {
+			assert(gltex_rotate(&txt, OR_RIGHT) == 0);
+		}
+		((struct gltex *)txt.data)->pool_max_bytes = CACHE_BOUND;
+		assert(dlist_empty(&((struct gltex *)txt.data)->atlases) || step == 2);
+	}
+	close_cache(&txt);
+}
+
+/*
+ * An upload GL refuses into a slot step 3 took: the evicted glyph is gone
+ * from the cache, the slot stays empty at the back of its list, the cell is
+ * drawn blank with its background (a space would take the same slot and its
+ * upload fails too), and the next glyph the cache misses takes that slot.
+ */
+static void test_cache_upload_failure(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 1};
+	struct gcell cells[NARROW_CAP];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gl_glyph *lru, *back;
+	struct kmscon_glyph_key k0 = {.key = NARROW_CP, .width = 1};
+	unsigned int i;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < NARROW_CAP; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+	cache_frame(&txt, cells, NARROW_CAP);
+	lru = lookup(gt, kmscon_glyph_key_hash(NARROW_CP, false, false, 1, 0), &k0);
+	assert(lru && lru == dlist_last(&gt->pools[0].lru, struct gl_glyph, lru));
+
+	assert(gltex_prepare(&txt, &attr) == 0);
+	fail_uploads = 2;
+	assert(gltex_draw_cell(&txt, &fc, 'X', 0, 0, 1, false) == -ENOMEM);
+	assert(!fail_uploads);
+	assert(!lookup(gt, kmscon_glyph_key_hash(NARROW_CP, false, false, 1, 0), &k0));
+	back = dlist_last(&gt->pools[0].lru, struct gl_glyph, lru);
+	assert(back == lru && !back->held);
+	assert(gt->quads_num == 1 && gt->quads[0].atlas == gt->deco_atlas &&
+	       gt->quads[0].texoff == KMSCON_DECO_NONE && colour_eq(gt->quads[0].bg, fc.bg));
+
+	assert(gltex_draw_cell(&txt, &fc, 'Y', 1, 0, 1, false) == 0);
+	assert(slot_of(&gt->quads[1]) == lru && lru->held && lru->key.key == 'Y');
+	assert(gltex_render(&txt) == 0);
+	close_cache(&txt);
+}
+
+/*
+ * A rotation whose set fails, as with no GL context, leaves a gltex that
+ * draws nothing until a set succeeds: gltex_rotate() says so, which its
+ * callers ignore, and each gltex_prepare() tries the set again, failing
+ * while the context is gone and saying so once; gltex_draw() refuses instead
+ * of using what the unset freed. The failed set still gives the text its
+ * largest size in the new orientation, so the size the terminal gives
+ * meanwhile passes text.c's check; the first prepare whose set succeeds
+ * keeps that size, and draws as from an empty cache, in the new orientation.
+ * The terminal is held below the text's size throughout, as in clone mode
+ * beside a smaller display: 56x28 of 80x30 upright, 56x36 of 60x40 turned.
+ */
+static void test_cache_failed_rotate(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct gcell cells[40];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int f, n = 0;
+
+	rnd_state = 5;
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	text_resize(&txt, 56, 28);
+	assert(txt.cols == 56 && txt.rows == 28);
+	for (f = 0; f < 50; f++) {
+		n = random_frame(cells, 40);
+		cache_frame(&txt, cells, n);
+	}
+	fail_display_use = true;
+	assert(gltex_rotate(&txt, OR_RIGHT) < 0);
+	assert(!gt->set_failed_logged);
+	assert(gltex_prepare(&txt, &attr) == -EFAULT);
+	assert(gt->set_failed_logged && !gt->shader);
+	assert(gltex_prepare(&txt, &attr) == -EFAULT);
+	assert(gltex_draw(&txt, make_frame(0), false) == -EINVAL);
+	assert(txt.max_cols == 60 && txt.max_rows == 40);
+	text_resize(&txt, 56, 36);
+	fail_display_use = false;
+
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(gt->shader && !gt->set_failed_logged && txt.orientation == OR_RIGHT);
+	assert(txt.cols == 56 && txt.rows == 36);
+	text_resize(&txt, txt.max_cols, txt.max_rows);
+	gt->pool_max_glyphs = UINT_MAX;
+	gt->pool_max_bytes = CACHE_BOUND;
+	cache_frame(&txt, cells, n);
+	assert_as_cold(&txt, cells, n);
+	close_cache(&txt);
+}
+
+/*
+ * A gltex whose first set fails, as with no GL context, holds nothing:
+ * gltex_init() leaves its atlases and pools empty, and a release, which a
+ * switch away runs on every screen, leaves it alone without making a context
+ * current. Its next set draws as from an empty cache.
+ */
+static void test_cache_unset_release(void)
+{
+	struct gcell cells[40];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int k, n, uses;
+
+	memset(&txt, 0, sizeof(txt));
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	max_texture_size = CACHE_TEX;
+	patterned = true;
+	assert(gltex_init(&txt) == 0);
+	gt = txt.data;
+	assert(dlist_empty(&gt->atlases));
+	for (k = 0; k < GLTEX_POOLS; k++)
+		assert(dlist_empty(&gt->pools[k].lru));
+
+	fail_display_use = true;
+	assert(gltex_set(&txt) == -EFAULT);
+	fail_display_use = false;
+	uses = display_uses;
+	gltex_release(&txt);
+	assert(display_uses == uses);
+
+	assert(gltex_set(&txt) == 0);
+	gt->pool_max_glyphs = UINT_MAX;
+	gt->pool_max_bytes = CACHE_BOUND;
+	rnd_state = 7;
+	n = random_frame(cells, 40);
+	cache_frame(&txt, cells, n);
+	assert_as_cold(&txt, cells, n);
+	close_cache(&txt);
+}
+
+/*
+ * A set whose shader GL reports an error fails after it cleared the gltex:
+ * gltex_set() says so and leaves it not set. A resize meanwhile records the
+ * terminal's size and nothing else, as the display's size is not known: no
+ * cursor offset is given the display. The next prepare whose set succeeds
+ * keeps that size and centres it, the cursor offset with it.
+ */
+static void test_cache_shader_failure(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int offsets;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	gltex_unset(&txt);
+	fail_shader = true;
+	assert(gltex_set(&txt) == -EFAULT);
+	assert(!gt->shader && !gt->sw);
+	offsets = cursor_offsets;
+	text_resize(&txt, 56, 28);
+	assert(txt.cols == 56 && txt.rows == 28 && cursor_offsets == offsets);
+	assert(gltex_prepare(&txt, &attr) == -EFAULT);
+	fail_shader = false;
+
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(txt.cols == 56 && txt.rows == 28);
+	/* 56x28 cells of 8x16 centred in 640x480 */
+	assert(cursor_x == 96 && cursor_y == 16);
+	assert(gltex_render(&txt) == 0);
+	close_cache(&txt);
+}
+
+/* the four pools' textures, and whether any is past @max[] */
+static size_t pools_bytes(struct gltex *gt, const size_t *max)
+{
+	size_t bytes = 0;
+	unsigned int k;
+
+	for (k = 0; k < GLTEX_POOLS; k++) {
+		assert(!max || gt->pools[k].bytes <= max[k]);
+		bytes += gt->pools[k].bytes;
+	}
+	return bytes;
+}
+
+/*
+ * An adversarial pattern: every cell of every frame a glyph never drawn
+ * before, as a program writing a new cluster to each cell each frame would:
+ * colour emoji two cells wide, then clusters of combining marks one cell
+ * wide, then both. A pool grows past full only by what one frame draws of
+ * its kind, so after every frame each pool holds at most its bound or one
+ * screen of its kind, whichever is more, and the hard stop set at their sum,
+ * the worst case the cache's comment gives, is never reached: every cell
+ * draws its own glyph.
+ */
+static void test_cache_adversarial(void)
+{
+	static struct gcell cells[FAKE_COLS * FAKE_ROWS];
+	static const size_t strip[] = {1024, 1024, 4096, 4096};
+	size_t worst[GLTEX_POOLS], sum = 0, screen;
+	struct kmscon_text txt;
+	struct gltex *gt;
+	uint64_t cluster = TSM_FRAME_CLUSTER_KEY;
+	unsigned int f, i, k, n, x, emoji = 0, w;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (k = 0; k < GLTEX_POOLS; k++) {
+		/* strips for a screen of this kind's glyphs, against the bound's */
+		w = k % 2 + 1;
+		screen = (FAKE_COLS / w * FAKE_ROWS + 8 / w - 1) / (8 / w) * strip[k];
+		worst[k] = screen > CACHE_BOUND
+				   ? screen
+				   : (CACHE_BOUND + strip[k] - 1) / strip[k] * strip[k];
+		sum += worst[k];
+	}
+	gt->cache_hard_bytes = sum;
+
+	for (f = 0; f < 300; f++) {
+		for (i = n = 0; i < FAKE_ROWS; i++)
+			for (x = 0; x < FAKE_COLS; x += w) {
+				bool colour = f % 3 == 0 || (f % 3 == 2 && x % 3 == 0);
+
+				w = colour ? 2 : 1;
+				if (x + w > FAKE_COLS)
+					break;
+				if (colour)
+					cells[n++] =
+						(struct gcell){EMOJI_NARROW_CP + emoji++ % 3000, 2};
+				else
+					cells[n++] = (struct gcell){cluster++, 1};
+			}
+		cache_frame(&txt, cells, n);
+		assert(txt.frame_misses == n);
+		assert(pools_bytes(gt, worst) <= gt->cache_hard_bytes);
+	}
+	assert(!gt->hard_stop_logged);
+	close_cache(&txt);
+}
+
+/*
+ * What a pool takes past full it gives back once no frame draws from it. A
+ * screen of 1200 distinct CJK takes 300 strips where the bound is two; the
+ * next frame draws four other glyphs, into the least recently drawn slots,
+ * and the strips stay while that frame is the last; at the frame after it
+ * the pool is back to its two strips, and the four still draw from the
+ * cache.
+ */
+static void test_cache_give_back(void)
+{
+	static struct gcell cells[FAKE_COLS / 2 * FAKE_ROWS];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int i, n = FAKE_COLS / 2 * FAKE_ROWS;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < n; i++)
+		cells[i] = (struct gcell){WIDE_CP + i, 2};
+	cache_frame(&txt, cells, n);
+	assert(gt->pools[1].bytes == (size_t)n / 4 * 1024);
+
+	for (i = 0; i < 4; i++)
+		cells[i] = (struct gcell){WIDE_CP + n + i, 2};
+	cache_frame(&txt, cells, 4);
+	assert(gt->pools[1].bytes == (size_t)n / 4 * 1024);
+	cache_frame(&txt, cells, 4);
+	assert(txt.frame_misses == 0);
+	assert(gt->pools[1].bytes == CACHE_BOUND && gt->pools[1].slots == WIDE_CAP);
+	assert_resident(gt, cells, 4);
+	assert_as_cold(&txt, cells, 4);
+	close_cache(&txt);
+}
+
+/*
+ * A session leaving the foreground (gltex_release()) frees the glyph cache
+ * with its pictures: every strip, the sprites' too, and every glyph. Back in
+ * the foreground its next frame draws its glyphs again, sprites and all, as
+ * from an empty cache.
+ */
+static void test_cache_release(void)
+{
+	struct gcell cells[41];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int f, n = 0, k, uploads;
+
+	rnd_state = 11;
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	cells[0] = (struct gcell){'A', 1, TSM_FRAME_STRIKE, TSM_UNDERLINE_SINGLE};
+	for (f = 0; f < 50; f++) {
+		n = random_frame(&cells[1], 40);
+		cache_frame(&txt, cells, n + 1);
+	}
+	uploads = strip_uploads;
+
+	gltex_release(&txt);
+	assert(dlist_empty(&gt->atlases) && !gt->deco_atlas && !gt->glyphs.elems);
+	for (k = 0; k < GLTEX_POOLS; k++)
+		assert(dlist_empty(&gt->pools[k].lru) && !gt->pools[k].slots &&
+		       !gt->pools[k].bytes);
+
+	cache_frame(&txt, cells, n + 1);
+	assert(txt.frame_misses > 0 && strip_uploads == uploads + 1);
+	assert_as_cold(&txt, cells, n + 1);
+	close_cache(&txt);
+}
+
+/*
+ * The hard stop: with the whole cache allowed one strip past the alpha
+ * pool's bound, a frame of 30 distinct glyphs draws the 24 that fit, each its
+ * own, and the other 6 blank, the sprites' blank cell, whose texels are
+ * clear, with the cell's background and decorations; the cache never passes
+ * the stop, which is logged in the first frame, and again 600 frames on.
+ */
+static void test_cache_hard_stop(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 1};
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gcell cells[30];
+	const struct fake_tex *t;
+	unsigned int f, i, x, y;
+	int r;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	gt->cache_hard_bytes = CACHE_BOUND + 1024;
+	fc.underline = TSM_UNDERLINE_SINGLE;
+	for (i = 0; i < 30; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+
+	for (f = 0; f <= GLTEX_HARD_STOP_LOG_FRAMES; f++) {
+		assert(gltex_prepare(&txt, &attr) == 0);
+		for (i = 0; i < 30; i++) {
+			r = gltex_draw_cell(&txt, &fc, cells[i].key, i, 0, 1, false);
+			assert(r == (i < 24 ? 0 : -ENOMEM));
+		}
+		assert(gltex_render(&txt) == 0);
+		assert(gt->quads_num == 30);
+		for (i = 0; i < 24; i++)
+			assert(slot_of(&gt->quads[i])->key.key == cells[i].key);
+		for (i = 24; i < 30; i++) {
+			const struct gltex_quad *q = &gt->quads[i];
+
+			assert(q->atlas == gt->deco_atlas && q->texoff == KMSCON_DECO_NONE);
+			assert(colour_eq(q->bg, fc.bg) && q->ulcell == KMSCON_DECO_SINGLE);
+		}
+		assert(pools_bytes(gt, NULL) <= gt->cache_hard_bytes);
+		/* frame_count, plus one, of the frame that last logged it */
+		assert(gt->hard_stop_logged == (f < GLTEX_HARD_STOP_LOG_FRAMES ? 2 : 602));
+	}
+	t = &texs[gt->deco_atlas->tex];
+	for (y = 0; y < FAKE_CELL_H; y++)
+		for (x = 0; x < FAKE_CELL_W; x++)
+			assert(!t->data[y * t->w + KMSCON_DECO_NONE * FAKE_CELL_W + x]);
+	close_cache(&txt);
+}
+
+/*
+ * The hard stop counts a pool's first strip too: with the alpha pool at its
+ * bound and the stop less than a colour strip above it, a colour glyph, the
+ * first of its pool, is drawn blank, and its pool takes no strip.
+ */
+static void test_cache_hard_stop_first(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 1};
+	struct gcell cells[NARROW_CAP];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int i;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < NARROW_CAP; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+	cache_frame(&txt, cells, NARROW_CAP);
+	assert(pools_bytes(gt, NULL) == CACHE_BOUND);
+	gt->cache_hard_bytes = CACHE_BOUND + 4096 - 1;
+
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(gltex_draw_cell(&txt, &fc, EMOJI_NARROW_CP, 0, 0, 1, false) == -ENOMEM);
+	assert(!gt->pools[2].bytes && dlist_empty(&gt->pools[2].lru));
+	assert(gt->hard_stop_logged);
+	assert(gltex_render(&txt) == 0);
+	close_cache(&txt);
+}
+
+/*
+ * Not run by default: GLTEX_MEASURE=1, or GLTEX_CACHE_TEST=measure, prints
+ * what a schedule of frames at 7680x2160 in 19x41 cells (font size 30; 404x52
+ * cells, 202 wide glyphs a line) costs the cache: under 4 MiB a pool and no
+ * glyph count, the first bound tried, and under the defaults. A seeded text
+ * of 6000 CJK ideographs, or of 1400 colour emoji, the first commoner by
+ * Zipf's law, is scrolled a line a frame for 600 frames, paged down a screen
+ * a frame for 100 and back up for 100. Misses are glyphs drawn from the font,
+ * each 21 to 33 us with FreeType.
+ */
+#define MEASURE_LINES 8000
+#define MEASURE_MAX_COLS 256
+
+static void measure(bool emoji, unsigned int glyphs, size_t max_bytes, const char *what)
+{
+	struct kmscon_font font = {.width = 19, .height = 41};
+	static uint32_t text[MEASURE_LINES][MEASURE_MAX_COLS];
+	static double cdf[6000];
+	static struct gcell cells[MEASURE_MAX_COLS * 64];
+	unsigned int distinct = emoji ? 1400 : 6000, i, j, f, top = 0, worst = 0, cols, rows;
+	uint32_t base = emoji ? EMOJI_CP : WIDE_CP;
+	uint64_t misses = 0, first = 0;
+	struct kmscon_text txt;
+	struct timespec t0, t1;
+	struct gltex *gt;
+	double sum = 0, u;
+
+	for (i = 0; i < distinct; i++)
+		sum += 1.0 / (i + 1);
+	for (i = 0, u = 0; i < distinct; i++)
+		cdf[i] = (u += 1.0 / (i + 1) / sum);
+	rnd_state = 2026;
+	for (i = 0; i < MEASURE_LINES; i++)
+		for (j = 0; j < MEASURE_MAX_COLS; j++) {
+			unsigned int lo = 0, hi = distinct - 1;
+
+			u = rnd(1u << 24) / (double)(1u << 24);
+			while (lo < hi) {
+				unsigned int mid = (lo + hi) / 2;
+
+				if (cdf[mid] < u)
+					lo = mid + 1;
+				else
+					hi = mid;
+			}
+			text[i][j] = base + lo;
+		}
+
+	disp_w = 7680;
+	disp_h = 2160;
+	memset(&txt, 0, sizeof(txt));
+	txt.font = &font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	patterned = true;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+	gt->pool_max_glyphs = glyphs;
+	gt->pool_max_bytes = max_bytes;
+	cols = txt.cols / 2;
+	rows = txt.rows;
+	assert(cols <= MEASURE_MAX_COLS && cols * rows <= sizeof(cells) / sizeof(*cells));
+
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	for (f = 0; f < 800; f++) {
+		if (f < 600)
+			top = f;
+		else if (f < 700)
+			top += rows;
+		else
+			top -= rows;
+		for (i = 0; i < rows; i++)
+			for (j = 0; j < cols; j++)
+				cells[i * cols + j] = (struct gcell){text[top + i][j], 2};
+		cache_frame(&txt, cells, cols * rows);
+		misses += txt.frame_misses;
+		first = f ? first : misses;
+		if (f && txt.frame_misses > worst)
+			worst = txt.frame_misses;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	fprintf(stderr,
+		"measure %s, %s: 800 frames, %" PRIu64 " misses (%" PRIu64
+		" in the first, at most %u in a later one), %u slots in %zu KiB of strips; "
+		"%.2f ms a frame here; at 21-33 us a miss, %.1f-%.1f ms of glyph drawing a frame\n",
+		emoji ? "emoji" : "CJK", what, misses, first, worst, gt->pools[emoji ? 3 : 1].slots,
+		gt->pools[emoji ? 3 : 1].bytes >> 10,
+		((t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6) / 800,
+		misses * 0.021 / 800, misses * 0.033 / 800);
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+	patterned = false;
+	disp_w = 640;
+	disp_h = 480;
+}
+
+static void test_cache_measure(void)
+{
+	if (!getenv("GLTEX_MEASURE") && !getenv("GLTEX_CACHE_TEST"))
+		return;
+	measure(false, UINT_MAX, 4 << 20, "4 MiB a pool");
+	measure(false, GLTEX_POOL_GLYPHS, GLTEX_CACHE_MAX_BYTES / GLTEX_POOLS, "the defaults");
+	measure(true, UINT_MAX, 4 << 20, "4 MiB a pool");
+	measure(true, GLTEX_POOL_GLYPHS, GLTEX_CACHE_MAX_BYTES / GLTEX_POOLS, "the defaults");
+}
+
+/* the glyph cache's tests, by name; GLTEX_CACHE_TEST=name runs that one alone */
+static const struct {
+	const char *name;
+	void (*run)(void);
+} cache_tests[] = {
+	{"cold_oracle", test_cache_cold_oracle},
+	{"model", test_cache_model},
+	{"count_governs", test_cache_count_governs},
+	{"ceiling_clamps", test_cache_ceiling_clamps},
+	{"exact_capacity", test_cache_exact_capacity},
+	{"capacity_plus_one", test_cache_capacity_plus_one},
+	{"frame_overshoot", test_cache_frame_overshoot},
+	{"same_frame", test_cache_same_frame},
+	{"narrow_wide", test_cache_narrow_wide},
+	{"colour_alpha", test_cache_colour_alpha},
+	{"slot_cleared", test_cache_slot_cleared},
+	{"deco_kept", test_cache_deco_kept},
+	{"cluster_churn", test_cache_cluster_churn},
+	{"reset", test_cache_reset},
+	{"adversarial", test_cache_adversarial},
+	{"give_back", test_cache_give_back},
+	{"release", test_cache_release},
+	{"hard_stop", test_cache_hard_stop},
+	{"hard_stop_first", test_cache_hard_stop_first},
+	{"upload_failure", test_cache_upload_failure},
+	{"failed_rotate", test_cache_failed_rotate},
+	{"unset_release", test_cache_unset_release},
+	{"shader_failure", test_cache_shader_failure},
+	{"measure", test_cache_measure},
+};
+
 int main(void)
 {
+	const char *only = getenv("GLTEX_CACHE_TEST");
+	unsigned int i;
+
+	if (only) {
+		for (i = 0; i < sizeof(cache_tests) / sizeof(*cache_tests); i++)
+			if (!strcmp(only, cache_tests[i].name))
+				cache_tests[i].run();
+		return 0;
+	}
+
 	/* gltex draws image placements (ADR-103 steps 3f and 4e), and says so */
 	assert(kmscon_text_gltex_ops.draws_images);
-	test_bounded();
 	test_vertex_memory();
 	test_first_glyph();
 	test_blink();
 	test_decorations();
 	test_underline_cursor();
-	test_deco_flush();
 	test_colour_glyph();
 	test_strip_failure();
 	test_glyph_fallback();
@@ -2413,5 +3874,7 @@ int main(void)
 	test_frame_draws();
 	test_budget_full();
 	test_atlas_sampling();
+	for (i = 0; i < sizeof(cache_tests) / sizeof(*cache_tests); i++)
+		cache_tests[i].run();
 	return 0;
 }

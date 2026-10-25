@@ -126,6 +126,9 @@ static void print_help()
 		"\t                              Enable bell forwarding to the VT\n"
 		"\t    --blink                 [on]\n"
 		"\t                              Enable or disable cursor/text blinking\n"
+		"\t    --sync-timeout <msecs>  [200]\n"
+		"\t                              Longest hold of a synchronized frame\n"
+		"\t                              (mode 2026); 0 does not offer the mode\n"
 		"\n"
 		"Input Options:\n"
 		"\t    --xkb-model <model>        [-]  Set XkbModel for input devices\n"
@@ -1334,6 +1337,7 @@ int kmscon_conf_new(struct conf_ctx **out)
 		CONF_OPTION_UINT(0, "sb-size", &conf->sb_size, 1000),
 		CONF_OPTION_BOOL(0, "bell", &conf->bell, false),
 		CONF_OPTION_BOOL(0, "blink", &conf->blink, true),
+		CONF_OPTION_UINT(0, "sync-timeout", &conf->sync_timeout, 200),
 
 		/* Input Options */
 		CONF_OPTION_STRING(0, "xkb-model", &conf->xkb_model, NULL),

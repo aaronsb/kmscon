@@ -199,6 +199,32 @@ test(
     args: [fake_image_helper, meson.current_build_dir()],
 )
 
+# a terminal's kitty graphics host end to end: a pseudo-terminal into kmscon's
+# pty and a real vte, served by the real helper or the stand-in; the
+# session's user stood in for
+test_terminal_image = executable(
+    'test_terminal_image',
+    'test_terminal_image.c',
+    '../src/terminal_image.c',
+    '../src/terminal_vte.c',
+    '../src/image_host.c',
+    '../src/render/image_budget.c',
+    '../src/misc/asciinema.c',
+    include_directories: [src_inc, misc_inc],
+    dependencies: [
+        subproject('libtsm').get_variable('libtsm_test_dep'),
+        shl_deps,
+        eloop_deps,
+        zlib_deps,
+    ],
+)
+test(
+    'test_terminal_image',
+    test_terminal_image,
+    args: [kmscon_image_helper, fake_image_helper],
+    timeout: 60,
+)
+
 # the helper's user, built without sd-login and with it, its calls stood in for
 test_image_identity = executable(
     'test_image_identity',

@@ -172,9 +172,9 @@ struct screen {
 	unsigned int cols, rows;
 	/*
 	 * optional: pictures and placements (ADR-103), made through libtsm's
-	 * test calls before frame @frame is drawn: frame 0 only, or 0 to 3 for
-	 * a screen with @next. @cw x @ch is the font's cell, which the screen
-	 * measures placements in.
+	 * test calls or sent as kitty commands to @vte, before frame @frame is
+	 * drawn: frame 0 only, or 0 to 3 for a screen with @next. @cw x @ch is
+	 * the font's cell, which the screen measures placements in.
 	 */
 	void (*images)(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
 		       unsigned int cw, unsigned int ch);
@@ -431,31 +431,41 @@ static uint32_t premul(uint32_t a, uint32_t r, uint32_t g, uint32_t b)
 	return a << 24 | (r * a + 127) / 255 << 16 | (g * a + 127) / 255 << 8 | (b * a + 127) / 255;
 }
 
+/* pixel @x, @y of a @w x @h picture of @pattern: straight alpha, 8 bits each */
+static void pattern_at(enum pattern pattern, unsigned int x, unsigned int y, unsigned int w,
+		       unsigned int h, unsigned int seed, uint32_t rgba[4])
+{
+	uint32_t r = w > 1 ? x * 255 / (w - 1) : 0, g = h > 1 ? y * 255 / (h - 1) : 0;
+	uint32_t b = (seed * 97 + 64) & 0xff, a = 255;
+	long dx = 2 * (long)x + 1 - (long)w, dy = 2 * (long)y + 1 - (long)h;
+
+	if (pattern == PIC_HALF && x >= w / 2)
+		a = 128;
+	if (pattern == PIC_DISC &&
+	    dx * dx * (long)h * h + dy * dy * (long)w * w > (long)w * w * h * h)
+		a = 0;
+	if (pattern == PIC_STRIPES) {
+		r = (x + y) % 2 ? 255 : 0;
+		g = 255 - r;
+		b = 64;
+	}
+	rgba[0] = r;
+	rgba[1] = g;
+	rgba[2] = b;
+	rgba[3] = a;
+}
+
 /* a @w x @h picture of @pattern in premultiplied ARGB32; free() it */
 static uint32_t *picture(enum pattern pattern, unsigned int w, unsigned int h, unsigned int seed)
 {
-	uint32_t *px = malloc((size_t)w * h * 4);
+	uint32_t *px = malloc((size_t)w * h * 4), c[4];
 	unsigned int x, y;
 
 	assert(px);
 	for (y = 0; y < h; y++) {
 		for (x = 0; x < w; x++) {
-			uint32_t r = w > 1 ? x * 255 / (w - 1) : 0,
-				 g = h > 1 ? y * 255 / (h - 1) : 0;
-			uint32_t b = (seed * 97 + 64) & 0xff, a = 255;
-			long dx = 2 * (long)x + 1 - (long)w, dy = 2 * (long)y + 1 - (long)h;
-
-			if (pattern == PIC_HALF && x >= w / 2)
-				a = 128;
-			if (pattern == PIC_DISC &&
-			    dx * dx * (long)h * h + dy * dy * (long)w * w > (long)w * w * h * h)
-				a = 0;
-			if (pattern == PIC_STRIPES) {
-				r = (x + y) % 2 ? 255 : 0;
-				g = 255 - r;
-				b = 64;
-			}
-			px[(size_t)y * w + x] = premul(a, r, g, b);
+			pattern_at(pattern, x, y, w, h, seed, c);
+			px[(size_t)y * w + x] = premul(c[3], c[0], c[1], c[2]);
 		}
 	}
 	return px;
@@ -494,6 +504,58 @@ static void place(struct tsm_screen *con, uint64_t image, uint32_t id, unsigned 
 static void input(struct tsm_vte *vte, const char *s)
 {
 	tsm_vte_input(vte, s, strlen(s));
+}
+
+/*
+ * A kitty graphics transmission through the vte, as a client sends one
+ * (ADR-103 step 4c): a @w x @h picture of @pattern as f=32 (straight RGBA)
+ * or f=24 (RGB, opaque), base64 in chunks of 4096 with m=1 on all but the
+ * last, the spec's chunking; @keys go in the first chunk. It lands at the
+ * cursor; with C=1 among @keys the cursor stays.
+ */
+static void kitty_send(struct tsm_vte *vte, const char *keys, unsigned int f, enum pattern pattern,
+		       unsigned int w, unsigned int h, unsigned int seed)
+{
+	static const char b64[] =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	size_t bpp = f / 8, len = (size_t)w * h * bpp, n64 = (len + 2) / 3 * 4, i, o = 0;
+	uint8_t *raw = malloc(len);
+	char *enc = malloc(n64 + 1), head[256];
+	uint32_t c[4];
+	unsigned int x, y;
+
+	assert(raw && enc && (f == 24 || f == 32));
+	for (y = 0; y < h; y++) {
+		for (x = 0; x < w; x++) {
+			pattern_at(pattern, x, y, w, h, seed, c);
+			memcpy(raw + ((size_t)y * w + x) * bpp,
+			       (uint8_t[4]){c[0], c[1], c[2], c[3]}, bpp);
+		}
+	}
+	for (i = 0; i < len; i += 3) {
+		uint32_t v = raw[i] << 16 | (i + 1 < len ? raw[i + 1] << 8 : 0) |
+			     (i + 2 < len ? raw[i + 2] : 0);
+
+		enc[o++] = b64[v >> 18 & 63];
+		enc[o++] = b64[v >> 12 & 63];
+		enc[o++] = i + 1 < len ? b64[v >> 6 & 63] : '=';
+		enc[o++] = i + 2 < len ? b64[v & 63] : '=';
+	}
+	for (i = 0; i < n64; i += 4096) {
+		size_t chunk = n64 - i < 4096 ? n64 - i : 4096;
+		bool more = i + chunk < n64;
+
+		if (!i)
+			snprintf(head, sizeof(head), ESC "_G%s,f=%u,s=%u,v=%u,m=%d;", keys, f, w, h,
+				 more);
+		else
+			snprintf(head, sizeof(head), ESC "_Gm=%d;", more);
+		input(vte, head);
+		tsm_vte_input(vte, enc + i, chunk);
+		input(vte, ESC "\\");
+	}
+	free(enc);
+	free(raw);
 }
 
 /* the same half-transparent picture in each band, under and over text */
@@ -681,6 +743,80 @@ static void images_ed2(struct tsm_screen *con, struct tsm_vte *vte, unsigned int
 	      0, 0);
 	place(con, add_image(con, PIC_DISC, 8 * cw, 4 * ch, 2, TSM_IMAGE_KITTY, 1), 0, 24, 2, 0, 0,
 	      Z_BELOW_TEXT);
+}
+
+/*
+ * Step 4c: the same three pictures as img-bands, transmitted and placed by
+ * kitty commands through the vte, at the cursor with C=1.
+ */
+static void kitty_bands(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			unsigned int cw, unsigned int ch)
+{
+	static const char *const keys[3] = {"a=T,i=1,C=1,z=-1073741825", "a=T,i=2,C=1,z=-1",
+					    "a=T,i=3,C=1,z=0"};
+	char cup[32];
+
+	for (unsigned int b = 0; b < 3; b++) {
+		snprintf(cup, sizeof(cup), ESC "7" ESC "[%u;15H", 3 * b + 1);
+		input(vte, cup);
+		kitty_send(vte, keys[b], 32, PIC_HALF, 24 * cw, 3 * ch, b);
+		input(vte, ESC "8");
+	}
+}
+
+/*
+ * Text over kitty pictures: one placed with C=0, which leaves the cursor
+ * after it on its last row, where the text that follows goes; text written
+ * over it afterwards; and a disc in the top band whose row is erased with
+ * EL, which only ED 2 takes from a kitty picture. The left picture is f=24.
+ */
+static void kitty_text(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+		       unsigned int cw, unsigned int ch)
+{
+	input(vte, ESC "[3;2H");
+	kitty_send(vte, "a=T,i=1,z=-1", 24, PIC_GRADIENT, 8 * cw, 3 * ch, 1);
+	input(vte, "<after");
+	input(vte, ESC "[4;3H" ESC "[97;41mTEXT" ESC "[0m on it");
+	input(vte, ESC "[3;26H");
+	kitty_send(vte, "a=T,i=2,C=1,z=0", 32, PIC_DISC, 10 * cw, 3 * ch, 2);
+	input(vte, ESC "[4;20H" ESC "[K" ESC "[8;1H");
+}
+
+#define KITTY_TEXT_BYTES                                                                           \
+	"kitty pictures under and over text" ESC "[3;26Hfirst row, around it" ESC                  \
+	"[4;26Hmiddle row, erased" ESC "[5;26Hlast row, around it"
+
+/*
+ * ADR-103's A6 through the vte: each frame transmits a new full-screen
+ * picture as image 1, which replaces the last and its placement, at the top
+ * left, then a banner line scrolls in the bottom two rows.
+ */
+static void kitty_banner(struct tsm_vte *vte, unsigned int frame, unsigned int cw, unsigned int ch,
+			 const char *keys)
+{
+	char line[128];
+
+	if (frame == 3)
+		return;
+	input(vte, ESC "7" ESC "[1;1H");
+	kitty_send(vte, keys, frame % 2 ? 24 : 32, PIC_GRADIENT, COLS * cw, ROWS * ch, frame);
+	input(vte, ESC "8");
+	snprintf(line, sizeof(line),
+		 "\r\n" ESC "[44;97m banner %u " ESC "[0m text " ESC "[42m over " ESC "[0m video",
+		 frame);
+	input(vte, line);
+}
+
+static void kitty_banner_bg(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			    unsigned int cw, unsigned int ch)
+{
+	kitty_banner(vte, frame, cw, ch, "a=T,i=1,q=2,C=1,z=-1073741825");
+}
+
+static void kitty_banner_text(struct tsm_screen *con, struct tsm_vte *vte, unsigned int frame,
+			      unsigned int cw, unsigned int ch)
+{
+	kitty_banner(vte, frame, cw, ch, "a=T,i=1,q=2,C=1,z=-1");
 }
 
 static const struct screen screens[] = {
@@ -977,6 +1113,47 @@ static const struct screen screens[] = {
 	 .bytes = TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW TEXT_ROW,
 	 .next = ESC "[2J" ESC "[Hcleared",
 	 .images = images_ed2},
+
+	/* ADR-103 step 4c: kitty commands parsed by the vte, as a program sends them */
+	{.name = "kitty-bands",
+	 .desc = "img-bands through the kitty graphics protocol: each picture transmitted in "
+		 "4096-byte chunks and placed at the cursor by a kitty command with C=1, at "
+		 "z=-1073741825, -1 and 0. Correct: as img-bands; in the lowest band the blue and "
+		 "green cells stay solid with the picture showing round them, in the middle band "
+		 "the picture covers the backgrounds, in the top band its left half hides the "
+		 "text and its right half shows it dimmed.",
+	 .bytes = BANDS_BYTES,
+	 .checks = bands_checks,
+	 .images = kitty_bands},
+	{.name = "kitty-text",
+	 .desc = "Text and kitty pictures: at the left an opaque f=24 gradient in the middle "
+		 "band, placed with C=0, so the text that follows, <after, starts on its last row "
+		 "just past its right edge; TEXT, white on red, and 'on it' written over its "
+		 "middle row afterwards, the red under the picture, which the middle band draws "
+		 "over cell backgrounds. At the right a disc in the top band over three rows of "
+		 "text, the middle row then erased by EL from column 20. Correct: the gradient "
+		 "whole under the white text written on it, no red showing; the disc whole, the "
+		 "first and last rows' "
+		 "words showing only outside it, and nothing of the middle row's.",
+	 .bytes = KITTY_TEXT_BYTES,
+	 .images = kitty_text},
+	{.name = "kitty-banner-bg",
+	 .desc = "ADR-103's A6 through the kitty graphics protocol, below backgrounds: a "
+		 "full-screen picture transmitted again as the same image on three frames running, "
+		 "f=32 and f=24 in turn, each replacing the last, under a banner of text that "
+		 "scrolls in the bottom two rows. Correct: the last frame's picture alone, the "
+		 "banner's blue and green backgrounds solid over it, and both buffers equal to a "
+		 "fresh draw.",
+	 .bytes = BANNER_BYTES,
+	 .next = "",
+	 .images = kitty_banner_bg},
+	{.name = "kitty-banner-text",
+	 .desc = "ADR-103's A6 through the kitty graphics protocol, below text: the same, with "
+		 "the picture over the cell backgrounds. Correct: the picture under every cell, "
+		 "only the banner's glyphs over it, and both buffers equal to a fresh draw.",
+	 .bytes = BANNER_BYTES,
+	 .next = "",
+	 .images = kitty_banner_text},
 
 	/* ADR-103's render timer display: the first placement bbulk draws */
 	{.name = "osd",
@@ -1400,6 +1577,7 @@ static int render_screen(struct kmscon_font *font, const struct screen *s, const
 	assert(tsm_screen_set_cell_size(con, font->width, font->height) == 0);
 	tsm_screen_set_image_limit(con, 64 << 20);
 	tsm_vte_set_sixel(vte, true);
+	tsm_vte_set_kitty_graphics(vte, true);
 
 	/* hidden cursor: its blink state is not part of what is compared */
 	tsm_vte_input(vte, ESC "[?25l", 6);

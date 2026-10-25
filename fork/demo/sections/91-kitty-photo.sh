@@ -1,0 +1,1 @@
+../../tier3/guest/screens/kitty-photo.sh

@@ -6,6 +6,9 @@
 #   make vt-demo        make demo, then run it on a free VT through sudo and
 #                       print the run's answers when it ends
 #                       (VT=N, DEMO_ARGS='kmscon options')
+#   make vt-login       make demo, then run its kmscon with a login prompt on
+#                       a free VT through sudo, for the demo or the showcase
+#                       run by hand in a logind session (VT=N, DEMO_ARGS=...)
 #
 # Or by hand, as root: sudo fork/demo/run-vt.sh [N]
 
@@ -34,4 +37,14 @@ vt-demo: export VT_DEMO_VT = $(value VT)
 vt-demo: export VT_DEMO_ARGS = $(value DEMO_ARGS)
 vt-demo: export VT_DEMO_KIT = $(value KIT)
 vt-demo: demo ## Build, stage and run the demo on a free VT, then print its answers (VT=N, DEMO_ARGS='...')
+	fork/demo/vt-demo.sh
+
+# The same with kmscon's own login prompt (run-vt.sh --login) in place of the
+# demo: a logind session, which holds the sound cards while its VT is on
+# screen (#207). Blocks until Ctrl-C.
+.PHONY: vt-login
+vt-login: export VT_DEMO_VT = $(value VT)
+vt-login: export VT_DEMO_ARGS = $(value DEMO_ARGS)
+vt-login: export VT_DEMO_LOGIN = 1
+vt-login: demo ## Build, stage and run its kmscon with a login prompt on a free VT, until Ctrl-C (VT=N, DEMO_ARGS='...')
 	fork/demo/vt-demo.sh

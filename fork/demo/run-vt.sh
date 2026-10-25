@@ -1,10 +1,10 @@
 #!/bin/bash
 # Runs the kmscon staged by `make demo` on one VT, with the demo (demo.sh) as
-# its only session, in place of the stock kmsconvt@ttyN unit. When the demo
-# ends, or this script is interrupted, or kmscon fails, the unit is started
-# again if it was running before. See docs/fork/demo.md.
+# its only session, in place of the VT's console unit (kmsconvt@, getty@ or
+# autovt@ttyN). When the demo ends, or this script is interrupted, or kmscon
+# fails, the units that were running are started again. See docs/fork/demo.md.
 #
-#   sudo fork/demo/run-vt.sh [--dry-run] [--kit=KIT | --showcase=VIDEO ...] [N] [-- kmscon-option...]
+#   sudo fork/demo/run-vt.sh [--dry-run] [--kit=KIT | --showcase=VIDEO ... | --login] [N] [-- kmscon-option...]
 #
 # N is the VT, 2-12, default 3. Options after -- go to kmscon, for display
 # settings of one machine (--mode=..., --no-use-original-mode, --font-size=...).
@@ -16,6 +16,9 @@
 # on VIDEO, an absolute path, in place of the demo; --showcase-from=N starts it
 # at act N and --showcase-audio plays the soundtrack, through an output the
 # show asks for, or --showcase-audio=DEVICE through mpv's audio device DEVICE.
+# --login runs kmscon's own login prompt (/bin/login, through PAM) in place
+# of the demo, so the session is a logind session, given the sound cards
+# while its VT is on screen; it runs until this script is interrupted.
 # --dry-run prints every command and runs none; it needs no root. A dry run
 # takes the module directory from RUN_VT_MODULEDIR when set, for the tests.
 #
@@ -27,7 +30,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,20s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,23s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -44,6 +47,7 @@ video=
 from=
 audio=
 device=
+login=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
@@ -52,6 +56,7 @@ while [ $# -gt 0 ]; do
 	--showcase-from=*) from=${1#*=} ;;
 	--showcase-audio) audio=1 ;;
 	--showcase-audio=*) audio=1; device=${1#*=} ;;
+	--login) login=1 ;;
 	-h | --help) usage ;;
 	--) shift; extra=("$@"); break ;;
 	[0-9]*) [ -z "$vt" ] || usage; vt=$1 ;;
@@ -69,8 +74,11 @@ modules=$stage/usr/lib/kmscon
 moduledir=/usr/lib/kmscon
 # Only a dry run, which mounts nothing, lets the tests point it elsewhere.
 [ -z "$dry" ] || moduledir=${RUN_VT_MODULEDIR:-$moduledir}
-showcase=$(readlink -m "$here/../showcase/bad-apple.sh")
-unit=kmsconvt@tty$vt.service
+checkout=$(readlink -m "$here/../..")
+showcase=$checkout/fork/showcase/bad-apple.sh
+# The units that may hold the VT: the stock kmscon, a getty, and autovt@,
+# which logind starts on a switch to the VT and which is one of the other two.
+units=("kmsconvt@tty$vt.service" "getty@tty$vt.service" "autovt@tty$vt.service")
 
 # show prints a command as it would be typed; run shows it, then runs it unless
 # this is a dry run.
@@ -132,6 +140,8 @@ case $kit in
 *) die "--kit takes text, sixel, kitty, glyphs or all, not '$kit'" ;;
 esac
 [ -z "$kit" ] || [ -z "$video" ] || die "--kit goes with the demo, not with --showcase"
+[ -z "$login" ] || [ -z "$kit$video" ] ||
+	die "--login runs no demo: log in, then run the demo or the showcase yourself (it says how)"
 if [ -n "$video" ]; then
 	[[ $video == /* ]] || die "--showcase needs an absolute path, not '$video'"
 	[ -z "$from" ] || [[ $from =~ ^[1-7]$ ]] || die "--showcase-from must be an act from 1 to 7, not '$from'"
@@ -174,13 +184,20 @@ else
 	done
 fi
 
-was_active=
+# The VT's units that run now: each is stopped below and started again on
+# exit. autovt@ttyN is another name for one of the others, which systemctl
+# takes for the same unit.
+active=()
+for u in "${units[@]}"; do
+	if [ -n "$dry" ]; then
+		show systemctl is-active --quiet "$u"
+	elif systemctl is-active --quiet "$u"; then
+		active+=("$u")
+	fi
+done
 if [ -n "$dry" ]; then
-	show systemctl is-active --quiet "$unit"
-	echo "  (the rest assumes it is active)"
-	was_active=1
-elif systemctl is-active --quiet "$unit"; then
-	was_active=1
+	echo "  (the rest assumes ${units[0]} is active)"
+	active=("${units[0]}")
 fi
 
 child=
@@ -199,9 +216,9 @@ restore() {
 		! kill -0 "$child" 2>/dev/null || run kill -KILL "$child" || true
 		wait "$child" 2>/dev/null || true
 	fi
-	if [ -n "$was_active" ]; then
-		run systemctl start "$unit" ||
-			echo "run-vt: restarting $unit failed; restore it with: sudo systemctl start $unit" >&2
+	if [ ${#active[@]} -gt 0 ]; then
+		run systemctl start "${active[@]}" ||
+			echo "run-vt: restarting ${active[*]} failed; restore it with: sudo systemctl start ${active[*]}" >&2
 	fi
 }
 trap restore EXIT
@@ -209,15 +226,30 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-[ -z "$was_active" ] || run systemctl stop "$unit"
+[ ${#active[@]} -eq 0 ] || run systemctl stop "${active[@]}"
 
 build=$(cut -d' ' -f1 "$stage/BUILD" 2>/dev/null) || build='(unknown)'
-if [ -n "$was_active" ]; then
-	after="when the demo ends, $unit is started again on VT $vt"
+ends="the demo ends" last=3
+[ -z "$login" ] || ends="it ends" last=4
+if [ ${#active[@]} -gt 0 ]; then
+	after="when $ends, ${active[*]} is started again on VT $vt"
+	manual="manual restore: sudo systemctl start ${active[*]}"
 else
-	after="$unit was not running, so nothing is started when the demo ends"
+	after="no console unit was running on VT $vt, so nothing is started when $ends"
+	manual="nothing to restore afterwards"
 fi
-if [ -n "$video" ]; then
+if [ -n "$login" ]; then
+	what="log in, then, in $checkout:
+       DEMO_LABEL='dev build $build' fork/demo/demo.sh
+           the demo; DEMO_KIT=sixel (or kitty, glyphs, all) before it picks a
+           review kit, and its answers go where make vt-demo's go
+       BAD_APPLE=/path/to/video fork/showcase/bad-apple.sh --audio
+           the showcase with its soundtrack (--from N starts at act N); this
+           login holds the sound cards while VT $vt is on screen, so no
+           audio group is needed
+     log out when done; a new prompt follows, as on the stock console
+  3. Ctrl-C here ends it (the login too, if still open)"
+elif [ -n "$video" ]; then
 	what="press a key to start the showcase; q ends it at any time"
 else
 	what="rate each page with 1, 2 or 3 (c adds a comment, b goes back);
@@ -225,17 +257,21 @@ else
 fi
 cat <<EOF
 
-kmscon dev build $build on VT $vt
+kmscon dev build $build on VT $vt${login:+, with a login prompt}
   1. switch with Ctrl-Alt-F$vt
   2. $what
-  3. $after;
+  $last. $after;
      switch back to your desktop with Ctrl-Alt-F${fg:-N}
-manual restore: sudo systemctl start $unit
+$manual
 
 EOF
 
-# The demo runs as $user, never as root. kmscon is started in the background
-# so that it ignores Ctrl-C (bash does that for background jobs) and this
+# The demo runs as $user, never as root. With --login, /bin/login runs as
+# root and PAM decides who logs in, as under the stock unit; pam_systemd makes
+# the login a logind session on VT $vt, from the XDG_VTNR and XDG_SEAT kmscon
+# sets. It runs without --oneshot, so a logout, or login's own timeout at the
+# prompt, brings a new prompt rather than the end. kmscon is started in the
+# background so that it ignores Ctrl-C (bash does that for background jobs) and this
 # script decides how it stops: SIGTERM from restore(), which kmscon handles by
 # releasing the VT. unshare and sh exec, so $! is kmscon's own PID. kmscon
 # starts its child with execve, without a PATH search, so its path is absolute.
@@ -251,11 +287,18 @@ if [ -n "$video" ]; then
 	[ -z "$from" ] || session+=(--from "$from")
 	[ -z "$audio" ] || session+=(--audio)
 fi
+once=(--oneshot)
+login_argv=("${drop[@]}" -- "${session[@]}")
+if [ -n "$login" ]; then
+	once=()
+	# kmscon's default login, named here so that no config file changes it.
+	login_argv=(/bin/login -p)
+fi
 # shellcheck disable=SC2016 # $1, $2 and $@ are for the inner sh
 cmd=(unshare --mount --propagation private --
 	/bin/sh -c 'mount --bind "$1" "$2" && shift 2 && exec "$@"' sh "$modules" "$moduledir"
-	"$kmscon" --vt="tty$vt" --no-switchvt --configdir "$here" --oneshot "${extra[@]}"
-	--login -- "${drop[@]}" -- "${session[@]}")
+	"$kmscon" --vt="tty$vt" --no-switchvt --configdir "$here" "${once[@]}" "${extra[@]}"
+	--login -- "${login_argv[@]}")
 show "${cmd[@]}"
 [ -z "$dry" ] || exit 0
 "${cmd[@]}" &

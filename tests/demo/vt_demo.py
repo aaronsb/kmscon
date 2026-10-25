@@ -242,8 +242,9 @@ def main():
         p = c.run(["6"], dry=False, STATUS="130", APPEND="")
         check("run-vt.sh's 130 (Ctrl-C) is kept", p.returncode == 130, p.stdout + p.stderr)
         p = c.run(["6"], dry=False, APPEND=esc(line("20261022T110000-9", "stock x", "10-sgr", "right")))
-        check("no dev-build answers fails the run",
-              p.returncode != 0 and "no answers from this run" in p.stderr, p.stdout + p.stderr)
+        check("no dev-build answers fails the run, naming the results file",
+              p.returncode != 0 and "no answers from this run" in p.stderr
+              and f"results: {c.feedback}" in p.stdout, p.stdout + p.stderr)
         p = c.run(["6"], dry=False, APPEND="")
         check("a clean log reports zero",
               "health: 0 'atomic commit failed', 0 'vt_timeout'" in p.stdout
@@ -306,6 +307,41 @@ def main():
               p.stdout + p.stderr + repr(args))
         p = c.run(["6"], dry=False, VT_DEMO_SHOWCASE=video, STATUS="130", APPEND="")
         check("a showcase cut short keeps run-vt.sh's status", p.returncode == 130, p.stdout + p.stderr)
+
+        # make vt-login (#207): run-vt.sh --login before the VT, with the
+        # kmscon options; a login records answers only if a demo was run in
+        # it, so a run without any ends with the health check and status 0.
+        p = c.run([], VT_DEMO_LOGIN="1", VT_DEMO_VT="8", VT_DEMO_ARGS="--font-size=30")
+        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
+        check("VT_DEMO_LOGIN reaches run-vt.sh as --login before the VT",
+              p.returncode == 0 and cmd.endswith("run-vt.sh --login 8 -- --font-size=30"),
+              p.stdout + p.stderr)
+        p = c.run([], VT_DEMO_LOGIN="1", sessions=[5])
+        check("VT_DEMO_LOGIN without VT= picks a free VT",
+              p.returncode == 0 and "run-vt.sh --login 6 --" in p.stdout, p.stdout + p.stderr)
+        p = c.run(["8"], VT_DEMO_LOGIN="1", sessions=[8])
+        check("VT_DEMO_LOGIN on a VT with a session is refused",
+              p.returncode != 0 and "VT 8 refused: logind session c8" in p.stderr, p.stderr)
+        for extra, why in (({"VT_DEMO_KIT": "sixel"}, "KIT goes with the demo"),
+                           ({"VT_DEMO_SHOWCASE": video}, "the showcase goes"),
+                           ({"VT_DEMO_LOGIN": "maybe"}, "VT_DEMO_LOGIN=maybe")):
+            p = c.run(["8"], **{"VT_DEMO_LOGIN": "1", **extra})
+            check(f"VT_DEMO_LOGIN with {' '.join(f'{k}={v}' for k, v in extra.items())} is refused",
+                  p.returncode != 0 and why in p.stderr, p.stdout + p.stderr)
+        p = c.run(["8"], dry=False, VT_DEMO_LOGIN="1", APPEND="")
+        with open(c.args_out) as f:
+            args = f.read().splitlines()
+        check("a login run without answers ends with the health check and status 0",
+              p.returncode == 0 and "health: 0" in p.stdout and "results:" not in p.stdout
+              and "no answers" not in p.stderr and args == ["--login", "8", "--"],
+              p.stdout + p.stderr + repr(args))
+        p = c.run(["8"], dry=False, VT_DEMO_LOGIN="1",
+                  APPEND=esc(line("20261025T200000-3", "dev build v1", "10-sgr", "wrong", "smeared")))
+        check("a login run prints the answers of a demo run in it",
+              p.returncode == 0 and "run       20261025T200000-3" in p.stdout and "smeared" in p.stdout
+              and "results: " in p.stdout, p.stdout + p.stderr)
+        p = c.run(["8"], dry=False, VT_DEMO_LOGIN="1", STATUS="130", APPEND="")
+        check("a login run cut short keeps run-vt.sh's status", p.returncode == 130, p.stdout + p.stderr)
 
         # run-vt.sh lets through only allowlisted kmscon options, by exact name
         # (getopt_long takes unique prefixes), each one word: a separate word
@@ -454,6 +490,56 @@ def main():
               and not any(w.startswith("XDG_RUNTIME_DIR=") for w in words[:env_at])
               and words[-2:] == ["/bin/bash", os.path.join(copy, "fork/demo/demo.sh")],
               p.stdout + p.stderr)
+
+        # --login (#207): kmscon's own login, /bin/login through PAM, as the
+        # session, in the same mount namespace; no setpriv and no env, since
+        # the login decides who runs, and no --oneshot, so a logout or login's
+        # timeout brings a new prompt. The kmscon options keep their allowlist.
+        def run_vt_copy(*args):
+            return subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run", *args],
+                                  capture_output=True, text=True, timeout=30,
+                                  env=dict(os.environ, SUDO_USER="nobody",
+                                           RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir")))
+
+        p = run_vt_copy("--login", "8", "--", "--font-size=30", "--hwaccel")
+        unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
+        words = shlex.split(unshare[2:]) if unshare else []
+        kmscon = os.path.join(copy, "fork/build/demo-root/usr/bin/kmscon")
+        check("run-vt.sh --login runs kmscon's login in the private mount namespace",
+              p.returncode == 0
+              and words[:9] == ["unshare", "--mount", "--propagation", "private", "--", "/bin/sh", "-c",
+                                'mount --bind "$1" "$2" && shift 2 && exec "$@"', "sh"]
+              and words[9:11] == [os.path.join(copy, "fork/build/demo-root/usr/lib/kmscon"),
+                                  os.path.join(tmp, "moduledir")]
+              and words[11:] == [kmscon, "--vt=tty8", "--no-switchvt", "--configdir",
+                                 os.path.join(copy, "fork/demo"), "--font-size=30", "--hwaccel",
+                                 "--login", "--", "/bin/login", "-p"],
+              p.stdout + p.stderr)
+        tell = p.stdout[:p.stdout.find("+ unshare ")]
+        check("run-vt.sh --login says what to run once logged in, before kmscon starts",
+              "Ctrl-Alt-F8" in tell and "log in" in tell
+              and "DEMO_LABEL='dev build v10-test' fork/demo/demo.sh" in tell
+              and "DEMO_KIT=sixel" in tell and "fork/showcase/bad-apple.sh --audio" in tell
+              and "log out" in tell and "Ctrl-C here ends it" in tell
+              and os.path.realpath(copy) in tell, tell)
+        # The VT's console units, whichever of kmsconvt@, getty@ or autovt@
+        # runs there, are checked, stopped and started again on exit.
+        for name in ("kmsconvt", "getty", "autovt"):
+            check(f"run-vt.sh --login checks {name}@tty8 and restores it",
+                  f"+ systemctl is-active --quiet {name}@tty8.service" in p.stdout, p.stdout)
+        order = [p.stdout.find(s) for s in ("+ systemctl stop kmsconvt@tty8.service", "+ unshare ",
+                                            "+ systemctl start kmsconvt@tty8.service")]
+        check("run-vt.sh stops the VT's active units before kmscon and starts them after",
+              0 <= order[0] < order[1] < order[2], p.stdout)
+        for opts, why in ((["--login", "--kit=sixel"], "--login runs no demo"),
+                          (["--login", "--showcase=/v.mkv"], "--login runs no demo"),
+                          (["--login", "--showcase-audio"], "go with --showcase=VIDEO")):
+            p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "8"], capture_output=True, text=True, timeout=30)
+            check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
+        for bad in ("--login=/bin/sh", "--lo", "Nerd"):
+            p = run_vt_copy("--login", "8", "--", bad)
+            check(f"run-vt.sh --login refuses the kmscon option {bad}",
+                  p.returncode != 0 and f"kmscon option '{bad}' is refused" in p.stderr, p.stderr)
 
         p = subprocess.run(["bash", run_vt, "--dry-run", "05"], capture_output=True, text=True, timeout=30)
         check("run-vt.sh refuses VT 05", p.returncode != 0 and "not '05'" in p.stderr, p.stderr)

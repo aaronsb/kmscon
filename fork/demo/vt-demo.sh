@@ -24,6 +24,11 @@
 # otherwise). The showcase records no answers, so its run ends with the
 # health check alone.
 #
+# VT_DEMO_LOGIN=1 (yes or 1), as make vt-login sets it, runs kmscon's own
+# login prompt in place of the demo (run-vt.sh --login). Its run ends with the
+# health check, and with the answers of a dev build demo run in that login,
+# if any.
+#
 # VT_DEMO_DRY_RUN=1 picks the VT and prints the run-vt.sh command without
 # running it. For the tests, VT_DEMO_ACTIVE, VT_DEMO_LOGINCTL, VT_DEMO_SUDO
 # (empty: no sudo), VT_DEMO_RUN_VT and VT_DEMO_FEEDBACK replace the sysfs file,
@@ -65,6 +70,17 @@ if [ -n "${VT_DEMO_SHOWCASE:-}" ]; then
 	*) die "AUDIO=$VT_DEMO_SHOWCASE_AUDIO: yes or 1 plays the soundtrack, no or 0 does not" ;;
 	esac
 fi
+login=
+case ${VT_DEMO_LOGIN:-} in
+'') ;;
+yes | 1)
+	login=1
+	[ -z "${VT_DEMO_KIT:-}" ] || die "KIT goes with the demo, not with a login: DEMO_KIT=$VT_DEMO_KIT before demo.sh, once logged in"
+	[ -z "${VT_DEMO_SHOWCASE:-}" ] || die "the showcase goes with make showcase, or by hand once logged in, not with a login"
+	session=(--login)
+	;;
+*) die "VT_DEMO_LOGIN=$VT_DEMO_LOGIN: yes or 1 runs a login prompt" ;;
+esac
 if [ -n "${VT_DEMO_ARGS:-}" ]; then
 	printf '%s' "$VT_DEMO_ARGS" | xargs -r printf '%s\0' >/dev/null ||
 		die "DEMO_ARGS cannot be split into words: $VT_DEMO_ARGS"
@@ -207,7 +223,8 @@ fi
 echo "kmscon log: $log"
 echo
 
-if [ ${#session[@]} -eq 0 ]; then
+# The demo's answers; a login's, when a demo was run in it.
+if [ ${#session[@]} -eq 0 ] || { [ -n "$login" ] && [ -n "$run" ]; }; then
 	[ -z "$run" ] || "$here/feedback.sh" --file "$feedback" --run "$run"
 	echo
 	echo "results: $(readlink -m "$feedback")"

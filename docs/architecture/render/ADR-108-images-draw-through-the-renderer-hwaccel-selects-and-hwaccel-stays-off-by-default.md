@@ -24,7 +24,7 @@ basis:
 agent:
   name: claude
   model: claude-opus-5-5
-status: proposed
+status: accepted
 date: 2026-10-24
 deciders:
   - aaronsb

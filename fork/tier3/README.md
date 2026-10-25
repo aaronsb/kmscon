@@ -93,7 +93,7 @@ mask=0,780,10,800    x0,y0,x1,y1, end-exclusive, left out of the comparison; rep
 
 An absent `max_delta` or `max_pixels` is 0, and a malformed sidecar fails its case. No golden has a sidecar today: the guest config turns blinking off, the prompt is fixed and no screen shows a clock.
 
-Each case gets one of five verdicts:
+Each case gets one of four verdicts:
 
 | Status | Meaning | Gate |
 |---|---|---|
@@ -101,9 +101,8 @@ Each case gets one of five verdicts:
 | `near` | differs, within both limits of the case's sidecar | passes |
 | `fail` | differs beyond the tolerance, or the case could not run | fails |
 | `missing` | no golden yet | fails |
-| `skipped` | not drawn by the variant; no variant skips a case today (above) | passes, and never counts as a pass |
 
-The tier exits non-zero on any `fail` or `missing`. The run page shows a `skipped` case as SKIPPED and leaves it out of the passing count.
+The tier exits non-zero on any `fail` or `missing`.
 
 `make tier3-bless` copies the last run's captures over the goldens. Per ADR-301 a golden or sidecar change lands in its own reviewed commit, never with the code that produced it, and each new golden is looked at before it is committed.
 

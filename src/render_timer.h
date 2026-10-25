@@ -27,7 +27,9 @@
  * Render timer (ADR-103, foot's render-timer option)
  * Counts, for one display, the page flips that complete, the thread CPU time
  * kmscon spends on each frame from preparing it to queuing its flip, and the
- * pixels in each frame's damage rectangles. render_timer_report() closes an
+ * pixels in each frame's damage rectangles, and the redraws a hold of
+ * synchronized output (mode 2026) owed and the holds that reached
+ * sync-timeout (ADR-201). render_timer_report() closes an
  * interval and returns its figures; the terminal calls it once a second, logs
  * the line render_timer_format() writes, and draws the one
  * render_timer_format_osd() writes in a corner of the display.
@@ -67,6 +69,8 @@ struct render_timer_stats {
 	uint64_t skipped_cpu_ns; /* all skipped passes together */
 	uint64_t damage_px_mean; /* per queued frame */
 	uint64_t screen_px;	 /* the display's pixels when the interval closed */
+	unsigned int held;	 /* redraws owed to a hold of mode 2026, not drawn */
+	unsigned int expired;	 /* holds of mode 2026 that reached sync-timeout */
 };
 
 struct render_timer;
@@ -83,6 +87,10 @@ void render_timer_frame_begin(struct render_timer *rt);
 void render_timer_frame_end(struct render_timer *rt, bool queued, uint64_t damage_px);
 /* A page flip completed on the display. */
 void render_timer_flip(struct render_timer *rt);
+/* A redraw was owed to a hold of synchronized output: nothing was drawn. */
+void render_timer_held(struct render_timer *rt);
+/* A hold of synchronized output reached sync-timeout and was ended. */
+void render_timer_expired(struct render_timer *rt);
 
 /*
  * Close the interval and start the next one. Returns true and fills @out
@@ -101,7 +109,8 @@ int render_timer_format(const struct render_timer_stats *st, const char *name, c
 /*
  * The on-screen display's line of @st, NUL-terminated in @buf: frames
  * presented per second, the median CPU time per frame and the mean share of
- * the screen damaged per frame.
+ * the screen damaged per frame, then the held and expired counts when either
+ * is above 0.
  */
 int render_timer_format_osd(const struct render_timer_stats *st, char *buf, size_t size);
 

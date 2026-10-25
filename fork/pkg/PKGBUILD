@@ -14,6 +14,11 @@
 # The libtsm commit compiled in is installed as /usr/share/doc/<pkgname>/libtsm-commit,
 # so tier 3's guest log names the libtsm each run drew with (#38).
 #
+# KMSCON_PROFILE=minimal builds the minimal build instead
+# (scripts/profiles/minimal.ini, ADR-103) under the same package names, for
+# tier 3's potato-minimal variants (make pkg-minimal), depending on the
+# minimal build's libraries alone.
+#
 # fork/pkg/upstream/PKGBUILD sources this recipe to package upstream kmscon
 # under other names for tier 3's comparison; the package functions take the
 # names they install so both recipes share them.
@@ -52,6 +57,10 @@ makedepends=(
   meson
   pango
 )
+_profile=${KMSCON_PROFILE:-}
+if [ "$_profile" = minimal ]; then
+  depends=(bash glibc libdrm libxkbcommon systemd-libs zlib)
+fi
 optdepends=(
   'fontconfig: for freetype font rendering'
   'harfbuzz: for freetype font rendering (cluster shaping)'
@@ -76,17 +85,21 @@ prepare() {
 }
 
 build() {
+  # a profile's machine file carries its options, libtsm's fallback among
+  # them; arch-meson's auto-features would turn its auto ones on
+  local options=(--auto-features enabled -D images=enabled --force-fallback-for=libtsm
+                 -D libtsm:default_library=static)
+  if [ -n "$_profile" ]; then
+    options=(--native-file "kmscon/scripts/profiles/$_profile.ini")
+  fi
   meson setup kmscon build \
     --prefix /usr \
     --libexecdir lib \
     --sbindir bin \
     --buildtype plain \
-    --auto-features enabled \
     -D b_pie=true \
     -D python.bytecompile=1 \
-    -D images=enabled \
-    --force-fallback-for=libtsm \
-    -D libtsm:default_library=static
+    "${options[@]}"
   _libtsm_commit > libtsm-commit
   meson compile -C build
 }

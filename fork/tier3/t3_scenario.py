@@ -10,7 +10,7 @@ import time
 
 import t3_bench
 from t3_common import BASE, GUEST, RUNDIR, rel
-from t3_evaluate import BENCHMARKS, CASES, KEYED, KEYS_AFTER, SCREENS, evaluate
+from t3_evaluate import BENCHMARKS, CASES, IMAGE_SCREENS, KEYED, KEYS_AFTER, SCREENS, evaluate
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
 # Display variants. Each boots its own guest from the base image, with its
@@ -36,6 +36,32 @@ VARIANTS = {
         "renderer": "bbulk",
         "cpus": 1,
         "memory_mb": 512,
+    },
+    # The same machine with the minimal build (ADR-103): unifont, and a PSF
+    # console font. Each needs the minimal package ("pkg", its make target,
+    # whose directory fork/build/<pkg> the run must name), so they run in a
+    # run of their own, make tier3-minimal. Their image screens draw no picture
+    # ("images": False), so the keys those screens take, which act on pictures,
+    # are not sent and their cases are not in the variant's report.
+    "2d-potato-min": {
+        "device": "virtio-vga,xres=1366,yres=768,edid=on",
+        "display": "none",
+        "conf": "kmscon-minimal.conf",
+        "renderer": "bbulk",
+        "cpus": 1,
+        "memory_mb": 512,
+        "pkg": "pkg-minimal",
+        "images": False,
+    },
+    "2d-potato-min-psf": {
+        "device": "virtio-vga,xres=1366,yres=768,edid=on",
+        "display": "none",
+        "conf": "kmscon-minimal-psf.conf",
+        "renderer": "bbulk",
+        "cpus": 1,
+        "memory_mb": 512,
+        "pkg": "pkg-minimal",
+        "images": False,
     },
     "2d-7680x2160": {
         # Each 7680x2160 XRGB buffer is 63 MiB; the console, two kmscon
@@ -90,9 +116,24 @@ def uses_virgl(variant):
     return VARIANTS[variant]["device"].startswith("virtio-vga-gl")
 
 
+def variant_cases(variant):
+    """The cases of `variant`'s report: every case, but for a variant without
+    images the keyed cases of the image screens, whose keys act on pictures."""
+    if VARIANTS[variant].get("images", True):
+        return CASES
+    skipped = {case for screen, case, _ in KEYED if screen in IMAGE_SCREENS}
+    return [c for c in CASES if c not in skipped]
+
+
+def package_target(variant):
+    """The make target whose packages `variant` installs: pkg, or the variant's
+    own, such as pkg-minimal."""
+    return VARIANTS[variant].get("pkg", "pkg")
+
+
 def evaluate_variant(variant, caps, meta, log):
     """The report entries of `variant`'s cases from their captures."""
-    return [evaluate(variant, case, caps.get(case), meta, log) for case in CASES]
+    return [evaluate(variant, case, caps.get(case), meta, log) for case in variant_cases(variant)]
 
 
 def newest_packages(pkgdir, name):
@@ -169,18 +210,77 @@ def kmscon_displays(serial):
                    if "Display " in line and "text renderer [" in line})
 
 
-def bench_figures(vm, caps, conf):
-    """Each drawn benchmark screen's figures (t3_bench.measure), by name."""
+def bench_figures(vm, caps, conf, images=True):
+    """Each drawn benchmark screen's figures (t3_bench.measure), by name. In a
+    variant without images, an image screen has no picture stream to measure
+    (not_offered)."""
     with open(vm.serial, "rb") as f:
         serial = f.read().decode(errors="replace")
     with open(vm.events, "rb") as f:
-        events = f.read().decode(errors="replace").splitlines()
+        events = [e.strip() for e in f.read().decode(errors="replace").splitlines()]
     out = {}
     for name in BENCHMARKS:
         if name in caps:
             line = next((e for e in events if e.startswith("T3-BENCH %s " % name)), None)
-            out[name] = t3_bench.measure(serial, line, conf)
+            if not images and name in IMAGE_SCREENS:
+                out[name] = not_offered(events, name, line)
+            else:
+                out[name] = t3_bench.measure(serial, line, conf)
     return out
+
+
+def not_offered(events, name, window):
+    """The figures of image screen `name` in a variant without images: it
+    must have found images not offered (T3-NO-SIXEL or T3-NO-KITTY, from
+    sixel-common.inc and kitty-common.inc, after the screen before it ended)
+    and sent no picture stream (no T3-BENCH window); either failing is an
+    "error", which fails the case."""
+    seen = []
+    for e in events:
+        if e == "T3-DONE %s" % name:
+            break
+        if e.startswith("T3-DONE "):
+            seen = []
+        elif e in ("T3-NO-SIXEL", "T3-NO-KITTY"):
+            seen.append(e)
+    if window is not None:
+        return {"error": "a build without images measured a picture stream: %r" % window}
+    if not seen:
+        return {"error": "the screen did not report images as not offered"}
+    return {"not_offered": seen[-1]}
+
+
+def resident_kb(vm):
+    """kmscon's resident memory in kB after each screen, by screen: the largest
+    VmRSS of the kmscon processes guest/t3 found (one, on tty2, until the VT
+    switch)."""
+    with open(vm.events, "rb") as f:
+        events = f.read().decode(errors="replace").splitlines()
+    out = {}
+    for e in events:
+        fields = e.split()
+        if len(fields) >= 3 and fields[0] == "T3-RSS":
+            values = [int(v) for v in fields[2:] if v.isdigit()]
+            if values:
+                out[fields[1]] = max(values)
+    return out
+
+
+def kmscon_startup_ms(serial):
+    """Milliseconds from the first kmscon's first log line (its revision) to
+    its "Display ... with backend" line, the display set up and its terminal
+    drawing, by the kernel's timestamps on the console; None without both.
+    The time before kmscon logs (exec and dynamic linking) is not in it."""
+    with open(serial, "rb") as f:
+        text = f.read().decode(errors="replace")
+    first = re.search(r"\[\s*([0-9.]+)\] kmscon\[(\d+)\]: log: kmscon Revision", text)
+    if not first:
+        return None
+    shown = re.search(r"\[\s*([0-9.]+)\] kmscon\[%s\]: terminal: Display .* with backend"
+                      % first.group(2), text)
+    if not shown:
+        return None
+    return round((float(shown.group(1)) - float(first.group(1))) * 1000, 1)
 
 
 def kmscon_cell(serial):
@@ -273,7 +373,7 @@ def run_variant(variant, timing, pkgs, log):
             # has changed from the capture before it: a key that changes
             # nothing fails its case.
             for screen, case, chords in KEYED:
-                if screen != name:
+                if screen != name or case not in variant_cases(variant):
                     continue
                 for chord in chords:
                     vm.keys(*chord)
@@ -281,7 +381,7 @@ def run_variant(variant, timing, pkgs, log):
                 last = wait_stable(vm, path, want=lambda img, prev=last: img.data != prev.data)
                 caps[case] = path
                 phase(case)
-            for chord in KEYS_AFTER.get(name, []):
+            for chord in KEYS_AFTER.get(name, []) if v.get("images", True) else []:
                 vm.keys(*chord)
         # VT switch away and back. vt-switch: logind starts a second kmscon
         # on tty3, which must draw a screen (its login prompt). vt-restore:
@@ -320,7 +420,9 @@ def run_variant(variant, timing, pkgs, log):
     meta = {"packages": [os.path.basename(p) for p in pkgs], "installed": installed,
             "kmscon": displays, "errors": errors, "device": v["device"], "config": conf,
             "cell": kmscon_cell(vm.serial), "cpus": v["cpus"], "memory_mb": v["memory_mb"],
-            "bench": bench_figures(vm, caps, conf)}
+            "bench": bench_figures(vm, caps, conf, v.get("images", True)),
+            "rss_kb": resident_kb(vm),
+            "startup_ms": kmscon_startup_ms(vm.serial)}
     want = "text renderer [%s]" % v["renderer"]
     if not displays or not all(want in d for d in displays):
         caps = {}

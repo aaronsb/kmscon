@@ -80,6 +80,26 @@ tier3: tier3-image ## Tier 3: every variant, or VARIANTS="2d-1280x800 gl-1280x80
 tier3-gl: tier3-image ## Tier 3 on the GL variant (virgl) alone
 	$(T3_RUN) --pkg-target pkg gl-1280x800
 
+# The minimal build (ADR-103) under the same package names, in a directory of
+# its own, for the potato-minimal variants, which run in their own run since
+# every variant of a run installs the same packages.
+T3_MINPKGOUT := fork/build/pkg-minimal
+
+.PHONY: pkg-minimal
+pkg-minimal: image ## Build the minimal build's package (scripts/profiles/minimal.ini) -> fork/build/pkg-minimal
+	mkdir -p $(T3_MINPKGOUT)/work
+	docker run --rm --user $(shell id -u):$(shell id -g) -e HOME=/tmp \
+		-e KMSCON_SRC=/src -e KMSCON_PKGVER=$(T3_PKGVER) -e KMSCON_PROFILE=minimal \
+		-e PKGDEST=/out -e BUILDDIR=/out/work -e SRCDEST=/out/work \
+		-v $(CURDIR):/src:ro $(LIBTSM_MOUNT) -v $(CURDIR)/$(T3_MINPKGOUT):/out \
+		-w /out/work $(IMAGE) \
+		sh -c 'cp /src/fork/pkg/PKGBUILD . && makepkg --nodeps --cleanbuild --force'
+
+.PHONY: tier3-minimal
+tier3-minimal: tier3-image ## Tier 3 on the potato machine with the minimal build: unifont and a PSF font
+	$(T3_RUN) --pkg-target pkg-minimal --pkg-dir $(T3_MINPKGOUT) \
+		$(or $(VARIANTS),2d-potato-min 2d-potato-min-psf)
+
 .PHONY: tier3-run
 tier3-run: ## Tier 3 without rebuilding the package (VARIANTS=, JOBS= as for tier3)
 	$(T3_RUN) $(VARIANTS)

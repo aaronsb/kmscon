@@ -89,6 +89,8 @@ struct display {
 	unsigned int flags;
 	unsigned int width;
 	unsigned int height;
+	/* the mode's refresh rate in mHz, 0: unknown */
+	unsigned int refresh_mhz;
 
 	struct video *video;
 

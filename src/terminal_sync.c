@@ -202,3 +202,75 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
 		return TERMINAL_SYNC_IDLE;
 	return terminal_sync_draw(s, false, lost);
 }
+
+void terminal_coalesce_init(struct terminal_coalesce *c)
+{
+	memset(c, 0, sizeof(*c));
+	c->mid_bytes = TERMINAL_SYNC_COALESCE_BYTES;
+}
+
+void terminal_coalesce_input(struct terminal_coalesce *c, uint64_t start_ns, uint64_t end_ns,
+			     size_t parsed)
+{
+	if (!c->first_ns) {
+		c->first_ns = start_ns;
+		c->before_ns = c->busy_ns;
+	}
+	c->bytes += parsed;
+	if (end_ns > c->busy_ns)
+		c->busy_ns = end_ns;
+}
+
+void terminal_coalesce_drawn(struct terminal_coalesce *c, struct terminal_coalesce_display *d,
+			     uint64_t start_ns, uint64_t end_ns, bool presented)
+{
+	d->due_ns = 0;
+	/* from the draw's start, so presents come a refresh apart, not a refresh and a draw */
+	if (presented)
+		d->presented_ns = start_ns;
+	if (end_ns > c->busy_ns)
+		c->busy_ns = end_ns;
+}
+
+uint64_t terminal_coalesce_decide(const struct terminal_sync *s, const struct terminal_coalesce *c,
+				  struct terminal_coalesce_display *d, bool unparsed,
+				  uint64_t now_ns, uint64_t refresh_ns)
+{
+	uint64_t due, began, before;
+
+	/* a hold decides for itself, and presents its frame end at once */
+	if ((c->bytes < c->mid_bytes && !unparsed) || terminal_sync_holding(s)) {
+		d->due_ns = 0;
+		return 0;
+	}
+	if (refresh_ns < TERMINAL_SYNC_REFRESH_MIN_NS || refresh_ns > TERMINAL_SYNC_REFRESH_MAX_NS)
+		refresh_ns = TERMINAL_SYNC_REFRESH_NS;
+	/* a wait keeps the deadline its first turn set */
+	due = d->due_ns;
+	if (!due) {
+		began = c->first_ns ? c->first_ns : now_ns;
+		before = c->first_ns ? c->before_ns : c->busy_ns;
+		/*
+		 * After an idle spell nothing was late until the output began. A
+		 * draw is not idle: counted from its start, the refresh after a
+		 * draw longer than a refresh would wait out a second one.
+		 */
+		if (began >= before + refresh_ns)
+			due = began + refresh_ns;
+		else
+			due = d->presented_ns + refresh_ns;
+	}
+	d->due_ns = now_ns < due ? due : 0;
+	return d->due_ns;
+}
+
+void terminal_coalesce_turn_end(struct terminal_coalesce *c)
+{
+	c->bytes = 0;
+	c->first_ns = 0;
+}
+
+void terminal_coalesce_end(struct terminal_coalesce_display *d)
+{
+	d->due_ns = 0;
+}

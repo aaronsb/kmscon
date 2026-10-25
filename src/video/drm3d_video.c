@@ -161,6 +161,7 @@ static int display_allocfb(struct display *disp)
 	minfo = d3d->ddrm.current_mode;
 	disp->width = minfo->hdisplay;
 	disp->height = minfo->vdisplay;
+	disp->refresh_mhz = drm_mode_refresh_mhz(minfo);
 
 	log_debug("preparefb display %p to %ux%u", disp, minfo->hdisplay, minfo->vdisplay);
 

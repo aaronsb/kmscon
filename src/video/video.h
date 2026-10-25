@@ -154,6 +154,7 @@ void display_unregister_pageflip(struct display *disp, display_pageflip_cb cb, v
 
 unsigned int display_get_width(struct display *disp);
 unsigned int display_get_height(struct display *disp);
+uint64_t display_get_refresh_ns(struct display *disp);
 int display_get_state(struct display *disp);
 int display_set_dpms(struct display *disp, enum display_dpms state);
 enum display_dpms display_get_dpms(const struct display *disp);

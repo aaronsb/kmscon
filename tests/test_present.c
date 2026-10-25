@@ -633,8 +633,8 @@ struct sim {
 	char rbuf[NREAD];
 	size_t held_off, held_len;
 	bool unparsed, redraw_owed;
-	size_t turn_bytes;	/* parsed since the last turn's end */
-	uint64_t turn_first_ns; /* when the turn's first input call began */
+	struct terminal_coalesce co;
+	struct terminal_coalesce_display cd;
 
 	struct tsm_screen *con;
 	struct tsm_vte *vte;
@@ -642,7 +642,7 @@ struct sim {
 	uint64_t sync_due;
 	struct output o;
 	bool swapping, pending;
-	uint64_t flip_at, coalesce_due, presented_ns, owed_ns, due_ns;
+	uint64_t flip_at, coalesce_due;
 
 	/* the screen as it is once the write in progress is parsed whole */
 	struct tsm_screen *ref_con;
@@ -739,12 +739,12 @@ static void sim_draw(struct sim *s, enum why why, bool mid)
 	uint64_t start = s->t;
 
 	s->pending = false;
-	s->owed_ns = 0;
-	s->due_ns = 0;
 	s->t += s->draw_ns;
-	if (!output_frame(&s->o, s->con, s->vte))
+	if (!output_frame(&s->o, s->con, s->vte)) {
+		terminal_coalesce_drawn(&s->co, &s->cd, start, s->t, false);
 		return;
-	s->presented_ns = start;
+	}
+	terminal_coalesce_drawn(&s->co, &s->cd, start, s->t, true);
 	shown = s->t;
 	if (s->flips) {
 		s->swapping = true;
@@ -815,14 +815,13 @@ static void sim_act(struct sim *s, enum terminal_sync_action action)
 /* pty_input, then the pty's feed: true if the call took all of it */
 static bool sim_input(struct sim *s, const char *u8, size_t len)
 {
+	uint64_t start = s->t;
 	size_t n;
 
 	s->redraw_owed = true;
-	if (!s->turn_bytes)
-		s->turn_first_ns = s->t;
 	n = tsm_vte_input_bounded(s->vte, u8, len);
-	s->turn_bytes += n;
 	s->t += n * PARSE_NS_PER_KB / 1024;
+	terminal_coalesce_input(&s->co, start, s->t, n);
 	s->parsed += n;
 	if (s->parsed == s->total)
 		s->parsed_ns = s->t;
@@ -845,31 +844,20 @@ static bool sim_input(struct sim *s, const char *u8, size_t len)
 /* terminal_turn_end */
 static void sim_turn_end(struct sim *s)
 {
-	bool mid = s->turn_bytes >= coalesce_n || s->unparsed;
-	uint64_t first = s->turn_first_ns, due;
+	bool mid = s->co.bytes >= s->co.mid_bytes || s->unparsed;
 
-	s->turn_bytes = 0;
-	s->turn_first_ns = 0;
-	if (!s->redraw_owed)
-		return;
-	s->redraw_owed = false;
-	if (!kmscon_text_changed(s->o.txt, s->con))
-		return;
-	due = s->coalesce ? terminal_sync_coalesce(&s->sync, mid, s->t, s->presented_ns,
-						   s->owed_ns ? s->owed_ns : first, s->refresh_ns)
-			  : 0;
-	if (!due) {
-		/* coalesce_end */
-		s->owed_ns = 0;
-		s->due_ns = 0;
-		sim_redraw(s, WHY_TURN, mid);
-		s->coalesce_due = s->due_ns;
-		return;
+	if (s->redraw_owed && kmscon_text_changed(s->o.txt, s->con)) {
+		if (!s->coalesce || !terminal_coalesce_decide(&s->sync, &s->co, &s->cd, s->unparsed,
+							      s->t, s->refresh_ns)) {
+			/* coalesce_end */
+			terminal_coalesce_end(&s->cd);
+			sim_redraw(s, WHY_TURN, mid);
+		}
+		/* coalesce_arm */
+		s->coalesce_due = s->cd.due_ns;
 	}
-	if (!s->owed_ns)
-		s->owed_ns = first ? first : s->t;
-	/* coalesce_arm */
-	s->due_ns = s->coalesce_due = due;
+	s->redraw_owed = false;
+	terminal_coalesce_turn_end(&s->co);
 }
 
 static void sim_run(struct sim *s)
@@ -893,9 +881,8 @@ static void sim_run(struct sim *s)
 		}
 		if (s->coalesce_due && s->coalesce_due <= s->t) {
 			s->coalesce_due = 0;
-			if (s->owed_ns && s->due_ns <= s->t) {
-				s->owed_ns = 0;
-				s->due_ns = 0;
+			if (s->cd.due_ns && s->cd.due_ns <= s->t) {
+				terminal_coalesce_end(&s->cd);
 				sim_redraw(s, WHY_TIMER, true);
 			}
 		}
@@ -955,6 +942,8 @@ static void sim_init(struct sim *s, bool coalesce, bool flips)
 	s->refresh_ns = REFRESH_NS;
 	s->draw_ns = DRAW_NS;
 	s->min_mid_gap = UINT64_MAX;
+	terminal_coalesce_init(&s->co);
+	s->co.mid_bytes = coalesce_n;
 	assert(tsm_screen_new(&s->con, NULL, NULL) == 0);
 	assert(tsm_screen_resize(s->con, COLS, ROWS) == 0);
 	assert(tsm_vte_new(&s->vte, s->con, vte_write, NULL, NULL, NULL) == 0);
@@ -1361,10 +1350,13 @@ static void real_writer(int fd, const char *data, const struct write *w, unsigne
 	_exit(0);
 }
 
-static void real_present(struct real *r, size_t parsed, uint64_t *presented)
+static void real_present(struct real *r, size_t parsed, struct terminal_coalesce *co,
+			 struct terminal_coalesce_display *cd)
 {
-	*presented = real_now();
-	real_until(*presented + DRAW_NS);
+	uint64_t start = real_now();
+
+	real_until(start + DRAW_NS);
+	terminal_coalesce_drawn(co, cd, start, real_now(), true);
 	if (r->presents < sizeof(r->at) / sizeof(r->at[0]))
 		r->at[r->presents] = parsed;
 	r->presents++;
@@ -1377,9 +1369,11 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 	struct tsm_screen *con;
 	struct tsm_vte *vte;
 	struct terminal_sync sync;
+	struct terminal_coalesce co;
+	struct terminal_coalesce_display cd = {0};
 	struct termios tio;
 	size_t total, parsed = 0;
-	uint64_t t0, presented = 0, owed = 0, due = 0;
+	uint64_t t0;
 	char *data;
 	int m, sl;
 	pid_t pid;
@@ -1399,6 +1393,8 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 	assert(tsm_screen_resize(con, COLS, ROWS) == 0);
 	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
 	terminal_sync_init(&sync, vte, 200);
+	terminal_coalesce_init(&co);
+	co.mid_bytes = coalesce_n;
 
 	t0 = real_now() + 20 * MS;
 	pid = fork();
@@ -1410,41 +1406,39 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 	close(sl);
 	assert(fcntl(m, F_SETFL, fcntl(m, F_GETFL) | O_NONBLOCK) == 0);
 
-	while (parsed < total || owed) {
+	while (parsed < total || cd.due_ns) {
 		struct pollfd pfd = {m, POLLIN, 0};
 		uint64_t now = real_now();
 		int timeout = 2000;
 		unsigned int num, last = 0, n_reads = 0;
-		size_t turn_bytes = 0;
-		uint64_t first = 0;
 		bool mid;
 
-		if (owed)
-			timeout = due > now ? (int)((due - now + MS - 1) / MS) : 0;
+		if (cd.due_ns)
+			timeout = cd.due_ns > now ? (int)((cd.due_ns - now + MS - 1) / MS) : 0;
 		if (poll(&pfd, 1, timeout) < 0 && errno != EINTR)
 			break;
-		if (owed && real_now() >= due) {
-			owed = 0;
-			real_present(r, parsed, &presented);
+		/* coalesce_timer_event */
+		if (cd.due_ns && real_now() >= cd.due_ns) {
+			terminal_coalesce_end(&cd);
+			real_present(r, parsed, &co, &cd);
 		}
 		for (num = 50; num; num--) {
+			uint64_t start;
 			ssize_t n;
 
-			if (!first)
-				first = real_now();
 			n = read(m, buf, sizeof(buf));
-
 			if (n <= 0)
 				break;
+			start = real_now();
 			assert(tsm_vte_input_bounded(vte, buf, n) == (size_t)n);
+			terminal_coalesce_input(&co, start, real_now(), n);
 			parsed += n;
-			turn_bytes += n;
 			last = n;
 			n_reads++;
 			r->full_reads += n >= NREAD;
 		}
 		if (!n_reads) {
-			if (!owed && parsed < total && poll(&pfd, 1, 0) == 0 &&
+			if (!cd.due_ns && parsed < total && poll(&pfd, 1, 0) == 0 &&
 			    waitpid(pid, NULL, WNOHANG) == pid)
 				break;
 			continue;
@@ -1463,21 +1457,17 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 		r->mid_turns += mid;
 		if (!num)
 			mid ? r->cap_mid++ : r->cap_end++;
-		if (turn_bytes >= coalesce_n)
+		if (co.bytes >= coalesce_n)
 			mid ? r->big_mid++ : r->big_end++;
-		/* terminal_turn_end, with terminal.c's signal */
-		now = real_now();
-		due = coalesce ? terminal_sync_coalesce(&sync, turn_bytes >= coalesce_n, now,
-							presented, owed ? owed : first, REFRESH_NS)
-			       : 0;
-		if (!due) {
-			owed = 0;
-			real_present(r, parsed, &presented);
-		} else if (!owed) {
-			owed = first;
+		/* terminal_turn_end */
+		if (!coalesce ||
+		    !terminal_coalesce_decide(&sync, &co, &cd, false, real_now(), REFRESH_NS)) {
+			terminal_coalesce_end(&cd);
+			real_present(r, parsed, &co, &cd);
 		}
+		terminal_coalesce_turn_end(&co);
 	}
-	r->ns = presented + DRAW_NS - t0;
+	r->ns = cd.presented_ns + DRAW_NS - t0;
 	waitpid(pid, NULL, 0);
 	close(m);
 	assert(parsed == total);

@@ -356,52 +356,105 @@ static void test_cancel(void)
 	term_free(&t);
 }
 
+/* a loop turn whose input calls parsed @bytes from @start_ns, for a tenth of a millisecond */
+static void coalesce_turn(struct terminal_coalesce *c, uint64_t start_ns, size_t bytes)
+{
+	terminal_coalesce_turn_end(c);
+	terminal_coalesce_input(c, start_ns, start_ns + MS / 10, bytes);
+}
+
 /*
  * Coalescing without mode 2026 (ADR-201 step 6): part way through a write,
  * the draw waits until one refresh after the last present, or, when the
  * output began after that, one refresh after it began; output that is not
  * part way through a write, a refresh already past, and a hold, which
- * decides for itself, draw now.
+ * decides for itself, draw now. A wait keeps its deadline until a draw.
  */
 static void test_coalesce(void)
 {
 	const uint64_t refresh = 1000000000ULL / 144;
+	const size_t mid = TERMINAL_SYNC_COALESCE_BYTES;
+	struct terminal_coalesce c;
+	struct terminal_coalesce_display d = {0};
 	struct term t;
 
 	term_init(&t, 20, 4, TIMEOUT_MS);
-	assert(terminal_sync_coalesce(&t.sync, false, 5 * MS, 4 * MS, 0, refresh) == 0);
-	/* output owed since the present: one refresh after it */
-	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, refresh) ==
+	terminal_coalesce_init(&c);
+	assert(c.mid_bytes == mid && !c.bytes && !c.first_ns);
+	terminal_coalesce_drawn(&c, &d, 4 * MS, 5 * MS, true);
+	assert(d.presented_ns == 4 * MS && !d.due_ns);
+
+	/* under the threshold in a turn, with nothing left unparsed: draw now */
+	coalesce_turn(&c, 5 * MS, mid - 1);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 6 * MS, refresh) == 0);
+	assert(!d.due_ns);
+	/* the threshold, or output left unparsed: one refresh after the present */
+	coalesce_turn(&c, 5 * MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 6 * MS, refresh) ==
 	       4 * MS + refresh);
-	assert(terminal_sync_coalesce(&t.sync, true, 6 * MS, 4 * MS, 5 * MS, refresh) ==
+	assert(d.due_ns == 4 * MS + refresh);
+	coalesce_turn(&c, 6 * MS, 1);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, true, 7 * MS, refresh) ==
 	       4 * MS + refresh);
-	assert(terminal_sync_coalesce(&t.sync, true, 4 * MS + refresh, 4 * MS, 5 * MS, refresh) ==
-	       0);
-	/* a write begun after an idle spell: one refresh after the first wait */
-	assert(terminal_sync_coalesce(&t.sync, true, 90 * MS, 4 * MS, 0, refresh) ==
+	/* the write ends: draw now */
+	coalesce_turn(&c, 7 * MS, 1);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 8 * MS, refresh) == 0);
+	assert(!d.due_ns);
+	/* the refresh has passed */
+	coalesce_turn(&c, 4 * MS + refresh - MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 4 * MS + refresh, refresh) == 0);
+
+	/* a write begun after an idle spell: one refresh after it began, kept by later turns */
+	coalesce_turn(&c, 90 * MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 91 * MS, refresh) ==
 	       90 * MS + refresh);
-	assert(terminal_sync_coalesce(&t.sync, true, 91 * MS, 4 * MS, 90 * MS, refresh) ==
+	coalesce_turn(&c, 92 * MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 93 * MS, refresh) ==
 	       90 * MS + refresh);
-	assert(terminal_sync_coalesce(&t.sync, true, 90 * MS + refresh, 4 * MS, 90 * MS, refresh) ==
-	       0);
+	coalesce_turn(&c, 90 * MS + refresh - MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 90 * MS + refresh, refresh) == 0);
+
+	/* a draw ends the wait; one that presented nothing leaves the last present */
+	coalesce_turn(&c, 200 * MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 201 * MS, refresh));
+	terminal_coalesce_drawn(&c, &d, 202 * MS, 203 * MS, false);
+	assert(!d.due_ns && d.presented_ns == 4 * MS);
+	/* as does the timer's end of it */
+	coalesce_turn(&c, 300 * MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 301 * MS, refresh));
+	terminal_coalesce_end(&d);
+	assert(!d.due_ns);
+	/* the turn's end forgets its output */
+	terminal_coalesce_turn_end(&c);
+	assert(!c.bytes && !c.first_ns);
+
 	/* a display that does not report its refresh, or reports 1 or 2000 Hz, is taken as 60 Hz */
-	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, 0) ==
+	terminal_coalesce_drawn(&c, &d, 4 * MS, 5 * MS, true);
+	coalesce_turn(&c, 5 * MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 5 * MS, 0) ==
 	       4 * MS + TERMINAL_SYNC_REFRESH_NS);
-	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, 1000 * 1000 * MS) ==
+	terminal_coalesce_end(&d);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 5 * MS, 1000 * 1000 * MS) ==
 	       4 * MS + TERMINAL_SYNC_REFRESH_NS);
-	assert(terminal_sync_coalesce(&t.sync, true, 4 * MS, 4 * MS, 0, 500 * 1000) ==
+	terminal_coalesce_end(&d);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 5 * MS, 500 * 1000) ==
 	       4 * MS + TERMINAL_SYNC_REFRESH_NS);
 	/* 20 and 1000 Hz stand */
-	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, 50 * MS) == 54 * MS);
-	assert(terminal_sync_coalesce(&t.sync, true, 4 * MS, 4 * MS, 0, MS) == 5 * MS);
+	terminal_coalesce_end(&d);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 5 * MS, 50 * MS) == 54 * MS);
+	terminal_coalesce_end(&d);
+	coalesce_turn(&c, 4 * MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 4 * MS, MS) == 5 * MS);
+	terminal_coalesce_end(&d);
 
 	feed(&t, "\e[?2026habc");
 	assert(terminal_sync_input(&t.sync, 5 * MS, true) == TERMINAL_SYNC_ARM);
-	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, refresh) == 0);
+	coalesce_turn(&c, 5 * MS, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, true, 5 * MS, refresh) == 0);
 	assert(terminal_sync_draw(&t.sync, false, false) == TERMINAL_SYNC_OWED);
 	feed(&t, "\e[?2026l");
 	assert(terminal_sync_input(&t.sync, 6 * MS, true) == TERMINAL_SYNC_PRESENT);
-	assert(terminal_sync_coalesce(&t.sync, true, 6 * MS, 4 * MS, 0, refresh) ==
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, true, 6 * MS, refresh) ==
 	       4 * MS + refresh);
 	term_free(&t);
 }

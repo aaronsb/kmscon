@@ -203,21 +203,62 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
 	return terminal_sync_draw(s, false, lost);
 }
 
-uint64_t terminal_sync_coalesce(const struct terminal_sync *s, bool mid_write, uint64_t now_ns,
-				uint64_t presented_ns, uint64_t owed_ns, uint64_t refresh_ns)
+void terminal_coalesce_init(struct terminal_coalesce *c)
 {
-	uint64_t due;
+	memset(c, 0, sizeof(*c));
+	c->mid_bytes = TERMINAL_SYNC_COALESCE_BYTES;
+}
+
+void terminal_coalesce_input(struct terminal_coalesce *c, uint64_t start_ns, uint64_t end_ns,
+			     size_t parsed)
+{
+	if (!c->first_ns)
+		c->first_ns = start_ns;
+	c->bytes += parsed;
+}
+
+void terminal_coalesce_drawn(struct terminal_coalesce *c, struct terminal_coalesce_display *d,
+			     uint64_t start_ns, uint64_t end_ns, bool presented)
+{
+	d->due_ns = 0;
+	/* from the draw's start, so presents come a refresh apart, not a refresh and a draw */
+	if (presented)
+		d->presented_ns = start_ns;
+}
+
+uint64_t terminal_coalesce_decide(const struct terminal_sync *s, const struct terminal_coalesce *c,
+				  struct terminal_coalesce_display *d, bool unparsed,
+				  uint64_t now_ns, uint64_t refresh_ns)
+{
+	uint64_t due, began;
 
 	/* a hold decides for itself, and presents its frame end at once */
-	if (!mid_write || terminal_sync_holding(s))
+	if ((c->bytes < c->mid_bytes && !unparsed) || terminal_sync_holding(s)) {
+		d->due_ns = 0;
 		return 0;
+	}
 	if (refresh_ns < TERMINAL_SYNC_REFRESH_MIN_NS || refresh_ns > TERMINAL_SYNC_REFRESH_MAX_NS)
 		refresh_ns = TERMINAL_SYNC_REFRESH_NS;
-	if (!owed_ns)
-		owed_ns = now_ns;
-	due = presented_ns + refresh_ns;
-	/* the output began after that refresh: nothing was late until it began */
-	if (due <= owed_ns)
-		due = owed_ns + refresh_ns;
-	return now_ns < due ? due : 0;
+	/* a wait keeps the deadline its first turn set */
+	due = d->due_ns;
+	if (!due) {
+		began = c->first_ns ? c->first_ns : now_ns;
+		due = d->presented_ns + refresh_ns;
+		/* the output began after that refresh: nothing was late until it began */
+		if (due <= began)
+			due = began + refresh_ns;
+	}
+	d->due_ns = now_ns < due ? due : 0;
+	return d->due_ns;
+}
+
+void terminal_coalesce_turn_end(struct terminal_coalesce *c)
+{
+	c->bytes = 0;
+	c->first_ns = 0;
+}
+
+void terminal_coalesce_end(struct terminal_coalesce_display *d)
+{
+	d->due_ns = 0;
 }

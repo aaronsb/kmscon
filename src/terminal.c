@@ -73,14 +73,8 @@ struct screen {
 	bool pending;
 	/* the pending draw is for a display that lost its picture (terminal_sync.h) */
 	bool lost;
-	/*
-	 * while a draw of the child's output waits for its write to end
-	 * (terminal_sync.h): when that output began to be parsed, 0: none
-	 * waits; when the wait ends; and when the draw of the last present began
-	 */
-	uint64_t owed_ns;
-	uint64_t due_ns;
-	uint64_t presented_ns;
+	/* a draw of the child's output waiting for its write to end (terminal_sync.h) */
+	struct terminal_coalesce_display coalesce;
 	bool hw_cursor;
 	bool enabled;
 	bool scaled;
@@ -123,9 +117,8 @@ struct kmscon_terminal {
 	struct ev_timer *sync_timer;
 	/* the pty holds output the last input call left */
 	bool unparsed;
-	/* the child's output parsed this loop turn, and when its first input call began */
-	size_t turn_bytes;
-	uint64_t turn_first_ns;
+	/* the child's output parsed this loop turn, for the waits of its draws */
+	struct terminal_coalesce coalesce;
 	/* ends the earliest wait for a write's end; armed for coalesce_due, 0: disarmed */
 	struct ev_timer *coalesce_timer;
 	uint64_t coalesce_due;
@@ -376,6 +369,7 @@ static void do_redraw_screen(struct screen *scr)
 	struct tsm_screen_attr attr;
 	struct kmscon_text_deco deco;
 	uint64_t start;
+	bool presented;
 	int ret;
 
 	if (!scr->term->awake || !kmscon_session_get_foreground(scr->term->session))
@@ -390,8 +384,6 @@ static void do_redraw_screen(struct screen *scr)
 
 	scr->pending = false;
 	scr->lost = false;
-	scr->owed_ns = 0;
-	scr->due_ns = 0;
 
 	start = clock_ns(CLOCK_MONOTONIC);
 	render_timer_frame_begin(scr->timer);
@@ -405,11 +397,10 @@ static void do_redraw_screen(struct screen *scr)
 	ret = kmscon_text_present(scr->txt);
 	if (ret && ret != -EBUSY)
 		log_warning("cannot swap display [%s] %d", display_name(scr->disp), ret);
-	/* from the draw's start, so presents come a refresh apart, not a refresh and a draw */
-	if (!ret && scr->txt->frame_queued)
-		scr->presented_ns = start;
-	render_timer_frame_end(scr->timer, !ret && scr->txt->frame_queued,
-			       scr->txt->frame_damage_px);
+	presented = !ret && scr->txt->frame_queued;
+	terminal_coalesce_drawn(&scr->term->coalesce, &scr->coalesce, start,
+				clock_ns(CLOCK_MONOTONIC), presented);
+	render_timer_frame_end(scr->timer, presented, scr->txt->frame_damage_px);
 }
 
 /*
@@ -458,8 +449,7 @@ static void redraw_all(struct kmscon_terminal *term)
 /* a display's wait ends: its draw is asked for, and a flip or a hold may defer it */
 static void coalesce_end(struct screen *scr)
 {
-	scr->owed_ns = 0;
-	scr->due_ns = 0;
+	terminal_coalesce_end(&scr->coalesce);
 	redraw_screen(scr, false);
 }
 
@@ -472,8 +462,8 @@ static void coalesce_arm(struct kmscon_terminal *term)
 
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		if (scr->owed_ns && (!due || scr->due_ns < due))
-			due = scr->due_ns;
+		if (scr->coalesce.due_ns && (!due || scr->coalesce.due_ns < due))
+			due = scr->coalesce.due_ns;
 	}
 	now = clock_ns(CLOCK_MONOTONIC);
 	/* armed for a time already past, the timer has fired or will not */
@@ -497,7 +487,7 @@ static void coalesce_arm(struct kmscon_terminal *term)
 	term->coalesce_due = 0;
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		if (scr->owed_ns)
+		if (scr->coalesce.due_ns)
 			coalesce_end(scr);
 	}
 }
@@ -511,7 +501,7 @@ static void coalesce_timer_event(struct ev_timer *timer, uint64_t count, void *d
 	term->coalesce_due = 0;
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		if (scr->owed_ns && scr->due_ns <= now)
+		if (scr->coalesce.due_ns && scr->coalesce.due_ns <= now)
 			coalesce_end(scr);
 	}
 	coalesce_arm(term);
@@ -530,36 +520,23 @@ static void coalesce_timer_event(struct ev_timer *timer, uint64_t count, void *d
 static void terminal_turn_end(struct ev_eloop *eloop, void *unused, void *data)
 {
 	struct kmscon_terminal *term = data;
-	bool mid_write = term->turn_bytes >= TERMINAL_SYNC_COALESCE_BYTES || term->unparsed;
 	struct screen *scr;
-	uint64_t now, due;
 
-	term->turn_bytes = 0;
-	term->turn_first_ns = 0;
-	if (!term->redraw_owed)
-		return;
-	term->redraw_owed = false;
-	if (!term->awake)
-		return;
-
-	dlist_for_each_entry(scr, &term->screens, list)
-	{
-		if (!kmscon_text_changed(scr->txt, term->console))
-			continue;
-		/* read for each display, after the draws of those before it */
-		now = clock_ns(CLOCK_MONOTONIC);
-		due = terminal_sync_coalesce(&term->sync, mid_write, now, scr->presented_ns,
-					     scr->owed_ns ? scr->owed_ns : term->turn_first_ns,
-					     display_get_refresh_ns(scr->disp));
-		if (!due) {
-			coalesce_end(scr);
-			continue;
+	if (term->redraw_owed && term->awake) {
+		dlist_for_each_entry(scr, &term->screens, list)
+		{
+			if (!kmscon_text_changed(scr->txt, term->console))
+				continue;
+			/* the time is read for each display, after the draws of those before it */
+			if (!terminal_coalesce_decide(&term->sync, &term->coalesce, &scr->coalesce,
+						      term->unparsed, clock_ns(CLOCK_MONOTONIC),
+						      display_get_refresh_ns(scr->disp)))
+				coalesce_end(scr);
 		}
-		if (!scr->owed_ns)
-			scr->owed_ns = term->turn_first_ns ? term->turn_first_ns : now;
-		scr->due_ns = due;
+		coalesce_arm(term);
 	}
-	coalesce_arm(term);
+	term->redraw_owed = false;
+	terminal_coalesce_turn_end(&term->coalesce);
 }
 
 static bool has_kms_display(struct kmscon_terminal *term)
@@ -1679,7 +1656,7 @@ static void terminal_close(struct kmscon_terminal *term)
 	kmscon_pty_close(term->pty);
 	term->opened = false;
 	term->unparsed = false;
-	term->turn_bytes = 0;
+	terminal_coalesce_turn_end(&term->coalesce);
 	sync_check(term);
 }
 
@@ -1764,15 +1741,15 @@ void terminal_destroy(struct kmscon_terminal *term)
 static size_t pty_input(struct kmscon_pty *pty, const char *u8, size_t len, void *data)
 {
 	struct kmscon_terminal *term = data;
+	uint64_t start;
 	size_t n;
 
 	if (!len)
 		return 0;
 	term->redraw_owed = true;
-	if (!term->turn_bytes)
-		term->turn_first_ns = clock_ns(CLOCK_MONOTONIC);
+	start = clock_ns(CLOCK_MONOTONIC);
 	n = tsm_vte_input_bounded(term->vte, u8, len);
-	term->turn_bytes += n;
+	terminal_coalesce_input(&term->coalesce, start, clock_ns(CLOCK_MONOTONIC), n);
 	term->unparsed = n < len;
 	sync_check(term);
 	return n;
@@ -1893,6 +1870,7 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 			    term->conf->sync_timeout, TERMINAL_SYNC_MAX_MS);
 
 	/* armed while a draw waits for the end of the child's write */
+	terminal_coalesce_init(&term->coalesce);
 	ret = ev_eloop_new_timer(term->eloop, &term->coalesce_timer, NULL, coalesce_timer_event,
 				 term);
 	if (ret)

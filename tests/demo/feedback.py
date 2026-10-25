@@ -147,7 +147,7 @@ def main():
         check(all(re.search(rf"^# {k}: \S", text, re.M) for k in ("look-for", "wrong-looks-like")),
               f"{name} has look-for and wrong-looks-like lines")
         found = re.findall(r"^# kit: (\S+)$", text, re.M)
-        check(len(found) <= 1 and set(found) <= {"text", "sixel", "kitty"},
+        check(len(found) <= 1 and set(found) <= {"text", "sixel", "kitty", "glyphs"},
               f"{name} names one known kit, or none", repr(found))
         kits.setdefault(found[0] if found else "text", []).append(name[:-3])
     check(kits.get("sixel") == ["80-sixel", "81-sixel-ramps", "82-sixel-article", "83-photos",
@@ -157,6 +157,8 @@ def main():
     check(kits.get("kitty") == ["90-kitty", "91-kitty-photo", "92-kitty-files", "93-kitty-layers"],
           "the kitty kit holds the kitty pages",
           repr(kits.get("kitty")))
+    check(kits.get("glyphs") == ["95-glyph-cjk-scroll", "96-glyph-bmp", "97-glyph-zwj"],
+          "the glyphs kit holds the glyph cache's pages", repr(kits.get("glyphs")))
     check("10-sgr" in kits.get("text", []) and "70-emoji" in kits.get("text", []),
           "the text kit holds the text pages", repr(kits.get("text")))
 
@@ -184,7 +186,7 @@ def main():
     status, names, out = listed({"DEMO_KIT": "all"})
     check(status == 0 and sorted(names) == every, "DEMO_KIT=all lists every page", out)
     status, names, out = listed({"DEMO_KIT": "bogus"})
-    check(status == 2 and "DEMO_KIT=bogus" in out and "text, sixel, kitty or all" in out,
+    check(status == 2 and "DEMO_KIT=bogus" in out and "text, sixel, kitty, glyphs or all" in out,
           "an unknown DEMO_KIT is refused", out)
     status, names, out = listed({}, "sixel", "cjk")
     check(status == 0 and names == ["cjk", "sixel"], "named sections run whatever their kit", out)

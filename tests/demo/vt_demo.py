@@ -167,7 +167,7 @@ def main():
         check("no KIT passes no --kit", p.returncode == 0 and "--kit" not in p.stdout, p.stdout)
         p = c.run(["6"], VT_DEMO_KIT="bogus")
         check("KIT=bogus is refused",
-              p.returncode != 0 and "KIT=bogus: text, sixel, kitty or all" in p.stderr, p.stderr)
+              p.returncode != 0 and "KIT=bogus: text, sixel, kitty, glyphs or all" in p.stderr, p.stderr)
         video = os.path.join(tmp, "kit.mkv")
         open(video, "w").close()
         p = c.run(["6"], VT_DEMO_KIT="sixel", VT_DEMO_SHOWCASE=video)
@@ -368,8 +368,8 @@ def main():
                           (["--showcase-from=2"], "go with --showcase=VIDEO")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
             check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
-        for opts, why in ((["--kit=bogus"], "--kit takes text, sixel, kitty or all"),
-                          (["--kit="], "--kit takes text, sixel, kitty or all"),
+        for opts, why in ((["--kit=bogus"], "--kit takes text, sixel, kitty, glyphs or all"),
+                          (["--kit="], "--kit takes text, sixel, kitty, glyphs or all"),
                           (["--kit=sixel", "--showcase=/v.mkv"], "--kit goes with the demo")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
             check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)

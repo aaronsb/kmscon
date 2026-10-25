@@ -2,7 +2,7 @@
 
 The operator's review pages. The full guide is [docs/fork/demo.md](../../docs/fork/demo.md).
 
-**Visual checks, from the desktop:** `make vt-demo KIT=kitty` (or `KIT=sixel`, `KIT=text`, `KIT=all`). It switches to VT 5 and pages through the kit. There, kitty-files shows EBADF replies by design, because the demo runs outside a login session.
+**Visual checks, from the desktop:** `make vt-demo KIT=kitty` (or `KIT=sixel`, `KIT=text`, `KIT=glyphs`, `KIT=all`). It switches to VT 5 and pages through the kit. There, kitty-files shows EBADF replies by design, because the demo runs outside a login session.
 
 **File media in a real session (kitty-files):**
 

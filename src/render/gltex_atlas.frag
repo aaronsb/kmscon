@@ -35,18 +35,20 @@
  * (colour set), premultiplied and untinted. The decoration sprites are cells
  * of the alpha atlas bound to deco, at the cells decopos.y and decopos.z name
  * (a blank one for none), each tinted with its own colour and repeated in
- * every cell of a wide glyph; decopos.x is the x within the quad's cells,
- * small enough to stay exact under a 16-bit mediump. A frame without the
- * sprites has decorated 0. Upstream samples one alpha atlas and tints it; this
+ * every cell of a wide glyph; decopos.x is the x within the quad's cells. A
+ * frame without the sprites has decorated 0. Upstream samples one alpha atlas and tints it; this
  * departure is recorded in ADR-102's corrections from step 6 (ADR-303).
  *
  * layer (ADR-103): 0 draws the cell whole and opaque. A frame with image
  * placements draws its cells twice, with pictures between: 1 draws only a
  * background that is not the default (bgcol.a 1), 2 only the text layer,
  * premultiplied, for blending over what is under it.
+ *
+ * The atlases are drawn a texel a pixel and sampled GL_NEAREST, so each pixel
+ * must land on its own texel's centre, as far along as the 2048th texel of an
+ * atlas: highp where the GPU has it, as mediump may hold only 11 bits (#197).
+ * The precision line comes before this source (gltex.c, frag_source).
  */
-
-precision mediump float;
 
 uniform sampler2D atlas;
 uniform sampler2D deco;

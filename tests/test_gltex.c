@@ -6,7 +6,9 @@
  * GLES 2 texture rules a real driver enforces (#17). Blinking cells lose their glyph
  * in the hidden phase. Decorations are the real decoration sprites (deco.c),
  * drawn in their own colours, and colour glyphs go to an RGBA atlas drawn
- * untinted (ADR-102 step 6). The GL and display calls are stubs: the test
+ * untinted (ADR-102 step 6). Each pixel of a cell samples its own texel's
+ * centre, GL_NEAREST, at the precision the cell shader asks for (#197). The
+ * GL and display calls are stubs: the test
  * counts the textures gltex creates, keeps the pixels it uploads, records each
  * draw's textures and uniforms, and checks where its glyphs land in them and
  * in the frame. We include the implementation to reach its statics.
@@ -351,9 +353,15 @@ bool gl_has_error(struct gl_shader *shader)
 	return false;
 }
 static unsigned int n_shaders;
+static char cell_frag[16384]; /* the cell shader's fragment source, as it was last given */
 int gl_shader_new(struct gl_shader **out, const char *vert, int vert_len, const char *frag,
 		  int frag_len, char **attr, size_t attr_count)
 {
+	if (!strcmp(attr[attr_count - 1], "decoration")) {
+		assert(frag_len >= 0 && (size_t)frag_len < sizeof(cell_frag));
+		memcpy(cell_frag, frag, frag_len);
+		cell_frag[frag_len] = 0;
+	}
 	*out = (struct gl_shader *)(uintptr_t)++n_shaders;
 	return 0;
 }
@@ -2214,6 +2222,167 @@ static void test_budget_full(void)
 	close_txt(&txt);
 }
 
+/*
+ * The significant bits of a float in fragment source @src, on a GPU that has
+ * highp there (GL_FRAGMENT_PRECISION_HIGH defined, as radeonsi and virgl
+ * have): 24 for highp, fp32; 11 for mediump, the least GLES 2 allows and what
+ * a GPU that runs mediump at half precision gives. The last precision
+ * statement outside an #else branch decides.
+ */
+static int frag_bits(const char *src)
+{
+	const char *p = src, *found = NULL, *skip;
+
+	while ((p = strstr(p, "precision "))) {
+		skip = strstr(src, "#else");
+		if (!skip || p < skip || p > strstr(skip, "#endif"))
+			found = p;
+		p++;
+	}
+	assert(found);
+	found += strlen("precision ");
+	if (!strncmp(found, "highp float", 11))
+		return 24;
+	assert(!strncmp(found, "mediump float", 13));
+	return 11;
+}
+
+/* @v rounded to @bits significant bits, as a GPU float of that precision holds it */
+static float round_bits(float v, int bits)
+{
+	uint32_t u, drop = 24 - bits;
+
+	memcpy(&u, &v, sizeof(u));
+	if (drop)
+		u = (u + (1u << (drop - 1))) & ~((1u << drop) - 1);
+	memcpy(&v, &u, sizeof(v));
+	return v;
+}
+
+/* a varying at the centre of pixel @k of @n between vertices carrying @t1 and @t2 */
+static float varying(float t1, float t2, unsigned int k, unsigned int n, int bits)
+{
+	return round_bits(t1 + (t2 - t1) * ((k + 0.5f) / n), bits);
+}
+
+/*
+ * The texel, of an atlas @size texels long, that the cell shader samples at
+ * @v cells scaled by @advance, in floats of @bits as gltex_atlas.frag
+ * computes it
+ */
+static double texel_at(float v, float advance, unsigned int size, int bits)
+{
+	return (double)round_bits(round_bits(v, bits) * round_bits(advance, bits), bits) * size;
+}
+
+/* @a is within a 64th of a texel of @b */
+static bool on_centre(double a, double b)
+{
+	return a - b < 1.0 / 64 && b - a < 1.0 / 64;
+}
+
+/*
+ * #197: glyphs are drawn a texel a pixel, so each pixel of a cell must sample
+ * its own texel of the atlas, at the texel's centre, whatever the glyph's
+ * place in the atlas, up to the far end of a 2048-texel atlas. The atlases
+ * are sampled GL_NEAREST, and the cell shader computes at a precision that
+ * holds a texel's centre there. Bilinear filtering off the centres thins the
+ * strokes and takes texels from the next glyph in the atlas.
+ *
+ * Every cell of a frame of distinct glyphs, underlined and struck through, is
+ * walked pixel by pixel through the shader's arithmetic, at the precision its
+ * source asks for, for the glyph and both decoration sprites. Run for the
+ * test's 8x16 cell and for tier 3's 10x19.
+ */
+static void check_sampling(unsigned int cw, unsigned int ch)
+{
+	struct kmscon_font font = {.width = cw, .height = ch};
+	struct tsm_frame_cell cell = {
+		.width = 1, .underline = TSM_UNDERLINE_SINGLE, .flags = TSM_FRAME_STRIKE};
+	struct kmscon_text txt;
+	struct gltex *gt;
+	const struct tsm_frame *frame;
+	struct atlas *atlas, *deco;
+	unsigned int i, x, y, slot, far = 0;
+	int bits;
+
+	memset(&txt, 0, sizeof(txt));
+	txt.font = &font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+	bits = frag_bits(cell_frag);
+
+	frame = make_frame(0);
+	image_frame.cols = txt.cols;
+	image_frame.rows = txt.rows;
+	for (i = 0; i < txt.cols * txt.rows; i++) {
+		frame_cells[i] = cell;
+		frame_cells[i].key = 0x100 + i;
+	}
+	frame_cells[0].key = COLOUR_CP; /* an RGBA atlas too */
+	run_frame(&txt, frame, false);
+	assert(n_draws && gt->deco_atlas);
+
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		assert(texs[atlas->tex].filter == GL_NEAREST && texs[atlas->tex].mag == GL_NEAREST);
+		atlas->cache_num = 0; /* counted again below */
+	}
+	for (i = 0; i < n_draws; i++)
+		assert(draws[i].filter == GL_NEAREST && draws[i].mag == GL_NEAREST);
+
+	deco = gt->deco_atlas;
+	for (i = 0; i < gt->quads_num; i++) {
+		const struct gltex_quad *q = &gt->quads[i];
+		unsigned int n = q->texw * cw;
+
+		slot = q->atlas->cache_off + q->atlas->cache_num++;
+		assert(q->atlas->width == 2048);
+		if ((q->texoff + q->texw) * cw > 2048 - 2 * cw)
+			far++;
+		for (x = 0; x < n; x++) {
+			/* the glyph's texel, then each sprite's: its cell, and x within it */
+			float gv = varying(gt->cache_texpos[slot * 12],
+					   gt->cache_texpos[slot * 12 + 4], x, n, bits);
+			float dv = varying(gt->cache_deco[slot * 18], gt->cache_deco[slot * 18 + 6],
+					   x, n, bits);
+			float frac = dv - (int)dv;
+
+			assert(on_centre(
+				texel_at(gv, q->atlas->advance_htex, q->atlas->width, bits),
+				q->texoff * cw + x + 0.5));
+			assert(on_centre(
+				texel_at(q->ulcell + frac, deco->advance_htex, deco->width, bits),
+				q->ulcell * cw + x % cw + 0.5));
+			assert(on_centre(texel_at(q->strikecell + frac, deco->advance_htex,
+						  deco->width, bits),
+					 q->strikecell * cw + x % cw + 0.5));
+		}
+		for (y = 0; y < ch; y++) {
+			float v = varying(0, 1, y, ch, bits);
+
+			assert(on_centre(
+				texel_at(v, q->atlas->advance_vtex, q->atlas->height, bits),
+				y + 0.5));
+			assert(on_centre(texel_at(v, deco->advance_vtex, deco->height, bits),
+					 y + 0.5));
+		}
+	}
+	assert(far > 1);
+
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+}
+
+static void test_atlas_sampling(void)
+{
+	check_sampling(FAKE_CELL_W, FAKE_CELL_H);
+	check_sampling(10, 19);
+}
+
 int main(void)
 {
 	/* gltex draws image placements (ADR-103 steps 3f and 4e), and says so */
@@ -2243,5 +2412,6 @@ int main(void)
 	test_overlay_replaced();
 	test_frame_draws();
 	test_budget_full();
+	test_atlas_sampling();
 	return 0;
 }

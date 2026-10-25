@@ -379,29 +379,40 @@ static void compute_advance_and_offset(struct kmscon_text *txt)
 }
 
 /*
- * The image shader. Its fragment shader asks for highp where the GPU has it:
- * a texture coordinate in a picture thousands of texels wide needs more than
- * mediump's 10 bits. The embedded source has no newlines, which a
- * preprocessor line needs, so the line is put before it here.
+ * Fragment source @src of @len bytes, asking for highp where the GPU has it:
+ * a texture coordinate in a picture thousands of texels wide, or far along a
+ * 2048-texel atlas, needs more than mediump's 10 bits (#197). The precision
+ * line is put before the embedded source here, as the source keeps no
+ * preprocessor line of its own. NULL when out of memory; *@out_len its length.
  */
-static int image_shader_new(struct gltex *gt)
+static char *frag_source(const char *src, int len, int *out_len)
 {
 	static const char head[] = "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
 				   "precision highp float;\n"
 				   "#else\n"
 				   "precision mediump float;\n"
 				   "#endif\n";
-	static char *attr[] = {"position", "texture_position"};
-	int flen = sizeof(head) - 1 + _binary_gltex_image_frag_size;
 	char *frag;
-	int ret;
 
-	frag = malloc(flen);
+	*out_len = sizeof(head) - 1 + len;
+	frag = malloc(*out_len);
+	if (!frag)
+		return NULL;
+	memcpy(frag, head, sizeof(head) - 1);
+	memcpy(frag + sizeof(head) - 1, src, len);
+	return frag;
+}
+
+/* the image shader */
+static int image_shader_new(struct gltex *gt)
+{
+	static char *attr[] = {"position", "texture_position"};
+	char *frag;
+	int ret, flen;
+
+	frag = frag_source(_binary_gltex_image_frag_start, _binary_gltex_image_frag_size, &flen);
 	if (!frag)
 		return -ENOMEM;
-	memcpy(frag, head, sizeof(head) - 1);
-	memcpy(frag + sizeof(head) - 1, _binary_gltex_image_frag_start,
-	       _binary_gltex_image_frag_size);
 	ret = gl_shader_new(&gt->img_shader, _binary_gltex_image_vert_start,
 			    _binary_gltex_image_vert_size, frag, flen, attr, 2);
 	free(frag);
@@ -422,8 +433,8 @@ static size_t gltex_trimmable(struct image_budget_cache *cache);
 static int gltex_set(struct kmscon_text *txt)
 {
 	struct gltex *gt = txt->data;
-	int ret, vlen, flen;
-	const char *vert, *frag;
+	int ret, flen;
+	char *frag;
 	static char *attr[] = {"position", "texture_position", "fgcolor",   "bgcolor",
 			       "ulcolor",  "strikecolor",      "decoration"};
 	GLint s;
@@ -442,13 +453,16 @@ static int gltex_set(struct kmscon_text *txt)
 	if (ret)
 		return ret;
 
-	vert = _binary_gltex_atlas_vert_start;
-	vlen = _binary_gltex_atlas_vert_size;
-	frag = _binary_gltex_atlas_frag_start;
-	flen = _binary_gltex_atlas_frag_size;
+	frag = frag_source(_binary_gltex_atlas_frag_start, _binary_gltex_atlas_frag_size, &flen);
+	if (!frag) {
+		ret = -ENOMEM;
+		goto err_htable;
+	}
 	gl_clear_error();
 
-	ret = gl_shader_new(&gt->shader, vert, vlen, frag, flen, attr, GLTEX_ATTRS);
+	ret = gl_shader_new(&gt->shader, _binary_gltex_atlas_vert_start,
+			    _binary_gltex_atlas_vert_size, frag, flen, attr, GLTEX_ATTRS);
+	free(frag);
 	if (ret)
 		goto err_htable;
 
@@ -595,6 +609,9 @@ static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num, GLenum
 		log_warning("cannot create new OpenGL texture: %d", err);
 		goto err_free;
 	}
+	/* glyphs and sprites are drawn a texel a pixel: sampled as they are (#197) */
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
 	newsize = gt->max_tex_size / FONT_WIDTH(txt);
 	if (newsize < 1)

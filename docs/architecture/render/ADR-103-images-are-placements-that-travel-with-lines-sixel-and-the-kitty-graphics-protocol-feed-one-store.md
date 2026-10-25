@@ -271,6 +271,14 @@ considered:
     said: "The option names stay images and zlib, as drafted"
     via: "session 2026-10-25, PR #205; the operator picked the option, relayed by the team lead"
     paraphrase: true
+  - operator: aaronsb
+    said: "The minimal build drops D-Bus; the keyboard layout comes from --xkb-layout or kmscon.conf, chosen over keeping D-Bus"
+    via: "session 2026-10-25, PR #205; the operator picked the option, relayed by the team lead"
+    paraphrase: true
+  - operator: aaronsb
+    said: "The profiles live in scripts/profiles/, as drafted"
+    via: "session 2026-10-25, PR #205; the operator picked the option, relayed by the team lead"
+    paraphrase: true
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -1093,7 +1101,7 @@ kmscon's original purpose is a userspace replacement for the kernel's console. T
 meson setup builddir --native-file scripts/profiles/minimal.ini
 ```
 
-`scripts/profiles/minimal.ini` sets, under `[project options]`: `images`, `video_drm3d`, `renderer_gltex`, `font_freetype`, `font_pango` and `dbus` to `'disabled'`; `zlib`, `font_psf` and `font_unifont` to `'enabled'`, so that a host without zlib fails the configure rather than building a different console; and leaves `video_drm2d` and `video_fbdev` at `auto` and `libseat` at its default, `disabled`. A `-D` given after it overrides any of them. The file is the profile's one definition: the README's line, `make test PROFILE=minimal` in the dev container (`fork/profiles.mk`, building into `fork/build-minimal`) and the CI job all read it. A machine file's `[project options]` is meson's own way of carrying a set of options; upstream has no build profiles, so this is no departure under ADR-303.
+`scripts/profiles/minimal.ini` sets, under `[project options]`: `images`, `video_drm3d`, `renderer_gltex`, `font_freetype`, `font_pango` and `dbus` to `'disabled'`; `zlib`, `font_psf` and `font_unifont` to `'enabled'`, so that a host without zlib fails the configure rather than building a different console; and leaves `video_drm2d` and `video_fbdev` at `auto` and `libseat` at its default, `disabled`. A `-D` given after it overrides any of them. The file is the profile's one definition: the README's line, `make test PROFILE=minimal` in the dev container (`fork/profiles.mk`, building into `fork/build-minimal`) and the CI job all read it. The operator kept the profiles in `scripts/profiles/`, and the names `images` and `zlib`, as drafted (considered entries above). A machine file's `[project options]` is meson's own way of carrying a set of options; upstream has no build profiles, so this is no departure under ADR-303.
 
 **unifont stays.** kmscon tries the font backends in the order freetype, pango, unifont, psf, 8x16 (`default_backend` in `font.c`), and the default `font-name` is `monospace`, which mod-psf cannot open as a file. With freetype and pango out, unifont is what draws when no PSF font is configured, and it covers the Basic Multilingual Plane; without it, that console falls to the built-in 8x16 font, U+0000 to U+00FF. Its cost is zlib, which way 1 keeps, and a 1.9 MB module.
 
@@ -1105,7 +1113,7 @@ meson setup builddir --native-file scripts/profiles/minimal.ini
 | `mod-psf.so` | libz, libc |
 | `mod-unifont.so` | libz, libc |
 
-- A default build's `kmscon` names libsystemd and libdbus-1 as well: sd-login for the image helper's identity, and D-Bus for reading the keyboard layout from systemd-localed (`src/misc/dbus.c`, `org.freedesktop.locale1`). The minimal build leaves both out, through `images` and `dbus`.
+- A default build's `kmscon` names libsystemd and libdbus-1 as well: sd-login for the image helper's identity, and D-Bus for reading the keyboard layout from systemd-localed (`src/misc/dbus.c`, `org.freedesktop.locale1`). The minimal build leaves both out, through `images` and `dbus`; the keyboard layout then comes from `--xkb-layout` or kmscon.conf, which the operator chose over keeping D-Bus (considered entry above).
 - libtsm is built in as a static subproject, its only optional dependency xkbcommon; libxkbcommon, libudev, libdrm and libz name only libc (and libgcc_s for libudev) on the session's Arch host. Nothing in the closure is image-, GL- or font-shaping-related, and zlib appears in the two font modules only.
 - Not installed: `kmscon-image-helper`, `kmscon-image.conf`, `mod-drm3d.so`, `mod-gltex.so`, `mod-freetype.so`, `mod-pango.so`.
 

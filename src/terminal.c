@@ -392,7 +392,10 @@ static void do_redraw_screen(struct screen *scr)
 	tsm_vte_get_def_attr(scr->term->vte, &attr);
 	/*
 	 * a renderer that cannot draw this frame, as gltex until its set
-	 * succeeds, draws and swaps nothing: the display keeps its picture
+	 * succeeds, or a text whose kmscon_text_set() failed until the set
+	 * kmscon_text_prepare() tries again succeeds (#206), draws and swaps
+	 * nothing: the display keeps its picture, and the frame is no draw for
+	 * coalescing (terminal_coalesce_drawn())
 	 */
 	if (kmscon_text_prepare(scr->txt, &attr, scr->term->blinking)) {
 		render_timer_frame_end(scr->timer, false, 0);
@@ -1497,6 +1500,9 @@ static void hw_cursor_show(struct kmscon_terminal *term, int32_t x, int32_t y)
 	{
 		int32_t sx, sy;
 
+		/* a text whose set failed has no font to place the pointer by (#211) */
+		if (!scr->txt->font)
+			continue;
 		if (scr->hw_cursor) {
 			if (!scr->scaled)
 				text_show_cursor(scr->txt, x, y);

@@ -92,7 +92,9 @@ On the VT, the wired and USB outputs need the user in the `audio` group: the ope
 
 ## Act 7's player
 
-`kitty.py` plays act 7, written from the kitty graphics protocol's published spec alone (ADR-300's clean room). ffmpeg decodes the clip at a copy's own pixel size (`KITTY_WIDTH=0`; a number decodes it that many pixels wide and the terminal scales it up), and each frame is transmitted once (`a=t`) and placed up to three times (`a=p`, placement ids 1 to 3) in each copy's cells (`c` and `r`). A copy moves by being placed again under its placement id at another column, which the spec says replaces the placement "without flicker"; nothing is sent again. Re-sending an image id deletes that image's placements, so the frames alternate between two ids: a frame is transmitted to one, its copies placed, and the other deleted with `d=I`, which frees its data, all in one write. The terminal never holds more than two of the player's images, and a copy is never without its picture. Copy 1 is in front (`z=3`) and each later copy behind the one before, so a copy sliding out from behind another starts hidden. Every command carries `q=2`, so nothing comes back into the show's input, and every placement `C=1`, so the cursor stays put. `KITTY_SHM`, which act 7's mpv read, is gone; `KITTY_TRANSPORT=shm` takes its place.
+`kitty.py` plays act 7, written from the kitty graphics protocol's published spec alone (ADR-300's clean room). ffmpeg decodes the clip at a copy's own pixel size, at most 2160 pixels tall (`KITTY_WIDTH=0`), and each frame is transmitted once (`a=t`) and placed up to three times (`a=p`, placement ids 1 to 3) in each copy's cells (`c` and `r`). A copy moves by being placed again under its placement id at another column, which the spec says replaces the placement "without flicker"; nothing is sent again. Re-sending an image id deletes that image's placements, so the frames alternate between two ids: a frame is transmitted to one, its copies placed, and the other deleted with `d=I`, which frees its data, all in one write. The terminal never holds more than two of the player's images, and a copy is never without its picture. Copy 1 is in front (`z=3`) and each later copy behind the one before, so a copy sliding out from behind another starts hidden. Every command carries `q=2`, so nothing comes back into the show's input, and every placement `C=1`, so the cursor stays put. `KITTY_SHM`, which act 7's mpv read, is gone; `KITTY_TRANSPORT=shm` takes its place.
+
+The player encodes each frame in its own loop, so a copy's own size costs it more on a slow machine: a greyscale PNG took 4.6 ms at 2236x1672 and 14.5 ms at 4400x3300 in a synthetic run. A number in `KITTY_WIDTH` limits that: frames decode that many pixels wide, and the terminal scales them up, which costs the terminal instead (bbulk's scaling on kmscon, below). The frame size is set when act 7 starts; after a resize the terminal scales the frames until the next act.
 
 The transports (`KITTY_TRANSPORT`):
 
@@ -101,7 +103,7 @@ The transports (`KITTY_TRANSPORT`):
 | `raw` | `f=24` RGB inline, base64 in 4096-byte chunks | 693,600 |
 | `zlib` | the same compressed with zlib (`o=z`); Bad Apple is nearly all black and white | about 31,400 |
 | `png` (default) | `f=100`, an 8-bit greyscale PNG made by the player: the spec has no grey raw format (`f` is 24, 32 or 100), and PNG is its compact form | about 17,800 |
-| `shm` | `f=24` RGB in a POSIX shared memory object (`t=s`), a new name starting with `/` each frame, which the terminal reads and unlinks | about 260 |
+| `shm` | `f=24` RGB in a POSIX shared memory object (`t=s`), a new name starting with `/` each frame, which the terminal reads and unlinks; while the frames it has yet to read hold 64 MB (five at 8K, at least two), the player drops frames rather than send more | about 260 |
 
 `shm` is asked for first with an `a=q` of one pixel and falls back to `png` when the terminal refuses it: kmscon reads no shared memory for a session outside logind, which is how `run-vt.sh` starts the show ([docs/image-helper.md](../../docs/image-helper.md)). On kmscon, `zlib`, `png` and `shm` go through its image helper, with the pty paused for each frame; `raw` stays in libtsm.
 
@@ -124,9 +126,9 @@ Act 7 itself, in kitty at 1280x800 with the scroller, the moves and the soundtra
 
 ### Where kmscon's time goes
 
-Asked after the operator saw act 7 under `mpv --vo=kitty` run smoother in desktop kitty, full screen on the same display with a smaller font, than on kmscon at 7680x2160. The same tier 3 VM at 7680x2160 (19x38 cell, 404x56 cells; the video rows 404x44), 8 s each, kmscon's CPU per frame split into composition (the render timer's CPU per presented frame, bbulk's scaling and blending) and the rest (pty read, parsing, base64, conversion to the store's premultiplied ARGB, placements); the image helper runs in its own process, on another core, and is counted apart:
+Asked after the operator saw act 7 under `mpv --vo=kitty` run smoother in desktop kitty, full screen on the same display with a smaller font, than on kmscon at 7680x2160. The same tier 3 VM at 7680x2160 (19x38 cell, 404x56 cells; the video rows 404x44), 8 s each, kmscon's CPU per frame sent split into composition (the render timer's CPU over the window, bbulk's scaling and blending) and the rest (pty read, parsing, base64, conversion to the store's premultiplied ARGB, placements); the image helper runs in its own process, on another core, and is counted apart:
 
-| Stream (pixels a frame) | Frames a second sent / presented | Composition | The rest | Helper | kmscon's CPU |
+| Stream (pixels a frame) | Frames a second sent / presented | Composition, per frame sent | The rest, per frame sent | Helper, per frame sent | kmscon's CPU |
 |---|---|---|---|---|---|
 | player, `png` 480x360, 1 copy (scaled to 2229x1672) | 29.3 / 29.4 | 22.5 ms | 0.6 ms | 0.5 ms | 68% |
 | player, `png` 480x360, 3 copies | 29.7 / 28.1 | 24.9 ms | 0.7 ms | 0.7 ms | 76% |

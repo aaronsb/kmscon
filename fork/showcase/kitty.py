@@ -56,7 +56,8 @@ QUERY_ID = 7500             # the transport probe's a=q
 CHUNK = 4096                # the spec's largest chunk of base64
 COPIES = 3
 TICK = 1 / 60               # how often a moving copy is placed again
-SHM_KEEP = 64               # shm names remembered for the cleanup; older ones are unlinked
+SHM_BUDGET = 64 << 20       # bytes of shm frames the terminal may have yet to read
+MAX_HEIGHT = 2160           # --width 0 decodes no taller; the terminal scales past it
 ST = ESC + "\\"
 
 
@@ -117,11 +118,26 @@ class Encoder:
         name = self.shm_write(frame)
         return apc(f"{keys},f=24,s={self.w},v={self.h},t=s,S={len(frame)}", b64(name.encode()))
 
+    def ready(self):
+        """Whether another frame may be sent: for shm, while the objects
+        the terminal has yet to read (and unlink) hold less than
+        SHM_BUDGET, and at least two frames, so /dev/shm stays bounded when
+        the terminal falls behind or stops reading; the player drops the
+        frame otherwise. Other transports wait on the pty instead."""
+        if self.transport != "shm":
+            return True
+        self.names = [n for n in self.names if os.path.exists("/dev/shm" + n)]
+        return len(self.names) < self.keep
+
+    @property
+    def keep(self):
+        return max(2, SHM_BUDGET // max(1, self.frame_bytes))
+
     def shm_write(self, data):
         """A new object holding data, under the next free name: one a
-        crashed run of a reused pid left is skipped. The name SHM_KEEP
-        objects back is unlinked, read or not (about two seconds of video,
-        far longer than a terminal takes to read one)."""
+        crashed run of a reused pid left is skipped. Past keep objects
+        unread, the oldest is unlinked, so /dev/shm stays bounded even for
+        a caller that does not ask ready()."""
         while True:
             self.serial += 1
             name = f"{self.prefix}{self.serial}"
@@ -135,7 +151,7 @@ class Encoder:
         finally:
             os.close(fd)
         self.names.append(name)
-        if len(self.names) > SHM_KEEP:
+        if len(self.names) > self.keep:
             unlink_shm(self.names.pop(0))
         return name
 
@@ -427,6 +443,9 @@ class Player:
         self.finished = False
 
     def show(self, frame, t):
+        if not self.enc.ready():
+            self.stats.dropped += 1
+            return
         n = self.stats.frames
         image_id = IMAGE_IDS[n % 2]
         t0 = time.monotonic()
@@ -560,10 +579,12 @@ def cmd_kitty(a):
         cols, rows = geom()[:2]
         return Layout(cols, rows - a.banner_rows, a.cell_w, a.cell_h, aspect, a.gap)
 
-    # Width 0: a copy's own pixel height, so the terminal shows the frame
-    # at its size and scales nothing (a resize later scales it).
+    # Width 0: a copy's own pixel height, at most MAX_HEIGHT, so the
+    # terminal shows the frame at its size and scales nothing. The size is
+    # fixed for the act: after a resize the terminal scales the frames.
     lay = layout()
-    h = max(2, lay.r * a.cell_h // 2 * 2) if a.width <= 0 else max(2, round(a.width / aspect / 2) * 2)
+    h = (max(2, min(lay.r * a.cell_h, MAX_HEIGHT) // 2 * 2) if a.width <= 0
+         else max(2, round(a.width / aspect / 2) * 2))
     w = max(2, round(h * aspect)) if a.width <= 0 else a.width
     enc = Encoder(transport, w, h, a.level)
 

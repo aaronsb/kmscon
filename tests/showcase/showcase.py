@@ -586,19 +586,38 @@ def kitty_checks(root):
                   shm_ok and len(set(names)) == len(names), repr(names[:3]))
             check("shm: objects the terminal did not read are removed",
                   not any(os.path.exists("/dev/shm" + base64.b64decode(n).decode()) for n in names))
-    # Frames no terminal reads: never more than SHM_KEEP objects, none after.
-    enc = kitty.Encoder("shm", 4, 4)
-    most = 0
-    for n in range(kitty.SHM_KEEP + 40):
-        enc.transmit(kitty.IMAGE_IDS[0], b"\0" * enc.frame_bytes)
-        most = max(most, sum(os.path.exists("/dev/shm" + nm) for nm in
-                             [f"{enc.prefix}{k}" for k in range(1, enc.serial + 1)]))
-    enc.close()
-    left = sum(os.path.exists(f"/dev/shm{enc.prefix}{k}") for k in range(1, enc.serial + 1))
-    check(f"shm: unread objects past {kitty.SHM_KEEP} are unlinked, and none outlive the player",
-          most == kitty.SHM_KEEP and left == 0, f"most {most}, left {left}")
-    for k in range(1, enc.serial + 1):  # what a failing run left
-        kitty.unlink_shm(f"{enc.prefix}{k}")
+    # Frames no terminal reads: /dev/shm holds at most SHM_BUDGET of them
+    # (here ten frames' worth). The player stops sending until the terminal
+    # reads one, the encoder alone unlinks the oldest past it, and none
+    # outlive the player.
+    budget, kitty.SHM_BUDGET = kitty.SHM_BUDGET, 10 * 4 * 4 * 3
+    try:
+        enc = kitty.Encoder("shm", 4, 4)
+        player = kitty.Player(enc, lay, kitty.Choreography(copies=1), 30, 0, write=lambda s: None,
+                              clock=kitty.Clock(now=lambda: 0.0))
+        for n in range(25):
+            player.show(b"\0" * enc.frame_bytes, 0.0)
+
+        def unread():
+            return sum(os.path.exists(f"/dev/shm{enc.prefix}{k}") for k in range(1, enc.serial + 1))
+        held, sent = unread(), player.stats.frames
+        kitty.unlink_shm(f"{enc.prefix}1")  # the terminal reads the oldest
+        player.show(b"\0" * enc.frame_bytes, 0.0)
+        check("shm: unread frames stop at the budget, the rest dropped, and one read lets the next through",
+              enc.keep == 10 and held == 10 and sent == 10 and player.stats.dropped == 15
+              and player.stats.frames == 11, f"held {held}, sent {sent}, {player.stats.line('shm')}")
+        most = 0
+        for n in range(25):
+            enc.transmit(kitty.IMAGE_IDS[0], b"\0" * enc.frame_bytes)
+            most = max(most, unread())
+        enc.close()
+        left = unread()
+        check("shm: the encoder alone unlinks the oldest past the budget, and none outlive the player",
+              most == enc.keep and left == 0, f"most {most}, left {left}")
+        for k in range(1, enc.serial + 1):  # what a failing run left
+            kitty.unlink_shm(f"{enc.prefix}{k}")
+    finally:
+        kitty.SHM_BUDGET = budget
     stale = f"/dev/shm/kmscon-showcase-{os.getpid()}-1"
     open(stale, "wb").close()
     enc = kitty.Encoder("shm", 4, 4)
@@ -726,10 +745,16 @@ def kitty_checks(root):
         # scroller: three copies 23 rows tall.
         st, got, _ = fx_kitty("--seconds", "0.2", "--transport", "raw", "--width", "0", "--banner-rows", "4",
                               "--cell-w", "10", "--cell-h", "20", "--copies", "3", COLUMNS="100", LINES="40")
-        lay = kitty.Layout(100, 36, 10, 20, 1444 / 1080)
-        want = f"s={round(lay.r * 20 * 1444 / 1080)},v={lay.r * 20}".encode()
+        want = b"s=294,v=220"  # 11 rows of 20 pixels, 1444:1080 across
         check(f"fx.py kitty --width 0 sends frames of a copy's own size ({want.decode()})",
               os.waitstatus_to_exitcode(st) == 0 and want in got, repr(re.findall(rb"s=\d+,v=\d+", got)[:1]))
+        # A copy taller than MAX_HEIGHT: the frames stop there, and the
+        # terminal scales them the rest of the way.
+        st, got, _ = fx_kitty("--seconds", "0.1", "--transport", "raw", "--width", "0", "--banner-rows", "0",
+                              "--cell-w", "10", "--cell-h", "20", "--copies", "1", COLUMNS="1000", LINES="200")
+        check("fx.py kitty --width 0 decodes no taller than MAX_HEIGHT (2160)",
+              os.waitstatus_to_exitcode(st) == 0 and b"s=2888,v=2160" in got,
+              repr(re.findall(rb"s=\d+,v=\d+", got)[:1]))
         # No rows above the scroller: nothing is placed over it.
         st, got, _ = fx_kitty("--seconds", "0.2", "--transport", "png", "--banner-rows", "12", COLUMNS="100",
                               LINES="12")

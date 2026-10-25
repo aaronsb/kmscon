@@ -110,7 +110,7 @@ cue() {
 : "${BANNER_FPS:=40}"            #   frames a second; it moves one column a frame
 : "${BANNER_SECONDS:=0}"         #   --banner-only runs this long (0: until q)
 : "${KITTY_TRANSPORT:=png}"      #   how each frame travels: raw, zlib, png or shm (fork/showcase/kitty.py)
-: "${KITTY_WIDTH:=0}"            #   frames are decoded this many pixels wide (0: a copy's own size, nothing to scale)
+: "${KITTY_WIDTH:=0}"            #   frames are decoded this many pixels wide (0: a copy's own size, at most 2160 tall); a number limits the player's work on a slow machine
 : "${ACT7_REPORT:=}"             #   a file to append the player's frame rate to
 : "${PLACEHOLDER_SECONDS:=6}"    # a placeholder (act 5 or 7) stays this long
 

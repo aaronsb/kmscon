@@ -18,6 +18,7 @@ import os
 import pty
 import re
 import select
+import signal
 import socket
 import struct
 import subprocess
@@ -697,11 +698,12 @@ def kitty_checks(root):
             os.chmod(os.path.join(stubs, name), 0o755)
         report = os.path.join(tmp, "report")
 
-        def fx_kitty(*args, answer=None, keys=b"", pace=0.0, timeout=10, **env):
+        def fx_kitty(*args, answer=None, keys=b"", pace=0.0, timeout=10, kill=None, **env):
             """Runs fx.py kitty on a pty and returns its status, its output
             and its pid. answer is written back once the output holds an
             a=q; keys are typed at once; with pace, the output is read 4 KB
-            at a time that many seconds apart, a terminal falling behind."""
+            at a time that many seconds apart, a terminal falling behind;
+            kill is a signal sent once a second has passed."""
             pid, fd = pty.fork()
             if pid == 0:
                 os.environ["PATH"] = stubs + ":" + os.environ["PATH"]
@@ -712,8 +714,12 @@ def kitty_checks(root):
                 time.sleep(0.3)
                 os.write(fd, keys)
             got = b""
-            end = time.monotonic() + timeout
+            start = time.monotonic()
+            end = start + timeout
             while time.monotonic() < end:
+                if kill and time.monotonic() - start > 1:
+                    os.kill(pid, kill)
+                    kill = None
                 r, _, _ = select.select([fd], [], [], max(0, end - time.monotonic()))
                 try:
                     d = os.read(fd, 4096 if pace else 65536) if r else b""
@@ -773,6 +779,19 @@ def kitty_checks(root):
         check("shm taken by the probe: frames go by t=s, and no object outlives the player",
               os.waitstatus_to_exitcode(st) == 0 and got.count(b"t=s") > 3 and not left, f"{left} {got[:200]!r}")
 
+        # SIGTERM and SIGHUP: the player stops through its cleanup, its
+        # images deleted and its shared memory unlinked, as on Ctrl-C.
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            st, got, pid = fx_kitty("--seconds", "20", "--transport", "shm", "--width", "64", kill=sig,
+                                    answer=b"\x1b_Gi=7500;OK\x1b\\\x1b[?62;4c")
+            left = [n for n in os.listdir("/dev/shm") if n.startswith(f"kmscon-showcase-{pid}-")]
+            for n in left:
+                os.unlink("/dev/shm/" + n)
+            check(f"{sig.name} ends fx.py kitty through its cleanup: images deleted, no shared memory left",
+                  os.waitstatus_to_exitcode(st) == 128 + sig and not left
+                  and got.rstrip().endswith(b"a=d,d=I,i=7502,q=2;\x1b\\"),
+                  f"status {st}, {len(left)} objects left, {got[-80:]!r}")
+
         # q while the terminal is behind: read slowly, the player never
         # catches up to sleep, yet q ends it at once (status 10).
         start = time.monotonic()
@@ -788,6 +807,30 @@ def kitty_checks(root):
         check("fx.py kitty says on stderr when it falls back from mpv's clock",
               os.waitstatus_to_exitcode(st) == 0 and b"kitty player: mpv's IPC socket" in got
               and "clock=wall" in open(report).read(), repr(got[-300:]))
+
+    # EPOCHREALTIME takes the locale's decimal mark: the time act 7 hands
+    # the player must read as a number anyway. Once with the variable set to
+    # a comma (bash drops its special meaning when it is unset), and once
+    # under a comma-decimal locale where one is installed.
+    script = os.path.join(root, "fork/showcase/bad-apple.sh")
+    code = 'source "$1"; audio=1; BAD_APPLE=x; mpv() { :; }; {} audio_start 46 60; echo "$audio_started"'
+    p = subprocess.run(["bash", "-c", code.replace("{}", "unset EPOCHREALTIME; EPOCHREALTIME=1792895934,861204;"),
+                        "sh", script], capture_output=True, text=True, timeout=30)
+    check("act 7's soundtrack start reads 1792895934.861204 from a comma-decimal EPOCHREALTIME",
+          p.stdout.strip() == "1792895934.861204", p.stdout + p.stderr)
+    locales = subprocess.run(["locale", "-a"], capture_output=True, text=True).stdout.split()
+    comma = next((l for l in locales if l.lower().startswith(("de_de.utf", "fr_fr.utf", "nl_nl.utf"))), None)
+    if comma:
+        p = subprocess.run(["bash", "-c", code.replace("{}", ""), "sh", script], capture_output=True, text=True,
+                           timeout=30, env=dict(os.environ, LC_ALL=comma))
+        try:
+            ok = float(p.stdout.strip()) > 0 and "," not in p.stdout
+        except ValueError:
+            ok = False
+        check(f"under {comma}, act 7 hands the player a soundtrack start with a point", ok, p.stdout + p.stderr)
+    else:
+        print("skip  no comma-decimal locale installed (de_DE, fr_FR or nl_NL) for the live check")
+
 
 if __name__ == "__main__":
     sys.exit(main())

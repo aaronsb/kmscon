@@ -479,7 +479,9 @@ audio_start() {
 	[ "$audio" = 1 ] || return 0
 	local length=(--length="$2")
 	[ "$2" != 0 ] || length=()
-	audio_started=$EPOCHREALTIME
+	# EPOCHREALTIME takes the locale's decimal mark (1792895934,861204 under
+	# de_DE); the player reads a point.
+	audio_started=${EPOCHREALTIME/[!0-9]/.}
 	mpv --no-config --really-quiet --no-input-terminal --no-video --start="$1" "${length[@]}" \
 		"${audio_opts[@]}" "${@:3}" -- "$BAD_APPLE" </dev/null >/dev/null 2>&1 &
 	audio_pid=$!

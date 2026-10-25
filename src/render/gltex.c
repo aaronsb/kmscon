@@ -214,10 +214,11 @@ struct gltex_pic {
 #endif
 
 /*
- * The hard stop: the four pools together never take a strip past this
- * (pool_grow()), and a glyph past it is drawn blank. Correct operation stays
- * under it; the cache's section says why. -DGLTEX_CACHE_HARD_BYTES=...
- * changes it.
+ * The hard stop, per display: a gltex's four pools together never take a
+ * strip past this (pool_grow()), and a glyph past it is drawn blank. Correct
+ * operation, in a monospace font's cells, reaches it only in cells over 1024
+ * pixels high, and never passes it; the cache's section says why.
+ * -DGLTEX_CACHE_HARD_BYTES=... changes it.
  */
 #ifndef GLTEX_CACHE_HARD_BYTES
 #define GLTEX_CACHE_HARD_BYTES (2 * GLTEX_CACHE_MAX_BYTES)
@@ -855,17 +856,31 @@ static void argb_to_rgba(struct kmscon_glyph *glyph)
  * without one of the strips the last frame drew nothing from, the least
  * recently drawn of them goes, with its glyphs (pool_give_back()). A pool
  * grows past full only when one frame draws more glyphs of its kind than it
- * holds, so it holds at most its bound or one screen of its kind, whichever
- * is more. At 7680x2160 a screen of colour glyphs is at most 127 MiB of
- * texture (16.6 million pixels, 4 bytes each, a cell height padded to a power
- * of two at most doubles it) and of masks 32 MiB, about 5% more for a strip's
- * unused width, so the four pools hold at most 2 * 134 + 2 * 64 = 396 MiB,
- * whatever the font, under the hard stop of twice the ceiling, 512 MiB. The
- * hard stop bounds the cache should a bug or a pattern of writes get past
- * that: a glyph a strip past it would need is drawn blank, its cell keeping
- * its background and decorations, and a line is logged. A gltex draws one
- * display, so these bounds are a display's; a session in the background
- * holds no glyphs (gltex_release()).
+ * holds, so it holds at most its bound, which its last strip can pass by less
+ * than a strip, or one screen of its kind, whichever is more.
+ *
+ * At 7680x2160 a screen of colour glyphs is about 127 MiB of texture (16.6
+ * million pixels, 4 bytes each, a cell height padded to a power of two at
+ * most doubles it) and of masks 32 MiB, plus what a strip leaves unused at
+ * its end. A monospace font's cells are no wider than they are high; in
+ * such cells up to 256 pixels high, which covers every size zoom reaches (it
+ * stops past font size 150), the four pools hold at most 396 MiB (computed
+ * for every such cell, in both orientations: 392 at most). Larger cells
+ * leave more of a strip unused: in 520x1030 cells a strip of 2048x2048
+ * texels holds three, so a screen of colour glyphs takes 10 strips, 160 MiB,
+ * one cell wide and 14, 224 MiB, two wide, and the four pools hold up to
+ * 512 MiB. Only cells over 1024 pixels high, a configured font size of about
+ * 750, take the cache to the hard stop in correct operation, and none past
+ * it.
+ *
+ * The hard stop, twice the ceiling, 512 MiB, bounds the cache should a bug or
+ * a pattern of writes get past that: a glyph a strip past it would need is
+ * drawn blank, its cell keeping its background and decorations, and a line is
+ * logged. A gltex draws one display, so these bounds, the hard stop's too, are
+ * a display's; the operator chose a stop per display over one for the whole
+ * process (ADR-102). A session in the background holds no glyphs
+ * (gltex_release()), unless its GL context could not be made current when it
+ * left; its cache then stays until the next release or unset.
  *
  * As the list is in the order the glyphs were last drawn, a glyph this frame
  * draws at the back means the whole pool is on this frame. A cluster's key

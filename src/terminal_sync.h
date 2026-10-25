@@ -55,6 +55,11 @@
 
 /* the longest an expiry waits for read output to be parsed, unless sync-timeout is longer */
 #define TERMINAL_SYNC_WAIT_NS (1000ULL * 1000 * 1000)
+/*
+ * The longest sync-timeout: a program that stops inside a frame freezes the
+ * console's output for that long, and ADR-201 rejects a hold without a bound.
+ */
+#define TERMINAL_SYNC_MAX_MS 10000
 
 struct terminal_sync {
 	struct tsm_vte *vte;
@@ -74,18 +79,22 @@ enum terminal_sync_action {
 	TERMINAL_SYNC_EXPIRED, /* the timeout ended the hold: as PRESENT */
 };
 
-/* how a display answers a redraw request */
+/* how a display answers a redraw request, or a completed flip */
 enum terminal_sync_draw {
 	TERMINAL_SYNC_DRAW, /* draw now */
 	TERMINAL_SYNC_FLIP, /* draw when the flip in flight completes */
 	TERMINAL_SYNC_OWED, /* a hold is in force: draw at its end */
+	TERMINAL_SYNC_IDLE, /* a completed flip with no draw pending: nothing to do */
 };
 
 /*
  * Offers mode 2026 on @vte when @timeout_ms is above 0; at 0 DECRQM answers
- * 4 (permanently reset) and nothing is ever held.
+ * 4 (permanently reset) and nothing is ever held. A timeout above
+ * TERMINAL_SYNC_MAX_MS is cut to it. Returns the timeout in force, in ms, so
+ * the terminal can say when it was cut.
  */
-void terminal_sync_init(struct terminal_sync *s, struct tsm_vte *vte, unsigned int timeout_ms);
+unsigned int terminal_sync_init(struct terminal_sync *s, struct tsm_vte *vte,
+				unsigned int timeout_ms);
 
 /*
  * The vte took input or was reset, at @now_ns. @unparsed: the pty still
@@ -98,6 +107,19 @@ enum terminal_sync_action terminal_sync_input(struct terminal_sync *s, uint64_t 
 enum terminal_sync_action terminal_sync_timer(struct terminal_sync *s, uint64_t now_ns,
 					      bool unparsed);
 
+/*
+ * The terminal cannot run the hold's timer: the hold ends through libtsm now,
+ * so nothing is held without a timer. Returns PRESENT when a hold ended,
+ * NONE otherwise.
+ */
+enum terminal_sync_action terminal_sync_cancel(struct terminal_sync *s);
+
+/*
+ * The relative time to arm the timer for, from @now_ns to the hold's
+ * deadline; 1 once the deadline has passed, since 0 disarms a timer.
+ */
+uint64_t terminal_sync_arm_ns(const struct terminal_sync *s, uint64_t now_ns);
+
 /* A hold is in force: present nothing unless the display lost its picture. */
 bool terminal_sync_holding(const struct terminal_sync *s);
 
@@ -106,5 +128,13 @@ bool terminal_sync_holding(const struct terminal_sync *s);
  * the display no longer shows the last presented picture.
  */
 enum terminal_sync_draw terminal_sync_draw(const struct terminal_sync *s, bool swapping, bool lost);
+
+/*
+ * A flip completed on a display. @pending: a draw was deferred to it, and
+ * @lost as above for that draw. Returns DRAW, OWED when a hold has begun
+ * since the draw was deferred, or IDLE when none was.
+ */
+enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, bool pending,
+					      bool lost);
 
 #endif /* KMSCON_TERMINAL_SYNC_H */

@@ -403,6 +403,8 @@ static void redraw_screen(struct screen *scr, bool lost)
 	case TERMINAL_SYNC_OWED:
 		render_timer_held(scr->timer);
 		break;
+	case TERMINAL_SYNC_IDLE:
+		break;
 	}
 }
 
@@ -533,15 +535,21 @@ static void display_pageflip(void *unused, void *unused2, void *data)
 
 	if (scr->term->awake)
 		render_timer_flip(scr->timer);
-	if (!scr->pending)
-		return;
-	/* a hold begun since the draw was deferred waits for its own end */
-	if (scr->enabled &&
-	    terminal_sync_draw(&scr->term->sync, false, scr->lost) == TERMINAL_SYNC_OWED) {
+	/*
+	 * A hold begun since the draw was deferred waits for its own end; a
+	 * disabled screen's pending clear is drawn as for a lost picture.
+	 */
+	switch (terminal_sync_flipped(&scr->term->sync, scr->pending, scr->lost || !scr->enabled)) {
+	case TERMINAL_SYNC_DRAW:
+	case TERMINAL_SYNC_FLIP:
+		do_redraw_screen(scr);
+		break;
+	case TERMINAL_SYNC_OWED:
 		render_timer_held(scr->timer);
-		return;
+		break;
+	case TERMINAL_SYNC_IDLE:
+		break;
 	}
-	do_redraw_screen(scr);
 }
 
 static void blink_event(struct ev_timer *timer, uint64_t count, void *data)
@@ -583,23 +591,24 @@ static const struct render_timer_clock render_timer_clock = {
  * timer for the hold's deadline, or disarm it and present at once. A display
  * with a flip in flight presents when the flip completes.
  */
-static void sync_act(struct kmscon_terminal *term, enum terminal_sync_action action)
+static bool sync_act(struct kmscon_terminal *term, enum terminal_sync_action action)
 {
 	struct itimerspec spec = {0};
 	struct screen *scr;
-	uint64_t now, ns;
+	uint64_t ns;
 
 	switch (action) {
 	case TERMINAL_SYNC_NONE:
-		return;
+		return false;
 	case TERMINAL_SYNC_ARM:
-		/* 0 would disarm the timer: a deadline already passed fires at once */
-		now = clock_ns(CLOCK_MONOTONIC);
-		ns = term->sync.deadline_ns > now ? term->sync.deadline_ns - now : 1;
+		ns = terminal_sync_arm_ns(&term->sync, clock_ns(CLOCK_MONOTONIC));
 		spec.it_value.tv_sec = ns / 1000000000ULL;
 		spec.it_value.tv_nsec = ns % 1000000000ULL;
-		ev_timer_update(term->sync_timer, &spec);
-		return;
+		if (!ev_timer_update(term->sync_timer, &spec))
+			return false;
+		/* no hold without its timer */
+		log_warning("cannot arm the timer of a synchronized frame; presenting it as it is");
+		return sync_act(term, terminal_sync_cancel(&term->sync));
 	case TERMINAL_SYNC_EXPIRED:
 		log_debug("sync-timeout ended a synchronized frame; presenting it as it is");
 		dlist_for_each_entry(scr, &term->screens, list) render_timer_expired(scr->timer);
@@ -607,14 +616,16 @@ static void sync_act(struct kmscon_terminal *term, enum terminal_sync_action act
 	case TERMINAL_SYNC_PRESENT:
 		ev_timer_update(term->sync_timer, NULL);
 		redraw_all(term);
-		return;
+		return true;
 	}
+	return false;
 }
 
-/* the vte took input or was reset outside the pty's feed */
-static void sync_check(struct kmscon_terminal *term)
+/* the vte took input or was reset outside the pty's feed; true if it presented */
+static bool sync_check(struct kmscon_terminal *term)
 {
-	sync_act(term, terminal_sync_input(&term->sync, clock_ns(CLOCK_MONOTONIC), term->unparsed));
+	return sync_act(
+		term, terminal_sync_input(&term->sync, clock_ns(CLOCK_MONOTONIC), term->unparsed));
 }
 
 static void sync_timer_event(struct ev_timer *timer, uint64_t count, void *data)
@@ -673,10 +684,9 @@ static void asciinema_write(const char *u8, size_t len, void *data)
 	if (!term->opened || !term->awake || !kmscon_session_get_foreground(term->session))
 		return;
 
-	if (terminal_image_input(&term->image, u8, len)) {
-		sync_check(term);
+	/* a frame end has presented already */
+	if (terminal_image_input(&term->image, u8, len) && !sync_check(term))
 		redraw_all(term);
-	}
 }
 
 static void asciinema_start(struct kmscon_terminal *term)
@@ -1770,7 +1780,11 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 	ret = ev_eloop_new_timer(term->eloop, &term->sync_timer, NULL, sync_timer_event, term);
 	if (ret)
 		goto err_turn;
-	terminal_sync_init(&term->sync, term->vte, term->conf->sync_timeout);
+	if (terminal_sync_init(&term->sync, term->vte, term->conf->sync_timeout) !=
+	    term->conf->sync_timeout)
+		log_warning("sync-timeout=%u is above the limit; holding a synchronized frame for "
+			    "%u ms at most",
+			    term->conf->sync_timeout, TERMINAL_SYNC_MAX_MS);
 
 	ret = input_register_key_cb(term->input, input_event, term);
 	if (ret)

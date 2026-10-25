@@ -4,8 +4,11 @@
  *
  * The first tests drive the rules one step at a time: the offer and DECRQM,
  * a frame end, the timeout and its wait for unparsed output, the resets that
- * end a hold, a stale timer, a flip in flight, and a display that lost its
- * picture. The last runs a schedule the way terminal.c does: a program's
+ * end a hold, a stale timer, a flip in flight, a display that lost its
+ * picture, the timer's arm time, a hold whose timer cannot be armed, and the
+ * limit on sync-timeout. The last runs a schedule the way terminal.c does,
+ * through the same calls (terminal_sync_draw for a redraw request,
+ * terminal_sync_flipped at a flip, terminal_sync_arm_ns to arm): a program's
  * output bracketed in mode 2026, fed through tsm_vte_input_bounded in reads
  * of random sizes, a redraw at the end of every loop turn, flips that take a
  * random number of turns, one frame that stalls past the timeout, and
@@ -305,10 +308,67 @@ static void test_flip_and_lost(void)
 	assert(terminal_sync_draw(&t.sync, true, false) == TERMINAL_SYNC_FLIP);
 	assert(terminal_sync_draw(&t.sync, false, false) == TERMINAL_SYNC_DRAW);
 
+	assert(terminal_sync_flipped(&t.sync, true, false) == TERMINAL_SYNC_DRAW);
+	assert(terminal_sync_flipped(&t.sync, false, false) == TERMINAL_SYNC_IDLE);
+
 	/* a new hold begins before the flip completes: the flip draws nothing */
 	feed(&t, "\e[?2026h");
 	terminal_sync_input(&t.sync, 2 * MS, false);
-	assert(terminal_sync_draw(&t.sync, false, false) == TERMINAL_SYNC_OWED);
+	assert(terminal_sync_flipped(&t.sync, true, false) == TERMINAL_SYNC_OWED);
+	assert(terminal_sync_flipped(&t.sync, false, false) == TERMINAL_SYNC_IDLE);
+	/* unless the draw it was deferred for is a lost picture's */
+	assert(terminal_sync_flipped(&t.sync, true, true) == TERMINAL_SYNC_DRAW);
+	term_free(&t);
+}
+
+/* the timer's relative arm time; 1 once the deadline has passed */
+static void test_arm_ns(void)
+{
+	struct term t;
+
+	term_init(&t, 20, 4, TIMEOUT_MS);
+	feed(&t, "\e[?2026h");
+	assert(terminal_sync_input(&t.sync, 30 * MS, false) == TERMINAL_SYNC_ARM);
+	assert(terminal_sync_arm_ns(&t.sync, 30 * MS) == TIMEOUT_MS * MS);
+	assert(terminal_sync_arm_ns(&t.sync, 100 * MS) == (TIMEOUT_MS - 70) * MS);
+	assert(terminal_sync_arm_ns(&t.sync, (30 + TIMEOUT_MS) * MS) == 1);
+	assert(terminal_sync_arm_ns(&t.sync, 900 * MS) == 1);
+	term_free(&t);
+}
+
+/* a hold whose timer cannot run ends at once, through libtsm */
+static void test_cancel(void)
+{
+	struct term t;
+
+	term_init(&t, 20, 4, TIMEOUT_MS);
+	assert(terminal_sync_cancel(&t.sync) == TERMINAL_SYNC_NONE);
+	feed(&t, "\e[?2026habc");
+	assert(terminal_sync_input(&t.sync, 0, false) == TERMINAL_SYNC_ARM);
+	assert(terminal_sync_cancel(&t.sync) == TERMINAL_SYNC_PRESENT);
+	assert(!terminal_sync_holding(&t.sync));
+	assert(!strcmp(decrqm(&t), "\e[?2026;2$y"));
+	/* nothing is left: no second present, no expiry */
+	assert(terminal_sync_input(&t.sync, MS, false) == TERMINAL_SYNC_NONE);
+	assert(terminal_sync_timer(&t.sync, TIMEOUT_MS * MS, false) == TERMINAL_SYNC_NONE);
+	assert(terminal_sync_cancel(&t.sync) == TERMINAL_SYNC_NONE);
+	term_free(&t);
+}
+
+/* sync-timeout is cut to TERMINAL_SYNC_MAX_MS; 0 and values under it stand */
+static void test_timeout_limit(void)
+{
+	struct term t;
+
+	term_init(&t, 20, 4, 0);
+	assert(terminal_sync_init(&t.sync, t.vte, 50000) == TERMINAL_SYNC_MAX_MS);
+	feed(&t, "\e[?2026h");
+	assert(terminal_sync_input(&t.sync, 0, false) == TERMINAL_SYNC_ARM);
+	assert(t.sync.deadline_ns == TERMINAL_SYNC_MAX_MS * MS);
+	assert(terminal_sync_init(&t.sync, t.vte, TERMINAL_SYNC_MAX_MS) == TERMINAL_SYNC_MAX_MS);
+	assert(terminal_sync_init(&t.sync, t.vte, TIMEOUT_MS) == TIMEOUT_MS);
+	assert(terminal_sync_init(&t.sync, t.vte, 0) == 0);
+	assert(!strcmp(decrqm(&t), "\e[?2026;4$y"));
 	term_free(&t);
 }
 
@@ -396,6 +456,7 @@ static void redraw(struct model *m, bool lost)
 		m->pending_lost |= lost;
 		break;
 	case TERMINAL_SYNC_OWED:
+	case TERMINAL_SYNC_IDLE:
 		break;
 	}
 }
@@ -403,8 +464,7 @@ static void redraw(struct model *m, bool lost)
 static void flip(struct model *m)
 {
 	m->swapping = false;
-	if (m->pending &&
-	    terminal_sync_draw(&m->t.sync, false, m->pending_lost) == TERMINAL_SYNC_DRAW)
+	if (terminal_sync_flipped(&m->t.sync, m->pending, m->pending_lost) == TERMINAL_SYNC_DRAW)
 		present(m, m->pending_lost);
 }
 
@@ -415,7 +475,7 @@ static void act(struct model *m, enum terminal_sync_action a, bool from_input)
 		break;
 	case TERMINAL_SYNC_ARM:
 		m->armed = true;
-		m->timer_at = m->t.sync.deadline_ns;
+		m->timer_at = m->now + terminal_sync_arm_ns(&m->t.sync, m->now);
 		if (from_input)
 			m->expired_live = false;
 		break;
@@ -546,6 +606,9 @@ int main(void)
 	test_resets();
 	test_parse_through();
 	test_flip_and_lost();
+	test_arm_ns();
+	test_cancel();
+	test_timeout_limit();
 	test_schedule();
 	printf("test_terminal_sync: ok\n");
 	return 0;

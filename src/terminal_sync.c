@@ -28,13 +28,17 @@
 
 #ifdef TSM_VTE_SYNC
 
-void terminal_sync_init(struct terminal_sync *s, struct tsm_vte *vte, unsigned int timeout_ms)
+unsigned int terminal_sync_init(struct terminal_sync *s, struct tsm_vte *vte,
+				unsigned int timeout_ms)
 {
+	if (timeout_ms > TERMINAL_SYNC_MAX_MS)
+		timeout_ms = TERMINAL_SYNC_MAX_MS;
 	memset(s, 0, sizeof(*s));
 	s->vte = vte;
 	s->timeout_ns = (uint64_t)timeout_ms * 1000 * 1000;
 	tsm_vte_set_sync(vte, timeout_ms > 0);
 	s->frames = tsm_vte_get_sync_frames(vte);
+	return timeout_ms;
 }
 
 static bool mode_set(const struct terminal_sync *s)
@@ -128,6 +132,17 @@ enum terminal_sync_action terminal_sync_timer(struct terminal_sync *s, uint64_t 
 	return expire(s);
 }
 
+enum terminal_sync_action terminal_sync_cancel(struct terminal_sync *s)
+{
+	if (!s->held)
+		return TERMINAL_SYNC_NONE;
+	tsm_vte_end_sync(s->vte);
+	s->frames = tsm_vte_get_sync_frames(s->vte);
+	s->held = false;
+	s->waiting = false;
+	return TERMINAL_SYNC_PRESENT;
+}
+
 bool terminal_sync_holding(const struct terminal_sync *s)
 {
 	/* no hold without its timer, and none past its end, whoever ended it */
@@ -136,10 +151,12 @@ bool terminal_sync_holding(const struct terminal_sync *s)
 
 #else /* !TSM_VTE_SYNC: a libtsm without mode 2026 holds nothing */
 
-void terminal_sync_init(struct terminal_sync *s, struct tsm_vte *vte, unsigned int timeout_ms)
+unsigned int terminal_sync_init(struct terminal_sync *s, struct tsm_vte *vte,
+				unsigned int timeout_ms)
 {
 	memset(s, 0, sizeof(*s));
 	s->vte = vte;
+	return 0;
 }
 
 enum terminal_sync_action terminal_sync_input(struct terminal_sync *s, uint64_t now_ns,
@@ -154,6 +171,11 @@ enum terminal_sync_action terminal_sync_timer(struct terminal_sync *s, uint64_t 
 	return TERMINAL_SYNC_NONE;
 }
 
+enum terminal_sync_action terminal_sync_cancel(struct terminal_sync *s)
+{
+	return TERMINAL_SYNC_NONE;
+}
+
 bool terminal_sync_holding(const struct terminal_sync *s)
 {
 	return false;
@@ -161,9 +183,22 @@ bool terminal_sync_holding(const struct terminal_sync *s)
 
 #endif /* TSM_VTE_SYNC */
 
+uint64_t terminal_sync_arm_ns(const struct terminal_sync *s, uint64_t now_ns)
+{
+	return s->deadline_ns > now_ns ? s->deadline_ns - now_ns : 1;
+}
+
 enum terminal_sync_draw terminal_sync_draw(const struct terminal_sync *s, bool swapping, bool lost)
 {
 	if (!lost && terminal_sync_holding(s))
 		return TERMINAL_SYNC_OWED;
 	return swapping ? TERMINAL_SYNC_FLIP : TERMINAL_SYNC_DRAW;
+}
+
+enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, bool pending,
+					      bool lost)
+{
+	if (!pending)
+		return TERMINAL_SYNC_IDLE;
+	return terminal_sync_draw(s, false, lost);
 }

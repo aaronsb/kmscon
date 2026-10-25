@@ -18,24 +18,6 @@ font_deps = declare_dependency(
 )
 
 #
-# Unifont Generator
-# This generates the unifont sources from raw hex-encoded font data.
-#
-genunifont = executable(
-    'genunifont',
-    'genunifont.c',
-    dependencies: [zlib_deps_native],
-    native: true,
-)
-
-unifont_bin = custom_target(
-    'unifont-bin',
-    input: ['font_unifont_data.hex'],
-    output: ['font_unifont_data'],
-    command: [genunifont, '@OUTPUT@', '@INPUT@'],
-)
-
-#
 # Fonts Modules
 #
 if enable_font_psf
@@ -53,6 +35,28 @@ if enable_font_psf
 endif
 
 if enable_font_unifont
+    #
+    # Unifont Generator
+    # This generates the unifont sources from raw hex-encoded font data.
+    # Built only for mod-unifont, so a build without it does not look zlib up
+    # for the build machine (ADR-103, The zlib-free variant).
+    #
+    zlib_deps_native = dependency('zlib', native: true)
+
+    genunifont = executable(
+        'genunifont',
+        'genunifont.c',
+        dependencies: [zlib_deps_native],
+        native: true,
+    )
+
+    unifont_bin = custom_target(
+        'unifont-bin',
+        input: ['font_unifont_data.hex'],
+        output: ['font_unifont_data'],
+        command: [genunifont, '@OUTPUT@', '@INPUT@'],
+    )
+
     mod_unifont = shared_module(
         'mod-unifont',
         [

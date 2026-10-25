@@ -1500,6 +1500,9 @@ static void hw_cursor_show(struct kmscon_terminal *term, int32_t x, int32_t y)
 	{
 		int32_t sx, sy;
 
+		/* a text whose set failed has no font to place the pointer by (#211) */
+		if (!scr->txt->font)
+			continue;
 		if (scr->hw_cursor) {
 			if (!scr->scaled)
 				text_show_cursor(scr->txt, x, y);

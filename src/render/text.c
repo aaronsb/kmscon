@@ -332,13 +332,22 @@ void kmscon_text_unset(struct kmscon_text *txt)
  * the number of columns/rows of the console that it can display on the screen.
  * But in case of multi-screen setup the actual size of the terminal might be
  * smaller, so call this function to set the current terminal size.
+ * A text whose set failed only records the size: the renderer has no font to
+ * compute with, and the set tried again puts the size back (set_again()).
  */
 void kmscon_text_resize(struct kmscon_text *txt, unsigned int cols, unsigned int rows)
 {
-	if (!txt || !cols || cols > txt->max_cols || !rows || rows > txt->max_rows)
+	if (!txt || !cols || !rows)
 		return;
-	if (txt->ops->resize)
-		txt->ops->resize(txt, cols, rows);
+	if (!txt->font) {
+		txt->cols = cols;
+		txt->rows = rows;
+	} else {
+		if (cols > txt->max_cols || rows > txt->max_rows)
+			return;
+		if (txt->ops->resize)
+			txt->ops->resize(txt, cols, rows);
+	}
 	kmscon_text_redraw_all(txt);
 }
 
@@ -412,14 +421,22 @@ enum Orientation kmscon_text_get_orientation(struct kmscon_text *txt)
  *   - OR_UPSIDE_DOWN
  *   - OR_LEFT
  *
+ * A text whose set failed only records the orientation: the renderer has no
+ * font to compute with, and the set tried again (set_again()) sets it up in
+ * this orientation.
+ *
  * Returns: 0 on success, negative error code on failure.
  */
 int kmscon_text_rotate(struct kmscon_text *txt, enum Orientation orientation)
 {
 	kmscon_text_redraw_all(txt);
-	if (txt->ops->rotate)
-		return txt->ops->rotate(txt, orientation);
-	return 0;
+	if (!txt->ops->rotate)
+		return 0;
+	if (!txt->font) {
+		txt->orientation = orientation;
+		return 0;
+	}
+	return txt->ops->rotate(txt, orientation);
 }
 
 /**
@@ -614,8 +631,8 @@ int kmscon_text_set_osd(struct kmscon_text *txt, const char *text)
  * @txt, whose last set failed, tries it again with the font it was given, at
  * most once in KMSCON_TEXT_SET_RETRY_NS, and says once that it keeps trying.
  * A set, failed or not, can give the text its largest size in cells, so the
- * size the terminal gave it since is put back. gltex retries its own set the
- * same way.
+ * size the terminal gave it since is put back, as gltex_prepare() does when
+ * it tries its own set again (which it does every frame).
  */
 static void set_again(struct kmscon_text *txt)
 {

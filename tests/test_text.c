@@ -197,13 +197,18 @@ static void test_two_displays(void)
 
 /*
  * A renderer whose next @fail_sets sets fail after giving the text its
- * largest size, as gltex_set() does, and that keeps the size it is given
+ * largest size, as gltex_set() does, and that keeps the size it is given;
+ * its resize and its rotation read the font's cell width, as bbulk_resize()
+ * and gltex_rotate()'s set do, so neither may run on a text with no font.
+ * @set_orientation: the orientation its last set was given.
  */
 static int fail_sets;
 static int failing_set_calls;
+static enum Orientation set_orientation;
 static int failing_set(struct kmscon_text *txt)
 {
 	failing_set_calls++;
+	set_orientation = txt->orientation;
 	txt->max_cols = COLS;
 	txt->max_rows = ROWS;
 	txt->cols = COLS;
@@ -216,14 +221,22 @@ static int failing_set(struct kmscon_text *txt)
 }
 static void keep_size(struct kmscon_text *txt, unsigned int cols, unsigned int rows)
 {
+	assert(txt->font && FONT_WIDTH(txt));
 	txt->cols = cols;
 	txt->rows = rows;
+}
+static int failing_rotate(struct kmscon_text *txt, enum Orientation orientation)
+{
+	assert(txt->font && FONT_WIDTH(txt));
+	txt->orientation = orientation;
+	return failing_set(txt);
 }
 
 static struct kmscon_text_ops failing_ops = {
 	.name = "failingtest",
 	.set = failing_set,
 	.resize = keep_size,
+	.rotate = failing_rotate,
 	.draw = record_draw,
 };
 
@@ -231,13 +244,15 @@ static struct kmscon_text_ops failing_ops = {
  * A set that fails leaves a text that draws nothing (#206): its frames try
  * the set again with the font it was given, not within a second of the last
  * try, until one succeeds; that frame draws every cell at the size the
- * terminal gave it since. An unset, or another set, gives the retry up, and
- * the text holds no reference to the font it no longer tries.
+ * terminal gave it since, in the orientation given since. A resize or a
+ * rotation meanwhile only records what it was given: the renderer has no font
+ * to compute with. An unset, or another set, gives the retry up, and the text
+ * holds no reference to the font it no longer tries.
  */
 static void test_set_again(void)
 {
 	struct kmscon_text txt;
-	struct kmscon_font font = {0}, other = {0};
+	struct kmscon_font font = {.width = 8}, other = {.width = 8};
 	struct tsm_screen_attr attr = {0};
 	struct tsm_screen *con;
 
@@ -254,6 +269,8 @@ static void test_set_again(void)
 	assert(kmscon_text_set(&txt, &font) == -EIO);
 	assert(!txt.font && failing_set_calls == 1);
 	kmscon_text_resize(&txt, COLS - 2, ROWS - 1);
+	assert(kmscon_text_rotate(&txt, OR_RIGHT) == 0);
+	assert(failing_set_calls == 1 && txt.orientation == OR_RIGHT);
 
 	/* within a second of the failure: no frame, no try */
 	fake_now_ns += KMSCON_TEXT_SET_RETRY_NS - 1;
@@ -272,7 +289,7 @@ static void test_set_again(void)
 	fake_now_ns += KMSCON_TEXT_SET_RETRY_NS / 2;
 	assert(kmscon_text_prepare(&txt, &attr, false) == 0);
 	assert(failing_set_calls == 3 && txt.font == &font && font_refs == 1);
-	assert(txt.cols == COLS - 2 && txt.rows == ROWS - 1);
+	assert(txt.cols == COLS - 2 && txt.rows == ROWS - 1 && set_orientation == OR_RIGHT);
 	draw_full(&txt, con);
 	kmscon_text_unset(&txt);
 	assert(font_refs == 0);

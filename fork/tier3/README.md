@@ -68,7 +68,7 @@ Upstream reads every key of `guest/kmscon.conf` and logs its character cell, so 
 | `2d-7680x2160-font32` | 4 vCPUs, 4096 MB | as `2d-7680x2160`, with `guest/kmscon-font32.conf`: 32 points, a 19x38 cell | drm2d + bbulk | QMP `screendump` (PPM) |
 | `gl-1280x800` | 4 vCPUs, 4096 MB | `virtio-vga-gl` with `-display egl-headless` (virgl on the host's render node, `T3_RENDERNODE`, default `/dev/dri/renderD128`) | drm3d + gltex (`hwaccel`) | VNC over a unix socket |
 
-`gl-1280x800` draws no pictures. gltex draws no image placements until ADR-103 steps 3f and 4e (ADR-108), so kmscon offers neither sixel nor kitty graphics there, and the variant skips the screens that send pictures (`IMAGE_SCREENS` in `t3_evaluate.py`, marked by the variant's `"images": False`): it runs the text screens, `s1-scroll`, `vt-switch` and `vt-restore`. Run there, an image screen would print that the terminal offers no images, and every case after it would fail waiting for a picture.
+`gl-1280x800` draws no pictures. gltex draws no image placements until ADR-103 steps 3f and 4e (ADR-108), so kmscon offers neither sixel nor kitty graphics there; the variant's `"draws_images": False` says so, in one place. It draws the text screens, `s1-scroll`, `vt-switch` and `vt-restore`, and the `sixel` screen, which there prints that the terminal's DA1 reply has no attribute 4 and reports the refusal on the event port: the `no-images` check passes only on that report, so the day gltex draws placements it fails and the flag goes. The other image screens (`IMAGE_SCREENS` in `t3_evaluate.py`) and their keyed cases are not drawn, and the report carries them as `skipped`, with the reason. Run there, each would wait for a picture that never comes, and every case after it would fail.
 
 `2d-1366x768-potato`, the potato computer, is ADR-103's small machine (ADR-103 names it `2d-1366x768-hamster`; renamed at the operator's request, noted at the end of ADR-103): one vCPU and 512 MB at a common laptop size, so a regression on small machines shows in the default run. Its vCPU is a core of the host, so it bounds parallelism and memory; it does not reproduce slow hardware. `2d-7680x2160-font32` runs every screen at a 19x38 cell, near the 20x40 of Monoid at 30 on the operator's display; every other variant runs a 10x19 cell. The sixel page sizes its pictures from the cell, so its layout is judged at two cell sizes. `make tier3` runs the 2D variants in the order 1280x800, 7680x2160, potato, 7680x2160-font32, so with `JOBS=2` the longest starts first.
 
@@ -93,7 +93,7 @@ mask=0,780,10,800    x0,y0,x1,y1, end-exclusive, left out of the comparison; rep
 
 An absent `max_delta` or `max_pixels` is 0, and a malformed sidecar fails its case. No golden has a sidecar today: the guest config turns blinking off, the prompt is fixed and no screen shows a clock.
 
-Each case gets one of four verdicts:
+Each case gets one of five verdicts:
 
 | Status | Meaning | Gate |
 |---|---|---|
@@ -101,8 +101,9 @@ Each case gets one of four verdicts:
 | `near` | differs, within both limits of the case's sidecar | passes |
 | `fail` | differs beyond the tolerance, or the case could not run | fails |
 | `missing` | no golden yet | fails |
+| `skipped` | not drawn: the variant's renderer draws no image placements (above) | passes, and never counts as a pass |
 
-The tier exits non-zero on any `fail` or `missing`.
+The tier exits non-zero on any `fail` or `missing`. The run page shows a `skipped` case as SKIPPED and leaves it out of the passing count.
 
 `make tier3-bless` copies the last run's captures over the goldens. Per ADR-301 a golden or sidecar change lands in its own reviewed commit, never with the code that produced it, and each new golden is looked at before it is committed.
 

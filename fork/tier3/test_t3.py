@@ -405,19 +405,58 @@ class VariantTest(unittest.TestCase):
 
     def test_gl_draws_no_images(self):
         # gltex draws no placements until ADR-103 steps 3f and 4e, so the GL
-        # variant runs every screen but the image ones, and the 2D variants
-        # run them all.
-        self.assertIs(t3_scenario.VARIANTS["gl-1280x800"]["images"], False)
-        gl = t3_scenario.variant_cases("gl-1280x800")
+        # variant draws every screen but the image ones, which its report
+        # carries as skipped, and draws the sixel screen to check the
+        # refusal; the 2D variants run every case as before.
+        self.assertIs(t3_scenario.VARIANTS["gl-1280x800"]["draws_images"], False)
+        self.assertFalse(t3_scenario.draws_images("gl-1280x800"))
+        skipped = t3_evaluate.skipped(False)
+        drawn = t3_evaluate.screens(False)
         for name in t3_evaluate.SCREENS:
             with self.subTest(name):
-                self.assertEqual(name in gl, name not in t3_evaluate.IMAGE_SCREENS)
+                image = name in t3_evaluate.IMAGE_SCREENS and name != "sixel"
+                self.assertEqual(name in skipped, image)
+                self.assertEqual(name in drawn, not image)
         for screen, case, _ in t3_evaluate.KEYED:
-            self.assertEqual(case in gl, screen not in t3_evaluate.IMAGE_SCREENS)
-        self.assertEqual(gl[-3:], [t3_evaluate.SCREENS[-1], "vt-switch", "vt-restore"])
-        self.assertIn("s1-scroll", gl)
+            self.assertIn(case, skipped)
+        gl = t3_scenario.variant_cases("gl-1280x800")
+        i = gl.index("sixel")
+        self.assertEqual(gl[:i + 1] + gl[i + 2:], t3_evaluate.CASES)
+        self.assertEqual(gl[i + 1], "no-images")
+        self.assertEqual(t3_evaluate.golden_for("gl-1280x800", "no-images"), (None, None))
+        self.assertIn("s1-scroll", drawn)
         for name in t3_scenario.DEFAULT_VARIANTS:
+            self.assertTrue(t3_scenario.draws_images(name))
             self.assertEqual(t3_scenario.variant_cases(name), t3_evaluate.CASES)
+            self.assertEqual(t3_evaluate.skipped(True), [])
+
+    def test_skipped_cases_are_reported(self):
+        # A skipped case is in the report as skipped, with the reason, never
+        # as a pass, and a variant that could not run fails the rest.
+        meta = t3_scenario.failure_meta("no boot", [])
+        cases = {c["name"].split("/", 1)[1]: c
+                 for c in t3_scenario.evaluate_variant("gl-1280x800", {}, meta, LOG)}
+        self.assertEqual(list(cases), t3_scenario.variant_cases("gl-1280x800"))
+        for name, c in cases.items():
+            with self.subTest(name):
+                if name in t3_evaluate.skipped(False):
+                    self.assertEqual(c["status"], "skipped")
+                    self.assertIn("ADR-108", c["error"])
+                else:
+                    self.assertEqual(c["status"], "fail")
+
+    def test_refused_images(self):
+        # The sixel screen reports kmscon's refusal on the event port.
+        with tempfile.TemporaryDirectory() as d:
+            vm = mock.Mock(events=os.path.join(d, "events.log"))
+            with open(vm.events, "w") as f:
+                f.write("T3-LOGIN\nT3-DONE sgr\n")
+            self.assertFalse(t3_scenario.refused_images(vm))
+            with open(vm.events, "a") as f:
+                f.write("T3-NO-SIXEL\nT3-DONE sixel\n")
+            self.assertTrue(t3_scenario.refused_images(vm))
+        with open(os.path.join(t3_evaluate.GUEST, "screens", "sixel-common.inc")) as f:
+            self.assertIn("echo T3-NO-SIXEL >\"$T3_EVENTS\"", f.read())
 
     def test_image_screens(self):
         # A screen that sends a picture sources sixel-common.inc or

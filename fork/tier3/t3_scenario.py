@@ -11,14 +11,15 @@ import time
 import t3_bench
 import t3_evaluate
 from t3_common import BASE, GUEST, RUNDIR, rel
-from t3_evaluate import BENCHMARKS, KEYED, KEYS_AFTER, evaluate, screens
+from t3_evaluate import BENCHMARKS, KEYED, KEYS_AFTER, NO_IMAGES_SCREEN, evaluate, screens
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
 # Display variants. Each boots its own guest from the base image, with its
 # own vCPUs and memory; the 2D variants draw through drm2d and bbulk, the GL
-# variant through drm3d and gltex on virgl. "images": False marks a variant
-# whose renderer draws no image placements, so kmscon offers no images there
-# and the variant skips the image screens (t3_evaluate.IMAGE_SCREENS).
+# variant through drm3d and gltex on virgl. "draws_images": False marks a
+# variant whose renderer draws no image placements, so kmscon offers no images
+# there: it skips the image screens and checks the refusal instead
+# (t3_evaluate.IMAGE_SCREENS).
 VARIANTS = {
     "2d-1280x800": {
         "device": "virtio-vga,xres=1280,yres=800,edid=on",
@@ -67,7 +68,7 @@ VARIANTS = {
         "conf": "kmscon-gl.conf",
         "renderer": "gltex",
         # gltex draws no placements until ADR-103 steps 3f and 4e (ADR-108)
-        "images": False,
+        "draws_images": False,
         "capture": "vnc",
         "cpus": 4,
         "memory_mb": 4096,
@@ -91,10 +92,28 @@ def uses_virgl(variant):
     return VARIANTS[variant]["device"].startswith("virtio-vga-gl")
 
 
+def draws_images(variant):
+    return VARIANTS[variant].get("draws_images", True)
+
+
 def variant_cases(variant):
-    """The cases `variant` runs: without the image screens where it has no
-    images."""
-    return t3_evaluate.cases(VARIANTS[variant].get("images", True))
+    """The cases of `variant`'s report, skipped ones included."""
+    return t3_evaluate.cases(draws_images(variant))
+
+
+def evaluate_variant(variant, caps, meta, log):
+    """The report entries of `variant`'s cases from their captures."""
+    skip = t3_evaluate.skipped(draws_images(variant))
+    return [t3_evaluate.skipped_entry(variant, case) if case in skip
+            else evaluate(variant, case, caps.get(case), meta, log)
+            for case in variant_cases(variant)]
+
+
+def refused_images(vm):
+    """Whether the guest's sixel screen reported that kmscon offers no sixel
+    (sixel-common.inc's T3-NO-SIXEL on the event port)."""
+    with open(vm.events, "rb") as f:
+        return any(line.startswith(b"T3-NO-SIXEL") for line in f)
 
 
 def newest_packages(pkgdir, name):
@@ -261,7 +280,7 @@ def run_variant(variant, timing, pkgs, log):
             vm.wait_event("T3-LOGIN", timeout=60)
         last = wait_stable(vm, tmp)
         phase("login")
-        for name in screens(v.get("images", True)):
+        for name in screens(draws_images(variant)):
             vm.type("t3 %s\n" % name)
             vm.wait_event("T3-DONE %s" % name,
                           timeout=BENCH_TIMEOUT if name in BENCHMARKS else SCREEN_TIMEOUT)
@@ -271,6 +290,12 @@ def run_variant(variant, timing, pkgs, log):
             last = wait_stable(vm, path, want=lambda img, prev=last: img.data != prev.data)
             caps[name] = path
             phase(name)
+            if name == NO_IMAGES_SCREEN and not draws_images(variant):
+                if refused_images(vm):
+                    caps["no-images"] = path
+                else:
+                    errors["no-images"] = ("kmscon offered sixel on a variant whose renderer "
+                                           "draws no image placements")
             # The keyed cases of this screen, each captured once the screen
             # has changed from the capture before it: a key that changes
             # nothing fails its case.
@@ -342,7 +367,7 @@ def failure_meta(error, pkgs):
 def failed_variant(variant, error, pkgs, log):
     log("%s: %s" % (variant, error))
     meta = failure_meta(error, pkgs)
-    return [evaluate(variant, case, None, meta, log) for case in variant_cases(variant)], meta
+    return evaluate_variant(variant, {}, meta, log), meta
 
 
 def variant_job(variant, pkgs, log):
@@ -360,7 +385,7 @@ def variant_job(variant, pkgs, log):
         log(str(e))
         caps, meta = {}, failure_meta(str(e), pkgs)
     start = time.time()
-    cases = [evaluate(variant, case, caps.get(case), meta, log) for case in variant_cases(variant)]
+    cases = evaluate_variant(variant, caps, meta, log)
     timing["evaluate"] = round(time.time() - start, 1)
     log("phase evaluate took %.1f s" % timing["evaluate"])
     meta["timing"] = timing

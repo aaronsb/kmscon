@@ -20,12 +20,17 @@ ask() {
 }
 
 # Exits with a message unless the terminal offers sixel: DA1 attribute 4.
+# The reply is shown with its ESC as ^[ and its final c, which read dropped:
+# printed raw it is a control sequence, which swallowed the text after it.
+# Under tier 3 the refusal is also reported on the event port.
 sixel_offered() {
-	local da1
+	local da1 shown
 	da1=$(ask "$esc[c" c)
 	if [[ ";${da1##*\?};" != *";4;"* ]]; then
+		shown=${da1:+${da1//$esc/^[}c}
 		printf 'This terminal does not offer sixel graphics: its DA1 reply has\n'
-		printf 'no attribute 4 (%s), so no picture is sent.\n' "${da1:-no reply}"
+		printf 'no attribute 4 (%s), so no picture is sent.\n' "${shown:-no reply}"
+		[ -n "$T3_EVENTS" ] && echo T3-NO-SIXEL >"$T3_EVENTS"
 		exit 0
 	fi
 }

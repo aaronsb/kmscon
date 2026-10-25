@@ -38,10 +38,16 @@ attribute vec2 position;
 attribute vec2 texture_position;
 attribute vec3 fgcolor;
 attribute vec3 bgcolor;
+attribute vec3 ulcolor;
+attribute vec3 strikecolor;
+attribute vec2 decoration;
 
 varying vec2 texpos;
 varying vec3 fgcol;
 varying vec3 bgcol;
+varying vec3 ulcol;
+varying vec3 stcol;
+varying vec2 decocell;
 
 vec2 opRotate(in vec2 p)
 {
@@ -55,4 +61,7 @@ void main()
 	texpos = texture_position;
 	fgcol = fgcolor;
 	bgcol = bgcolor;
+	ulcol = ulcolor;
+	stcol = strikecolor;
+	decocell = decoration;
 }

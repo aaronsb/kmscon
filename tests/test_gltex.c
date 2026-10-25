@@ -4,11 +4,12 @@
  * keys every frame; the atlases must not grow with them. Its memory stays
  * linear in the cell count at a 4K cell grid. The GL stubs hold gltex to the
  * GLES 2 texture rules a real driver enforces (#17). Blinking cells lose their glyph
- * in the hidden phase. Decorations and colour glyphs reach the atlas as masks,
- * from the real decoration sprites (deco.c). The GL and display calls are
- * stubs: the test counts the textures gltex creates, keeps the masks it
- * uploads, and checks where its glyphs land in them and in the frame. We
- * include the implementation to reach its statics.
+ * in the hidden phase. Decorations are the real decoration sprites (deco.c),
+ * drawn in their own colours, and colour glyphs go to an RGBA atlas drawn
+ * untinted (ADR-102 step 6). The GL and display calls are stubs: the test
+ * counts the textures gltex creates, keeps the pixels it uploads, records each
+ * draw's textures and uniforms, and checks where its glyphs land in them and
+ * in the frame. We include the implementation to reach its statics.
  */
 
 #include <GLES2/gl2.h>
@@ -38,11 +39,26 @@
 
 static unsigned int disp_w = 640, disp_h = 480;
 static unsigned int n_textures; /* textures created */
-static GLuint bound_tex;	/* the texture glBindTexture last bound */
+static unsigned int unit;	/* the texture unit glActiveTexture made active */
+static GLuint bound[2];		/* the texture glBindTexture last bound on each unit */
+#define bound_tex bound[unit]
+
+/* the uniforms gltex asks for, each at its index here, and their values */
+static const char *const uniform_names[] = {
+	"cos",		"sin",	  "projection", "atlas",     "advance_htex",
+	"advance_vtex", "colour", "deco",	"deco_htex", "deco_vtex",
+};
+#define N_UNIFORMS (sizeof(uniform_names) / sizeof(*uniform_names))
+static GLint uniform_i[N_UNIFORMS];
+static GLfloat uniform_f[N_UNIFORMS];
+enum { U_ATLAS = 3, U_COLOUR = 6, U_DECO = 7 };
+
+/* a draw: the textures on units 0 and 1, and the colour and sampler uniforms */
 static struct draw_call {
-	GLuint tex;
+	GLuint tex, deco_tex;
 	GLint first;
 	GLsizei count;
+	GLint colour, atlas_unit, deco_unit;
 } draws[4096];
 static unsigned int n_draws;	/* glDrawArrays calls since the last reset */
 static unsigned int n_rendered; /* glyphs rasterised */
@@ -56,8 +72,9 @@ static unsigned int n_rendered; /* glyphs rasterised */
  */
 static struct fake_tex {
 	GLuint name;
-	bool live;    /* generated and not deleted, or bound as a stray */
-	GLsizei w, h; /* its storage; 0 before glTexImage2D */
+	bool live;     /* generated and not deleted, or bound as a stray */
+	GLsizei w, h;  /* its storage; 0 before glTexImage2D */
+	GLenum format; /* its storage's format */
 } texs[4096], strays[16];
 static unsigned int n_strays;
 
@@ -76,18 +93,29 @@ static struct fake_tex *tex_of(GLuint name)
 	return &strays[n_strays++];
 }
 
-/* the glyph masks uploaded while keep_uploads is set */
+/* the pixels uploaded while keep_uploads is set */
 static bool keep_uploads;
 static struct upload {
 	GLuint tex;
 	GLint x;
 	GLsizei w, h;
-	uint8_t *data;
+	GLenum format;
+	uint8_t *data; /* w * h pixels, a byte each for GL_ALPHA, four for GL_RGBA */
 } uploads[64];
 static unsigned int n_uploads;
 
+static unsigned int bytes_per_pixel(GLenum format)
+{
+	assert(format == GL_ALPHA || format == GL_RGBA);
+	return format == GL_RGBA ? 4 : 1;
+}
+
 /* ---- GL ---- */
-void glActiveTexture(GLenum texture) {}
+void glActiveTexture(GLenum texture)
+{
+	assert(texture == GL_TEXTURE0 || texture == GL_TEXTURE1);
+	unit = texture - GL_TEXTURE0;
+}
 void glBindTexture(GLenum target, GLuint texture)
 {
 	tex_of(texture);
@@ -100,7 +128,9 @@ void glDisableVertexAttribArray(GLuint index) {}
 void glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
 	assert(n_draws < sizeof(draws) / sizeof(*draws));
-	draws[n_draws++] = (struct draw_call){bound_tex, first, count};
+	draws[n_draws++] = (struct draw_call){
+		bound[0],	    bound[1],	      first, count, uniform_i[U_COLOUR],
+		uniform_i[U_ATLAS], uniform_i[U_DECO]};
 }
 void glEnableVertexAttribArray(GLuint index) {}
 GLenum glGetError(void)
@@ -118,10 +148,13 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
 	struct fake_tex *t = tex_of(bound_tex);
 
 	assert(level == 0);
-	assert(internalformat == GL_ALPHA && format == GL_ALPHA && type == GL_UNSIGNED_BYTE);
+	/* GLES 2 has no conversion: the storage takes the format of the pixels */
+	assert(internalformat == (GLint)format && type == GL_UNSIGNED_BYTE);
+	bytes_per_pixel(format);
 	assert(width > 0 && width <= 2048 && height > 0 && height <= 2048);
 	t->w = width;
 	t->h = height;
+	t->format = format;
 }
 void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
 		     GLsizei height, GLenum format, GLenum type, const void *pixels)
@@ -129,19 +162,29 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
 	const struct fake_tex *t = tex_of(bound_tex);
 	struct upload *u;
 
-	assert(t->live && t->w && level == 0 && format == GL_ALPHA && type == GL_UNSIGNED_BYTE);
+	/* pixels of another format than the storage's: GL_INVALID_OPERATION */
+	assert(t->live && t->w && level == 0 && format == t->format && type == GL_UNSIGNED_BYTE);
 	assert(xoffset >= 0 && yoffset >= 0 && width > 0 && height > 0);
 	assert(xoffset + width <= t->w && yoffset + height <= t->h);
 	if (!keep_uploads)
 		return;
-	assert(format == GL_ALPHA && type == GL_UNSIGNED_BYTE && yoffset == 0);
+	assert(yoffset == 0);
 	assert(n_uploads < sizeof(uploads) / sizeof(*uploads));
 	u = &uploads[n_uploads++];
-	*u = (struct upload){bound_tex, xoffset, width, height, malloc(width * height)};
-	memcpy(u->data, pixels, width * height);
+	*u = (struct upload){bound_tex, xoffset, width,
+			     height,	format,	 malloc(width * height * bytes_per_pixel(format))};
+	memcpy(u->data, pixels, width * height * bytes_per_pixel(format));
 }
-void glUniform1f(GLint location, GLfloat v0) {}
-void glUniform1i(GLint location, GLint v0) {}
+void glUniform1f(GLint location, GLfloat v0)
+{
+	assert(location >= 0 && location < (GLint)N_UNIFORMS);
+	uniform_f[location] = v0;
+}
+void glUniform1i(GLint location, GLint v0)
+{
+	assert(location >= 0 && location < (GLint)N_UNIFORMS);
+	uniform_i[location] = v0;
+}
 void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {}
 void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized,
 			   GLsizei stride, const void *pointer)
@@ -168,6 +211,10 @@ int gl_shader_new(struct gl_shader **out, const char *vert, int vert_len, const 
 void gl_shader_unref(struct gl_shader *shader) {}
 GLuint gl_shader_get_uniform(struct gl_shader *shader, const char *name)
 {
+	for (unsigned int i = 0; i < N_UNIFORMS; i++)
+		if (!strcmp(name, uniform_names[i]))
+			return i;
+	assert(!"a uniform the shader does not have");
 	return 0;
 }
 void gl_shader_use(struct gl_shader *shader) {}
@@ -215,9 +262,12 @@ unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_hei
 {
 	return disp_h / font_height;
 }
-/* the colour glyph's pixel at @x, @y: its alpha varies, its colour does not */
+/*
+ * The colour glyph's pixel at @x, @y, ARGB: its alpha varies,
+ * and its red, green and blue differ so that a swap of any two shows.
+ */
 #define COLOUR_CP 0x1f600
-#define COLOUR_PX(x, y) ((uint32_t)((x) * 16 + (y)) << 24 | 0xff8000)
+#define COLOUR_PX(x, y) ((uint32_t)((x) * 16 + (y)) << 24 | 0x804000)
 
 /*
  * A blank mask, or for COLOUR_CP an ARGB glyph, as the font gives a colour
@@ -268,15 +318,18 @@ const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, u
 	*len = 1;
 	return one;
 }
+/* text.c's rules for the decoration colours (ADR-102), as bbulk reads them */
 struct tsm_screen_color kmscon_text_ul_color(struct kmscon_text *txt,
 					     const struct tsm_frame_cell *cell)
 {
-	return cell->fg;
+	if (!txt->deco.force && (cell->flags & TSM_FRAME_UL_SET))
+		return cell->ul;
+	return txt->deco.ul_fg ? cell->fg : txt->deco.ul;
 }
 struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
 						 const struct tsm_frame_cell *cell)
 {
-	return cell->fg;
+	return txt->deco.strike_fg ? cell->fg : txt->deco.strike;
 }
 
 #include "../src/render/gltex.c"
@@ -311,11 +364,11 @@ static void draw_frame(struct kmscon_text *txt, uint64_t *next, unsigned int n)
 
 	assert(gltex_prepare(txt, &attr) == 0);
 
-	a = find_glyph(txt, 'A', 0, 1, 0, false);
+	a = find_glyph(txt, 'A', 0, 1);
 	assert(a);
 	seen[0] = a;
 	for (i = 1; i <= n; i++) {
-		g = find_glyph(txt, (*next)++, 0, 1 + i % 2, 0, false);
+		g = find_glyph(txt, (*next)++, 0, 1 + i % 2);
 		assert(g);
 		assert(g->texoff + (g->double_width ? 2 : 1) <= g->atlas->count);
 		for (j = 0; j < i; j++)
@@ -324,7 +377,7 @@ static void draw_frame(struct kmscon_text *txt, uint64_t *next, unsigned int n)
 	}
 	/* a second look within the frame is a hit */
 	j = n_rendered;
-	assert(find_glyph(txt, 'A', 0, 1, 0, false) == a);
+	assert(find_glyph(txt, 'A', 0, 1) == a);
 	assert(n_rendered == j);
 }
 
@@ -379,7 +432,9 @@ static size_t heap_in_use(void)
 /*
  * gltex_render() drew every queued quad once, from its own atlas: each atlas
  * with quads in one draw over its slots of the shared vertex arrays, which
- * hold its quads in the order they were queued.
+ * hold its quads in the order they were queued. Each draw has its atlas on
+ * unit 0, sampled untinted when it is an RGBA atlas, and the decoration
+ * sprites' atlas on unit 1.
  */
 static void check_render(struct gltex *gt)
 {
@@ -394,6 +449,9 @@ static void check_render(struct gltex *gt)
 		assert(draws[n].tex == atlas->tex);
 		assert(draws[n].first == (GLint)(6 * atlas->cache_off));
 		assert(draws[n].count == (GLsizei)(6 * atlas->cache_num));
+		assert(draws[n].colour == (atlas->format == GL_RGBA));
+		assert(draws[n].deco_tex == gt->deco_atlas->tex);
+		assert(draws[n].atlas_unit == 0 && draws[n].deco_unit == 1);
 		total += atlas->cache_num;
 		atlas->cache_num = 0; /* counted again below */
 		n++;
@@ -410,6 +468,10 @@ static void check_render(struct gltex *gt)
 		assert(gt->cache_texpos[slot * 12 + 4] == q->texoff + q->texw);
 		assert(gt->cache_fgcol[slot * 18] == (GLfloat)(q->fg.r / 255.0));
 		assert(gt->cache_bgcol[slot * 18 + 17] == (GLfloat)(q->bg.b / 255.0));
+		assert(gt->cache_ulcol[slot * 18 + 1] == (GLfloat)(q->ul.g / 255.0));
+		assert(gt->cache_strikecol[slot * 18 + 15] == (GLfloat)(q->strike.r / 255.0));
+		assert(gt->cache_deco[slot * 12] == q->ulcell);
+		assert(gt->cache_deco[slot * 12 + 11] == q->strikecell);
 	}
 }
 
@@ -445,7 +507,7 @@ static void test_vertex_memory(void)
 		assert(gltex_prepare(&txt, &attr) == 0);
 		for (y = 0; y < txt.rows; y++)
 			for (x = 0; x < txt.cols; x++)
-				assert(gltex_draw_cell(&txt, &cell, next++, x, y, 1) == 0);
+				assert(gltex_draw_cell(&txt, &cell, next++, x, y, 1, false) == 0);
 		assert(gltex_draw_pointer(&txt, 100, 100) == 0);
 		n_draws = 0;
 		assert(gltex_render(&txt) == 0);
@@ -499,8 +561,7 @@ static void assert_drawn(struct kmscon_text *txt, const struct tsm_frame *frame,
 	struct atlas *atlas;
 	float texoff;
 
-	want = find_glyph(txt, key, fc->flags, fc->width == 2 ? 2 : 1, fc->underline,
-			  fc->flags & TSM_FRAME_STRIKE);
+	want = find_glyph(txt, key, fc->flags, fc->width == 2 ? 2 : 1);
 	assert(want);
 	assert(drawn_at(txt->data, col, 0, &atlas, &texoff) == 1);
 	assert(atlas == want->atlas && texoff == want->texoff);
@@ -537,7 +598,7 @@ static void test_first_glyph(void)
 	assert(dlist_empty(&gt->atlases));
 	assert(gt->off_x != 0 && gt->off_y != 0);
 
-	g = find_glyph(&txt, 'A', 0, 1, 0, false);
+	g = find_glyph(&txt, 'A', 0, 1);
 	assert(g);
 	assert(n_textures == before + 1);
 	assert(!dlist_empty(&gt->atlases));
@@ -634,34 +695,49 @@ static const struct upload *mask_at(struct gltex *gt, unsigned int col,
 	return NULL;
 }
 
-/*
- * @mask is the blank glyph with the sprites of @a and @b (KMSCON_DECO_NONE:
- * none) baked in, the cell's sprite repeated across a wide glyph.
- */
-static void assert_mask(const struct upload *mask, enum kmscon_deco a, enum kmscon_deco b)
+static bool colour_eq(struct tsm_screen_color a, struct tsm_screen_color b)
 {
-	struct kmscon_glyph *sa = kmscon_deco_render(a, FAKE_CELL_W, FAKE_CELL_H, &fake_deco);
-	struct kmscon_glyph *sb = kmscon_deco_render(b, FAKE_CELL_W, FAKE_CELL_H, &fake_deco);
-	unsigned int x, y, inked = 0;
-
-	assert(sa && mask->h == FAKE_CELL_H);
-	for (y = 0; y < FAKE_CELL_H; y++)
-		for (x = 0; x < (unsigned int)mask->w; x++) {
-			uint8_t va = sa->buf.data[y * FAKE_CELL_W + x % FAKE_CELL_W];
-			uint8_t vb = sb ? sb->buf.data[y * FAKE_CELL_W + x % FAKE_CELL_W] : 0;
-			uint8_t want = va > vb ? va : vb;
-
-			assert(mask->data[y * mask->w + x] == want);
-			inked += want != 0;
-		}
-	/* a sprite that drew nothing would pass the loop above */
-	assert(inked >= (unsigned int)mask->w / 2);
-	free(sa);
-	free(sb);
+	return a.r == b.r && a.g == b.g && a.b == b.b;
 }
 
-/* parse @bytes into a fresh screen and draw its frame */
-static void draw_bytes(struct kmscon_text *txt, const char *bytes, size_t len)
+/*
+ * The decoration sprites gltex uploaded: one strip at its decoration cells,
+ * the blank sprite then deco.c's sprite of each kind, a cell each.
+ */
+static void assert_sprites(struct gltex *gt)
+{
+	const struct upload *strip = NULL;
+	unsigned int kind, x, y, inked;
+
+	assert(gt->deco_atlas && gt->deco_atlas->format == GL_ALPHA);
+	for (unsigned int j = 0; j < n_uploads; j++)
+		if (uploads[j].tex == gt->deco_atlas->tex &&
+		    uploads[j].x == (GLint)(gt->deco_off * FAKE_CELL_W))
+			strip = &uploads[j];
+	assert(strip && strip->format == GL_ALPHA);
+	assert(strip->w == KMSCON_DECO_COUNT * FAKE_CELL_W && strip->h == FAKE_CELL_H);
+
+	for (kind = KMSCON_DECO_NONE; kind < KMSCON_DECO_COUNT; kind++) {
+		struct kmscon_glyph *sp =
+			kmscon_deco_render(kind, FAKE_CELL_W, FAKE_CELL_H, &fake_deco);
+
+		assert(!sp == (kind == KMSCON_DECO_NONE));
+		inked = 0;
+		for (y = 0; y < FAKE_CELL_H; y++)
+			for (x = 0; x < FAKE_CELL_W; x++) {
+				uint8_t want = sp ? sp->buf.data[y * FAKE_CELL_W + x] : 0;
+
+				assert(strip->data[y * strip->w + kind * FAKE_CELL_W + x] == want);
+				inked += want != 0;
+			}
+		/* a sprite that drew nothing would pass the loop above */
+		assert(kind == KMSCON_DECO_NONE || inked >= FAKE_CELL_W / 2);
+		free(sp);
+	}
+}
+
+/* parse @bytes into a fresh screen and draw its frame, the cursor on or not */
+static void draw_bytes(struct kmscon_text *txt, const char *bytes, size_t len, bool cursor_on)
 {
 	struct tsm_frame_age age = {0};
 	struct tsm_screen_attr attr = {0};
@@ -676,7 +752,7 @@ static void draw_bytes(struct kmscon_text *txt, const char *bytes, size_t len)
 	frame = tsm_screen_frame_since(con, &age);
 	assert(frame);
 	assert(gltex_prepare(txt, &attr) == 0);
-	assert(gltex_draw(txt, frame, false) == 0);
+	assert(gltex_draw(txt, frame, cursor_on) == 0);
 	tsm_vte_unref(vte);
 	tsm_screen_unref(con);
 }
@@ -688,12 +764,13 @@ static void free_uploads(void)
 }
 
 /*
- * #116: decorations as gltex draws them until it composes decoration sprites
- * itself (ADR-102 step 6): deco.c's sprites baked into the glyph's mask and
- * drawn in the cell's foreground. Every underline style, strike, both at
- * once, SGR 58's coloured underline and a wide underlined cell. The
- * configured decoration colours, forced or not, leave the tint at the
- * foreground; step 6 is what makes them change it.
+ * #116, flipped by ADR-102 step 6: gltex draws decorations as bbulk does,
+ * deco.c's sprites in their own colours, and the glyph masks carry none. Each
+ * decorated cell's quad names its sprites: every underline style, strike, both
+ * at once, SGR 58's coloured underline and a wide underlined cell. The
+ * underline takes underline-color, or SGR 58's colour unless
+ * force-decoration-colors is on; strike takes strike-color; `fg` follows the
+ * foreground.
  */
 static void test_decorations(void)
 {
@@ -701,14 +778,18 @@ static void test_decorations(void)
 				    "\x1b[4:1mA\x1b[4:2mB\x1b[4:3mC\x1b[4:4mD\x1b[4:5mE"
 				    "\x1b[4:0;9mF\x1b[4:1;9mG\x1b[29;4:1;58:2::255:0:0mH"
 				    "\x1b[59m\xe6\x97\xa5\x1b[0mI";
-	/* the sprites in each cell's mask, one column a cell, the wide one two */
-	static const enum kmscon_deco want[][2] = {
-		{KMSCON_DECO_SINGLE, KMSCON_DECO_NONE},	  {KMSCON_DECO_DOUBLE, KMSCON_DECO_NONE},
-		{KMSCON_DECO_CURLY, KMSCON_DECO_NONE},	  {KMSCON_DECO_DOTTED, KMSCON_DECO_NONE},
-		{KMSCON_DECO_DASHED, KMSCON_DECO_NONE},	  {KMSCON_DECO_STRIKE, KMSCON_DECO_NONE},
-		{KMSCON_DECO_SINGLE, KMSCON_DECO_STRIKE}, {KMSCON_DECO_SINGLE, KMSCON_DECO_NONE},
-		{KMSCON_DECO_SINGLE, KMSCON_DECO_NONE},
+	/* each cell's underline and strike, one column a cell, the wide one two */
+	static const struct {
+		enum kmscon_deco ul;
+		bool strike;
+	} want[] = {
+		{KMSCON_DECO_SINGLE, false}, {KMSCON_DECO_DOUBLE, false},
+		{KMSCON_DECO_CURLY, false},  {KMSCON_DECO_DOTTED, false},
+		{KMSCON_DECO_DASHED, false}, {KMSCON_DECO_NONE, true},
+		{KMSCON_DECO_SINGLE, true},  {KMSCON_DECO_SINGLE, false},
+		{KMSCON_DECO_SINGLE, false}, {KMSCON_DECO_NONE, false},
 	};
+	static const struct tsm_screen_color fg = {10, 20, 30}, red = {255, 0, 0};
 	static const struct kmscon_text_deco decos[] = {
 		{.ul_fg = true, .strike_fg = true},
 		{.ul = {0, 255, 0}, .strike = {0, 0, 255}},
@@ -717,41 +798,61 @@ static void test_decorations(void)
 	const struct gltex_quad *q;
 	const struct upload *mask;
 	struct kmscon_text txt = {0};
-	unsigned int d, i, col;
+	struct tsm_screen_color ul;
+	struct gltex *gt;
+	unsigned int d, i, col, strike;
 
 	txt.font = &fake_font;
 	txt.disp = (struct display *)0x1;
 	txt.orientation = OR_NORMAL;
 	assert(gltex_init(&txt) == 0);
 	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
 
 	for (d = 0; d < sizeof(decos) / sizeof(*decos); d++) {
 		txt.deco = decos[d];
 		/* the glyphs are new on the first pass only */
 		keep_uploads = !d;
-		draw_bytes(&txt, bytes, sizeof(bytes) - 1);
+		draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
 		keep_uploads = false;
 
 		if (!d) {
-			/* ten cells' glyphs and the blank of the empty cells */
-			assert(n_uploads == 11);
+			/* the sprites, ten cells' glyphs and the blank of the empty cells */
+			assert(n_uploads == 12);
+			assert_sprites(gt);
 			for (i = 0, col = 0; i < sizeof(want) / sizeof(*want); i++, col++) {
-				mask = mask_at(txt.data, col, &q);
+				mask = mask_at(gt, col, &q);
+				assert(mask->format == GL_ALPHA);
 				assert(mask->w == (i == 8 ? 2 : 1) * FAKE_CELL_W);
-				assert_mask(mask, want[i][0], want[i][1]);
+				for (unsigned int b = 0; b < (unsigned int)(mask->w * mask->h); b++)
+					assert(!mask->data[b]);
 				if (i == 8)
 					col++; /* the wide cell's trailing half */
 			}
-			/* after SGR 0, no decoration: a blank mask */
-			mask = mask_at(txt.data, col, &q);
-			for (i = 0; i < FAKE_CELL_W * FAKE_CELL_H; i++)
-				assert(!mask->data[i]);
 		}
-		/* every decorated cell drawn in its foreground */
-		for (col = 0; col < 9; col++) {
-			q = quad_at(txt.data, col);
-			assert(q->fg.r == 10 && q->fg.g == 20 && q->fg.b == 30);
+
+		for (i = 0, col = 0; i < sizeof(want) / sizeof(*want); i++, col++) {
+			q = quad_at(gt, col);
+			/* 'I', after SGR 0, is in the default foreground */
+			assert(i == 9 || colour_eq(q->fg, fg));
+			assert(q->ulcell == gt->deco_off + want[i].ul);
+			strike = want[i].strike ? KMSCON_DECO_STRIKE : KMSCON_DECO_NONE;
+			assert(q->strikecell == gt->deco_off + strike);
+			ul = txt.deco.ul_fg ? fg : txt.deco.ul;
+			if (i == 7 && !txt.deco.force)
+				ul = red; /* SGR 58 */
+			if (want[i].ul)
+				assert(colour_eq(q->ul, ul));
+			if (want[i].strike)
+				assert(colour_eq(q->strike,
+						 txt.deco.strike_fg ? fg : txt.deco.strike));
+			if (i == 8)
+				col++;
 		}
+
+		n_draws = 0;
+		assert(gltex_render(&txt) == 0);
+		check_render(gt);
 	}
 	free_uploads();
 
@@ -760,35 +861,125 @@ static void test_decorations(void)
 }
 
 /*
- * #116: a colour glyph from the font, ARGB, goes into the alpha atlas as its
- * alpha and is drawn in the cell's foreground, until gltex has an RGBA atlas
- * (ADR-102 step 6, #68).
+ * An underline cursor is no decoration: bbulk draws it in the cell's
+ * foreground, whatever underline-color says, and so does gltex.
  */
-static void test_colour_glyph(void)
+static void test_underline_cursor(void)
 {
-	static const char bytes[] = "\x1b[?25l\x1b[38;2;40;50;60m\xf0\x9f\x98\x80";
+	static const char bytes[] = "\x1b[4 q\x1b[38;2;10;20;30mA";
 	const struct gltex_quad *q;
-	const struct upload *mask;
 	struct kmscon_text txt = {0};
-	unsigned int x, y;
+	struct gltex *gt;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	txt.deco = (struct kmscon_text_deco){.ul = {0, 255, 0}, .strike = {0, 0, 255}};
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+
+	draw_bytes(&txt, bytes, sizeof(bytes) - 1, true);
+	q = quad_at(gt, 1);
+	assert(q->ulcell == gt->deco_off + KMSCON_DECO_SINGLE);
+	assert(colour_eq(q->ul, q->fg) && !colour_eq(q->ul, txt.deco.ul));
+	/* the cell before it is no cursor and has no underline */
+	assert(quad_at(gt, 0)->ulcell == gt->deco_off + KMSCON_DECO_NONE);
+
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+}
+
+/*
+ * A flush drops the decoration sprites with the glyphs, as their cells are
+ * refilled; the next frame uploads them again, counted against the cache
+ * bound, and its quads name the new cells.
+ */
+static void test_deco_flush(void)
+{
+	static const char bytes[] = "\x1b[?25l\x1b[4mA";
+	struct kmscon_text txt = {0};
+	struct gltex *gt;
 
 	txt.font = &fake_font;
 	txt.disp = (struct display *)0x1;
 	txt.orientation = OR_NORMAL;
 	assert(gltex_init(&txt) == 0);
 	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+
+	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
+	assert(gt->deco_atlas);
+	gltex_flush(&txt);
+	assert(!gt->deco_atlas && !gt->cells);
 
 	keep_uploads = true;
-	draw_bytes(&txt, bytes, sizeof(bytes) - 1);
+	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
+	keep_uploads = false;
+	assert_sprites(gt);
+	assert(gt->cells >= KMSCON_DECO_COUNT);
+	assert(quad_at(gt, 0)->ulcell == gt->deco_off + KMSCON_DECO_SINGLE);
+	free_uploads();
+
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+}
+
+/*
+ * #68: a colour glyph from the font, premultiplied ARGB, goes into an RGBA
+ * atlas as the bytes R, G, B, A, apart from the alpha atlas of the text beside
+ * it, and its atlas is drawn untinted: the shader's colour path, where the
+ * foreground is not read.
+ */
+static void test_colour_glyph(void)
+{
+	static const char bytes[] = "\x1b[?25l\x1b[38;2;40;50;60m\xf0\x9f\x98\x80"
+				    "A";
+	const struct gltex_quad *q, *qa;
+	const struct upload *px;
+	struct kmscon_text txt = {0};
+	struct gltex *gt;
+	unsigned int x, y, i, n_colour = 0;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+
+	keep_uploads = true;
+	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
 	keep_uploads = false;
 
-	mask = mask_at(txt.data, 0, &q);
-	assert(mask->w == 2 * FAKE_CELL_W && mask->h == FAKE_CELL_H);
+	px = mask_at(gt, 0, &q);
+	assert(q->atlas->format == GL_RGBA && texs[q->atlas->tex].format == GL_RGBA);
+	assert(px->format == GL_RGBA);
+	assert(px->w == 2 * FAKE_CELL_W && px->h == FAKE_CELL_H);
 	for (y = 0; y < FAKE_CELL_H; y++)
-		for (x = 0; x < 2 * FAKE_CELL_W; x++)
-			assert(mask->data[y * mask->w + x] == COLOUR_PX(x, y) >> 24);
+		for (x = 0; x < 2 * FAKE_CELL_W; x++) {
+			const uint8_t *b = &px->data[(y * px->w + x) * 4];
+			uint32_t v = COLOUR_PX(x, y);
+
+			assert(b[0] == ((v >> 16) & 0xff) && b[1] == ((v >> 8) & 0xff));
+			assert(b[2] == (v & 0xff) && b[3] == v >> 24);
+		}
 	assert(q->texw == 2.0);
-	assert(q->fg.r == 40 && q->fg.g == 50 && q->fg.b == 60);
+
+	/* the text beside it stays in an alpha atlas */
+	qa = quad_at(gt, 2);
+	assert(qa->atlas != q->atlas && qa->atlas->format == GL_ALPHA);
+
+	n_draws = 0;
+	assert(gltex_render(&txt) == 0);
+	check_render(gt);
+	for (i = 0; i < n_draws; i++) {
+		if (draws[i].tex == q->atlas->tex)
+			n_colour += draws[i].colour == 1;
+		if (draws[i].tex == qa->atlas->tex)
+			assert(draws[i].colour == 0);
+	}
+	assert(n_colour == 1);
 	free_uploads();
 
 	gltex_unset(&txt);
@@ -804,6 +995,8 @@ int main(void)
 	test_first_glyph();
 	test_blink();
 	test_decorations();
+	test_underline_cursor();
+	test_deco_flush();
 	test_colour_glyph();
 	return 0;
 }

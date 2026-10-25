@@ -27,6 +27,7 @@ _Glyphs, images and cells to pixels - fonts, text renderers, video backends_
 | [ADR-106](./render/ADR-106-black-box-survey-of-five-more-kitty-graphics-clients-timg-ncplayer-kitten-icat-chafa-and-viu.md) | Black-box survey of five more kitty graphics clients: timg, ncplayer, kitten icat, chafa and viu | accepted |
 | [ADR-107](./render/ADR-107-s-and-data-length-in-kitty-0-49-2-black-box-and-in-ghostty-wezterm-and-rio.md) | S and data length in kitty 0.49.2, black-box, and in Ghostty, WezTerm and Rio | accepted |
 | [ADR-108](./render/ADR-108-images-draw-through-the-renderer-hwaccel-selects-and-hwaccel-stays-off-by-default.md) | Images draw through the renderer hwaccel selects, and hwaccel stays off by default | accepted |
+| [ADR-109](./render/ADR-109-images-with-hwaccel-off-and-on-bbulk-against-gltex-in-tier-3-at-1280x800-and-7680x2160.md) | Images with hwaccel off and on: bbulk against gltex in tier 3 at 1280x800 and 7680x2160 | proposed |
 
 ## Terminal
 _Escape protocols and the screen model - libtsm parsing, cells, scrollback_

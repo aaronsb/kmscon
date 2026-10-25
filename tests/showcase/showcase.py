@@ -421,14 +421,20 @@ def picker_checks(root):
         check("no outputs with --no-wait: no sound, and the line says why",
               p.returncode == 0 and p.stdout == "none\n" and why(p), p.stdout + p.stderr)
         pipewire_groups("1000")
-        cases = [("in /etc/group's audio group but not this login's",
-                  dict(GROUP="audio:x:995:tester", ID_G="1000"), "this login started before you joined"),
-                 ("in this login's audio group but not PipeWire's",
+        # The group is blamed only for cards out of reach: cards this login
+        # opens through their ACLs need none. Root opens any card, so the
+        # cases with cards out of reach run only without root.
+        cases = [("in this login's audio group but not PipeWire's",
                   dict(GROUP="audio:x:995:tester", ID_G="1000 995", PW_PID="4242"),
-                  "your PipeWire started before you joined")]
+                  "your PipeWire started before you joined"),
+                 ("in /etc/group's audio group, not this login's, with the cards in reach",
+                  dict(GROUP="audio:x:995:tester", ID_G="1000"), "mpv --audio-device=help")]
         if os.geteuid() != 0:
-            cases.append(("outside the audio group with the cards out of reach",
-                          dict(GROUP="audio:x:995:", ID_G="1000", CARDS_MODE="0"), "sudo usermod -aG audio tester"))
+            cases += [("in /etc/group's audio group but not this login's, with the cards out of reach",
+                       dict(GROUP="audio:x:995:tester", ID_G="1000", CARDS_MODE="0"),
+                       "this login started before you joined"),
+                      ("outside the audio group with the cards out of reach",
+                       dict(GROUP="audio:x:995:", ID_G="1000", CARDS_MODE="0"), "sudo usermod -aG audio tester")]
         cases += [("with no sound card", dict(GROUP="audio:x:995:", ID_G="1000", PICK_AUDIO_SND=os.path.join(tmp, "nosnd")),
                    "no sound card"),
                   ("with nothing else to blame", dict(GROUP="audio:x:995:", ID_G="1000"), "mpv --audio-device=help")]

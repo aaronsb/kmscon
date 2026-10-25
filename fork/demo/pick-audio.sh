@@ -12,9 +12,11 @@
 # It lists the outputs mpv --audio-device=help finds: the sound server's,
 # PipeWire's before PulseAudio's, the server's default first; with no
 # server, each ALSA card's default and HDMI devices. A server with no sink
-# but its dummy (auto_null) lists none. A number, or a device name typed in
-# its place (any that mpv --audio-device=help lists), plays a one-second
-# tone through one, y keeps it, t plays it again, and 0 is no sound. When the
+# but its dummy (auto_null) lists none. A number plays a one-second tone
+# through one, y keeps it, t plays it again, and 0 is no sound. A device name
+# can be typed in place of the number: any word of the form mpv's device names
+# take (mpv --audio-device=help lists them) is tried with the same tone, and
+# any other answer asks again. When the
 # sound cards are out of reach, as on a VT that is no logind session for a
 # user outside the audio group (#171), it says so first, with the fix. When
 # it finds no output, one line says why, and a device name can be typed.
@@ -90,7 +92,9 @@ cards_note() {
 why_none() {
 	if [ -z "$cards" ]; then
 		echo "there is no sound card in $snd"
-	elif [ -n "$in_etc" ] && [ -z "$in_login" ]; then
+	elif [ -n "$in_etc" ] && [ -z "$in_login" ] && [ -z "$open" ]; then
+		# Cards this login opens through their ACLs need no group, so the group
+		# is no cause then.
 		echo "you are in the audio group in /etc/group, but this login started before you joined it: log out of every session (or reboot) and log in again"
 	elif [ -n "$in_login" ] && [ -n "$pw" ] && [ -z "$pw_audio" ]; then
 		echo "your PipeWire started before you joined the audio group, so it cannot open the sound cards: log out of every session (or reboot) and log in again"

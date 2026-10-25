@@ -1,0 +1,7 @@
+# LeakSanitizer suppressions for `make asan` (fork/asan.mk).
+#
+# fontconfig loses blocks while it reads a font file it is given
+# (FcConfigAppFontAddFile, then FcFreeTypeQueryAll): they are lost inside
+# the library, reached by no pointer kmscon or a test holds, so no free can
+# reach them. Every test that pins its fonts that way reports them.
+leak:FcFreeTypeQueryAll

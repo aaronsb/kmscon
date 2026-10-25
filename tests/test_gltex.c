@@ -3588,6 +3588,36 @@ static void test_cache_hard_stop(void)
 }
 
 /*
+ * The hard stop counts a pool's first strip too: with the alpha pool at its
+ * bound and the stop less than a colour strip above it, a colour glyph, the
+ * first of its pool, is drawn blank, and its pool takes no strip.
+ */
+static void test_cache_hard_stop_first(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 1};
+	struct gcell cells[NARROW_CAP];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int i;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i < NARROW_CAP; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+	cache_frame(&txt, cells, NARROW_CAP);
+	assert(pools_bytes(gt, NULL) == CACHE_BOUND);
+	gt->cache_hard_bytes = CACHE_BOUND + 4096 - 1;
+
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(gltex_draw_cell(&txt, &fc, EMOJI_NARROW_CP, 0, 0, 1, false) == -ENOMEM);
+	assert(!gt->pools[2].bytes && dlist_empty(&gt->pools[2].lru));
+	assert(gt->hard_stop_logged);
+	assert(gltex_render(&txt) == 0);
+	close_cache(&txt);
+}
+
+/*
  * Not run by default: GLTEX_MEASURE=1, or GLTEX_CACHE_TEST=measure, prints
  * what a schedule of frames at 7680x2160 in 19x41 cells (font size 30; 404x52
  * cells, 202 wide glyphs a line) costs the cache: under 4 MiB a pool and no
@@ -3717,6 +3747,7 @@ static const struct {
 	{"give_back", test_cache_give_back},
 	{"release", test_cache_release},
 	{"hard_stop", test_cache_hard_stop},
+	{"hard_stop_first", test_cache_hard_stop_first},
 	{"upload_failure", test_cache_upload_failure},
 	{"failed_rotate", test_cache_failed_rotate},
 	{"unset_release", test_cache_unset_release},

@@ -140,7 +140,6 @@ struct pool {
 	struct dlist lru;   /* its slots, the most recently drawn first, the empty ones last */
 	unsigned int slots; /* in its strips */
 	size_t bytes;	    /* its strips' textures */
-	size_t strip_bytes; /* its last strip's */
 };
 
 /*
@@ -619,6 +618,15 @@ static void gltex_unset(struct kmscon_text *txt)
 	gt->shader = NULL;
 }
 
+/* the cells new_atlas() first tries: as many as a texture holds, at least one */
+static unsigned int atlas_cells(struct kmscon_text *txt)
+{
+	struct gltex *gt = txt->data;
+	unsigned int n = gt->max_tex_size / FONT_WIDTH(txt);
+
+	return n ? n : 1;
+}
+
 /*
  * A new @format atlas of as many cells as a texture holds, at least @num;
  * NULL on error
@@ -648,9 +656,7 @@ static struct atlas *new_atlas(struct kmscon_text *txt, unsigned int num, GLenum
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
-	newsize = gt->max_tex_size / FONT_WIDTH(txt);
-	if (newsize < 1)
-		newsize = 1;
+	newsize = atlas_cells(txt);
 
 	/* OpenGL texture sizes are heavily restricted so we need to find a
 	 * valid texture size that is big enough to hold as many glyphs as
@@ -914,7 +920,7 @@ static void glyphs_free(struct gltex *gt, bool gl)
 	for (i = 0; i < GLTEX_POOLS; i++) {
 		dlist_init(&gt->pools[i].lru);
 		gt->pools[i].slots = 0;
-		gt->pools[i].bytes = gt->pools[i].strip_bytes = 0;
+		gt->pools[i].bytes = 0;
 	}
 	gt->deco_atlas = NULL;
 }
@@ -937,6 +943,16 @@ static struct pool *pool_of(struct gltex *gt, GLenum format, unsigned int cells)
 }
 
 /*
+ * The texture a new strip of @pool takes, as new_atlas() first tries it; GL
+ * may give the strip fewer cells, never more.
+ */
+static size_t strip_bytes(struct kmscon_text *txt, const struct pool *pool)
+{
+	return (size_t)shl_next_pow2(FONT_WIDTH(txt) * atlas_cells(txt)) *
+	       shl_next_pow2(FONT_HEIGHT(txt)) * (pool->format == GL_RGBA ? 4 : 1);
+}
+
+/*
  * A new strip for @pool, its slots empty at the back of the pool's list, the
  * first cell's last, so they are taken from the left.
  */
@@ -946,8 +962,8 @@ static int pool_grow(struct kmscon_text *txt, struct pool *pool)
 	struct atlas *atlas;
 	unsigned int i, n;
 
-	/* the hard stop, by the size of the pool's last strip */
-	if (cache_bytes(gt) + pool->strip_bytes > gt->cache_hard_bytes) {
+	/* the hard stop: the strip would take the cache past it */
+	if (cache_bytes(gt) + strip_bytes(txt, pool) > gt->cache_hard_bytes) {
 		if (!gt->hard_stop_logged ||
 		    gt->frame_count + 1 - gt->hard_stop_logged >= GLTEX_HARD_STOP_LOG_FRAMES) {
 			log_warning("glyph cache at its hard stop of %zu MiB: glyphs past it are "
@@ -974,8 +990,7 @@ static int pool_grow(struct kmscon_text *txt, struct pool *pool)
 		dlist_link_tail(&pool->lru, &atlas->slots[i].lru);
 	}
 	pool->slots += n;
-	pool->strip_bytes = atlas_bytes(atlas);
-	pool->bytes += pool->strip_bytes;
+	pool->bytes += atlas_bytes(atlas);
 	return 0;
 }
 

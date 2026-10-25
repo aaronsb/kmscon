@@ -102,19 +102,28 @@ valued=" font-engine font-name font-size mode multi-monitor gpus term sb-size
 	palette-light-magenta palette-light-cyan palette-white palette-foreground
 	palette-background underline-color strike-color grapheme-width xkb-model
 	xkb-layout xkb-variant xkb-options xkb-repeat-delay xkb-repeat-rate
-	dpms-timeout render-timer "
+	dpms-timeout render-timer image-storage-limit "
 switches=" drm hwaccel use-original-mode blink bell soft-cursor mouse
 	natural-scrolling force-decoration-colors backspace-delete verbose debug silent "
+declare -A unit_shift=([B]=0 [K]=10 [M]=20 [G]=30)
 valued=$(tr -s ' \t\n' ' ' <<<"$valued")
 switches=$(tr -s ' \t\n' ' ' <<<"$switches")
 for o in "${extra[@]}"; do
 	name=${o#--}
+	# the image budget is held by kmscon, which runs as root here: the demo
+	# needs at most 1G (8K video under --hwaccel), so it takes auto or up to 4G
+	if [[ $o == --image-storage-limit=* && ${o#*=} != auto ]]; then
+		size=${o#*=}
+		[[ $size =~ ^([0-9]{1,10})([KMG]?)$ ]] &&
+			(( 10#${BASH_REMATCH[1]} <= (4 << 30) >> ${unit_shift[${BASH_REMATCH[2]:-B}]} )) ||
+			die "--image-storage-limit takes auto or a size up to 4G here, not '$size'"
+	fi
 	if [[ $o == --?*=* ]]; then
 		[[ $valued == *" ${name%%=*} "* ]] && continue
 	elif [[ $o == --?* ]]; then
 		[[ $switches == *" ${name#no-} "* ]] && continue
 	fi
-	die "kmscon option '$o' is refused. Accepted: display, font, palette, text and input options, one word each: --name=value (quoted as one word: --font-name=\"Monoid Nerd Font Mono\"), or --name / --no-name for a switch (see docs/fork/demo.md)"
+	die "kmscon option '$o' is refused. Accepted: display, font, palette, text and input options, --render-timer and --image-storage-limit, one word each: --name=value (quoted as one word: --font-name=\"Monoid Nerd Font Mono\"), or --name / --no-name for a switch (see docs/fork/demo.md)"
 done
 # The showcase's video is a path the session opens as the user; it reaches the
 # session as one word in its environment, never through a shell.

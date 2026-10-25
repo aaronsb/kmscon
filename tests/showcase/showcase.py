@@ -520,6 +520,12 @@ def kitty_checks(root):
     check("in 128x24 cells of 10x22 the copies shrink to fit three across",
           3 * lay.c + 4 <= 126 and lay.r < 24 and lay.top == 1 + (24 - lay.r) // 2,
           f"r={lay.r} c={lay.c} top={lay.top}")
+    tall = kitty.Layout(1000, 200, 10, 20, 1444 / 1080, copies=1)
+    check("frames are a copy's own size, at most 2160 pixels tall, or as wide as asked",
+          kitty.frame_size(kitty.Layout(404, 44, 19, 38, 1444 / 1080), 38, 1444 / 1080) == (2236, 1672)
+          and kitty.frame_size(tall, 20, 1444 / 1080) == (2888, 2160)
+          and kitty.frame_size(tall, 20, 1444 / 1080, 480) == (480, 360),
+          repr(kitty.frame_size(tall, 20, 1444 / 1080)))
     peak = max(kitty.ease(u / 1000, 0.12) for u in range(1001))
     check("a slide starts at 0, overshoots by about the bounce and settles on 1",
           kitty.ease(0, 0.12) == 0 and abs(kitty.ease(1, 0.12) - 1) < 1e-9 and 1.09 < peak < 1.13
@@ -748,13 +754,6 @@ def kitty_checks(root):
         want = b"s=294,v=220"  # 11 rows of 20 pixels, 1444:1080 across
         check(f"fx.py kitty --width 0 sends frames of a copy's own size ({want.decode()})",
               os.waitstatus_to_exitcode(st) == 0 and want in got, repr(re.findall(rb"s=\d+,v=\d+", got)[:1]))
-        # A copy taller than MAX_HEIGHT: the frames stop there, and the
-        # terminal scales them the rest of the way.
-        st, got, _ = fx_kitty("--seconds", "0.1", "--transport", "raw", "--width", "0", "--banner-rows", "0",
-                              "--cell-w", "10", "--cell-h", "20", "--copies", "1", COLUMNS="1000", LINES="200")
-        check("fx.py kitty --width 0 decodes no taller than MAX_HEIGHT (2160)",
-              os.waitstatus_to_exitcode(st) == 0 and b"s=2888,v=2160" in got,
-              repr(re.findall(rb"s=\d+,v=\d+", got)[:1]))
         # No rows above the scroller: nothing is placed over it.
         st, got, _ = fx_kitty("--seconds", "0.2", "--transport", "png", "--banner-rows", "12", COLUMNS="100",
                               LINES="12")

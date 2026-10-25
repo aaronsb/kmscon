@@ -557,6 +557,17 @@ def decode(video, start, seconds, w, h, pix):
         p.wait()
 
 
+def frame_size(lay, cell_h, aspect, width=0):
+    """The frames' (width, height) in pixels, the height even. Width 0: a
+    copy's own pixel height, at most MAX_HEIGHT, so the terminal shows the
+    frame at its size and scales nothing. The size is fixed for the act:
+    after a resize the terminal scales the frames."""
+    if width > 0:
+        return width, max(2, round(width / aspect / 2) * 2)
+    h = max(2, min(lay.r * cell_h, MAX_HEIGHT) // 2 * 2)
+    return max(2, round(h * aspect)), h
+
+
 def hang_up(signum, _frame):
     """SIGTERM and SIGHUP end the player as Ctrl-C does, through its
     cleanup: the images deleted, the shared memory unlinked, ffmpeg
@@ -579,13 +590,8 @@ def cmd_kitty(a):
         cols, rows = geom()[:2]
         return Layout(cols, rows - a.banner_rows, a.cell_w, a.cell_h, aspect, a.gap)
 
-    # Width 0: a copy's own pixel height, at most MAX_HEIGHT, so the
-    # terminal shows the frame at its size and scales nothing. The size is
-    # fixed for the act: after a resize the terminal scales the frames.
     lay = layout()
-    h = (max(2, min(lay.r * a.cell_h, MAX_HEIGHT) // 2 * 2) if a.width <= 0
-         else max(2, round(a.width / aspect / 2) * 2))
-    w = max(2, round(h * aspect)) if a.width <= 0 else a.width
+    w, h = frame_size(lay, a.cell_h, aspect, a.width)
     enc = Encoder(transport, w, h, a.level)
 
     chor = Choreography(a.slide_at, a.copy2_at, a.copy3_at, a.move, a.bounce, a.copies)

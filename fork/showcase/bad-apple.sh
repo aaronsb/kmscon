@@ -152,7 +152,7 @@ ACT_KMSCON=(""
 	"plays"
 	"plays (sixel, ADR-103 step 3)"
 	"plays"
-	"placeholder and scroller until ADR-103 step 4c (#169) lands kitty graphics")
+	"plays (kitty graphics, ADR-103 step 4c)")
 LAST_ACT=7
 
 # The effects: where each plays, and what it needs. --fx NAME runs one alone.
@@ -777,7 +777,7 @@ act_7() {
 		return
 	fi
 	if [ -z "$have_kitty" ] || ! have mpv; then
-		local why="[kitty graphics arrive in steps 4 and 5]"
+		local why="[no kitty graphics: the a=q query got no OK]"
 		[ -z "$have_kitty" ] || why="[kitty graphics: mpv is needed]"
 		banner --placeholder "$why" --title "kitty graphics" --seconds "$(awk -v p="$PLACEHOLDER_SECONDS" \
 			-v c="$ACT7_SECONDS" 'BEGIN { print (c > 0 && c < p ? c : p) }')"

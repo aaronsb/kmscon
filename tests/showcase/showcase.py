@@ -67,8 +67,8 @@ def main():
               f"{got!r}\n{p.stderr}")
         needs = {l[:4].strip(): l[29:60].split() for l in rows}
         check("each act lists what it needs", all(needs.get(n) for n, _ in ACTS), repr(needs))
-        check("act 7 is a placeholder on kmscon today, the rest play",
-              all(("placeholder" in l) == (l[:4].strip() == "7") for l in rows), p.stdout)
+        check("every act plays on kmscon (act 7 through kitty graphics since #169)",
+              all("placeholder" not in l for l in rows), p.stdout)
 
         effects = [l.split()[0] for l in blocks[1].splitlines()[1:] if l.strip()] if len(blocks) > 1 else []
         check("--list names the effects --fx runs", effects == EFFECTS, repr(effects))

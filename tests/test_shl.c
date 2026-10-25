@@ -23,8 +23,17 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "shl/hashtable.h"
 #include "shl/misc.h"
 #include "test_common.h"
+
+/* mallinfo2() is glibc's, from 2.33; elsewhere the heap is not measured */
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+#include <malloc.h>
+#define HAVE_MALLINFO2 1
+#else
+#define HAVE_MALLINFO2 0
+#endif
 
 #define check_assert_string_list_eq(X, Y)                                                          \
 	do {                                                                                       \
@@ -165,8 +174,69 @@ START_TEST(test_split_command_string)
 }
 END_TEST
 
+/* bytes in use on the heap, the blocks malloc maps on its own included */
+static size_t heap_in_use(void)
+{
+#if HAVE_MALLINFO2
+	struct mallinfo2 mi = mallinfo2();
+
+	return mi.uordblks + mi.hblkhd;
+#else
+	return 0;
+#endif
+}
+
+static unsigned int values_freed;
+
+static void count_free(void *value)
+{
+	values_freed++;
+	free(value);
+}
+
+/*
+ * #40: shl_hashtable_remove frees its entry and leaves the value to the
+ * caller. A million inserts each followed by its remove hold no more heap at
+ * the end than one entry's worth per thousand; an entry left behind on each
+ * remove is 16 MB. The table's own free_value is not called for a removed
+ * value, and is called for the one left at the end.
+ */
+START_TEST(test_hashtable_remove)
+{
+	struct shl_hashtable *tbl;
+	size_t before, after;
+	unsigned int i;
+	void *value, *found;
+	int ret;
+
+	ret = shl_hashtable_new(&tbl, shl_direct_hash, shl_direct_equal, count_free);
+	ck_assert_int_eq(ret, 0);
+	/* the table at its working size before measuring */
+	ck_assert_int_eq(shl_hashtable_insert(tbl, 0, malloc(1)), 0);
+
+	before = heap_in_use();
+	for (i = 1; i <= 1000000; i++) {
+		value = malloc(1);
+		ck_assert_int_eq(shl_hashtable_insert(tbl, i, value), 0);
+		ck_assert(shl_hashtable_find(tbl, &found, i));
+		ck_assert_ptr_eq(found, value);
+		shl_hashtable_remove(tbl, i);
+		ck_assert(!shl_hashtable_find(tbl, &found, i));
+		free(value);
+	}
+	after = heap_in_use();
+	ck_assert_uint_eq(values_freed, 0);
+	if (HAVE_MALLINFO2)
+		ck_assert_uint_le(after, before + 1000000 / 1000 * sizeof(struct shl_hashentry));
+
+	shl_hashtable_free(tbl);
+	ck_assert_uint_eq(values_freed, 1);
+}
+END_TEST
+
 TEST_DEFINE_CASE(misc)
 TEST(test_split_command_string)
+TEST(test_hashtable_remove)
 TEST_END_CASE
 
 TEST_DEFINE(TEST_SUITE(shl, TEST_CASE(misc), TEST_END))

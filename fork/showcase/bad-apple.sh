@@ -26,21 +26,27 @@ set -euo pipefail
 # act 7 until the end card's cue (delete that line to play act 7 to the end
 # of the video). Acts 2, 4 and 6 play between them, silent, for the lengths
 # set below, and the soundtrack picks up again at the next cue, so the times
-# are the video's, not the show's. Edit the times here.
+# are the video's, not the show's. Act 7's three moves are cues too: its one
+# copy slides left (act7-slide), a second copy slides out from behind it
+# (act7-copy2), then a third (act7-copy3); delete a move's line and it never
+# comes. Seconds may carry a fraction (0:54.5). Edit the times here.
 CUES="
 0:00 act1-ascii
 0:20 act1-braille
 0:30 act3-aalib
 0:38 act5-sixel
 0:46 act7-kitty
+0:54 act7-slide
+1:02 act7-copy2
+1:10 act7-copy3
 1:46 endcard
 "
 # The time of cue $1 in seconds; with $2, the seconds from $1 to $2 (0 when
-# there is no cue $2).
+# there is no cue $2, or with a third argument, that argument).
 cue() {
-	awk -v a="$1" -v b="${2:-}" 'function s(x, t) { split(x, t, ":"); return t[1] * 60 + t[2] }
+	awk -v a="$1" -v b="${2:-}" -v none="${3:-0}" 'function s(x, t) { split(x, t, ":"); return t[1] * 60 + t[2] }
 		$2 == a { x = s($1) } b != "" && $2 == b { y = s($1); found = 1 }
-		END { print (b == "" ? x : (found ? y - x : 0)) }' <<<"$CUES"
+		END { print (b == "" ? x : (found ? y - x : none)) }' <<<"$CUES"
 }
 
 # Pacing, in seconds unless marked. Each can be set in the environment too,
@@ -94,10 +100,18 @@ cue() {
 : "${ACT7_START:=$(cue act7-kitty)}"   # kitty graphics, full size
 : "${ACT7_SECONDS:=$(cue act7-kitty endcard)}"  #   0: to the end of the video
 : "${ACT7_FADE:=2}"              #   the soundtrack fades out over its last seconds (0: no fade)
+: "${ACT7_SLIDE_AT:=$(cue act7-kitty act7-slide -1)}"   #   copy 1 slides left, seconds into the act (-1: never)
+: "${ACT7_COPY2_AT:=$(cue act7-kitty act7-copy2 -1)}"   #   copy 2 slides out from behind it
+: "${ACT7_COPY3_AT:=$(cue act7-kitty act7-copy3 -1)}"   #   copy 3 from behind copy 2
+: "${ACT7_MOVE:=1.2}"            #   each slide takes this long
+: "${ACT7_BOUNCE:=0.12}"         #   and overshoots by this share of its distance before it settles (0: none)
+: "${ACT7_GAP:=2}"               #   columns between the copies
 : "${BANNER_ROWS:=12}"           #   the scroller's rows along the bottom
 : "${BANNER_FPS:=40}"            #   frames a second; it moves one column a frame
 : "${BANNER_SECONDS:=0}"         #   --banner-only runs this long (0: until q)
-: "${KITTY_SHM:=no}"             #   yes: mpv sends frames through shared memory (kitty 0.49 rejects mpv 0.41's)
+: "${KITTY_TRANSPORT:=zlib}"     #   how each frame travels: raw, zlib, png or shm (fork/showcase/kitty.py)
+: "${KITTY_WIDTH:=480}"          #   frames are decoded this many pixels wide; the terminal scales them up
+: "${ACT7_REPORT:=}"             #   a file to append the player's frame rate to
 : "${PLACEHOLDER_SECONDS:=6}"    # a placeholder (act 5 or 7) stays this long
 
 : "${BIG_FONT:=mono12}"          # toilet fonts drawn with ▀ ▄ █
@@ -135,7 +149,7 @@ ACT_NEEDS=(""
 	"python3"
 	"ffmpeg mpv python3"
 	"python3"
-	"mpv toilet python3")
+	"ffmpeg toilet python3")
 ACT_VIDEO=("" 1 0 1 0 1 0 1)
 ACT_WHAT=(""
 	"Bad Apple!! as crude ASCII line art: outlines traced on a ${ACT1_ROWS}-row grid at ${ACT1_FPS} fps, then a Braille pass (2x4 dots a cell) at ${ACT1_DOTS_FPS} fps"
@@ -144,7 +158,7 @@ ACT_WHAT=(""
 	"\"wait a minute... don't we have ... LIBSIXEL?\" typed over the frozen frame"
 	"sixel (DA1 attribute 4): mpv --vo=sixel plays it ${ACT5_SIZE} of the screen's height, sized from the cell size the terminal reports (XTWINOPS 16), it glitches to one channel and tears, and its last frame stays; else a placeholder"
 	"a fire wipe, \"hold on, we also have kitty. hold on, feeding the cats\", a crowd of colour cats"
-	"kitty graphics (a=q): mpv --vo=kitty full size, until the end card's cue, above a scroller of the fork's features over copper bars; else a placeholder above the scroller; --banner-only: the scroller alone")
+	"kitty graphics (a=q): each frame transmitted once and placed up to three times (fork/showcase/kitty.py), one copy in the middle that slides left, then a second and a third sliding out from behind it, until the end card's cue, above a scroller of the fork's features over copper bars; else a placeholder above the scroller; --banner-only: the scroller alone")
 ACT_KMSCON=(""
 	"plays"
 	"plays"
@@ -239,7 +253,8 @@ dry_run() {
 		1) echo "  video: ${ACT1_START}s for ${ACT1_SECONDS}s, then ${ACT1_DOTS_SECONDS}s in Braille" ;;
 		3) echo "  video: ${ACT3_START}s for ${ACT3_SECONDS}s" ;;
 		5) echo "  video: ${ACT5_START}s for ${ACT5_SECONDS}s, then ${ACT5_GLITCH}s glitched" ;;
-		7) echo "  video: from ${ACT7_START}s $( [ "$ACT7_SECONDS" = 0 ] && echo 'to the end' || echo "for ${ACT7_SECONDS}s, then the end card")" ;;
+		7) echo "  video: from ${ACT7_START}s $( [ "$ACT7_SECONDS" = 0 ] && echo 'to the end' || echo "for ${ACT7_SECONDS}s, then the end card")"
+		   echo "  moves: slide ${ACT7_SLIDE_AT}s, copy 2 ${ACT7_COPY2_AT}s, copy 3 ${ACT7_COPY3_AT}s into the act (-1: never); frames by $KITTY_TRANSPORT, ${KITTY_WIDTH} px wide" ;;
 		esac
 		echo "  kmscon today: ${ACT_KMSCON[n]}"
 	done
@@ -367,6 +382,7 @@ MODES_OFF="$E[?1000l$E[?1002l$E[?1003l$E[?1005l$E[?1006l$E[?1015l$E[?1004l$E[?20
 
 bg_pids=()
 audio_pid=
+ipc_dir=  # act 7's directory for mpv's IPC socket
 
 # The keys read while a player runs, one byte at a time: q ends the show.
 # While mpv has mouse tracking on, the terminal sends reports as input: X10
@@ -439,12 +455,18 @@ stop_bg() {
 	done
 	bg_pids=()
 	audio_pid=
+	[ -z "$ipc_dir" ] || rm -rf "$ipc_dir"
+	ipc_dir=
 }
 
+# audio_start START LENGTH [mpv option...]: the soundtrack from START for
+# LENGTH seconds (0: to the end).
 audio_start() {
 	[ "$audio" = 1 ] || return 0
-	mpv --no-config --really-quiet --no-input-terminal --no-video --start="$1" --length="$2" \
-		"${audio_opts[@]}" -- "$BAD_APPLE" </dev/null >/dev/null 2>&1 &
+	local length=(--length="$2")
+	[ "$2" != 0 ] || length=()
+	mpv --no-config --really-quiet --no-input-terminal --no-video --start="$1" "${length[@]}" \
+		"${audio_opts[@]}" "${@:3}" -- "$BAD_APPLE" </dev/null >/dev/null 2>&1 &
 	audio_pid=$!
 }
 
@@ -763,52 +785,49 @@ act_6() {
 	pause "$ACT_GAP"
 }
 
-# Act 7: the video in the rows above the scroller (mpv's --vo-kitty-rows and
-# the pixel height of those rows), the scroller in its own process below,
-# until the end card's cue (ACT7_SECONDS), the soundtrack fading out over
-# its last ACT7_FADE seconds. A placeholder stays no longer than the video
-# would.
+# Act 7: the video in the rows above the scroller, through the fork's own
+# kitty graphics player (kitty.py): each frame transmitted once and placed up
+# to three times, one copy in the middle until the moves of the cue sheet
+# slide it left and bring out a second and a third. The scroller draws in
+# its own process below, the soundtrack in mpv, whose position the player
+# follows over mpv's IPC socket, dropping frames rather than drifting; it
+# fades out over the act's last ACT7_FADE seconds. Until the end card's cue
+# (ACT7_SECONDS). A placeholder stays no longer than the video would.
 act_7() {
-	local vrows=$((screen_rows - BANNER_ROWS))
 	clear_screen
 	if [ -n "$banner_only" ]; then
 		banner --seconds "$BANNER_SECONDS"
 		clear_screen
 		return
 	fi
-	if [ -z "$have_kitty" ] || ! have mpv; then
-		local why="[no kitty graphics: the a=q query got no OK]"
-		[ -z "$have_kitty" ] || why="[kitty graphics: mpv is needed]"
-		banner --placeholder "$why" --title "kitty graphics" --seconds "$(awk -v p="$PLACEHOLDER_SECONDS" \
-			-v c="$ACT7_SECONDS" 'BEGIN { print (c > 0 && c < p ? c : p) }')"
+	if [ -z "$have_kitty" ]; then
+		banner --placeholder "[no kitty graphics: the a=q query got no OK]" --title "kitty graphics" \
+			--seconds "$(awk -v p="$PLACEHOLDER_SECONDS" -v c="$ACT7_SECONDS" 'BEGIN { print (c > 0 && c < p ? c : p) }')"
 		clear_screen
 		return
 	fi
-	local length=() sound=(--no-audio) shm=no
-	[ "$ACT7_SECONDS" = 0 ] || length=(--length="$ACT7_SECONDS")
+	local ipc=()
 	if [ "$audio" = 1 ]; then
-		sound=("${audio_opts[@]}")
+		local fade=()
 		# The fade, no longer than the act, ends with it.
-		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || sound+=(--af="lavfi=[afade=t=out:$(awk \
+		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || fade=(--af="lavfi=[afade=t=out:$(awk \
 			-v s="$ACT7_START" -v l="$ACT7_SECONDS" -v f="$ACT7_FADE" \
 			'BEGIN { if (f > l) f = l; printf "st=%s:d=%s", s + l - f, f }')]")
+		ipc_dir=$(mktemp -d)
+		ipc=(--audio-ipc "$ipc_dir/mpv.sock")
+		audio_start "$ACT7_START" "$ACT7_SECONDS" --input-ipc-server="$ipc_dir/mpv.sock" "${fade[@]}"
 	fi
-	[ "$KITTY_SHM" != yes ] || shm=yes
-	# The scroller draws in its own process with one write per frame and the
-	# cursor saved and restored around it, so mpv's placement is kept.
+	# The scroller draws with the cursor saved and restored around each frame,
+	# and the player around each of its own.
 	python3 -B "$fx_py" banner --text "$(banner_text)" --rows "$BANNER_ROWS" --font "$BANNER_FONT" \
 		--fps "$BANNER_FPS" </dev/null &
 	bg_pids=($!)
-	mpv --no-config --really-quiet --no-input-terminal --vo=kitty --vo-kitty-alt-screen=no \
-		--vo-kitty-config-clear=no --vo-kitty-use-shm="$shm" \
-		--vo-kitty-cols="$screen_cols" --vo-kitty-rows="$vrows" \
-		--vo-kitty-width=$((screen_cols * cell_w)) --vo-kitty-height=$((vrows * cell_h)) \
-		--start="$ACT7_START" "${length[@]}" "${sound[@]}" -- "$BAD_APPLE" </dev/null 2>/dev/null &
-	bg_pids+=($!)
-	wait_bg "${bg_pids[1]}"
+	fx kitty --video "$BAD_APPLE" --start "$ACT7_START" --seconds "$ACT7_SECONDS" \
+		--transport "$KITTY_TRANSPORT" --width "$KITTY_WIDTH" --cell-w "$cell_w" --cell-h "$cell_h" \
+		--banner-rows "$BANNER_ROWS" --gap "$ACT7_GAP" --slide-at "$ACT7_SLIDE_AT" \
+		--copy2-at "$ACT7_COPY2_AT" --copy3-at "$ACT7_COPY3_AT" --move "$ACT7_MOVE" \
+		--bounce "$ACT7_BOUNCE" --report "$ACT7_REPORT" "${ipc[@]}"
 	stop_bg
-	player_done
-	printf '%s_Ga=d,d=A%s' "$E" "$ST"
 	clear_screen
 }
 

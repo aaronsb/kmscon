@@ -22,6 +22,7 @@ import tty
 
 import effects
 import frames
+import kitty
 import scenes
 from screen import ESC, AnyKey, Quit, geom, out, wait, watch_resize
 
@@ -108,6 +109,29 @@ def parser():
     p.add_argument("--seconds", type=float, default=0)
     p.add_argument("--placeholder", default="")
     p.add_argument("--title", default="")
+    p.add_argument("--report", default="")
+
+    p = cmd("kitty", kitty.cmd_kitty, "act 7's video through kitty graphics, up to three copies")
+    p.add_argument("--video", required=True)
+    p.add_argument("--start", type=float, default=0)
+    p.add_argument("--seconds", type=float, default=0, help="0: to the end")
+    p.add_argument("--transport", default="zlib", choices=kitty.TRANSPORTS)
+    p.add_argument("--fallback", default="zlib,raw", help="transports to try when the first is refused")
+    p.add_argument("--width", type=int, default=480, help="frames are decoded this many pixels wide")
+    p.add_argument("--level", type=int, default=1, help="zlib's level for zlib and png")
+    p.add_argument("--cell-w", type=int, default=10)
+    p.add_argument("--cell-h", type=int, default=20)
+    p.add_argument("--banner-rows", type=int, default=0, help="rows left free at the bottom")
+    p.add_argument("--gap", type=int, default=2, help="columns between copies")
+    p.add_argument("--slide-at", type=float, default=-1, help="seconds into the act copy 1 slides left")
+    p.add_argument("--copy2-at", type=float, default=-1)
+    p.add_argument("--copy3-at", type=float, default=-1)
+    p.add_argument("--move", type=float, default=1.2, help="seconds each slide takes")
+    p.add_argument("--bounce", type=float, default=0.12, help="overshoot, a share of the distance")
+    p.add_argument("--copies", type=int, default=0, help="hold this many copies still (measuring)")
+    p.add_argument("--audio-ipc", default="", help="mpv's IPC socket: follow its time-pos")
+    p.add_argument("--unpaced", action="store_true", help="every frame, as fast as the terminal takes them")
+    p.add_argument("--probe-timeout", type=float, default=1.0)
     p.add_argument("--report", default="")
 
     p = cmd("placeholder", scenes.cmd_placeholder, "a framed panel of static with text")

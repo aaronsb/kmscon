@@ -304,8 +304,8 @@ With the correction, the expectation holds at 7680x2160 for scaled pictures and 
 | 2 | on, gltex | `KIT=sixel`: sixel, ramps, article, photos, sixel-evict, photo-scroll, mpv-sixel, tmux-2x2, tmux-3x3 | `g1a319907` | 8 of 9 right; sixel-evict wrong |
 | 3 | off, bbulk | `KIT=sixel` | `g1a319907` | 9 of 9 right |
 | 5 | on, gltex | `KIT=sixel` | `gaec40b59` | 9 of 9 right |
-| 6 | on, gltex | the showcase's act 7 (`FROM=7`, with sound) | `g77457cc1` | not rated in the feedback file |
-| 7 | off, bbulk | the showcase's act 7 | `g77457cc1` | not rated in the feedback file |
+| 6 | on, gltex | the showcase's act 7 (`FROM=7`, with sound) | `g77457cc1` | not rated in the feedback file; the operator's words below |
+| 7 | off, bbulk | the showcase's act 7 | `g77457cc1` | not rated in the feedback file; the operator's words below |
 
 Run 4 ran the text kit on bbulk for another workstream (ADR-201) and is not used here.
 
@@ -347,6 +347,7 @@ Relayed by the team lead from the operator's session on 2026-10-25, verbatim. Th
 - On run 2's text, thin glyphs and artifacts at their edges, filed as #197 and fixed in `7ee63c9d`.
 - On run 5: "the text was crisp and accurate just like cpu rendering".
 - On run 6: "with three video streams on screen it renders at a constant 72 fps". The act sends one video placed as three copies, and the 72 counts the scroller's updates too (above).
+- On run 7, act 7 with bbulk: "roughly 28-30 fps" and "still, pretty good for cpu rendering". The render timer's median over the three-copy phase is 29.8 presented a second (27.9 to 31.5).
 
 ### Against ADR-108's expectation, on the real hardware
 
@@ -366,7 +367,7 @@ Relayed by the team lead from the operator's session on 2026-10-25, verbatim. Th
 - **The render timer measures kmscon's thread only:** its CPU time from preparing a frame to queuing its flip. With gltex that includes radeonsi's work on that thread. It leaves out the GPU's own time, any driver threads, and the kernel's, and nothing else was measured. The figures show that kmscon's thread spends less with `hwaccel` on, not that the machine does.
 - **Windows are chosen by signature in an untimed log,** as above. The act 7 phases rest on the cue sheet's times.
 - **Act 7 is the showcase's choreography,** with moving copies, a 40 frame-a-second scroller and sound. It is not tier 3's player.
-- **The operator's ratings judge what is seen;** they are not measurements. Run 6 and 7's figures carry the only judgement of act 7, the operator's sentence above.
+- **The operator's ratings judge what is seen;** they are not measurements. The only judgement of act 7 is the operator's words above on runs 6 and 7; neither run was rated in the feedback file.
 
 ## Acceptance (2026-10-25)
 

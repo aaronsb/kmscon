@@ -273,7 +273,10 @@ font-name=Ubuntu Mono
                 frame began or this time when it is longer. Typed keys echo
                 when the frame ends or the time runs out. Switching back to
                 the VT, a display change or a resize draws the screen as it is.
-                Set to 0 to not offer the mode: requests to hold are ignored,
+                A program that stops inside a frame freezes the console's
+                output for up to this time, so a long timeout makes a stalled
+                or crashed program look like a hung console; values above 10000
+                are cut to 10000, with a warning in the log. Set to 0 to not offer the mode: requests to hold are ignored,
                 and a program that asks (DECRQM) is told the mode is not
                 supported. (default: 200)</para>
         </listitem>

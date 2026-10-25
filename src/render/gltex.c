@@ -142,6 +142,7 @@ struct gltex_image {
 	 * larger
 	 */
 	bool drawn_size;
+	bool grow_failed;  /* GL refused it larger: not tried again while shown */
 	bool failed;	   /* GL refused it: not tried again, no texture */
 	GLint filter;	   /* its GL_TEXTURE_MIN_FILTER and MAG_FILTER */
 	uint64_t last_use; /* the frame that last drew it */
@@ -1117,12 +1118,14 @@ static void images_trim(struct gltex *gt, size_t want, size_t limit)
 	}
 }
 
-/* forget the uploads GL refused that this frame no longer shows */
+/* forget the uploads GL refused, whole or larger, that this frame no longer shows */
 static void failed_free(struct gltex *gt)
 {
 	struct gltex_image **pp = &gt->images;
 
 	while (*pp) {
+		if (!image_in_use(gt, *pp))
+			(*pp)->grow_failed = false;
 		if ((*pp)->failed && !image_in_use(gt, *pp))
 			image_free(gt, pp);
 		else
@@ -1432,7 +1435,7 @@ static struct gltex_image *place_texture(struct kmscon_text *txt,
 		/* the image at the size this placement draws it */
 		tw = ((uint64_t)gi->iw * dw + fp->src_width / 2) / fp->src_width;
 		th = ((uint64_t)gi->ih * dh + fp->src_height / 2) / fp->src_height;
-		if (!gi->drawn_size || (tw <= gi->w && th <= gi->h))
+		if (!gi->drawn_size || (tw <= gi->w && th <= gi->h) || gi->grow_failed)
 			return gi;
 	}
 
@@ -1476,10 +1479,16 @@ static struct gltex_image *place_texture(struct kmscon_text *txt,
 		gt->images_num++;
 		gt->image_bytes += old->bytes;
 		image_budget_add_picture(old->bytes);
-		if (!ret)
+		if (!ret) {
 			image_free(gt, &gt->images);
-		else
+		} else {
+			if (ret == -EFAULT && old->next == gi) {
+				/* the refusal is old's to remember, not a key of its own */
+				image_free(gt, &old->next);
+				old->grow_failed = true;
+			}
 			return old;
+		}
 	}
 	return ret ? NULL : gi;
 }

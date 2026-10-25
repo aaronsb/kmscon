@@ -1888,6 +1888,24 @@ static void test_half_budget(void)
 	run_frame(&txt, make_frame(1), false);
 	assert(texture_of(gt, 50)->tex == name && !gt->pics[0].exact);
 
+	/*
+	 * a texel a pixel, but from a source rectangle that starts between the
+	 * texels of the drawn-size texture (row 1 of 1536 is a third of a row
+	 * of 480), as a placement clipped by a region scroll does: sampled
+	 * bilinear, as NEAREST off the texels' centres would shift it; from a
+	 * row that is a texel's edge, as it is
+	 */
+	place(0, 50, 2, 0, 80, 30, TSM_FRAME_BAND_ABOVE_TEXT);
+	placements[0].height = 470;
+	placements[0].src_y = 1;
+	placements[0].src_height = 1504;
+	run_frame(&txt, make_frame(1), false);
+	gi = texture_of(gt, 50);
+	assert(gi->w == 640 && gi->h == 480 && gt->pics_num == 1 && !gt->pics[0].exact);
+	placements[0].src_y = 32; /* row 32 of 1536 is row 10 of 480 */
+	run_frame(&txt, make_frame(1), false);
+	assert(texture_of(gt, 50) == gi && gt->pics_num == 1 && gt->pics[0].exact);
+
 	image_budget_remove_picture(img);
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 	close_txt(&txt);
@@ -1929,6 +1947,53 @@ static void test_upload_failure(void)
 	assert(n_tex_rgba == tries + 2 && gt->pics_num == 1 && !texture_of(gt, 51)->failed);
 
 	close_txt(&txt);
+}
+
+/*
+ * A drawn-size texture drawn larger whose larger upload GL refuses keeps
+ * drawing from the texture it has, and the larger upload is not tried again,
+ * nor room made for it, while the image is shown; once it is not shown, a
+ * placement tries again.
+ */
+static void test_grow_failure(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gltex_image *gi;
+	size_t img = (size_t)2048 * 1536 * 4;
+	unsigned int tries, f;
+
+	max_texture_size = texture_limit = 4096;
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	image_budget_set_limit((size_t)16 << 20);
+	image_budget_add_picture(img); /* stands for libtsm's copy */
+	make_image(54, 2048, 1536, 255);
+	place(0, 54, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT); /* 320x240 */
+	run_frame(&txt, make_frame(1), false);
+	gi = texture_of(gt, 54);
+	assert(gi->drawn_size && gi->w == 320);
+
+	fail_teximage = true;
+	tries = n_tex_rgba;
+	place(0, 54, 0, 0, 80, 30, TSM_FRAME_BAND_ABOVE_TEXT); /* 640x480 */
+	for (f = 0; f < 4; f++) {
+		run_frame(&txt, make_frame(1), false);
+		assert(texture_of(gt, 54) == gi && gt->images_num == 1 && gt->pics_num == 1);
+	}
+	assert(n_tex_rgba == tries + 1);
+
+	/* not shown, the refusal is forgotten; shown again, it grows */
+	fail_teximage = false;
+	run_frame(&txt, make_frame(0), false);
+	run_frame(&txt, make_frame(1), false);
+	gi = texture_of(gt, 54);
+	assert(n_tex_rgba == tries + 2 && gi->w == 640 && gi->h == 480 && gt->images_num == 1);
+
+	image_budget_remove_picture(img);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+	close_txt(&txt);
+	max_texture_size = texture_limit = 2048;
 }
 
 /* a picture whose rows are padded goes up a row at a time, each row its own pixels */
@@ -2111,6 +2176,7 @@ int main(void)
 	test_image_rotated();
 	test_half_budget();
 	test_upload_failure();
+	test_grow_failure();
 	test_padded_rows();
 	test_source_clip();
 	test_overlay_replaced();

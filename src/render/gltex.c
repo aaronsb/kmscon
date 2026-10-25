@@ -41,8 +41,8 @@
  * atlas, which the shader draws under and over the glyph in their own colours.
  * Upstream has alpha atlases only and no decorations; this departure is
  * recorded in ADR-102's corrections from step 6 (ADR-303). The glyph cache
- * keeps the atlases within a byte bound, reusing the least recently drawn
- * glyph's slot; its section below says how.
+ * keeps the atlases within a bound in glyphs and bytes, reusing the least
+ * recently drawn glyph's slot; its section below says how.
  *
  * Images (ADR-103 steps 3f and 4e) are the frame's placements, in three bands,
  * drawn in layers: the clear to the default background, the lowest band, the

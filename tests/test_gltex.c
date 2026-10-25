@@ -1,9 +1,9 @@
 /*
  * The gltex glyph cache (ADR-102) holds each kind of glyph in its own pool of
- * strips within a byte bound and reuses the least recently drawn glyph's
- * slot, never one the frame being drawn uses; the tests from "the glyph
- * cache" on are its specification, and a reference LRU in the test checks it
- * frame by frame. A cluster's frame key carries the screen's generation, so a
+ * strips within a bound in glyphs and bytes and reuses the least recently
+ * drawn glyph's slot, never one the frame being drawn uses; the tests from
+ * "the glyph cache" on are its specification, and a reference LRU in the
+ * test checks it frame by frame. A cluster's frame key carries the screen's generation, so a
  * screen that re-creates its clusters asks for new keys every frame; they age
  * out. Its memory stays linear in the cell count at a 4K cell grid. The GL
  * stubs hold gltex to the GLES 2 texture rules a real driver enforces (#17).

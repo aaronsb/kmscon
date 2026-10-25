@@ -46,8 +46,9 @@ exit "${STATUS:-0}"
 # run-vt.sh's loginctl for a dry run's session checks and its watch of a login
 # (RUN_VT_LOGINCTL): list-sessions call k prints word k of $SEQ (the last word
 # past the end): - no session, F a failure, N one session on VT N, N:STATE one
-# in that state (active by default). Each session's id carries its VT and
-# state, which show-session reads back.
+# in that state (active by default), and N! (or N:STATE!) one that show-session
+# fails for. Each session's id carries its VT and state, which show-session
+# reads back.
 FAKE_RUN_VT_LOGINCTL = """#!/bin/bash
 case $1 in
 list-sessions)
@@ -56,10 +57,12 @@ list-sessions)
 	case $w in
 	-) ;;
 	F) echo "Failed to list sessions" >&2; exit 1 ;;
-	*) vt=${w%%:*}; st=active; [[ $w != *:* ]] || st=${w#*:}; echo "c${vt}_${st} 1000 tester seat0" ;;
+	*) bad=; [[ $w != *! ]] || bad=_x; w=${w%!}
+		vt=${w%%:*}; st=active; [[ $w != *:* ]] || st=${w#*:}; echo "c${vt}_${st}${bad} 1000 tester seat0" ;;
 	esac ;;
 show-session)
 	for id; do :; done; id=${id#c}
+	[[ $id != *_x ]] || { echo "Failed to get session" >&2; exit 1; }
 	case "$*" in
 	*VTNr*) printf 'VTNr=%s\nState=%s\n' "${id%%_*}" "${id#*_}" ;;
 	*) printf 'tester\ntty\n' ;;
@@ -632,8 +635,17 @@ def main():
 
         p = run_vt_seq("F", "--login", "8")
         check("run-vt.sh refuses when loginctl cannot list the sessions",
-              p.returncode != 0 and "loginctl list-sessions failed" in p.stderr and "+ unshare" not in p.stdout,
-              p.stdout + p.stderr)
+              p.returncode != 0 and "whether a session is on VT 8 is unknown" in p.stderr
+              and "+ unshare" not in p.stdout, p.stdout + p.stderr)
+        # A session show-session fails for is gone only when a second list no
+        # longer has it; one still listed leaves the VT unknown, so no run.
+        p = run_vt_seq("8! 8!", "8")
+        check("run-vt.sh refuses when loginctl cannot read a session still listed",
+              p.returncode != 0 and "whether a session is on VT 8 is unknown" in p.stderr
+              and "+ unshare" not in p.stdout and int(read(count)) == 2, p.stdout + p.stderr)
+        p = run_vt_seq("8! -", "8")
+        check("run-vt.sh takes a session it cannot read, gone from a second list, as ended",
+              p.returncode == 0 and "+ unshare" in p.stdout and int(read(count)) == 2, p.stdout + p.stderr)
         for seq in ("8", "8:closing"):
             p = run_vt_seq(seq, "8")
             check(f"run-vt.sh refuses VT 8 with a session there ({seq})",
@@ -646,8 +658,11 @@ def main():
         # With --login, the first logout ends the run: the watch sees no
         # session, then one, then none open (or only a closing one), and stops
         # kmscon (here a stand-in) and restarts the unit. Before any login, and
-        # through a poll whose list fails, it keeps going.
-        for seq, name in (("- - 8 F 8 -", "a logout"), ("- 8 8:online 8:closing", "a session left closing")):
+        # through a poll whose list fails or whose session cannot be read while
+        # still listed, it keeps going.
+        for seq, name in (("- - 8 F 8 -", "a logout"), ("- 8 8:online 8:closing", "a session left closing"),
+                          ("- 8 8! 8! 8 -", "a logout after a session it could not read"),
+                          ("- 8 8! -", "a logout seen as a session gone from a second list")):
             p = run_vt_seq(seq, "--login", "8", RUN_VT_CHILD="exec sleep 60")
             after = p.stdout[p.stdout.find("+ unshare "):]
             check(f"run-vt.sh --login ends at {name} and restores the unit",

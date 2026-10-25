@@ -177,14 +177,19 @@ if [ -n "$video" ] && [ -z "$dry" ]; then
 fi
 
 # Prints "ID STATE" for each logind session on VT $vt, and fails when loginctl
-# cannot list the sessions. A session that ends between the list and the
-# query is gone, so it is skipped.
+# cannot list the sessions. A session whose query fails is skipped only when a
+# second list no longer has it, as one that ended between the list and the
+# query; one still listed is a session on an unknown VT, so that fails too.
 vt_sessions() {
 	local list s props
 	list=$("$loginctl" list-sessions --no-legend) || return 1
 	while read -r s _; do
 		[ -n "$s" ] || continue
-		props=$("$loginctl" show-session -p VTNr -p State "$s" 2>/dev/null) || continue
+		if ! props=$("$loginctl" show-session -p VTNr -p State "$s" 2>/dev/null); then
+			"$loginctl" list-sessions --no-legend | awk -v s="$s" '$1 == s { listed = 1 } END { exit listed }' ||
+				return 1
+			continue
+		fi
 		[ "$(sed -n 's/^VTNr=//p' <<<"$props")" != "$vt" ] ||
 			echo "$s $(sed -n 's/^State=//p' <<<"$props")"
 	done <<<"$list"
@@ -202,14 +207,16 @@ if [ -z "$dry" ]; then
 	[ "$fg" != "$vt" ] || die "VT $vt is on screen now; run this from another VT"
 fi
 if [ -n "$loginctl" ]; then
-	on_vt=$(vt_sessions) || die "loginctl list-sessions failed, so whether a session is on VT $vt is unknown"
+	on_vt=$(vt_sessions) ||
+		die "loginctl could not list the sessions or read one of them, so whether a session is on VT $vt is unknown"
 	if [ -n "$on_vt" ]; then
 		s=${on_vt%% *}
 		die "logind session $s ($("$loginctl" show-session -p Name -p Type --value "$s" | paste -sd' ')) is on VT $vt; pick another VT"
 	fi
 else
 	show loginctl list-sessions --no-legend
-	echo "  (for each session: loginctl show-session -p VTNr -p State ID; refuse if one is on VT $vt, or if the list fails)"
+	echo "  (for each session: loginctl show-session -p VTNr -p State ID; refuse if one is on VT $vt, if the list fails,"
+	echo "   or if a query fails for a session a second list still has)"
 fi
 
 # The VT's units that run now: each is stopped below and started again on

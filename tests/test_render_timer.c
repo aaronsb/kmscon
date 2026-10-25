@@ -72,6 +72,7 @@ static void test_new_rejects(void)
 	/* every call accepts the NULL a screen without a timer holds */
 	render_timer_frame_begin(NULL);
 	render_timer_frame_end(NULL, true, 1);
+	render_timer_misses(NULL, 1);
 	render_timer_flip(NULL);
 	render_timer_free(NULL);
 }
@@ -112,6 +113,36 @@ static void test_one_interval(void)
 	assert(st.cpu_ns_max == 3 * MS);
 	assert(st.damage_px_mean == 3000);
 	assert(st.screen_px == 1280 * 800);
+	render_timer_free(d.rt);
+}
+
+/*
+ * Glyph misses add up over the interval, with the most of any one frame, and
+ * start again at 0 in the next.
+ */
+static void test_misses(void)
+{
+	struct fake_display d;
+	struct render_timer_stats st;
+
+	display_init(&d, 100, 100);
+	render_timer_frame_begin(d.rt);
+	render_timer_misses(d.rt, 40);
+	render_timer_frame_end(d.rt, true, 1);
+	render_timer_frame_begin(d.rt);
+	render_timer_misses(d.rt, 7);
+	render_timer_frame_end(d.rt, true, 1);
+	render_timer_frame_begin(d.rt);
+	render_timer_misses(d.rt, 0);
+	render_timer_frame_end(d.rt, true, 1);
+	d.clock.now += S;
+	assert(display_report(&d, &st));
+	assert(st.misses == 47 && st.misses_max == 40);
+
+	display_frame(&d, MS, 0, true, 1);
+	d.clock.now += S;
+	assert(display_report(&d, &st));
+	assert(st.misses == 0 && st.misses_max == 0);
 	render_timer_free(d.rt);
 }
 
@@ -344,7 +375,7 @@ static void test_format(void)
 		       "presented_per_s=58.88 flips=59 frames=59 cpu_ms_mean=1.235 "
 		       "cpu_ms_median=1.235 cpu_ms_p95=1.235 cpu_ms_max=1.235 "
 		       "damage_px_mean=25954 damage_pct=2.47 skipped=1 skipped_cpu_ms=0.250 "
-		       "held=0 expired=0"));
+		       "held=0 expired=0 glyph_misses=0 glyph_misses_max=0"));
 
 	/* a quiet line, and a display of no size */
 	d.clock.now += S;
@@ -353,7 +384,8 @@ static void test_format(void)
 	assert(!strcmp(line, "render-timer: display=x interval_ms=1000.000 presented_per_s=0.00 "
 			     "flips=0 frames=0 cpu_ms_mean=0.000 cpu_ms_median=0.000 "
 			     "cpu_ms_p95=0.000 cpu_ms_max=0.000 damage_px_mean=0 damage_pct=0.00 "
-			     "skipped=0 skipped_cpu_ms=0.000 held=0 expired=0"));
+			     "skipped=0 skipped_cpu_ms=0.000 held=0 expired=0 "
+			     "glyph_misses=0 glyph_misses_max=0"));
 
 	/* a short buffer is cut, and terminated */
 	assert(render_timer_format(&st, "x", line, 8) == 0);
@@ -388,6 +420,12 @@ static void test_format_osd(void)
 	st.expired = 1;
 	assert(render_timer_format_osd(&st, line, sizeof(line)) == 0);
 	assert(!strcmp(line, "0.0 fps 0.000 ms 0.0% 12 held 1 expired"));
+
+	/* glyph misses join it once there are any, before the holds */
+	st.misses = 300;
+	st.misses_max = 120;
+	assert(render_timer_format_osd(&st, line, sizeof(line)) == 0);
+	assert(!strcmp(line, "0.0 fps 0.000 ms 0.0% 300 misses 120 max 12 held 1 expired"));
 }
 
 int main(void)
@@ -395,6 +433,7 @@ int main(void)
 	test_new_rejects();
 	test_quiet_from_start();
 	test_one_interval();
+	test_misses();
 	test_skipped_passes();
 	test_intervals_reset();
 	test_quiet_after_activity();

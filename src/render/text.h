@@ -117,6 +117,8 @@ struct kmscon_text {
 	bool measure;
 	bool frame_queued;
 	uint64_t frame_damage_px;
+	/* the glyphs the renderer drew from the font since kmscon_text_prepare() */
+	unsigned int frame_misses;
 
 	struct kmscon_text_overlay *overlay; /* NULL: none */
 	uint64_t overlay_count;		     /* the overlays made, for their keys */

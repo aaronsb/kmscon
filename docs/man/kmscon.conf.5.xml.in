@@ -770,7 +770,14 @@ font-name=Ubuntu Mono
                 <option>sync-timeout</option>) and <literal>expired</literal>
                 the synchronized frames that reached
                 <option>sync-timeout</option>; the on-screen display adds
-                these two when either is above 0. A renderer that reports no
+                these two when either is above 0.
+                <literal>glyph_misses</literal> counts the glyphs the
+                renderer drew from the font because its glyph cache did not
+                hold them, and <literal>glyph_misses_max</literal> the most
+                in one frame; the on-screen display adds both when there are
+                any, as <literal>misses</literal> and <literal>max</literal>.
+                A cache that keeps missing for the same text on the screen
+                is too small for it. A renderer that reports no
                 damage counts the whole display. A second with no flip and no
                 frame is logged once, after the last active one, and then no
                 more lines are written until the display draws again; skipped

@@ -592,6 +592,7 @@ int kmscon_text_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr, b
 
 	txt->rendering = true;
 	txt->blinking = blinking;
+	txt->frame_misses = 0;
 	if (txt->ops->prepare)
 		ret = txt->ops->prepare(txt, attr);
 	if (ret)

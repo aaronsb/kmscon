@@ -379,6 +379,7 @@ static void do_redraw_screen(struct screen *scr)
 	ret = kmscon_text_present(scr->txt);
 	if (ret && ret != -EBUSY)
 		log_warning("cannot swap display [%s] %d", display_name(scr->disp), ret);
+	render_timer_misses(scr->timer, scr->txt->frame_misses);
 	render_timer_frame_end(scr->timer, !ret && scr->txt->frame_queued,
 			       scr->txt->frame_damage_px);
 }

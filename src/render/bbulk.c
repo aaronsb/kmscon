@@ -555,6 +555,7 @@ static struct kmscon_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, ui
 	cps = kmscon_text_get_cluster(txt, key, &one, &len);
 
 	glyph = kmscon_font_render(font, &attr, cps, len, width);
+	txt->frame_misses++;
 	if (!glyph)
 		return NULL;
 

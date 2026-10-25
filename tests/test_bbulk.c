@@ -380,6 +380,19 @@ static void test_damage_measured(struct kmscon_text *txt)
 }
 
 /*
+ * The render timer's glyph misses: a glyph the cache does not hold counts once,
+ * when it is drawn from the font, and not again while the cache holds it.
+ */
+static void test_glyph_misses(struct kmscon_text *txt)
+{
+	txt->frame_misses = 0;
+	assert(draw_frame_key(txt, 4, 2, 0x2603) == 0);
+	assert(txt->frame_misses == 1);
+	assert(draw_frame_key(txt, 6, 2, 0x2603) == 0);
+	assert(txt->frame_misses == 1);
+}
+
+/*
  * A cell whose glyph failed to draw gets its background at once, and its glyph
  * on a later frame.
  */
@@ -1484,6 +1497,7 @@ int main(void)
 
 	test_two_frame_rule(&txt);
 	test_damage_measured(&txt);
+	test_glyph_misses(&txt);
 	test_draw_failure_retried(&txt);
 	test_underline_cursor_colour(&txt);
 	test_placement_damage(&txt);

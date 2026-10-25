@@ -311,11 +311,11 @@ Run 4 ran the text kit on bbulk for another workstream (ADR-201) and is not used
 
 ### How the figures are windowed
 
-The kmscon log carries no timestamps. The render timer writes one line per display per second, in order, so a window is a run of consecutive lines, chosen by its signature and the page order. In each window, CPU time is the median of the seconds' medians (every second in these windows drew frames). The 95th percentile is the 95th percentile of those medians, alongside the largest second's own 95th percentile and its maximum. The presented rate is the median of the seconds' rates. The parser, `vt.py`, is kept with `recompute.py` in `/home/aaron/Projects/terminal/emulators/session-artifacts-2026-10-25/evidence-109-scripts/` (`python3 -I vt.py <log> [first end]`) and is separate from the harness's.
+The kmscon log carries no timestamps. The render timer writes one line per display per second, in order, so a window is a run of consecutive lines, chosen by its signature and the page order. In each window, CPU time is the median of the seconds' medians (every second in these windows drew frames). The 95th percentile is the 95th percentile of those medians, alongside the largest second's own 95th percentile and its maximum. The presented rate is the median of the seconds' rates. The parser, `vt.py`, is kept with `recompute.py` in `/home/aaron/Projects/terminal/emulators/session-artifacts-2026-10-25/evidence-109-scripts/` (`python3 -I vt.py <log> [first end]`, where `end` is exclusive, as in `vt.py run6-act7-hwaccel.log 14 73`) and is separate from the harness's.
 
-- **Act 7.** The act's seconds run from the first line above 20 presents a second after the start screen to the last before the end card's steady 44 a second. The windows below are the 59 seconds wholly inside: lines 14 to 72 of run 6 and 4 to 62 of run 7, counted from 0. Each frame is 2246x1680 (15.1 MB in ARGB), placed in a 112x42-cell box of 2240x1680, both computed from the player's layout for this grid. Both renderers therefore draw it slightly scaled. Three copies show from the cue at 1:10 to the end card at 1:46, the act's last 36 seconds. In run 7 the damage shows it: 87.5% to 90.8% of the screen on lines 28 to 62, three boxes (68%) and the scroller's rows (22%), against 43% to 46% with one copy. For run 6 the same 35 lines from the end, 38 to 72, stand for that phase.
-- **mpv-sixel.** Five consecutive lines at about 34 presents a second, after the photo pages and before the tmux grids. In run 3 they carry 11.9% to 17.4% damage, mpv's 1920x1080 window being 12.5% of the screen. Those are lines 48 to 52 of run 3, 85 to 89 of run 2, and 36 to 40 of run 5.
-- **Pages at rest.** Every line with at most 5 presents a second, the cursor's blink and the on-screen figures, after the first line.
+- **Act 7.** The act's seconds run from the first line above 20 presents a second after the start screen to the last before the end card's steady 44 a second. The windows below are the 59 seconds wholly inside: lines 14 to 72 of run 6 and 4 to 62 of run 7, counted from 0. Each frame is 2246x1680 (15.1 MB in ARGB), placed in a 112x42-cell box of 2240x1680, both computed from the player's layout for this grid. Both renderers therefore draw it slightly scaled. Three copies show from the cue at 1:10 to the end card at 1:46, the act's last 36 seconds. In run 7 the damage shows it: 87.5% to 90.8% of the screen on lines 28 to 62, three boxes (68%) and the scroller's rows (22%), against 43% to 46% with one copy on lines 4 to 18. Between them, lines 19 to 27 carry 55% to 76% damage as the second copy slides out from the cue at 1:02. For run 6 the same 35 lines from the end, 38 to 72, stand for the three-copy phase.
+- **mpv-sixel.** Five consecutive lines at about 34 presents a second, after the photo pages and before the tmux grids. In run 3 they carry 11.9% to 17.4% damage, mpv's 1920x1080 window being 12.5% of the screen. Those are lines 48 to 52 of run 3, 85 to 89 of run 2, and 36 to 40 of run 5. The fifth line is partial in runs 2 (28.97) and 5 (24.94), as the clip ends.
+- **Pages at rest.** Every line with at most 5 presents a second, the cursor's blink and the on-screen figures, after the first line. In run 3, 12 of these 35 lines are page changes, with 33% to 100% damage, 5 of them at medians of 8.30 to 8.64 ms. The other 23 carry under 1% damage at a median of 0.73 ms (at most 0.82), the same as all 35.
 - **The tmux grids** are not separated: the logs hold stretches that fit them, but not cleanly enough to attribute.
 
 ### Figures
@@ -330,7 +330,8 @@ The kmscon log carries no timestamps. The render timer writes one line per displ
 | mpv-sixel, 5 s: presented per second | 34.0 (run 3) | 34.0 (run 2), 34.0 (run 5) |
 | Pages at rest: CPU per drawn frame | 0.73 ms (run 3, 35 s; damage 0.05%) | 2.38 ms (run 1, 47 s), 2.44 ms (run 2, 38 s), 2.39 ms (run 5, 15 s) |
 
-- **Act 7's presented rates are not frame counts of the video.** The act plays one 29.97 frame-a-second video, each frame sent once and placed up to three times, under a scroller that draws 40 frames a second in a process of its own (`BANNER_FPS`). Together that is about 70 updates a second (29.97 and 40), computed from the two senders' settings. gltex presents 69 to 75 a second, so it drew them as they came. bbulk presents about 30 at a median of 38 ms a frame. With three copies, its mean of 28.9 ms over 29.6 frames a second keeps its thread busy about 86% of each second. So it draws less often than the updates arrive and folds several into one frame. The player's own count of frames shown and dropped was not kept (`ACT7_REPORT` was unset), so whether bbulk kept every video frame is not known.
+- **Act 7's presented rates are not frame counts of the video.** The act plays one 29.97 frame-a-second video, each frame sent once and placed up to three times, under a scroller that draws 40 frames a second in a process of its own (`BANNER_FPS`). Together that is about 70 updates a second (29.97 and 40), computed from the two senders' settings. The copies' slides also move them (`ACT7_MOVE`, `ACT7_BOUNCE`), and the on-screen figures redraw once a second, while updates that coincide fold into one frame. gltex's 69 to 75 a second is consistent with drawing every update but does not establish it. bbulk presents about 30 a second. Its frame cost is bimodal: with one copy its seconds' medians run from 5.3 to 35.4 ms, and with three copies its mean is 28.9 ms against a median of 38.5. The 59 s median of 38.37 ms is essentially the three-copy phase's.
+- **Busy share of kmscon's thread.** Mean CPU per frame times frames per second gives bbulk about 846 ms of each second over the act (85%), and 856 ms with three copies (86%). It draws less often than the updates arrive and folds several into one frame. gltex spends about 171 ms of each second (2.39 ms times 71.6 frames, 17%). Per second, gltex's thread does about a fifth of bbulk's work; per drawn frame, about a sixteenth. The player's own count of frames shown and dropped was not kept (`ACT7_REPORT` was unset), so whether bbulk kept every video frame is not known.
 - **mpv-sixel** plays a 30 frame-a-second clip, and both renderers present 34 a second. mpv's own counts were not kept in these runs, so what the extra presents carry, and whether either path dropped frames, is not shown.
 - **At rest,** bbulk redraws only the cursor's cell and the figures (0.05% of the screen). gltex redraws all of it every frame.
 
@@ -342,24 +343,29 @@ From the feedback file, verbatim:
 - Run 2, 08:50, tmux-3x3, right: "right visually, but performance is degraded a bit (less frames, choppier)".
 - Run 3 (bbulk), 08:54, tmux-2x2, right: "framerate was not as fast as single video and frame consistency had some 'burstiness' to consistency (frame replay timing had bursting jitter)"; tmux-3x3, right: "same bursting jitter as last, with an even lower overall framerate".
 
+From #197, filed from the operator's VT review on 2026-10-25 and fixed in `7ee63c9d` before run 5:
+
+- On run 1 (kitty kit, gltex, `g1a319907`), whose pages were rated right, quoted verbatim in the issue's body: "the text itself looked slightly poorer than before, as if it was just a hair too thin and even a few characters had some single pixel artifacts on the edge of the cell (just a few, out of all the characters)".
+- On run 2 (sixel kit, the same build), the issue's follow-up comment records the same artifacts again, with the operator's example of an inverse-video lowercase 'q'. That is the comment's description, not the operator's words.
+
 Relayed by the team lead from the operator's session on 2026-10-25, verbatim. These are not in the feedback file:
 
-- On run 2's text, thin glyphs and artifacts at their edges, filed as #197 and fixed in `7ee63c9d`.
-- On run 5: "the text was crisp and accurate just like cpu rendering".
+- On run 5: "the text was crisp and accurate just like cpu rendering". #197's closing comment quotes the same words.
 - On run 6: "with three video streams on screen it renders at a constant 72 fps". The act sends one video placed as three copies, and the 72 counts the scroller's updates too (above).
 - On run 7, act 7 with bbulk: "roughly 28-30 fps" and "still, pretty good for cpu rendering". The render timer's median over the three-copy phase is 29.8 presented a second (27.9 to 31.5).
 
 ### Against ADR-108's expectation, on the real hardware
 
-- **Act 7, kitty video at 7680x2160 drawn slightly scaled, up to three copies, under a scroller: holds on both counts.** gltex takes 2.37 ms per drawn frame against bbulk's 38.37, about a sixteenth, and presents 71.0 a second against 29.9. It agrees in direction with the VM's scaled player (8.6 against 30 to 35 ms). The workload is the showcase's, not tier 3's player, so the two are not the same cell.
+- **Act 7, kitty video at 7680x2160 drawn slightly scaled, up to three copies, under a scroller: holds on both counts.** gltex takes 2.37 ms per drawn frame against bbulk's 38.37, about a sixteenth, and presents 71.0 a second against 29.9. Per second it keeps kmscon's thread busy about 17% of the time against bbulk's 85%, about a fifth. It agrees in direction with the VM's scaled player (8.6 against 30 to 35 ms). The workload is the showcase's, not tier 3's player, so the two are not the same cell.
 - **mpv-sixel at 7680x2160: higher CPU time with gltex,** 2.17 to 2.19 ms against 1.68. The presented rate is the same, 34.0. This agrees with the VM's verdict on CPU (9.1 to 9.3 against 2.6 ms), and on the real hardware the gap is about half a millisecond. The VM's lower presented rate is not seen here, and the GL edge-second bias does not apply to these medians of whole seconds.
-- **Pages at rest:** gltex's full redraw costs 2.38 to 2.44 ms a frame against bbulk's 0.73 for the cursor alone. This is a few frames a second, not a workload ADR-108 names.
+- **Pages at rest:** gltex's full redraw costs 2.38 to 2.44 ms a frame against bbulk's 0.73 for the cursor alone. This is a few frames a second, not a workload ADR-108 names. It is not gltex's floor: its mpv-sixel frames cost less, 2.17 to 2.19 ms.
 - **VM-only:**
   - every cell at 1280x800;
-  - at 7680x2160, the tier 3 player at its own size (PNG and shared memory, one and three copies);
+  - at 7680x2160, the tier 3 player at its own size (PNG and shared memory, one and three copies) and scaled. Act 7 shrinks its frames by 0.3% (2246 to 2240 pixels wide), where tier 3's scaled player enlarges them about five times;
   - `mpv --vo=kitty`;
   - the photograph beside scrolling text;
   - the tmux grids, which the logs do not separate.
+- **The kitty pages** (run 1) ran on gltex only. There is no off-against-on comparison for them.
 
 ### Limits
 

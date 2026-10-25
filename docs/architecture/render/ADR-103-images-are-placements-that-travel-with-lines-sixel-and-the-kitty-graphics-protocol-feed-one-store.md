@@ -1105,7 +1105,7 @@ meson setup builddir --native-file scripts/profiles/minimal.ini
 
 **unifont stays.** With `font-engine` unset, its default, kmscon tries the font backends in the order freetype, pango, unifont, psf, 8x16 (`default_backend`, `src/font/font.c`), and takes the first that loads. mod-unifont ignores `font-name` and always loads, so with freetype and pango out, unifont draws, and it covers the Basic Multilingual Plane; without it, the console falls to mod-psf, which fails on the default `font-name`, `monospace`, and then to the built-in 8x16 font, U+0000 to U+00FF. Its cost is zlib, which way 1 keeps, and a 1.9 MB module.
 
-**A console font takes two settings.** Because unifont comes before psf and always loads, `font-name=/usr/share/kbd/consolefonts/ter-v16n.psf.gz` alone changes nothing; `font-engine=psf` with it selects the font. There is no fallback between backends glyph by glyph: a character the selected font lacks draws as U+FFFD from that font, or `?` when it lacks that too (`src/font/font.c`). So a PSF console font gives that font's 256 or 512 glyphs, as under fbcon, and unifont gives the Basic Multilingual Plane in unifont's own face; the user picks one. The documentation says so.
+**A console font takes two settings.** Because unifont comes before psf and always loads, `font-name=/usr/share/kbd/consolefonts/default8x16.psfu.gz` alone changes nothing; `font-engine=psf` with it selects the font. (Corrected 2026-10-25 by the profiles step: the example named `ter-v16n.psf.gz`, which terminus-font installs there, not kbd.) There is no fallback between backends glyph by glyph: a character the selected font lacks draws as U+FFFD from that font, or `?` when it lacks that too (`src/font/font.c`). So a PSF console font gives that font's 256 or 512 glyphs, as under fbcon, and unifont gives the Basic Multilingual Plane in unifont's own face; the user picks one. The documentation says so.
 
 **What it links,** read with `readelf -d` from a current build of `main` and confirmed in the meson files:
 
@@ -1144,7 +1144,7 @@ Option 2, for a build with no zlib at all. It adds a second machine file:
 meson setup builddir --native-file scripts/profiles/minimal.ini --native-file scripts/profiles/no-zlib.ini
 ```
 
-`no-zlib.ini` sets `zlib = 'disabled'` and `font_unifont = 'disabled'`; meson reads the files in order. Its extra cost: mod-psf reads uncompressed fonts only, and every PSF font Arch's kbd ships is gzipped (374 of 374 in `/usr/share/kbd/consolefonts`). The user decompresses one, `gunzip -c /usr/share/kbd/consolefonts/ter-v16n.psf.gz > /etc/kmscon/ter-v16n.psf`, and selects it with `font-engine=psf` and `font-name=/etc/kmscon/ter-v16n.psf`; without one, text outside U+0000 to U+00FF draws only where kmscon's box-drawing and block-element sprites cover it. The documentation says this beside the trade table.
+`no-zlib.ini` sets `zlib = 'disabled'` and `font_unifont = 'disabled'`; meson reads the files in order. Its extra cost: mod-psf reads uncompressed fonts only, and every PSF font Arch's kbd ships is gzipped (229 of 229 of kbd 2.10.0's files in `/usr/share/kbd/consolefonts`; the directory held 374 with terminus-font's). The user decompresses one, `gunzip -c /usr/share/kbd/consolefonts/default8x16.psfu.gz > /etc/kmscon/default8x16.psfu`, and selects it with `font-engine=psf` and `font-name=/etc/kmscon/default8x16.psfu`; (Corrected 2026-10-25 by the profiles step: the example was terminus-font's `ter-v16n.psf.gz`, and the count was the directory's.) without one, text outside U+0000 to U+00FF draws only where kmscon's box-drawing and block-element sprites cover it. The documentation says this beside the trade table.
 
 How zlib becomes optional:
 
@@ -1236,7 +1236,7 @@ ADR-201 asks every reply to describe what the terminal does. A build without ima
 4. **kmscon, `zlib`.** The option, mod-psf without gzip, its unit test and fixture. About 80 lines.
 5. **The profiles.** `scripts/profiles/minimal.ini` and `no-zlib.ini`, `fork/profiles.mk`, the two CI jobs, and the README's "Minimal build" section with the trade table, the fbcon comparison and the zlib-free variant's extra step. About 150 lines.
 
-Seven PRs, two of them libtsm's, and the pin bump: about 900 new lines with tests and 450 moved, and no tier 2 or tier 3 golden moves. Steps 1 and 2 can run in parallel, 2b after 2a; 3 follows the pin bump; 4 and 5 follow 3.
+Six PRs, two of them libtsm's, and the pin bump (corrected 2026-10-25; it read "Seven PRs"): about 900 new lines with tests and 450 moved, and no tier 2 or tier 3 golden moves. Steps 1 and 2 can run in parallel, 2b after 2a; 3 follows the pin bump; 4 and 5 follow 3.
 
 ### Later: the potato variant boots the minimal build
 

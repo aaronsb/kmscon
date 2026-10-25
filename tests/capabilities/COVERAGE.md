@@ -2,7 +2,7 @@
 
 Each feature the fork built, the tests that would catch a regression of it, and the paths those tests reach. A gap is either closed by a light test in the same change as this map or filed. `#N` is an aaronsb/kmscon issue or PR, `libtsm#N` an aaronsb/libtsm one. Probes are rows of [capabilities.list](capabilities.list), run by the `capabilities` meson test against the pinned libtsm.
 
-Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex); video D2 (drm2d) / FB (fbdev). Tier 1 is libtsm's replay in three views (cell state `golden/`, `golden-draw2/`, `golden-frame/`); tier 2 is `tests/test_pixels.c` (FT + BB + the real drm2d blend into a fake display at normal orientation); tier 3's default variants run PG + BB + D2 in a VM with blink off; its GL variant runs PG + GT on drm3d under virgl. No test reaches unifont, psf or fbdev end to end, or a real GL context.
+Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex); video D2 (drm2d) / FB (fbdev). Tier 1 is libtsm's replay in three views (cell state `golden/`, `golden-draw2/`, `golden-frame/`); tier 2 is `tests/test_pixels.c` (FT + BB + the real drm2d blend into a fake display at normal orientation); tier 3's 2D variants run PG + BB + D2 in a VM with blink off, and its GL variant runs PG + GT on drm3d under virgl. No test reaches unifont, psf or fbdev end to end, or a GL driver other than through virgl.
 
 ## libtsm
 
@@ -45,7 +45,7 @@ Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex);
 | Hardware cursor commit | #80 | `test_blink.c` `test_hw_cursor` | text.c + fake cursor | `drm_shared.c`: #119 |
 | Glyph draw failure retried | #33, #80 | `test_bbulk.c` | BB | guarded |
 | Frame age per display | #33, #41 | `test_text.c` `test_two_displays`; `test_blink.c` | any renderer | guarded |
-| gltex glyph cache stays bounded | #33 | `test_gltex.c` `test_bounded` | GT, GL stubbed | real GL: #17 |
+| gltex glyph cache stays bounded | #33 | `test_gltex.c` `test_bounded` | GT, GL stubbed | real GL: tier 3's `gl-1280x800` draws through virgl, which runs the shaders at fp32 and asserts no cache bound; a native driver that lowers `mediump`, as radeonsi may, is reached by no test (#197) |
 | drm2d and fbdev premultiplied blend | #33 | `test_blend.c` (drm2d; fbdev 32/24/16 bpp); tier 2 uses the real drm2d blend | D2; FB maths only | fbdev end to end, rotation: #118 |
 | `grapheme-width` option | #29, #33 | `test_conf.c` | parse only | drawing under wcwidth: #122 |
 | FreeType W-calibrated cell size (upstream sync) | #62 | every tier 2 golden (9x16 cell) | FT/BB | tier 3 runs pango: #121 |

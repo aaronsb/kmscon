@@ -117,6 +117,8 @@ struct gltex {
 	 * and one for the pointer, and the vertex arrays gltex_render() fills
 	 * from them, each atlas's quads together. All atlases share them, so
 	 * their size follows the cell count, not the number of atlases (#43).
+	 * Upstream gives each atlas its own arrays: an ADR-303 departure users
+	 * cannot see, recorded in PR #180.
 	 */
 	struct gltex_quad *quads;
 	unsigned int quads_num;
@@ -181,6 +183,9 @@ static void free_quads(struct gltex *gt)
 	free(gt->cache_texpos);
 	free(gt->cache_fgcol);
 	free(gt->cache_bgcol);
+	gt->quads = NULL;
+	gt->cache_pos = gt->cache_texpos = gt->cache_fgcol = gt->cache_bgcol = NULL;
+	gt->quads_num = gt->quads_size = 0;
 }
 
 /* room for @n quads, in the queue and in the vertex arrays */

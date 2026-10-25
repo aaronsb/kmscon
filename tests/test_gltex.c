@@ -14,7 +14,6 @@
 #include <GLES2/gl2.h>
 #include <assert.h>
 #include <errno.h>
-#include <malloc.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -23,6 +22,14 @@
 #include "../src/render/text.h"
 #include "../src/shl/gl.h"
 #include "../src/video/video.h"
+
+/* mallinfo2() is glibc's, from 2.33; elsewhere the heap is not measured */
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+#include <malloc.h>
+#define HAVE_MALLINFO2 1
+#else
+#define HAVE_MALLINFO2 0
+#endif
 
 #define FAKE_CELL_W 8
 #define FAKE_CELL_H 16
@@ -41,15 +48,33 @@ static unsigned int n_draws;	/* glDrawArrays calls since the last reset */
 static unsigned int n_rendered; /* glyphs rasterised */
 
 /*
- * What GL knows of each texture name, so the stubs fail where a driver would
- * raise GL_INVALID_OPERATION or GL_INVALID_VALUE (#17): a name is bound only
- * once generated, and a glyph is uploaded only into a texture glTexImage2D
- * gave storage, and inside it.
+ * What GL knows of each texture, so the stubs fail where a driver raises
+ * GL_INVALID_OPERATION or GL_INVALID_VALUE (#17). As in GLES 2, binding a name
+ * gltex never generated, or one it deleted, makes a texture without storage
+ * (a stray); a glyph uploaded into a texture glTexImage2D gave no storage, or
+ * outside it, is the error, where #17's driver failed.
  */
 static struct fake_tex {
-	bool live;    /* generated and not deleted */
+	GLuint name;
+	bool live;    /* generated and not deleted, or bound as a stray */
 	GLsizei w, h; /* its storage; 0 before glTexImage2D */
-} texs[4096];
+} texs[4096], strays[16];
+static unsigned int n_strays;
+
+/* the texture GL knows by @name, a new stray when it knows none */
+static struct fake_tex *tex_of(GLuint name)
+{
+	unsigned int i;
+
+	if (name < sizeof(texs) / sizeof(*texs) && texs[name].live)
+		return &texs[name];
+	for (i = 0; i < n_strays; i++)
+		if (strays[i].name == name)
+			return &strays[i];
+	assert(n_strays < sizeof(strays) / sizeof(*strays));
+	strays[n_strays] = (struct fake_tex){.name = name, .live = true};
+	return &strays[n_strays++];
+}
 
 /* the glyph masks uploaded while keep_uploads is set */
 static bool keep_uploads;
@@ -65,7 +90,7 @@ static unsigned int n_uploads;
 void glActiveTexture(GLenum texture) {}
 void glBindTexture(GLenum target, GLuint texture)
 {
-	assert(texture < sizeof(texs) / sizeof(*texs) && texs[texture].live);
+	tex_of(texture);
 	bound_tex = texture;
 }
 void glClear(GLbitfield mask) {}
@@ -90,16 +115,18 @@ void glPixelStorei(GLenum pname, GLint param) {}
 void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
 		  GLint border, GLenum format, GLenum type, const void *pixels)
 {
-	assert(texs[bound_tex].live && level == 0);
+	struct fake_tex *t = tex_of(bound_tex);
+
+	assert(level == 0);
 	assert(internalformat == GL_ALPHA && format == GL_ALPHA && type == GL_UNSIGNED_BYTE);
 	assert(width > 0 && width <= 2048 && height > 0 && height <= 2048);
-	texs[bound_tex].w = width;
-	texs[bound_tex].h = height;
+	t->w = width;
+	t->h = height;
 }
 void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
 		     GLsizei height, GLenum format, GLenum type, const void *pixels)
 {
-	const struct fake_tex *t = &texs[bound_tex];
+	const struct fake_tex *t = tex_of(bound_tex);
 	struct upload *u;
 
 	assert(t->live && t->w && level == 0 && format == GL_ALPHA && type == GL_UNSIGNED_BYTE);
@@ -149,7 +176,7 @@ void gl_tex_new(GLuint *tex, size_t num)
 	for (size_t i = 0; i < num; i++) {
 		tex[i] = ++n_textures;
 		assert(tex[i] < sizeof(texs) / sizeof(*texs));
-		texs[tex[i]] = (struct fake_tex){.live = true};
+		texs[tex[i]] = (struct fake_tex){.name = tex[i], .live = true};
 	}
 }
 void gl_tex_free(GLuint *tex, size_t num)
@@ -340,9 +367,13 @@ static void test_bounded(void)
 /* bytes in use on the heap, the blocks malloc maps on its own included */
 static size_t heap_in_use(void)
 {
+#if HAVE_MALLINFO2
 	struct mallinfo2 mi = mallinfo2();
 
 	return mi.uordblks + mi.hblkhd;
+#else
+	return 0;
+#endif
 }
 
 /*
@@ -424,9 +455,13 @@ static void test_vertex_memory(void)
 			peak = used;
 	}
 
-	fprintf(stderr, "4K grid: %zu cells, at most %zu bytes held, %zu per cell\n", cells, peak,
-		peak / cells);
-	assert(peak <= cells * 1024);
+	if (!HAVE_MALLINFO2) {
+		fprintf(stderr, "4K grid: no mallinfo2(), so the memory bound is not checked\n");
+	} else {
+		fprintf(stderr, "4K grid: %zu cells, at most %zu bytes held, %zu per cell\n", cells,
+			peak, peak / cells);
+		assert(peak <= cells * 1024);
+	}
 
 	gltex_unset(&txt);
 	gltex_destroy(&txt);
@@ -478,8 +513,11 @@ static void assert_drawn(struct kmscon_text *txt, const struct tsm_frame *frame,
  * is the list head inside struct gltex, read as an atlas, so the glyph went to
  * a texture name made of a float's bits whenever the bytes after the head
  * passed for room. Under virgl every upload then failed with
- * GL_INVALID_OPERATION and the screen stayed black. The display leaves a
- * margin, so the offsets next to the head are not zero.
+ * GL_INVALID_OPERATION and the screen stayed black. The test checks the
+ * outcome. The display leaves a margin so off_x and off_y are not zero: with
+ * c5b2fa5's fields after the list head, that is what let its lookup pass the
+ * room check, and that plant fails here (#180). Today the queue follows the
+ * head, and the old lookup alone fails test_bounded instead.
  */
 static void test_first_glyph(void)
 {

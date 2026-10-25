@@ -57,6 +57,7 @@ kmscon_srcs = [
     'render_timer.c',
     'terminal.c',
     'terminal_image.c',
+    'terminal_sync.c',
     'terminal_vte.c',
 ]
 kmscon_dep = [

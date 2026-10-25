@@ -76,6 +76,9 @@ kmscon|KMS Console,
 # Cursor Shape
   Se=\E[0 q, Ss=\E[%p1%d q,
 
+# Synchronized Output (mode 2026, tmux(1): Sync)
+  Sync=\E[?2026%?%p1%{1}%-%tl%eh%;,
+
 # Input Keys
   kbs=^?, kcub1=\E[D, kcud1=\E[B,
   kcuf1=\E[C, kcuu1=\E[A, kcbt=\E[Z,

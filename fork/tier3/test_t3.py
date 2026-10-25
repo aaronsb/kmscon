@@ -54,13 +54,14 @@ class ScreenTextTest(unittest.TestCase):
         self.assertIsNone(t3_evaluate.screen_text("vt-switch", LOG))
         # wide-margin moves the cursor to reach the screen's real edge,
         # s1-scroll prints 500 000 lines of which the screen shows the last,
-        # the sixel and kitty screens draw pictures, and flood clears what it
-        # streamed, so they have no text on purpose; every other screen has
-        # its rows.
+        # the sixel and kitty screens draw pictures, flood clears what it
+        # streamed, and sync-hold redraws its frames in place and prints the
+        # terminal's replies, so they have no text on purpose; every other
+        # screen has its rows.
         textless = ("wide-margin", "s1-scroll", "sixel", "sixel-ramps", "sixel-article",
                     "sixel-bound", "sixel-evict", "photos", "photo-scroll", "mpv-sixel",
                     "tmux-2x2", "tmux-3x3", "kitty", "kitty-photo", "kitty-files", "kitty-layers",
-                    "flood")
+                    "flood", "sync-hold")
         with contextlib.redirect_stderr(io.StringIO()):
             for name in textless:
                 self.assertIsNone(t3_evaluate.screen_text(name, LOG))

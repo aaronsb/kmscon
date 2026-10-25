@@ -62,3 +62,45 @@ jobs:
       working-directory: ./build
       run: meson test --print-errorlogs
 
+  # The minimal build and its zlib-free variant (ADR-103): the profile's
+  # machine files, its tests, and what its installed files link, checked
+  # against a kmscon built with images in the same job (the nm check's control)
+  profiles:
+    name: ${{ matrix.profile }} build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [minimal, zlib-free]
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies on Ubuntu
+      # the profile needs udev, xkbcommon and libdrm, and zlib unless
+      # zlib-free; the control, kmscon with images, libpng as well
+      run: sudo apt-get update && sudo apt-get install -y meson check libudev-dev libxkbcommon-dev libdrm-dev zlib1g-dev libpng-dev
+
+    - name: Configure the profile
+      run: |
+        files="--native-file scripts/profiles/minimal.ini"
+        if [ "${{ matrix.profile }}" = zlib-free ]; then
+          files="$files --native-file scripts/profiles/no-zlib.ini"
+        fi
+        meson setup build $files
+
+    - name: Build
+      run: meson compile -C build
+
+    - name: Test
+      run: meson test -C build --print-errorlogs
+
+    - name: Install
+      run: meson install -C build --destdir stage
+
+    - name: Build kmscon with images, the nm check's control
+      run: |
+        meson setup control --force-fallback-for=libtsm -Dlibtsm:default_library=static -Dimages=enabled
+        meson compile -C control kmscon
+
+    - name: Check what the installed files link
+      run: python3 -I -B tests/check_profile.py ${{ matrix.profile }} build build/stage control/src/kmscon

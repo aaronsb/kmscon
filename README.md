@@ -98,6 +98,59 @@ explicitly enable it via command line:
 |`docs`|`auto`| Build manpages and documentation |
 |`term`|`kmscon`| Default $TERM value |
 
+### Minimal build
+
+The minimal build is kmscon as a userspace replacement for the kernel's console, with nothing it does not need: text on the screen through DRM or fbdev, read and written through a pty, with keyboard input through xkbcommon. One machine file selects it:
+
+```sh
+meson setup builddir --native-file scripts/profiles/minimal.ini
+```
+
+`scripts/profiles/minimal.ini` turns off `images`, `video_drm3d`, `renderer_gltex`, `font_freetype`, `font_pango` and `dbus`, turns on `zlib`, `font_psf` and `font_unifont`, and builds libtsm as the pinned static subproject, so libtsm leaves out its image decoders too. A `-D` given after the file overrides any of these. In the dev container, `make test PROFILE=minimal` builds and tests it in `fork/build-minimal`, and `make profile-check PROFILE=minimal` also checks what the installed files link.
+
+| | |
+|---|---|
+| **You keep** | text with 16, 256 and 24-bit colours; Unicode across the Basic Multilingual Plane through unifont, the default, or a PSF console font (`font-engine=psf` and `font-name`), whose missing glyphs draw as U+FFFD or `?`; xkb keyboard layouts set with `--xkb-layout` or kmscon.conf; scrollback; drm2d and fbdev on every display; multiseat |
+| **You give up** | inline images, sixel and the kitty graphics protocol; GPU drawing, so `hwaccel` has nothing to turn on; FreeType and Pango text: outline fonts, ligatures and other shaping, complex scripts, colour emoji, and fontconfig's font fallback; the keyboard layout from `localectl` |
+| **You gain** | fewer libraries and less code reading untrusted data: no PNG decoder, no image helper, no GL stack, no font shaper, no D-Bus; a smaller install; a console that starts with libdrm, libudev, libxkbcommon and zlib alone |
+| **Who it is for** | consoles on servers and appliances that show only text, rescue and recovery systems, and old or small hardware |
+
+It is made for the fork's potato computer standard: tier 3's `2d-1366x768-potato` variant, a guest with 1 vCPU, 512 MB, a 1366x768 display, drm2d and bbulk, is its baseline.
+
+A console font takes two settings. With `font-engine` unset, kmscon takes the first font backend that loads, in the order freetype, pango, unifont, psf, 8x16, and unifont always loads, so `font-name` alone changes nothing in this build. `font-engine=psf` with `font-name` set to a PSF file selects it:
+
+```
+font-engine=psf
+font-name=/usr/share/kbd/consolefonts/default8x16.psfu.gz
+```
+
+There is no fallback between backends glyph by glyph: a PSF font gives its 256 or 512 glyphs, as under fbcon, and unifont gives the Basic Multilingual Plane in unifont's own face.
+
+Beside the kernel's console:
+
+- *Matches fbcon:* it needs no session manager, display server, D-Bus or logind, only a DRM or fbdev device, udev and its own files; with `font-engine=psf` and `font-name` it reads the PSF fonts `setfont` reads (`/usr/share/kbd/consolefonts/*.psfu.gz` on Arch), and draws a character the font lacks as fbcon does, with the font's replacement glyph. Running it from an initramfs that has udev is in reach, and untested.
+- *Adds to it:* with unifont, the default, the whole Basic Multilingual Plane, where fbcon draws at most a PSF font's 512 glyphs; 24-bit colour, xkb layouts, scrollback (fbcon's was removed in Linux 5.9), more than one seat, and DRM modesetting per display.
+- *Stays in the kernel:* messages before userspace starts, and panic output, which the kernel draws itself through drm_panic.
+
+**The zlib-free variant** leaves zlib out as well, with a second machine file read after the first:
+
+```sh
+meson setup builddir --native-file scripts/profiles/minimal.ini --native-file scripts/profiles/no-zlib.ini
+```
+
+It has no unifont, and mod-psf reads uncompressed fonts only, while every PSF font Arch's kbd ships is gzipped. Decompress one and select it:
+
+```sh
+gunzip -c /usr/share/kbd/consolefonts/default8x16.psfu.gz > /etc/kmscon/default8x16.psfu
+```
+
+```
+font-engine=psf
+font-name=/etc/kmscon/default8x16.psfu
+```
+
+Without one, text outside U+0000 to U+00FF, the built-in 8x16 font, draws only where kmscon's box-drawing and block-element sprites cover it. `make test PROFILE=zlib-free` builds it in the dev container.
+
 
 ## Running
 
@@ -135,7 +188,8 @@ you can configure the font in kmscon.conf
 ```
 font-engine=freetype
 font-size=18
-# font-name is only for freetype/pango. Unifont and 8x16 uses their own bitmap.
+# font-name is the font for freetype and pango, and the PSF file for psf;
+# unifont and 8x16 use their own bitmaps.
 font-name=Hack Nerd Font
 ```
 

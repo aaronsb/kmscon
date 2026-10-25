@@ -498,22 +498,25 @@ def decode(video, start, seconds, w, h, pix):
 def cmd_kitty(a):
     vw, vh, fps = ffprobe(a.video)
     aspect = vw / vh
-    w = a.width
-    h = max(2, round(w / aspect / 2) * 2)
     transport = a.transport
     for t in [transport] + [x for x in a.fallback.split(",") if x and x != transport]:
         if t not in ("shm",) or probe(t, a.probe_timeout):
             transport = t
             break
-    enc = Encoder(transport, w, h, a.level)
-
     def layout():
         cols, rows = geom()[:2]
         return Layout(cols, max(1, rows - a.banner_rows), a.cell_w, a.cell_h, aspect, a.gap)
 
+    # Width 0: a copy's own pixel height, so the terminal shows the frame
+    # at its size and scales nothing (a resize later scales it).
+    lay = layout()
+    h = max(2, lay.r * a.cell_h // 2 * 2) if a.width <= 0 else max(2, round(a.width / aspect / 2) * 2)
+    w = max(2, round(h * aspect)) if a.width <= 0 else a.width
+    enc = Encoder(transport, w, h, a.level)
+
     chor = Choreography(a.slide_at, a.copy2_at, a.copy3_at, a.move, a.bounce, a.copies)
     clock = Clock(a.audio_ipc, a.start) if a.audio_ipc else Clock()
-    player = Player(enc, layout(), chor, fps, a.seconds, clock=clock, unpaced=a.unpaced)
+    player = Player(enc, lay, chor, fps, a.seconds, clock=clock, unpaced=a.unpaced)
 
     def tick(p, t):
         if resized():

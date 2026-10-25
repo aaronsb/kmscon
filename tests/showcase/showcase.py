@@ -530,24 +530,30 @@ def kitty_checks(root):
         for name in ("ffprobe", "ffmpeg"):
             os.chmod(os.path.join(stubs, name), 0o755)
         report = os.path.join(tmp, "report")
-        pid, fd = pty.fork()
-        if pid == 0:
-            os.environ["PATH"] = stubs + ":" + os.environ["PATH"]
-            os.execvp("python3", ["python3", "-B", os.path.join(root, "fork/showcase/fx.py"), "kitty",
-                                  "--video", "clip.mp4", "--seconds", "1", "--transport", "raw", "--width", "64",
-                                  "--banner-rows", "4", "--slide-at", "0.2", "--copy2-at", "0.4",
-                                  "--copy3-at", "0.6", "--move", "0.2", "--report", report])
-        got = b""
-        while True:
-            r, _, _ = select.select([fd], [], [], 10)
-            try:
-                d = os.read(fd, 65536) if r else b""
-            except OSError:
-                break
-            if not d:
-                break
-            got += d
-        _, st = os.waitpid(pid, 0)
+
+        def fx_kitty(*args, **env):
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.environ["PATH"] = stubs + ":" + os.environ["PATH"]
+                os.environ.update(env)
+                os.execvp("python3", ["python3", "-B", os.path.join(root, "fork/showcase/fx.py"), "kitty",
+                                      "--video", "clip.mp4", *args])
+            got = b""
+            while True:
+                r, _, _ = select.select([fd], [], [], 10)
+                try:
+                    d = os.read(fd, 65536) if r else b""
+                except OSError:
+                    break
+                if not d:
+                    break
+                got += d
+            _, st = os.waitpid(pid, 0)
+            return st, got
+
+        st, got = fx_kitty("--seconds", "1", "--transport", "raw", "--width", "64", "--banner-rows", "4",
+                           "--slide-at", "0.2", "--copy2-at", "0.4", "--copy3-at", "0.6", "--move", "0.2",
+                           "--report", report)
         store = KittyStore()
         store.feed(got)
         rep = open(report).read() if os.path.exists(report) else ""
@@ -557,6 +563,15 @@ def kitty_checks(root):
               f"status {st}, {store.errors[:3]}, {store.transmits} frames, {rep}")
         check("fx.py kitty sends no query when its transport needs none, and leaves the cursor where it was",
               b"a=q" not in got and got.count(b"\x1b7") == got.count(b"\x1b8") > 0, repr(got[:120]))
+        # Width 0: frames as tall as a copy's rows in pixels, so the terminal
+        # shows them at their size. 100x40 cells of 10x20, 4 rows for the
+        # scroller: three copies 23 rows tall.
+        st, got = fx_kitty("--seconds", "0.2", "--transport", "raw", "--width", "0", "--banner-rows", "4",
+                           "--cell-w", "10", "--cell-h", "20", "--copies", "3", COLUMNS="100", LINES="40")
+        lay = kitty.Layout(100, 36, 10, 20, 1444 / 1080)
+        want = f"s={round(lay.r * 20 * 1444 / 1080)},v={lay.r * 20}".encode()
+        check(f"fx.py kitty --width 0 sends frames of a copy's own size ({want.decode()})",
+              os.waitstatus_to_exitcode(st) == 0 and want in got, repr(re.findall(rb"s=\d+,v=\d+", got)[:1]))
 
 
 if __name__ == "__main__":

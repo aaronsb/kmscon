@@ -118,7 +118,7 @@ def parser():
     p.add_argument("--seconds", type=float, default=0, help="0: to the end")
     p.add_argument("--transport", default="png", choices=kitty.TRANSPORTS)
     p.add_argument("--fallback", default="png,raw", help="transports to try when the first is refused")
-    p.add_argument("--width", type=int, default=480, help="frames are decoded this many pixels wide")
+    p.add_argument("--width", type=int, default=0, help="frames are decoded this many pixels wide (0: a copy's own size)")
     p.add_argument("--level", type=int, default=1, help="zlib's level for zlib and png")
     p.add_argument("--cell-w", type=int, default=10)
     p.add_argument("--cell-h", type=int, default=20)

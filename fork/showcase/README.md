@@ -92,7 +92,7 @@ On the VT, the wired and USB outputs need the user in the `audio` group: the ope
 
 ## Act 7's player
 
-`kitty.py` plays act 7, written from the kitty graphics protocol's published spec alone (ADR-300's clean room). ffmpeg decodes the clip `KITTY_WIDTH` (480) pixels wide, and each frame is transmitted once (`a=t`) and placed up to three times (`a=p`, placement ids 1 to 3), the terminal scaling it into each copy's cells (`c` and `r`). A copy moves by being placed again under its placement id at another column, which the spec says replaces the placement "without flicker"; nothing is sent again. Re-sending an image id deletes that image's placements, so the frames alternate between two ids: a frame is transmitted to one, its copies placed, and the other deleted with `d=I`, which frees its data, all in one write. The terminal never holds more than two of the player's images, and a copy is never without its picture. Copy 1 is in front (`z=3`) and each later copy behind the one before, so a copy sliding out from behind another starts hidden. Every command carries `q=2`, so nothing comes back into the show's input, and `C=1`, so the cursor stays put.
+`kitty.py` plays act 7, written from the kitty graphics protocol's published spec alone (ADR-300's clean room). ffmpeg decodes the clip at a copy's own pixel size (`KITTY_WIDTH=0`; a number decodes it that many pixels wide and the terminal scales it up), and each frame is transmitted once (`a=t`) and placed up to three times (`a=p`, placement ids 1 to 3) in each copy's cells (`c` and `r`). A copy moves by being placed again under its placement id at another column, which the spec says replaces the placement "without flicker"; nothing is sent again. Re-sending an image id deletes that image's placements, so the frames alternate between two ids: a frame is transmitted to one, its copies placed, and the other deleted with `d=I`, which frees its data, all in one write. The terminal never holds more than two of the player's images, and a copy is never without its picture. Copy 1 is in front (`z=3`) and each later copy behind the one before, so a copy sliding out from behind another starts hidden. Every command carries `q=2`, so nothing comes back into the show's input, and `C=1`, so the cursor stays put.
 
 The transports (`KITTY_TRANSPORT`):
 
@@ -121,6 +121,26 @@ On kmscon, in tier 3's VM (4 vCPUs, the 2D renderer: drm2d and bbulk) at 7680x21
 The player sent 29.2 to 29.7 frames a second in every run and dropped none. At 7680x2160 composition sets the rate: each copy is 2242x1672 pixels, the render timer's median frame took 22.4 ms with one copy and 26.5 ms with three, and three copies present 27 to 28 frames a second; the transport moves kmscon's time by about 2 ms a frame. `png` is the default: inline, so it works before login, the smallest on the pty, and as cheap as `shm` on kmscon within the run's noise. mpv --vo=kitty at act 7's old area sent 17.8 frames a second at 7680x2160 (94 of 240 dropped) at 50 ms of kmscon's time each, and 29.6 at 1280x800. The harness and every figure are in the session's artifacts (`session-artifacts-2026-10-24/kplayer`).
 
 Act 7 itself, in kitty at 1280x800 with the scroller, the moves and the soundtrack on a PipeWire null sink, played 600 frames in 20 s on mpv's clock with none dropped.
+
+### Where kmscon's time goes
+
+Asked after the operator saw act 7 under `mpv --vo=kitty` run smoother in desktop kitty, full screen on the same display with a smaller font, than on kmscon at 7680x2160. The same tier 3 VM at 7680x2160 (19x38 cell, 404x56 cells; the video rows 404x44), 8 s each, kmscon's CPU per frame split into composition (the render timer's CPU per presented frame, bbulk's scaling and blending) and the rest (pty read, parsing, base64, conversion to the store's premultiplied ARGB, placements); the image helper runs in its own process, on another core, and is counted apart:
+
+| Stream (pixels a frame) | Frames a second sent / presented | Composition | The rest | Helper | kmscon's CPU |
+|---|---|---|---|---|---|
+| player, `png` 480x360, 1 copy (scaled to 2229x1672) | 29.3 / 29.4 | 22.5 ms | 0.6 ms | 0.5 ms | 68% |
+| player, `png` 480x360, 3 copies | 29.7 / 28.1 | 24.9 ms | 0.7 ms | 0.7 ms | 76% |
+| player, `png` 2236x1672, 1 copy (unscaled) | 29.7 / 30.5 | 2.7 ms | 6.2 ms | 7.8 ms | 27% |
+| player, `png` 2236x1672, 3 copies | 29.7 / 30.9 | 6.9 ms | 6.1 ms | 7.8 ms | 39% |
+| player, `zlib` 2236x1672, 3 copies | 29.5 / 30.4 | 7.2 ms | 6.3 ms | 6.3 ms | 40% |
+| player, `shm` 2236x1672, 3 copies | 29.7 / 29.8 | 6.6 ms | 3.0 ms | 2.4 ms | 29% |
+| player, `raw` 2236x1672, 1 copy | 15.8 / 15.8 | 3.2 ms | 42.9 ms | none | 73% |
+| mpv's recorded stream (2235x1672 `f=24`, as act 7 sent it), fed unpaced | 22.2 / 22.4 | 2.7 ms | 41.8 ms | none | 99% |
+| the player's recorded `png` 2236x1672 3-copy stream, fed unpaced | 60.5 / 61.7 | 6.7 ms | 5.4 ms | 7.6 ms | 73% |
+
+Two costs set kmscon's rate. Scaling: each frame is a new image, so bbulk scales it afresh, about 20 ms for a 2229x1672 copy of a 480x360 frame, where an unscaled picture of that size composes in about 3 ms. And inline raw data: mpv's 15 MB of base64 a frame costs kmscon about 42 ms, so it accepts 22 frames a second at most, at a full core. On the host, libtsm alone (`tsm-replay` on the recorded stream) spends about 25 ms a frame, most of it in its base64 decoder, which handles a byte at a time and copies three bytes per call into the upload; a pty carries the 15 MB in about 15 ms. So the player sends frames at a copy's own size, as greyscale PNG: nothing to scale, a twentieth of the bytes, and the decoding in the helper's process. That halves kmscon's CPU against 480-wide frames and presents every frame. Both costs are recorded against aaronsb/kmscon#161.
+
+Desktop kitty on the operator's GPU could not be measured here. Under Xvfb (software GL), kitty 0.49.2 at 7680x2160 with a 22x51 cell (349x42 cells) took mpv's recorded stream at about 10 frames a second and the player's native PNG stream at about 90, so those figures say nothing of the operator's kitty. The streams were the same bytes for both terminals: 2235x1672 pixels a frame for mpv's.
 
 ## Pacing
 

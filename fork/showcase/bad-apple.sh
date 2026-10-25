@@ -110,7 +110,7 @@ cue() {
 : "${BANNER_FPS:=40}"            #   frames a second; it moves one column a frame
 : "${BANNER_SECONDS:=0}"         #   --banner-only runs this long (0: until q)
 : "${KITTY_TRANSPORT:=png}"      #   how each frame travels: raw, zlib, png or shm (fork/showcase/kitty.py)
-: "${KITTY_WIDTH:=480}"          #   frames are decoded this many pixels wide; the terminal scales them up
+: "${KITTY_WIDTH:=0}"            #   frames are decoded this many pixels wide (0: a copy's own size, nothing to scale)
 : "${ACT7_REPORT:=}"             #   a file to append the player's frame rate to
 : "${PLACEHOLDER_SECONDS:=6}"    # a placeholder (act 5 or 7) stays this long
 
@@ -254,7 +254,7 @@ dry_run() {
 		3) echo "  video: ${ACT3_START}s for ${ACT3_SECONDS}s" ;;
 		5) echo "  video: ${ACT5_START}s for ${ACT5_SECONDS}s, then ${ACT5_GLITCH}s glitched" ;;
 		7) echo "  video: from ${ACT7_START}s $( [ "$ACT7_SECONDS" = 0 ] && echo 'to the end' || echo "for ${ACT7_SECONDS}s, then the end card")"
-		   echo "  moves: slide ${ACT7_SLIDE_AT}s, copy 2 ${ACT7_COPY2_AT}s, copy 3 ${ACT7_COPY3_AT}s into the act (-1: never); frames by $KITTY_TRANSPORT, ${KITTY_WIDTH} px wide" ;;
+		   echo "  moves: slide ${ACT7_SLIDE_AT}s, copy 2 ${ACT7_COPY2_AT}s, copy 3 ${ACT7_COPY3_AT}s into the act (-1: never); frames by $KITTY_TRANSPORT, $( [ "$KITTY_WIDTH" = 0 ] && echo "a copy's own size" || echo "${KITTY_WIDTH} px wide")" ;;
 		esac
 		echo "  kmscon today: ${ACT_KMSCON[n]}"
 	done

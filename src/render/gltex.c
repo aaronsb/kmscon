@@ -217,7 +217,7 @@ struct gltex_pic {
  * The hard stop, per display: a gltex's four pools together never take a
  * strip past this (pool_grow()), and a glyph past it is drawn blank. Correct
  * operation, in a monospace font's cells, reaches it only in cells over 1024
- * pixels high, and never passes it; the cache's section says why.
+ * pixels high; the cache's section says why.
  * -DGLTEX_CACHE_HARD_BYTES=... changes it.
  */
 #ifndef GLTEX_CACHE_HARD_BYTES
@@ -871,14 +871,16 @@ static void argb_to_rgba(struct kmscon_glyph *glyph)
  * most doubles it) and of masks 32 MiB, plus what a strip leaves unused at
  * its end. A monospace font's cells are no wider than they are high; in
  * such cells up to 256 pixels high, which covers every size zoom reaches (it
- * stops past font size 150), the four pools hold at most 396 MiB (computed
- * for every such cell, in both orientations: 392 at most). Larger cells
- * leave more of a strip unused: in 520x1030 cells a strip of 2048x2048
- * texels holds three, so a screen of colour glyphs takes 10 strips, 160 MiB,
- * one cell wide and 14, 224 MiB, two wide, and the four pools hold up to
- * 512 MiB. Only cells over 1024 pixels high, a configured font size of about
- * 750, take the cache to the hard stop in correct operation, and none past
- * it.
+ * stops past font size 150), the four pools hold at most about 400 MiB,
+ * computed for every such cell in both orientations. The most is where a
+ * display draws fewer columns than the terminal has, so a row can end in
+ * half a wide glyph. Larger cells leave more of a strip unused: in 520x1030
+ * cells a strip of 2048x2048 texels holds three, so a screen of colour glyphs
+ * takes 10 strips, 160 MiB, one cell wide and 14, 224 MiB, two wide, and the
+ * four pools hold up to 512 MiB. Only cells over 1024 pixels high, a
+ * configured font size of about 750, take the cache to the hard stop in
+ * correct operation; with rows ending in half a wide glyph they could ask
+ * for more, and the glyphs past the stop are drawn blank.
  *
  * The hard stop, twice the ceiling, 512 MiB, bounds the cache should a bug or
  * a pattern of writes get past that: a glyph a strip past it would need is

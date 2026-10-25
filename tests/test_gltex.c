@@ -3331,8 +3331,9 @@ static void test_cache_upload_failure(void)
  * draws nothing until a set succeeds: gltex_rotate() says so, which its
  * callers ignore, and each gltex_prepare() tries the set again, failing
  * while the context is gone and saying so once; gltex_draw() refuses instead
- * of using what the unset freed. The first prepare whose set succeeds draws
- * as from an empty cache, in the new orientation.
+ * of using what the unset freed. The first prepare whose set succeeds keeps
+ * the size in cells the terminal gave meanwhile, and draws as from an empty
+ * cache, in the new orientation.
  */
 static void test_cache_failed_rotate(void)
 {
@@ -3356,10 +3357,14 @@ static void test_cache_failed_rotate(void)
 	assert(gt->set_failed_logged && !gt->shader);
 	assert(gltex_prepare(&txt, &attr) == -EFAULT);
 	assert(gltex_draw(&txt, make_frame(0), false) == -EINVAL);
+	/* the terminal's size meanwhile, a cell short of the text's each way */
+	gltex_resize(&txt, txt.max_cols - 1, txt.max_rows - 1);
 	fail_display_use = false;
 
 	assert(gltex_prepare(&txt, &attr) == 0);
 	assert(gt->shader && !gt->set_failed_logged && txt.orientation == OR_RIGHT);
+	assert(txt.cols == txt.max_cols - 1 && txt.rows == txt.max_rows - 1);
+	gltex_resize(&txt, txt.max_cols, txt.max_rows);
 	gt->pool_max_glyphs = UINT_MAX;
 	gt->pool_max_bytes = CACHE_BOUND;
 	cache_frame(&txt, cells, n);

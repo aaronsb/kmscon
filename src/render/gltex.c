@@ -1223,7 +1223,7 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 {
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
-	unsigned int i;
+	unsigned int i, cols = txt->cols, rows = txt->rows;
 	bool logged;
 	int ret;
 
@@ -1231,7 +1231,8 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	 * A gltex whose set failed, as a rotation's can (its callers go on
 	 * without it), is set again here, each frame until a set succeeds; until
 	 * then it draws nothing, and says so once. gltex_set() clears the gltex,
-	 * so the flag is kept across it.
+	 * so the flag is kept across it, and gives the text its largest size in
+	 * cells, so the size the terminal gave it since is put back.
 	 */
 	if (!gt->shader) {
 		logged = gt->set_failed_logged;
@@ -1244,6 +1245,8 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 			gt->set_failed_logged = true;
 			return ret;
 		}
+		if (cols && rows && cols <= txt->max_cols && rows <= txt->max_rows)
+			gltex_resize(txt, cols, rows);
 	}
 	ret = display_use(txt->disp);
 	if (ret)

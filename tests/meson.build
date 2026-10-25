@@ -126,6 +126,15 @@ if enable_video_drm2d
         dependencies: [libdrm_deps, shl_deps, htable_deps],
     )
     test('test_blend', test_blend)
+
+    # a DRM mode's refresh rate, which bounds coalescing (ADR-201 step 6)
+    test_drm_refresh = executable(
+        'test_drm_refresh',
+        'test_drm_refresh.c',
+        include_directories: src_inc,
+        dependencies: [libdrm_deps],
+    )
+    test('test_drm_refresh', test_drm_refresh)
 endif
 
 if enable_video_fbdev

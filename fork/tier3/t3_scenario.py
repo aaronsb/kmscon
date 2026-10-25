@@ -11,7 +11,7 @@ import time
 import t3_bench
 import t3_evaluate
 from t3_common import BASE, GUEST, RUNDIR, rel
-from t3_evaluate import BENCHMARKS, KEYED, KEYS_AFTER, NO_IMAGES_SCREEN, evaluate, screens
+from t3_evaluate import BENCHMARKS, KEYED, KEYS_AFTER, NO_IMAGES_SCREENS, evaluate, screens
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
 # Display variants. Each boots its own guest from the base image, with its
@@ -109,11 +109,17 @@ def evaluate_variant(variant, caps, meta, log):
             for case in variant_cases(variant)]
 
 
-def refused_images(vm):
-    """Whether the guest's sixel screen reported that kmscon offers no sixel
-    (sixel-common.inc's T3-NO-SIXEL on the event port)."""
+# What sixel-common.inc and kitty-common.inc report on the event port when
+# kmscon refuses their pictures.
+REFUSALS = [b"T3-NO-SIXEL", b"T3-NO-KITTY"]
+
+
+def missing_refusals(vm):
+    """The refusals the guest's sixel and kitty screens did not report on the
+    event port: none on a variant that offers no images."""
     with open(vm.events, "rb") as f:
-        return any(line.startswith(b"T3-NO-SIXEL") for line in f)
+        seen = {line.split()[0] for line in f if line.strip()}
+    return [r.decode() for r in REFUSALS if r not in seen]
 
 
 def newest_packages(pkgdir, name):
@@ -290,12 +296,14 @@ def run_variant(variant, timing, pkgs, log):
             last = wait_stable(vm, path, want=lambda img, prev=last: img.data != prev.data)
             caps[name] = path
             phase(name)
-            if name == NO_IMAGES_SCREEN and not draws_images(variant):
-                if refused_images(vm):
-                    caps["no-images"] = path
+            if name == NO_IMAGES_SCREENS[-1] and not draws_images(variant):
+                missing = missing_refusals(vm)
+                if missing:
+                    errors["no-images"] = ("kmscon offered images on a variant whose renderer "
+                                           "draws no image placements: no %s"
+                                           % " or ".join(missing))
                 else:
-                    errors["no-images"] = ("kmscon offered sixel on a variant whose renderer "
-                                           "draws no image placements")
+                    caps["no-images"] = path
             # The keyed cases of this screen, each captured once the screen
             # has changed from the capture before it: a key that changes
             # nothing fails its case.

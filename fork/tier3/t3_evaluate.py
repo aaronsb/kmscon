@@ -53,14 +53,15 @@ SAME_AS = {"photo-scrollforward": "photo-scroll", "vt-restore": SCREENS[-1]}
 # The screens that draw sixel or kitty pictures. A terminal offers images only
 # where its renderer draws placements (ADR-103), which gltex does not until
 # ADR-103 steps 3f and 4e (ADR-108). A variant whose renderer draws none
-# (VARIANTS' "draws_images": False) still draws NO_IMAGES_SCREEN, which there
-# prints that the terminal offers no sixel, and its no-images check holds the
-# variant to that. It skips the rest, which would wait for pictures that never
-# come; they are reported as skipped, with SKIPPED_WHY.
+# (VARIANTS' "draws_images": False) still draws NO_IMAGES_SCREENS, which there
+# print that the terminal offers neither sixel nor kitty graphics, and its
+# no-images check holds the variant to both. It skips the rest, which would
+# wait for pictures that never come; they are reported as skipped, with
+# SKIPPED_WHY.
 IMAGE_SCREENS = ["sixel", "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict",
                  "photos", "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "kitty",
                  "kitty-photo", "kitty-files", "kitty-layers", "flood"]
-NO_IMAGES_SCREEN = "sixel"
+NO_IMAGES_SCREENS = ["sixel", "kitty"]
 SKIPPED_WHY = ("not drawn: this variant's renderer draws no image placements, so kmscon "
                "offers no images on it (ADR-108) until gltex draws them (ADR-103 steps 3f "
                "and 4e)")
@@ -73,11 +74,12 @@ def keyed(name):
 
 def skipped(draws_images=True):
     """The cases a variant skips: none, or where its renderer draws no image
-    placements, every image screen but NO_IMAGES_SCREEN and the keyed cases
+    placements, every image screen but NO_IMAGES_SCREENS and the keyed cases
     after them."""
     if draws_images:
         return []
-    return [c for name in IMAGE_SCREENS if name != NO_IMAGES_SCREEN for c in [name] + keyed(name)]
+    return [c for name in IMAGE_SCREENS if name not in NO_IMAGES_SCREENS
+            for c in [name] + keyed(name)]
 
 
 def screens(draws_images=True):
@@ -87,13 +89,14 @@ def screens(draws_images=True):
 
 def cases(draws_images=True):
     """Every case of a variant's report, skipped ones included: each screen and
-    the keyed cases after it, the no-images check after NO_IMAGES_SCREEN where
-    the renderer draws no image placements, then the VT switch (a check
-    without a golden) and the restore after it."""
+    the keyed cases after it, the no-images check after the last of
+    NO_IMAGES_SCREENS where the renderer draws no image placements, then the
+    VT switch (a check without a golden) and the restore after it."""
+    last = [s for s in SCREENS if s in NO_IMAGES_SCREENS][-1]
     out = []
     for name in SCREENS:
         out += [name] + keyed(name)
-        if name == NO_IMAGES_SCREEN and not draws_images:
+        if name == last and not draws_images:
             out.append("no-images")
     return out + ["vt-switch", "vt-restore"]
 
@@ -119,11 +122,12 @@ CHECKS = {
     "sixel-evict-zoomed": "Scrolled down, then zoomed with Ctrl+=: a scaled copy of the last "
                           "picture for the larger cells. Correct: the last picture drawn, "
                           "scaled to the larger cells, under its caption.",
-    "no-images": "The sixel screen on a variant whose renderer draws no image placements "
-                 "(ADR-108). Correct: the screen reports that kmscon's DA1 reply has no "
-                 "attribute 4 and sends no picture; once the renderer draws placements "
-                 "(ADR-103 steps 3f and 4e), this check fails and the variant's "
-                 "\"draws_images\" flag goes.",
+    "no-images": "The sixel and kitty screens on a variant whose renderer draws no image "
+                 "placements (ADR-108), captured after the kitty screen. Correct: both "
+                 "report that kmscon refused, sixel because its DA1 reply has no attribute "
+                 "4 and kitty because it does not answer the graphics query, and neither "
+                 "sends a picture; once the renderer draws placements (ADR-103 steps 3f "
+                 "and 4e), this check fails and the variant's \"draws_images\" flag goes.",
     "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
                  "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
                  "screen just left.",

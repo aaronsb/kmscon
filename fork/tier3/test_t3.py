@@ -406,21 +406,21 @@ class VariantTest(unittest.TestCase):
     def test_gl_draws_no_images(self):
         # gltex draws no placements until ADR-103 steps 3f and 4e, so the GL
         # variant draws every screen but the image ones, which its report
-        # carries as skipped, and draws the sixel screen to check the
-        # refusal; the 2D variants run every case as before.
+        # carries as skipped, and draws the sixel and kitty screens to check
+        # the refusals; the 2D variants run every case as before.
         self.assertIs(t3_scenario.VARIANTS["gl-1280x800"]["draws_images"], False)
         self.assertFalse(t3_scenario.draws_images("gl-1280x800"))
         skipped = t3_evaluate.skipped(False)
         drawn = t3_evaluate.screens(False)
         for name in t3_evaluate.SCREENS:
             with self.subTest(name):
-                image = name in t3_evaluate.IMAGE_SCREENS and name != "sixel"
+                image = name in t3_evaluate.IMAGE_SCREENS and name not in ("sixel", "kitty")
                 self.assertEqual(name in skipped, image)
                 self.assertEqual(name in drawn, not image)
         for screen, case, _ in t3_evaluate.KEYED:
             self.assertIn(case, skipped)
         gl = t3_scenario.variant_cases("gl-1280x800")
-        i = gl.index("sixel")
+        i = gl.index("kitty")
         self.assertEqual(gl[:i + 1] + gl[i + 2:], t3_evaluate.CASES)
         self.assertEqual(gl[i + 1], "no-images")
         self.assertEqual(t3_evaluate.golden_for("gl-1280x800", "no-images"), (None, None))
@@ -446,17 +446,22 @@ class VariantTest(unittest.TestCase):
                     self.assertEqual(c["status"], "fail")
 
     def test_refused_images(self):
-        # The sixel screen reports kmscon's refusal on the event port.
+        # The sixel and kitty screens report kmscon's refusals on the event
+        # port, and the no-images check needs both.
         with tempfile.TemporaryDirectory() as d:
             vm = mock.Mock(events=os.path.join(d, "events.log"))
             with open(vm.events, "w") as f:
                 f.write("T3-LOGIN\nT3-DONE sgr\n")
-            self.assertFalse(t3_scenario.refused_images(vm))
+            self.assertEqual(t3_scenario.missing_refusals(vm), ["T3-NO-SIXEL", "T3-NO-KITTY"])
             with open(vm.events, "a") as f:
                 f.write("T3-NO-SIXEL\nT3-DONE sixel\n")
-            self.assertTrue(t3_scenario.refused_images(vm))
-        with open(os.path.join(t3_evaluate.GUEST, "screens", "sixel-common.inc")) as f:
-            self.assertIn("echo T3-NO-SIXEL >\"$T3_EVENTS\"", f.read())
+            self.assertEqual(t3_scenario.missing_refusals(vm), ["T3-NO-KITTY"])
+            with open(vm.events, "a") as f:
+                f.write("T3-NO-KITTY\nT3-DONE kitty\n")
+            self.assertEqual(t3_scenario.missing_refusals(vm), [])
+        for inc, marker in (("sixel-common.inc", "T3-NO-SIXEL"), ("kitty-common.inc", "T3-NO-KITTY")):
+            with open(os.path.join(t3_evaluate.GUEST, "screens", inc)) as f:
+                self.assertIn("echo %s >\"$T3_EVENTS\"" % marker, f.read())
 
     def test_image_screens(self):
         # A screen that sends a picture sources sixel-common.inc or

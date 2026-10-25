@@ -40,7 +40,9 @@
  * it is. Underlines and strike-through are deco.c's sprites, cells of an alpha
  * atlas, which the shader draws under and over the glyph in their own colours.
  * Upstream has alpha atlases only and no decorations; this departure is
- * recorded in ADR-102's corrections from step 6 (ADR-303).
+ * recorded in ADR-102's corrections from step 6 (ADR-303). The glyph cache
+ * keeps the atlases within a byte bound, reusing the least recently drawn
+ * glyph's slot; its section below says how.
  *
  * Images (ADR-103 steps 3f and 4e) are the frame's placements, in three bands,
  * drawn in layers: the clear to the default background, the lowest band, the
@@ -83,7 +85,7 @@
 #include "picture.h"
 #include "shl/dlist.h"
 #include "shl/gl.h"
-#include "shl/hashtable.h"
+#include "shl/htable/htable.h"
 #include "shl/log.h"
 #include "shl/misc.h"
 #include "text.h"
@@ -91,6 +93,11 @@
 
 #define LOG_SUBSYSTEM "text_gltex"
 
+/*
+ * An atlas: a texture one cell high holding @count cells side by side. A
+ * strip of the glyph cache belongs to @pool and holds its @slots; the
+ * decoration sprites' strip has neither.
+ */
 struct atlas {
 	struct dlist list;
 
@@ -99,7 +106,8 @@ struct atlas {
 	unsigned int height;
 	unsigned int width;
 	unsigned int count;
-	unsigned int fill;
+	struct pool *pool;
+	struct gl_glyph *slots;
 
 	unsigned int cache_num; /* quads queued this frame */
 	unsigned int cache_off; /* their first slot in the vertex arrays */
@@ -108,11 +116,27 @@ struct atlas {
 	GLfloat advance_vtex;
 };
 
+/*
+ * A slot of a strip, its pool's cells wide at cell @texoff of @atlas, and,
+ * while @held, the glyph for @key it holds, found in the cache by @id.
+ */
 struct gl_glyph {
-	bool double_width;
-	struct kmscon_glyph_key key;
+	struct dlist lru; /* in its pool's list */
 	struct atlas *atlas;
 	unsigned int texoff;
+	bool held;
+	bool double_width;
+	struct kmscon_glyph_key key;
+	uint64_t id;
+	uint64_t last_use; /* the frame that last drew it */
+};
+
+/* the strips of one kind of slot: glyphs of @format, @cells wide */
+struct pool {
+	GLenum format;
+	unsigned int cells;
+	struct dlist lru; /* its slots, the most recently drawn first, the empty ones last */
+	size_t bytes;	  /* its strips' textures */
 };
 
 /*
@@ -169,14 +193,13 @@ struct gltex_pic {
 
 #define GLYPH_WIDTH(gly) ((gly)->buf.width)
 #define GLYPH_HEIGHT(gly) ((gly)->buf.height)
-#define GLYPH_STRIDE(gly) ((gly)->buf.stride)
 #define GLYPH_DATA(gly) ((gly)->buf.data)
 
-/*
- * The glyph cache holds at most this many screens of atlas cells between
- * flushes (see gltex_flush()).
- */
-#define GLTEX_CACHE_SCREENS 4
+/* a pool's strips take new ones until their textures hold this many bytes */
+#define GLTEX_POOL_BYTES (4 << 20)
+
+/* alpha one cell wide, alpha two, RGBA one, RGBA two: see pool_of() */
+#define GLTEX_POOLS 4
 
 /* the shader's vertex attributes, gltex_set()'s attr */
 #define GLTEX_ATTRS 7
@@ -184,10 +207,12 @@ struct gltex_pic {
 struct gltex {
 	/* first, so gltex_trim finds gltex by it; in the budget while counted is set */
 	struct image_budget_cache cache;
-	struct shl_hashtable *glyphs;
 	unsigned int max_tex_size;
-	unsigned int cells;	/* atlas cells handed out since the last flush */
-	unsigned int max_cells; /* flush at the next frame once cells passes this */
+
+	/* the glyph cache: the slots holding a glyph, by id, and the pools */
+	struct htable glyphs;
+	struct pool pools[GLTEX_POOLS];
+	size_t pool_max_bytes; /* GLTEX_POOL_BYTES */
 
 	struct dlist atlases;
 
@@ -211,14 +236,13 @@ struct gltex {
 	GLfloat *cache_deco;
 
 	/*
-	 * The decoration sprites, each kind at cell deco_off + its kind of
-	 * deco_atlas, KMSCON_DECO_NONE blank. They are uploaded for the first
-	 * cell drawn after a flush, which drops them with the glyphs. An upload
+	 * The decoration sprites, each kind at the cell of its kind in
+	 * deco_atlas, KMSCON_DECO_NONE blank: a strip of their own, outside the
+	 * glyph cache, uploaded for the first cell drawn and kept. An upload
 	 * that fails is tried once a frame (deco_tried), and the frame is drawn
 	 * without decorations.
 	 */
 	struct atlas *deco_atlas;
-	unsigned int deco_off;
 	bool deco_tried;
 
 	/* the mouse pointer's quad, drawn after everything else (#181) */
@@ -302,13 +326,6 @@ static void gltex_destroy(struct kmscon_text *txt)
 	struct gltex *gt = txt->data;
 
 	free(gt);
-}
-
-static void free_glyph(void *data)
-{
-	struct gl_glyph *glyph = data;
-
-	free(glyph);
 }
 
 static void free_quads(struct gltex *gt)
@@ -429,6 +446,8 @@ static int image_shader_new(struct gltex *gt)
 
 static void gltex_trim(struct image_budget_cache *cache, size_t want);
 static size_t gltex_trimmable(struct image_budget_cache *cache);
+static void glyphs_init(struct gltex *gt);
+static void glyphs_free(struct gltex *gt, bool gl);
 
 static int gltex_set(struct kmscon_text *txt)
 {
@@ -448,23 +467,18 @@ static int gltex_set(struct kmscon_text *txt)
 
 	memset(gt, 0, sizeof(*gt));
 	dlist_init(&gt->atlases);
-
-	ret = shl_hashtable_new(&gt->glyphs, shl_direct_hash, shl_direct_equal, free_glyph);
-	if (ret)
-		return ret;
+	glyphs_init(gt);
 
 	frag = frag_source(_binary_gltex_atlas_frag_start, _binary_gltex_atlas_frag_size, &flen);
-	if (!frag) {
-		ret = -ENOMEM;
-		goto err_htable;
-	}
+	if (!frag)
+		return -ENOMEM;
 	gl_clear_error();
 
 	ret = gl_shader_new(&gt->shader, _binary_gltex_atlas_vert_start,
 			    _binary_gltex_atlas_vert_size, frag, flen, attr, GLTEX_ATTRS);
 	free(frag);
 	if (ret)
-		goto err_htable;
+		return ret;
 
 	gt->uni_cos = gl_shader_get_uniform(gt->shader, "cos");
 	gt->uni_sin = gl_shader_get_uniform(gt->shader, "sin");
@@ -500,7 +514,6 @@ static int gltex_set(struct kmscon_text *txt)
 	txt->max_rows = kmscon_text_get_rows(txt, FONT_HEIGHT(txt));
 	txt->cols = txt->max_cols;
 	txt->rows = txt->max_rows;
-	gt->max_cells = GLTEX_CACHE_SCREENS * (txt->max_cols * txt->max_rows + 1);
 	ret = alloc_quads(gt, txt->max_cols * txt->max_rows);
 	if (ret)
 		goto err_img_shader;
@@ -531,8 +544,6 @@ err_img_shader:
 	gl_shader_unref(gt->img_shader);
 err_shader:
 	gl_shader_unref(gt->shader);
-err_htable:
-	shl_hashtable_free(gt->glyphs);
 	return ret;
 }
 
@@ -543,8 +554,6 @@ static void gltex_unset(struct kmscon_text *txt)
 {
 	struct gltex *gt = txt->data;
 	int ret;
-	struct dlist *tmp;
-	struct atlas *atlas;
 	bool gl = true;
 
 	ret = display_use(txt->disp);
@@ -553,7 +562,7 @@ static void gltex_unset(struct kmscon_text *txt)
 		log_warning("cannot activate OpenGL-CTX during destruction");
 	}
 
-	shl_hashtable_free(gt->glyphs);
+	glyphs_free(gt, gl);
 	images_free(gt, gl);
 	if (gt->counted) {
 		image_budget_remove_texture_cache(&gt->cache);
@@ -561,14 +570,6 @@ static void gltex_unset(struct kmscon_text *txt)
 		gt->counted = NULL;
 	}
 
-	dlist_for_each_entry_safe(atlas, tmp, &gt->atlases, list)
-	{
-		dlist_unlink(&atlas->list);
-
-		if (gl)
-			gl_tex_free(&atlas->tex, 1);
-		free(atlas);
-	}
 	free_quads(gt);
 
 	if (gl) {
@@ -579,8 +580,11 @@ static void gltex_unset(struct kmscon_text *txt)
 	}
 }
 
-/* returns a @format atlas with @num free glyph positions; NULL on error */
-static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num, GLenum format)
+/*
+ * A new @format atlas of as many cells as a texture holds, at least @num;
+ * NULL on error
+ */
+static struct atlas *new_atlas(struct kmscon_text *txt, unsigned int num, GLenum format)
 {
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
@@ -588,14 +592,6 @@ static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num, GLenum
 	unsigned int width, height;
 	GLenum err;
 
-	/* an atlas with room, which after a flush may be an old one */
-	dlist_for_each_entry(atlas, &gt->atlases, list)
-	{
-		if (atlas->format == format && atlas->fill + num <= atlas->count)
-			return atlas;
-	}
-
-	/* all atlases are full so we have to create a new atlas */
 	atlas = calloc(1, sizeof(*atlas));
 	if (!atlas)
 		return NULL;
@@ -663,6 +659,22 @@ err_free:
 	return NULL;
 }
 
+/* @atlas's texture storage */
+static size_t atlas_bytes(const struct atlas *atlas)
+{
+	return (size_t)atlas->width * atlas->height * (atlas->format == GL_RGBA ? 4 : 1);
+}
+
+/* @atlas, its texture (@gl: the GL context is ours) and its slots go */
+static void atlas_free(struct atlas *atlas, bool gl)
+{
+	dlist_unlink(&atlas->list);
+	if (gl)
+		gl_tex_free(&atlas->tex, 1);
+	free(atlas->slots);
+	free(atlas);
+}
+
 /*
  * Upload @w x @h pixels of @format at @atlas's cell @cell. A GL error is
  * reported and fails it, with a hint to disable the GL renderer.
@@ -700,8 +712,8 @@ static int upload(struct kmscon_text *txt, struct atlas *atlas, unsigned int cel
 }
 
 /*
- * The decoration sprites (deco.c) as cells of an alpha atlas, uploaded once
- * after each flush; see struct gltex. Each is drawn tinted, under the glyph
+ * The decoration sprites (deco.c) as the cells of an alpha atlas of their
+ * own, uploaded once; see struct gltex. Each is drawn tinted, under the glyph
  * or over it, by the shader.
  */
 static int get_deco(struct kmscon_text *txt)
@@ -734,17 +746,15 @@ static int get_deco(struct kmscon_text *txt)
 		free(sprite);
 	}
 
-	atlas = get_atlas(txt, KMSCON_DECO_COUNT, GL_ALPHA);
+	atlas = new_atlas(txt, KMSCON_DECO_COUNT, GL_ALPHA);
 	if (!atlas)
 		goto out;
-	ret = upload(txt, atlas, atlas->fill, w, fh, GL_ALPHA, strip);
-	if (ret)
+	ret = upload(txt, atlas, 0, w, fh, GL_ALPHA, strip);
+	if (ret) {
+		atlas_free(atlas, true);
 		goto out;
-
+	}
 	gt->deco_atlas = atlas;
-	gt->deco_off = atlas->fill;
-	atlas->fill += KMSCON_DECO_COUNT;
-	gt->cells += KMSCON_DECO_COUNT;
 out:
 	free(strip);
 	return ret;
@@ -769,15 +779,205 @@ static void argb_to_rgba(struct kmscon_glyph *glyph)
 	}
 }
 
+/* ---- the glyph cache (ADR-102) ----
+ *
+ * A glyph is drawn from a slot of a strip: an atlas, one cell high, whose
+ * slots sit side by side. Every slot of a strip is of one kind, and each kind
+ * has a pool of strips: alpha masks or RGBA colour glyphs, one cell wide or
+ * two. A glyph goes to the pool of its kind, so the slot one glyph gives up
+ * always fits the next one there, and a wide glyph never looks for two free
+ * cells side by side.
+ *
+ * A pool keeps its slots on one list, the most recently drawn first and the
+ * empty ones last. Drawing a glyph moves it to the front. A glyph not yet
+ * cached is drawn from the font into the slot at the back of its pool's list
+ * (take_slot()):
+ *
+ *   1. an empty slot;
+ *   2. else, while the pool's strips hold less than pool_max_bytes, an empty
+ *      slot of a new strip;
+ *   3. else the least recently drawn glyph's slot, which that glyph gives up,
+ *      unless this frame draws that glyph: the frame's quads name its cells
+ *      until gltex_render();
+ *   4. else, every glyph of the pool being on this frame, an empty slot of a
+ *      new strip past pool_max_bytes. The pool keeps it.
+ *
+ * As the list is in the order the glyphs were last drawn, a glyph this frame
+ * draws at the back means the whole pool is on this frame. A cluster's key
+ * changes each time the screen re-creates the cluster, so a dead key is
+ * never drawn again: it drifts to the back and gives up its slot. This is
+ * plain LRU; glyphs are found by their key's hash and their whole key, so two
+ * keys with one hash are both cached.
+ *
+ * The decoration sprites have a strip of their own (get_deco()), in no pool.
+ */
+
+static size_t glyph_rehash(const void *elem, void *priv)
+{
+	const struct gl_glyph *glyph = elem;
+
+	return glyph->id;
+}
+
+static void glyphs_init(struct gltex *gt)
+{
+	unsigned int i;
+
+	htable_init(&gt->glyphs, glyph_rehash, NULL);
+	for (i = 0; i < GLTEX_POOLS; i++) {
+		gt->pools[i].format = i < 2 ? GL_ALPHA : GL_RGBA;
+		gt->pools[i].cells = i % 2 + 1;
+		dlist_init(&gt->pools[i].lru);
+	}
+	gt->pool_max_bytes = GLTEX_POOL_BYTES;
+}
+
+/* every glyph and every atlas; @gl: the GL context is ours */
+static void glyphs_free(struct gltex *gt, bool gl)
+{
+	struct atlas *atlas;
+	struct dlist *tmp;
+
+	htable_clear(&gt->glyphs);
+	dlist_for_each_entry_safe(atlas, tmp, &gt->atlases, list)
+	{
+		atlas_free(atlas, gl);
+	}
+	gt->deco_atlas = NULL;
+}
+
+/* the pool for glyphs of @format, @cells wide */
+static struct pool *pool_of(struct gltex *gt, GLenum format, unsigned int cells)
+{
+	return &gt->pools[(format == GL_RGBA ? 2 : 0) + cells - 1];
+}
+
+/*
+ * A new strip for @pool, its slots empty at the back of the pool's list, the
+ * first cell's last, so they are taken from the left.
+ */
+static int pool_grow(struct kmscon_text *txt, struct pool *pool)
+{
+	struct atlas *atlas;
+	unsigned int i, n;
+
+	atlas = new_atlas(txt, pool->cells, pool->format);
+	if (!atlas)
+		return -ENOMEM;
+	n = atlas->count / pool->cells;
+	atlas->slots = calloc(n, sizeof(*atlas->slots));
+	if (!atlas->slots) {
+		atlas_free(atlas, true);
+		return -ENOMEM;
+	}
+	atlas->pool = pool;
+	for (i = n; i-- > 0;) {
+		atlas->slots[i].atlas = atlas;
+		atlas->slots[i].texoff = i * pool->cells;
+		dlist_link_tail(&pool->lru, &atlas->slots[i].lru);
+	}
+	pool->bytes += atlas_bytes(atlas);
+	return 0;
+}
+
+/* @glyph was drawn on this frame */
+static bool drawn_this_frame(struct gltex *gt, const struct gl_glyph *glyph)
+{
+	return glyph->last_use == gt->frame_count;
+}
+
+/* this frame draws @glyph: it goes to the front of its pool's list */
+static void mark_drawn(struct gltex *gt, struct gl_glyph *glyph)
+{
+	glyph->last_use = gt->frame_count;
+	dlist_unlink(&glyph->lru);
+	dlist_link(&glyph->atlas->pool->lru, &glyph->lru);
+}
+
+/* the glyph for @key, whose hash is @id, or NULL */
+static struct gl_glyph *lookup(struct gltex *gt, uint64_t id, const struct kmscon_glyph_key *key)
+{
+	struct htable_iter i;
+	struct gl_glyph *glyph;
+
+	for (glyph = htable_firstval(&gt->glyphs, &i, id); glyph;
+	     glyph = htable_nextval(&gt->glyphs, &i, id)) {
+		if (glyph->id == id && kmscon_glyph_key_equal(&glyph->key, key))
+			return glyph;
+	}
+	return NULL;
+}
+
+/*
+ * The slot of @pool a glyph not yet cached goes to, steps 1 to 4 of the
+ * comment above, at the back of the pool's list and empty; NULL when GL makes
+ * no new strip.
+ */
+static struct gl_glyph *take_slot(struct kmscon_text *txt, struct pool *pool)
+{
+	struct gltex *gt = txt->data;
+	struct gl_glyph *back = NULL;
+
+	if (!dlist_empty(&pool->lru))
+		back = dlist_last(&pool->lru, struct gl_glyph, lru);
+
+	/* 1 */
+	if (back && !back->held)
+		return back;
+
+	/* 2 and 4 */
+	if (!back || pool->bytes < gt->pool_max_bytes || drawn_this_frame(gt, back)) {
+		if (pool_grow(txt, pool))
+			return NULL;
+		return dlist_last(&pool->lru, struct gl_glyph, lru);
+	}
+
+	/* 3 */
+	htable_del(&gt->glyphs, back->id, back);
+	back->held = false;
+	return back;
+}
+
+/*
+ * Upload @glyph's pixels of @format into @slot, the whole slot: a glyph
+ * smaller than the slot is padded with transparent pixels and a larger one
+ * cut, so nothing is left of the slot's last glyph, nor spills into the next
+ * slot.
+ */
+static int upload_slot(struct kmscon_text *txt, struct gl_glyph *slot,
+		       const struct kmscon_glyph *glyph, GLenum format)
+{
+	unsigned int w = FONT_WIDTH(txt) * slot->atlas->pool->cells, h = FONT_HEIGHT(txt);
+	unsigned int bpp = format == GL_RGBA ? 4 : 1, y, cw, ch;
+	uint8_t *pad;
+	int ret;
+
+	if (GLYPH_WIDTH(glyph) == w && GLYPH_HEIGHT(glyph) == h)
+		return upload(txt, slot->atlas, slot->texoff, w, h, format, GLYPH_DATA(glyph));
+
+	pad = calloc((size_t)w * h, bpp);
+	if (!pad)
+		return -ENOMEM;
+	cw = GLYPH_WIDTH(glyph) < w ? GLYPH_WIDTH(glyph) : w;
+	ch = GLYPH_HEIGHT(glyph) < h ? GLYPH_HEIGHT(glyph) : h;
+	for (y = 0; y < ch; y++)
+		memcpy(&pad[(size_t)y * w * bpp],
+		       &GLYPH_DATA(glyph)[(size_t)y * GLYPH_WIDTH(glyph) * bpp], (size_t)cw * bpp);
+	ret = upload(txt, slot->atlas, slot->texoff, w, h, format, pad);
+	free(pad);
+	return ret;
+}
+
+/*
+ * The cached glyph for @key with @flags, @width cells wide, drawn from the
+ * font into a slot when it is not cached; NULL when it cannot be had.
+ */
 static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16_t flags,
 				   unsigned int width)
 {
 	struct gltex *gt = txt->data;
-	struct atlas *atlas;
-	struct gl_glyph *glglyph;
+	struct gl_glyph *slot;
 	GLenum format;
-	struct kmscon_font *font = txt->font;
-	unsigned int num;
 	struct kmscon_glyph *glyph;
 	struct kmscon_font_attr attr;
 	struct kmscon_glyph_key k = {0};
@@ -785,6 +985,7 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 	uint32_t one;
 	size_t len;
 	uint64_t id;
+	int ret;
 
 	attr.italic = !!(flags & TSM_FRAME_ITALIC);
 	attr.bold = !!(flags & TSM_FRAME_BOLD);
@@ -797,25 +998,17 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 	k.width = width;
 	id = kmscon_glyph_key_hash(key, attr.bold, attr.italic, width, 0);
 
-	if (shl_hashtable_find(gt->glyphs, (void **)&glglyph, id)) {
-		if (kmscon_glyph_key_equal(&glglyph->key, &k))
-			return glglyph;
-		/* a hash collision: the newer glyph takes the slot */
-		shl_hashtable_remove(gt->glyphs, id);
-		free(glglyph);
+	slot = lookup(gt, id, &k);
+	if (slot) {
+		mark_drawn(gt, slot);
+		return slot;
 	}
 
 	cps = kmscon_text_get_cluster(txt, k.key, &one, &len);
-
-	glglyph = calloc(1, sizeof(*glglyph));
-	if (!glglyph)
+	glyph = kmscon_font_render(txt->font, &attr, cps, len, width);
+	txt->frame_misses++;
+	if (!glyph)
 		return NULL;
-
-	glyph = kmscon_font_render(font, &attr, cps, len, width);
-	if (!glyph) {
-		free(glglyph);
-		return NULL;
-	}
 	/* a colour glyph goes to an RGBA atlas, drawn untinted */
 	format = GL_ALPHA;
 	if (glyph->buf.format == VIDEO_FORMAT_ARGB32) {
@@ -823,34 +1016,23 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 		format = GL_RGBA;
 	}
 
-	glglyph->key = k;
-	glglyph->double_width = glyph->double_width;
-
-	num = kmscon_glyph_cwidth(glyph);
-	atlas = get_atlas(txt, num, format);
-	if (!atlas)
-		goto err_free;
-
-	if (upload(txt, atlas, atlas->fill, GLYPH_WIDTH(glyph), GLYPH_HEIGHT(glyph), format,
-		   GLYPH_DATA(glyph)))
-		goto err_free;
-
-	glglyph->atlas = atlas;
-	glglyph->texoff = atlas->fill;
-
-	if (shl_hashtable_insert(gt->glyphs, id, glglyph))
-		goto err_free;
-
-	atlas->fill += num;
-	gt->cells += num;
+	slot = take_slot(txt, pool_of(gt, format, kmscon_glyph_cwidth(glyph)));
+	ret = slot ? upload_slot(txt, slot, glyph, format) : -ENOMEM;
+	if (!ret) {
+		slot->key = k;
+		slot->id = id;
+		slot->double_width = glyph->double_width;
+		if (!htable_add(&gt->glyphs, id, slot))
+			ret = -ENOMEM;
+	}
 	free(glyph);
+	/* a slot that holds no glyph stays empty at the back of its list */
+	if (ret)
+		return NULL;
 
-	return glglyph;
-
-err_free:
-	free(glyph);
-	free(glglyph);
-	return NULL;
+	slot->held = true;
+	mark_drawn(gt, slot);
+	return slot;
 }
 
 static void gltex_resize(struct kmscon_text *txt, unsigned int cols, unsigned int rows)
@@ -869,32 +1051,6 @@ static int gltex_rotate(struct kmscon_text *txt, enum Orientation orientation)
 	return 0;
 }
 
-/*
- * Empty the glyph cache and refill every atlas from its first cell; the atlases
- * and their textures stay. Atlas cells are handed out in order and not given
- * back one at a time, and a cluster's frame key changes each time the screen
- * re-creates the cluster, so without this the atlases grow without bound. It
- * runs between frames, as no queued vertex may name a cell that is refilled.
- */
-static void gltex_flush(struct kmscon_text *txt)
-{
-	struct gltex *gt = txt->data;
-	struct shl_hashtable *glyphs;
-	struct atlas *atlas;
-
-	if (shl_hashtable_new(&glyphs, shl_direct_hash, shl_direct_equal, free_glyph))
-		return; /* keep the full cache and try again next frame */
-	shl_hashtable_free(gt->glyphs);
-	gt->glyphs = glyphs;
-
-	dlist_for_each_entry(atlas, &gt->atlases, list)
-	{
-		atlas->fill = 0;
-	}
-	gt->cells = 0;
-	gt->deco_atlas = NULL;
-}
-
 static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 {
 	struct gltex *gt = txt->data;
@@ -905,8 +1061,6 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	if (ret)
 		return ret;
 
-	if (gt->cells > gt->max_cells)
-		gltex_flush(txt);
 	gt->deco_tried = false;
 	doomed_flush(gt);
 
@@ -1040,13 +1194,13 @@ static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 	q.bg = cell->bg;
 	/* without the sprites this frame, the cell is drawn undecorated */
 	if (!get_deco(txt)) {
-		q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
+		q.ulcell = q.strikecell = KMSCON_DECO_NONE;
 		if (cell->underline > TSM_UNDERLINE_NONE && cell->underline < KMSCON_DECO_STRIKE) {
-			q.ulcell = gt->deco_off + cell->underline;
+			q.ulcell = cell->underline;
 			q.ul = ul_cursor ? cell->fg : kmscon_text_ul_color(txt, cell);
 		}
 		if (cell->flags & TSM_FRAME_STRIKE) {
-			q.strikecell = gt->deco_off + KMSCON_DECO_STRIKE;
+			q.strikecell = KMSCON_DECO_STRIKE;
 			q.strike = kmscon_text_strike_color(txt, cell);
 		}
 	}
@@ -1699,7 +1853,7 @@ static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned 
 	q.fg = (struct tsm_screen_color){gt->attr.fr, gt->attr.fg, gt->attr.fb};
 	q.bg = (struct tsm_screen_color){gt->attr.br, gt->attr.bg, gt->attr.bb};
 	if (!get_deco(txt))
-		q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
+		q.ulcell = q.strikecell = KMSCON_DECO_NONE;
 	gt->pointer = q;
 	gt->has_pointer = true;
 	return 0;

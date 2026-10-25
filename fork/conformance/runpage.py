@@ -330,7 +330,9 @@ class Page:
         # A tier run only now, or only then, is named once, not listed case
         # by case as new or removed.
         then = set(prev["cases"] if prev["cases"] is not None else prev["counts"])
-        groups = {"failing": [], "passing": [], "new": [], "changed": []}
+        # A skipped case is one a variant does not draw (tier 3's renderer
+        # without image placements): never failing nor passing, listed apart.
+        groups = {"failing": [], "passing": [], "skipped": [], "new": [], "changed": []}
         unknown = set()
         for tier, rep in sorted(self.reports.items()):
             if tier not in then:
@@ -343,6 +345,9 @@ class Page:
                     groups["new"].append(entry)
                 elif was == "?":
                     unknown.add(tier)
+                elif case["status"] == "skipped":
+                    if was != "skipped":
+                        groups["skipped"].append(entry)
                 elif was in OK and not ok:
                     groups["failing"].append(entry)
                 elif was not in OK and ok:
@@ -371,6 +376,7 @@ class Page:
 
         self.w("- **Newly failing:** " + listing(groups["failing"]),
                "- **Newly passing:** " + listing(groups["passing"]),
+               "- **Newly skipped:** " + listing(groups["skipped"]),
                "- **New cases:** " + listing(groups["new"]),
                "- **Removed cases:** " + listing(removed),
                "- **Goldens changed:** " + listing(groups["changed"]), "")

@@ -141,11 +141,25 @@ class RunPageTest(unittest.TestCase):
         self.assertIn("- **Newly failing:** tier 1: [`t1-bad`](#t1-bad-tier-1-fail); "
                       "tier 2: [`broken`](#broken-tier-2-fail).", page)
         self.assertIn("- **Newly passing:** tier 1: [`t1-fixed`](#t1-fixed-tier-1-pass).", page)
+        self.assertIn("- **Newly skipped:** none.", page)
         self.assertIn("- **Removed cases:** tier 2: `gone`.", page)
         self.assertIn("- **Goldens changed:** tier 2: [`moved`](#moved-tier-2-pass).", page)
         self.assertIn("- **New cases:** none.", page)
         self.assertIn("[2026-10-20](../prev/README.md), \"Earlier\"", page)
         self.assertIn("| 1 | 1 of 2 | 2 of 3 |", page)
+
+    def test_skipped_is_not_failing(self):
+        # A case a variant does not draw is listed as skipped, never as
+        # failing, though it passed before.
+        t2 = json.loads(Path("tier2.json").read_text())
+        for c in t2["cases"]:
+            if c["name"] == "same":
+                c.update(status="skipped", actual=None, error="not drawn")
+        Path("tier2.json").write_text(json.dumps(t2))
+        page = self.fx.run("ledger/runs/now")
+        self.assertIn("- **Newly skipped:** tier 2: [`same`](#same-tier-2-skipped).", page)
+        self.assertIn("- **Newly failing:** tier 1: [`t1-bad`](#t1-bad-tier-1-fail); "
+                      "tier 2: [`broken`](#broken-tier-2-fail).", page)
 
     def test_previous_run_by_url(self):
         # A run whose sheet left the tree: its row links to GitHub and it

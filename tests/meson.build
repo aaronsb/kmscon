@@ -66,11 +66,13 @@ test_image_budget = executable(
 test('test_image_budget', test_image_budget)
 
 if enable_renderer_gltex
-    # GL is stubbed in the test; only its headers are used.
+    # GL is stubbed in the test; only its headers are used. The decoration
+    # sprites are the real ones.
     test_gltex = executable(
         'test_gltex',
         [
             'test_gltex.c',
+            '../src/render/deco.c',
             embed_gen.process(
                 '../src/render/gltex_atlas.vert',
                 extra_args: shader_regex,
@@ -85,6 +87,7 @@ if enable_renderer_gltex
             libtsm_deps,
             shl_deps,
             htable_deps,
+            math_deps,
             glesv2_deps.partial_dependency(compile_args: true, includes: true),
         ],
     )

@@ -68,12 +68,8 @@ struct atlas {
 	unsigned int count;
 	unsigned int fill;
 
-	unsigned int cache_size;
-	unsigned int cache_num;
-	GLfloat *cache_pos;
-	GLfloat *cache_texpos;
-	GLfloat *cache_fgcol;
-	GLfloat *cache_bgcol;
+	unsigned int cache_num; /* quads queued this frame */
+	unsigned int cache_off; /* their first slot in the vertex arrays */
 
 	GLfloat advance_htex;
 	GLfloat advance_vtex;
@@ -84,6 +80,17 @@ struct gl_glyph {
 	struct kmscon_glyph_key key;
 	struct atlas *atlas;
 	unsigned int texoff;
+};
+
+/*
+ * A quad queued for the frame, a cell or the pointer: @atlas's cells @texoff
+ * to @texoff + @texw drawn over @x1, @y1 to @x2, @y2.
+ */
+struct gltex_quad {
+	struct atlas *atlas;
+	GLfloat x1, y1, x2, y2;
+	GLfloat texoff, texw;
+	struct tsm_screen_color fg, bg;
 };
 
 #define GLYPH_WIDTH(gly) ((gly)->buf.width)
@@ -104,6 +111,22 @@ struct gltex {
 	unsigned int max_cells; /* flush at the next frame once cells passes this */
 
 	struct dlist atlases;
+
+	/*
+	 * The frame's quads in the order they were queued, at most one a cell
+	 * and one for the pointer, and the vertex arrays gltex_render() fills
+	 * from them, each atlas's quads together. All atlases share them, so
+	 * their size follows the cell count, not the number of atlases (#43).
+	 * Upstream gives each atlas its own arrays: an ADR-303 departure users
+	 * cannot see, recorded in PR #180.
+	 */
+	struct gltex_quad *quads;
+	unsigned int quads_num;
+	unsigned int quads_size;
+	GLfloat *cache_pos;
+	GLfloat *cache_texpos;
+	GLfloat *cache_fgcol;
+	GLfloat *cache_bgcol;
 
 	GLfloat advance_x;
 	GLfloat advance_y;
@@ -151,6 +174,35 @@ static void free_glyph(void *data)
 	struct gl_glyph *glyph = data;
 
 	free(glyph);
+}
+
+static void free_quads(struct gltex *gt)
+{
+	free(gt->quads);
+	free(gt->cache_pos);
+	free(gt->cache_texpos);
+	free(gt->cache_fgcol);
+	free(gt->cache_bgcol);
+	gt->quads = NULL;
+	gt->cache_pos = gt->cache_texpos = gt->cache_fgcol = gt->cache_bgcol = NULL;
+	gt->quads_num = gt->quads_size = 0;
+}
+
+/* room for @n quads, in the queue and in the vertex arrays */
+static int alloc_quads(struct gltex *gt, unsigned int n)
+{
+	gt->quads = malloc(sizeof(*gt->quads) * n);
+	gt->cache_pos = malloc(sizeof(GLfloat) * n * 2 * 6);
+	gt->cache_texpos = malloc(sizeof(GLfloat) * n * 2 * 6);
+	gt->cache_fgcol = malloc(sizeof(GLfloat) * n * 3 * 6);
+	gt->cache_bgcol = malloc(sizeof(GLfloat) * n * 3 * 6);
+	if (!gt->quads || !gt->cache_pos || !gt->cache_texpos || !gt->cache_fgcol ||
+	    !gt->cache_bgcol) {
+		free_quads(gt);
+		return -ENOMEM;
+	}
+	gt->quads_size = n;
+	return 0;
 }
 
 static void gltex_set_cos(struct gltex *gt, enum Orientation orientation)
@@ -236,6 +288,9 @@ static int gltex_set(struct kmscon_text *txt)
 	txt->cols = txt->max_cols;
 	txt->rows = txt->max_rows;
 	gt->max_cells = GLTEX_CACHE_SCREENS * (txt->max_cols * txt->max_rows + 1);
+	ret = alloc_quads(gt, txt->max_cols * txt->max_rows + 1); // +1 for the mouse pointer
+	if (ret)
+		goto err_shader;
 	compute_advance_and_offset(txt);
 	gltex_set_cos(gt, txt->orientation);
 
@@ -276,15 +331,11 @@ static void gltex_unset(struct kmscon_text *txt)
 	{
 		dlist_unlink(&atlas->list);
 
-		free(atlas->cache_pos);
-		free(atlas->cache_texpos);
-		free(atlas->cache_fgcol);
-		free(atlas->cache_bgcol);
-
 		if (gl)
 			gl_tex_free(&atlas->tex, 1);
 		free(atlas);
 	}
+	free_quads(gt);
 
 	if (gl) {
 		gl_shader_unref(gt->shader);
@@ -299,7 +350,7 @@ static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num)
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
 	size_t newsize;
-	unsigned int width, height, nsize;
+	unsigned int width, height;
 	GLenum err;
 
 	/* an atlas with room, which after a flush may be an old one */
@@ -354,25 +405,6 @@ try_next:
 
 	log_debug("new atlas of size %ux%u for %zu", width, height, newsize);
 
-	nsize = txt->max_cols * txt->max_rows + 1; // +1 for the mouse pointer
-
-	atlas->cache_pos = malloc(sizeof(GLfloat) * nsize * 2 * 6);
-	if (!atlas->cache_pos)
-		goto err_mem;
-
-	atlas->cache_texpos = malloc(sizeof(GLfloat) * nsize * 2 * 6);
-	if (!atlas->cache_texpos)
-		goto err_mem;
-
-	atlas->cache_fgcol = malloc(sizeof(GLfloat) * nsize * 3 * 6);
-	if (!atlas->cache_fgcol)
-		goto err_mem;
-
-	atlas->cache_bgcol = malloc(sizeof(GLfloat) * nsize * 3 * 6);
-	if (!atlas->cache_bgcol)
-		goto err_mem;
-
-	atlas->cache_size = nsize;
 	atlas->count = newsize;
 	atlas->width = width;
 	atlas->height = height;
@@ -382,11 +414,6 @@ try_next:
 	dlist_link(&gt->atlases, &atlas->list);
 	return atlas;
 
-err_mem:
-	free(atlas->cache_pos);
-	free(atlas->cache_texpos);
-	free(atlas->cache_fgcol);
-	free(atlas->cache_bgcol);
 err_tex:
 	gl_tex_free(&atlas->tex, 1);
 err_free:
@@ -603,11 +630,83 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	{
 		atlas->cache_num = 0;
 	}
+	gt->quads_num = 0;
 	gt->attr = *attr;
 
 	glClearColor(gt->attr.br / 255.0, gt->attr.bg / 255.0, gt->attr.bb / 255.0, 1);
 	glClear(GL_COLOR_BUFFER_BIT);
 	return 0;
+}
+
+/* queue a quad for the frame; -ERANGE once the frame holds its maximum */
+static int queue_quad(struct gltex *gt, struct atlas *atlas, GLfloat x1, GLfloat y1, GLfloat x2,
+		      GLfloat y2, unsigned int texoff, GLfloat texw, struct tsm_screen_color fg,
+		      struct tsm_screen_color bg)
+{
+	struct gltex_quad *q;
+
+	if (gt->quads_num >= gt->quads_size)
+		return -ERANGE;
+
+	q = &gt->quads[gt->quads_num++];
+	q->atlas = atlas;
+	q->x1 = x1;
+	q->y1 = y1;
+	q->x2 = x2;
+	q->y2 = y2;
+	q->texoff = texoff;
+	q->texw = texw;
+	q->fg = fg;
+	q->bg = bg;
+	++atlas->cache_num;
+	return 0;
+}
+
+/* the six vertices of quad @q, two triangles, at slot @i of the vertex arrays */
+static void write_quad(struct gltex *gt, unsigned int i, const struct gltex_quad *q)
+{
+	GLfloat *pos = &gt->cache_pos[i * 2 * 6];
+	GLfloat *tex = &gt->cache_texpos[i * 2 * 6];
+	GLfloat t1 = q->texoff, t2 = q->texoff + q->texw;
+	int j, idx;
+
+	pos[0] = q->x1;
+	pos[1] = q->y1;
+	pos[2] = q->x1;
+	pos[3] = q->y2;
+	pos[4] = q->x2;
+	pos[5] = q->y2;
+
+	pos[6] = q->x1;
+	pos[7] = q->y1;
+	pos[8] = q->x2;
+	pos[9] = q->y2;
+	pos[10] = q->x2;
+	pos[11] = q->y1;
+
+	tex[0] = t1;
+	tex[1] = 0.0;
+	tex[2] = t1;
+	tex[3] = 1.0;
+	tex[4] = t2;
+	tex[5] = 1.0;
+
+	tex[6] = t1;
+	tex[7] = 0.0;
+	tex[8] = t2;
+	tex[9] = 1.0;
+	tex[10] = t2;
+	tex[11] = 0.0;
+
+	for (j = 0; j < 6; ++j) {
+		idx = i * 3 * 6 + j * 3;
+		gt->cache_fgcol[idx + 0] = q->fg.r / 255.0;
+		gt->cache_fgcol[idx + 1] = q->fg.g / 255.0;
+		gt->cache_fgcol[idx + 2] = q->fg.b / 255.0;
+		gt->cache_bgcol[idx + 0] = q->bg.r / 255.0;
+		gt->cache_bgcol[idx + 1] = q->bg.g / 255.0;
+		gt->cache_bgcol[idx + 2] = q->bg.b / 255.0;
+	}
 }
 
 /*
@@ -618,71 +717,24 @@ static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 			   unsigned int posx, unsigned int posy, unsigned int cwidth)
 {
 	struct gltex *gt = txt->data;
-	struct atlas *atlas;
 	struct gl_glyph *glglyph;
 	float gl_x1, gl_x2, gl_y1, gl_y2;
 	float width;
-	int i, idx;
 
 	glglyph = find_glyph(txt, key, cell->flags, cwidth, cell->underline,
 			     cell->flags & TSM_FRAME_STRIKE);
 	if (!glglyph)
 		return -ENOMEM;
 
-	atlas = glglyph->atlas;
-
-	if (atlas->cache_num >= atlas->cache_size)
-		return -ERANGE;
-
 	width = glglyph->double_width ? 2.0 : 1.0;
 
-	idx = atlas->cache_num * 2 * 6;
 	gl_x1 = gt->off_x + gt->advance_x * posx - 1.0;
 	gl_x2 = gl_x1 + width * gt->advance_x;
 	gl_y1 = 1.0 - gt->off_y - gt->advance_y * posy;
 	gl_y2 = gl_y1 - gt->advance_y;
 
-	atlas->cache_pos[idx + 0] = gl_x1;
-	atlas->cache_pos[idx + 1] = gl_y1;
-	atlas->cache_pos[idx + 2] = gl_x1;
-	atlas->cache_pos[idx + 3] = gl_y2;
-	atlas->cache_pos[idx + 4] = gl_x2;
-	atlas->cache_pos[idx + 5] = gl_y2;
-
-	atlas->cache_pos[idx + 6] = gl_x1;
-	atlas->cache_pos[idx + 7] = gl_y1;
-	atlas->cache_pos[idx + 8] = gl_x2;
-	atlas->cache_pos[idx + 9] = gl_y2;
-	atlas->cache_pos[idx + 10] = gl_x2;
-	atlas->cache_pos[idx + 11] = gl_y1;
-
-	atlas->cache_texpos[idx + 0] = glglyph->texoff;
-	atlas->cache_texpos[idx + 1] = 0.0;
-	atlas->cache_texpos[idx + 2] = glglyph->texoff;
-	atlas->cache_texpos[idx + 3] = 1.0;
-	atlas->cache_texpos[idx + 4] = glglyph->texoff + width;
-	atlas->cache_texpos[idx + 5] = 1.0;
-
-	atlas->cache_texpos[idx + 6] = glglyph->texoff;
-	atlas->cache_texpos[idx + 7] = 0.0;
-	atlas->cache_texpos[idx + 8] = glglyph->texoff + width;
-	atlas->cache_texpos[idx + 9] = 1.0;
-	atlas->cache_texpos[idx + 10] = glglyph->texoff + width;
-	atlas->cache_texpos[idx + 11] = 0.0;
-
-	for (i = 0; i < 6; ++i) {
-		idx = atlas->cache_num * 3 * 6 + i * 3;
-		atlas->cache_fgcol[idx + 0] = cell->fg.r / 255.0;
-		atlas->cache_fgcol[idx + 1] = cell->fg.g / 255.0;
-		atlas->cache_fgcol[idx + 2] = cell->fg.b / 255.0;
-		atlas->cache_bgcol[idx + 0] = cell->bg.r / 255.0;
-		atlas->cache_bgcol[idx + 1] = cell->bg.g / 255.0;
-		atlas->cache_bgcol[idx + 2] = cell->bg.b / 255.0;
-	}
-
-	++atlas->cache_num;
-
-	return 0;
+	return queue_quad(gt, glglyph->atlas, gl_x1, gl_y1, gl_x2, gl_y2, glglyph->texoff, width,
+			  cell->fg, cell->bg);
 }
 
 /*
@@ -741,19 +793,14 @@ static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned int y)
 {
 	struct gltex *gt = txt->data;
-	struct atlas *atlas;
 	struct gl_glyph *glyph;
+	struct tsm_screen_color fg, bg;
 	float gl_x1, gl_x2, gl_y1, gl_y2;
 	unsigned int sw, sh;
-	int i, idx;
+
 	glyph = find_glyph(txt, 'I', 0, 1, TSM_UNDERLINE_NONE, false);
 	if (!glyph)
 		return -ENOMEM;
-
-	atlas = glyph->atlas;
-
-	if (atlas->cache_num >= atlas->cache_size)
-		return -ERANGE;
 
 	if (txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN) {
 		sw = gt->sw;
@@ -774,56 +821,30 @@ static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned 
 	gl_x2 = gl_x1 + gt->advance_x;
 	gl_y2 = gl_y1 - gt->advance_y;
 
-	idx = atlas->cache_num * 2 * 6;
-
-	atlas->cache_pos[idx + 0] = gl_x1;
-	atlas->cache_pos[idx + 1] = gl_y1;
-	atlas->cache_pos[idx + 2] = gl_x1;
-	atlas->cache_pos[idx + 3] = gl_y2;
-	atlas->cache_pos[idx + 4] = gl_x2;
-	atlas->cache_pos[idx + 5] = gl_y2;
-
-	atlas->cache_pos[idx + 6] = gl_x1;
-	atlas->cache_pos[idx + 7] = gl_y1;
-	atlas->cache_pos[idx + 8] = gl_x2;
-	atlas->cache_pos[idx + 9] = gl_y2;
-	atlas->cache_pos[idx + 10] = gl_x2;
-	atlas->cache_pos[idx + 11] = gl_y1;
-
-	atlas->cache_texpos[idx + 0] = glyph->texoff;
-	atlas->cache_texpos[idx + 1] = 0.0;
-	atlas->cache_texpos[idx + 2] = glyph->texoff;
-	atlas->cache_texpos[idx + 3] = 1.0;
-	atlas->cache_texpos[idx + 4] = glyph->texoff + 1.0;
-	atlas->cache_texpos[idx + 5] = 1.0;
-
-	atlas->cache_texpos[idx + 6] = glyph->texoff;
-	atlas->cache_texpos[idx + 7] = 0.0;
-	atlas->cache_texpos[idx + 8] = glyph->texoff + 1.0;
-	atlas->cache_texpos[idx + 9] = 1.0;
-	atlas->cache_texpos[idx + 10] = glyph->texoff + 1.0;
-	atlas->cache_texpos[idx + 11] = 0.0;
-
-	for (i = 0; i < 6; ++i) {
-		idx = atlas->cache_num * 3 * 6 + i * 3;
-		atlas->cache_fgcol[idx + 0] = gt->attr.fr / 255.0;
-		atlas->cache_fgcol[idx + 1] = gt->attr.fg / 255.0;
-		atlas->cache_fgcol[idx + 2] = gt->attr.fb / 255.0;
-		atlas->cache_bgcol[idx + 0] = gt->attr.br / 255.0;
-		atlas->cache_bgcol[idx + 1] = gt->attr.bg / 255.0;
-		atlas->cache_bgcol[idx + 2] = gt->attr.bb / 255.0;
-	}
-
-	++atlas->cache_num;
-
-	return 0;
+	fg = (struct tsm_screen_color){gt->attr.fr, gt->attr.fg, gt->attr.fb};
+	bg = (struct tsm_screen_color){gt->attr.br, gt->attr.bg, gt->attr.bb};
+	return queue_quad(gt, glyph->atlas, gl_x1, gl_y1, gl_x2, gl_y2, glyph->texoff, 1.0, fg, bg);
 }
 
 static int gltex_render(struct kmscon_text *txt)
 {
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
+	struct gltex_quad *q;
+	unsigned int i, off = 0;
 	float mat[16];
+
+	/* each atlas's quads together, in the order they were queued */
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		atlas->cache_off = off;
+		off += atlas->cache_num;
+		atlas->cache_num = 0;
+	}
+	for (i = 0; i < gt->quads_num; i++) {
+		q = &gt->quads[i];
+		write_quad(gt, q->atlas->cache_off + q->atlas->cache_num++, q);
+	}
 
 	gl_clear_error();
 
@@ -845,6 +866,11 @@ static int gltex_render(struct kmscon_text *txt)
 	glActiveTexture(GL_TEXTURE0);
 	glUniform1i(gt->uni_atlas, 0);
 
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, gt->cache_pos);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, gt->cache_texpos);
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_fgcol);
+	glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_bgcol);
+
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{
 		if (!atlas->cache_num)
@@ -853,12 +879,7 @@ static int gltex_render(struct kmscon_text *txt)
 		glBindTexture(GL_TEXTURE_2D, atlas->tex);
 		glUniform1f(gt->uni_advance_htex, atlas->advance_htex);
 		glUniform1f(gt->uni_advance_vtex, atlas->advance_vtex);
-
-		glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, atlas->cache_pos);
-		glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, atlas->cache_texpos);
-		glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, atlas->cache_fgcol);
-		glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 0, atlas->cache_bgcol);
-		glDrawArrays(GL_TRIANGLES, 0, 6 * atlas->cache_num);
+		glDrawArrays(GL_TRIANGLES, 6 * atlas->cache_off, 6 * atlas->cache_num);
 	}
 
 	glDisableVertexAttribArray(0);

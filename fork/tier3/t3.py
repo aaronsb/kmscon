@@ -137,9 +137,10 @@ def run(args, log):
     if args.compare_only:
         # Another build measured against the fork's goldens: a difference is
         # what the comparison shows, and only a missing capture fails.
-        return 0 if all(c["actual"] for c in cases) else 1
+        return 0 if all(c["actual"] or c["status"] == "skipped" for c in cases) else 1
     # "near" is a difference within the case's reviewed tolerance: it passes.
-    return 0 if all(c["status"] in ("pass", "near") for c in cases) else 1
+    # A skipped case is one the variant cannot draw, reported as such.
+    return 0 if all(c["status"] in ("pass", "near", "skipped") for c in cases) else 1
 
 
 def bless(args, log):

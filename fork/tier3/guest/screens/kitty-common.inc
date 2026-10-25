@@ -62,13 +62,15 @@ b64() {
 
 # The spec's detection: a query of one pixel, then DA1. A terminal with the
 # protocol answers the query first; without it, only DA1 comes back, and the
-# page says so and exits.
+# page says so and exits. Under tier 3 the refusal is also reported on the
+# event port.
 kitty_offered() {
 	local r
 	r=$(ask "${esc}_Gi=31,s=1,v=1,a=q,f=24;AAAA${esc}\\${esc}[c" c)
 	if [[ $r != *"_Gi=31;OK"* ]]; then
 		printf 'This terminal does not answer the kitty graphics query (an a=q of\n'
 		printf 'one pixel before DA1), so no picture is sent.\n'
+		[ -n "$T3_EVENTS" ] && echo T3-NO-KITTY >"$T3_EVENTS"
 		exit 0
 	fi
 }

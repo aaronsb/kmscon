@@ -9,13 +9,17 @@ import subprocess
 import time
 
 import t3_bench
+import t3_evaluate
 from t3_common import BASE, GUEST, RUNDIR, rel
-from t3_evaluate import BENCHMARKS, CASES, KEYED, KEYS_AFTER, SCREENS, evaluate
+from t3_evaluate import BENCHMARKS, KEYED, KEYS_AFTER, NO_IMAGES_SCREENS, evaluate, screens
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
 # Display variants. Each boots its own guest from the base image, with its
 # own vCPUs and memory; the 2D variants draw through drm2d and bbulk, the GL
-# variant through drm3d and gltex on virgl.
+# variant through drm3d and gltex on virgl. "draws_images": False marks a
+# variant whose renderer draws no image placements, so kmscon offers no images
+# there: it skips the image screens and checks the refusal instead
+# (t3_evaluate.IMAGE_SCREENS).
 VARIANTS = {
     "2d-1280x800": {
         "device": "virtio-vga,xres=1280,yres=800,edid=on",
@@ -63,6 +67,8 @@ VARIANTS = {
                    % os.environ.get("T3_RENDERNODE", "/dev/dri/renderD128"),
         "conf": "kmscon-gl.conf",
         "renderer": "gltex",
+        # gltex draws no placements until ADR-103 steps 3f and 4e (ADR-108)
+        "draws_images": False,
         "capture": "vnc",
         "cpus": 4,
         "memory_mb": 4096,
@@ -72,8 +78,8 @@ VARIANTS = {
 # What `t3.py run` runs when no variant is named, in the order workers take
 # them: with JOBS=2 the longest, 2d-7680x2160, starts at once, and the
 # potato and then 2d-7680x2160-font32 follow 2d-1280x800 as workers free.
-# gl-1280x800 runs only when named (`make tier3-gl`) until its intermittent
-# black screen is resolved: aaronsb/kmscon#17.
+# gl-1280x800 runs only when named (`make tier3-gl`) until its goldens are
+# blessed; its black screen, aaronsb/kmscon#17, was gltex's and is fixed.
 DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160", "2d-1366x768-potato",
                     "2d-7680x2160-font32"]
 
@@ -84,6 +90,36 @@ BENCH_TIMEOUT = 300
 
 def uses_virgl(variant):
     return VARIANTS[variant]["device"].startswith("virtio-vga-gl")
+
+
+def draws_images(variant):
+    return VARIANTS[variant].get("draws_images", True)
+
+
+def variant_cases(variant):
+    """The cases of `variant`'s report, skipped ones included."""
+    return t3_evaluate.cases(draws_images(variant))
+
+
+def evaluate_variant(variant, caps, meta, log):
+    """The report entries of `variant`'s cases from their captures."""
+    skip = t3_evaluate.skipped(draws_images(variant))
+    return [t3_evaluate.skipped_entry(variant, case) if case in skip
+            else evaluate(variant, case, caps.get(case), meta, log)
+            for case in variant_cases(variant)]
+
+
+# What sixel-common.inc and kitty-common.inc report on the event port when
+# kmscon refuses their pictures.
+REFUSALS = [b"T3-NO-SIXEL", b"T3-NO-KITTY"]
+
+
+def missing_refusals(vm):
+    """The refusals the guest's sixel and kitty screens did not report on the
+    event port: none on a variant that offers no images."""
+    with open(vm.events, "rb") as f:
+        seen = {line.split()[0] for line in f if line.strip()}
+    return [r.decode() for r in REFUSALS if r not in seen]
 
 
 def newest_packages(pkgdir, name):
@@ -250,7 +286,7 @@ def run_variant(variant, timing, pkgs, log):
             vm.wait_event("T3-LOGIN", timeout=60)
         last = wait_stable(vm, tmp)
         phase("login")
-        for name in SCREENS:
+        for name in screens(draws_images(variant)):
             vm.type("t3 %s\n" % name)
             vm.wait_event("T3-DONE %s" % name,
                           timeout=BENCH_TIMEOUT if name in BENCHMARKS else SCREEN_TIMEOUT)
@@ -260,6 +296,14 @@ def run_variant(variant, timing, pkgs, log):
             last = wait_stable(vm, path, want=lambda img, prev=last: img.data != prev.data)
             caps[name] = path
             phase(name)
+            if name == NO_IMAGES_SCREENS[-1] and not draws_images(variant):
+                missing = missing_refusals(vm)
+                if missing:
+                    errors["no-images"] = ("kmscon offered images on a variant whose renderer "
+                                           "draws no image placements: no %s"
+                                           % " or ".join(missing))
+                else:
+                    caps["no-images"] = path
             # The keyed cases of this screen, each captured once the screen
             # has changed from the capture before it: a key that changes
             # nothing fails its case.
@@ -331,7 +375,7 @@ def failure_meta(error, pkgs):
 def failed_variant(variant, error, pkgs, log):
     log("%s: %s" % (variant, error))
     meta = failure_meta(error, pkgs)
-    return [evaluate(variant, case, None, meta, log) for case in CASES], meta
+    return evaluate_variant(variant, {}, meta, log), meta
 
 
 def variant_job(variant, pkgs, log):
@@ -349,7 +393,7 @@ def variant_job(variant, pkgs, log):
         log(str(e))
         caps, meta = {}, failure_meta(str(e), pkgs)
     start = time.time()
-    cases = [evaluate(variant, case, caps.get(case), meta, log) for case in CASES]
+    cases = evaluate_variant(variant, caps, meta, log)
     timing["evaluate"] = round(time.time() - start, 1)
     log("phase evaluate took %.1f s" % timing["evaluate"])
     meta["timing"] = timing

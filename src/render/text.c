@@ -663,6 +663,24 @@ static void set_again(struct kmscon_text *txt)
 }
 
 /**
+ * kmscon_text_retry_due:
+ * @txt: valid text renderer
+ *
+ * A text whose set failed tries it again in a frame's kmscon_text_prepare(),
+ * at most once in KMSCON_TEXT_SET_RETRY_NS. A screen with no output draws no
+ * frame, so its caller asks for one at this time (#206).
+ *
+ * Returns: the time, on CLOCK_MONOTONIC, from which kmscon_text_prepare() tries
+ * the failed set again, or 0 when no set is to be tried again.
+ */
+uint64_t kmscon_text_retry_due(struct kmscon_text *txt)
+{
+	if (!txt || !txt->set_font)
+		return 0;
+	return txt->set_tried_ns + KMSCON_TEXT_SET_RETRY_NS;
+}
+
+/**
  * kmscon_text_prepare:
  * @txt: valid text renderer
  * @attr: glyph attributes

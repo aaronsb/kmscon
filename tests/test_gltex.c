@@ -3,9 +3,11 @@
  * screen's generation, so a screen that re-creates its clusters asks for new
  * keys every frame; the atlases must not grow with them. Its memory stays
  * linear in the cell count at a 4K cell grid. Blinking cells lose their glyph
- * in the hidden phase. The GL and display calls are stubs: the test counts
- * the textures gltex creates and checks where its glyphs land in them and in
- * the frame. We include the implementation to reach its statics.
+ * in the hidden phase. Decorations and colour glyphs reach the atlas as masks,
+ * from the real decoration sprites (deco.c). The GL and display calls are
+ * stubs: the test counts the textures gltex creates, keeps the masks it
+ * uploads, and checks where its glyphs land in them and in the frame. We
+ * include the implementation to reach its statics.
  */
 
 #include <GLES2/gl2.h>
@@ -36,6 +38,16 @@ static struct draw_call {
 } draws[4096];
 static unsigned int n_draws;	/* glDrawArrays calls since the last reset */
 static unsigned int n_rendered; /* glyphs rasterised */
+
+/* the glyph masks uploaded while keep_uploads is set */
+static bool keep_uploads;
+static struct upload {
+	GLuint tex;
+	GLint x;
+	GLsizei w, h;
+	uint8_t *data;
+} uploads[64];
+static unsigned int n_uploads;
 
 /* ---- GL ---- */
 void glActiveTexture(GLenum texture) {}
@@ -69,6 +81,15 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
 void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
 		     GLsizei height, GLenum format, GLenum type, const void *pixels)
 {
+	struct upload *u;
+
+	if (!keep_uploads)
+		return;
+	assert(format == GL_ALPHA && type == GL_UNSIGNED_BYTE && yoffset == 0);
+	assert(n_uploads < sizeof(uploads) / sizeof(*uploads));
+	u = &uploads[n_uploads++];
+	*u = (struct upload){bound_tex, xoffset, width, height, malloc(width * height)};
+	memcpy(u->data, pixels, width * height);
 }
 void glUniform1f(GLint location, GLfloat v0) {}
 void glUniform1i(GLint location, GLint v0) {}
@@ -135,15 +156,36 @@ unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_hei
 {
 	return disp_h / font_height;
 }
+/* the colour glyph's pixel at @x, @y: its alpha varies, its colour does not */
+#define COLOUR_CP 0x1f600
+#define COLOUR_PX(x, y) ((uint32_t)((x) * 16 + (y)) << 24 | 0xff8000)
+
+/*
+ * A blank mask, or for COLOUR_CP an ARGB glyph, as the font gives a colour
+ * emoji (ADR-102 step 4c).
+ */
 struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
 					const uint32_t *cps, size_t len, unsigned int cwidth)
 {
-	struct kmscon_glyph *g = calloc(1, sizeof(*g) + cwidth * FAKE_CELL_W * FAKE_CELL_H);
+	unsigned int w = cwidth * FAKE_CELL_W, x, y;
+	struct kmscon_glyph *g;
 
-	g->buf.width = cwidth * FAKE_CELL_W;
+	n_rendered++;
+	if (len == 1 && cps[0] == COLOUR_CP) {
+		uint32_t *px;
+
+		g = calloc(1, sizeof(*g) + w * FAKE_CELL_H * 4);
+		g->buf.format = VIDEO_FORMAT_ARGB32;
+		px = (uint32_t *)g->buf.data;
+		for (y = 0; y < FAKE_CELL_H; y++)
+			for (x = 0; x < w; x++)
+				px[y * w + x] = COLOUR_PX(x, y);
+	} else {
+		g = calloc(1, sizeof(*g) + w * FAKE_CELL_H);
+	}
+	g->buf.width = w;
 	g->buf.height = FAKE_CELL_H;
 	g->double_width = cwidth == 2;
-	n_rendered++;
 	return g;
 }
 bool kmscon_font_has_glyph(struct kmscon_font *font, struct kmscon_font_attr *attr,
@@ -151,19 +193,19 @@ bool kmscon_font_has_glyph(struct kmscon_font *font, struct kmscon_font_attr *at
 {
 	return true;
 }
+/* an 8x16 cell's underline at row 13 and strike-through at row 7, a pixel thick */
+static const struct kmscon_font_deco fake_deco = {
+	.ul_pos = 13, .ul_thick = 1, .strike_pos = 7, .strike_thick = 1};
+
 void kmscon_font_get_deco(struct kmscon_font *font, struct kmscon_font_deco *out)
 {
-	memset(out, 0, sizeof(*out));
+	*out = fake_deco;
 }
-struct kmscon_glyph *kmscon_deco_render(enum kmscon_deco kind, unsigned int w, unsigned int h,
-					const struct kmscon_font_deco *m)
-{
-	return NULL;
-}
+/* a codepoint names itself; every cluster is 'c' */
 const uint32_t *kmscon_text_get_cluster(struct kmscon_text *txt, uint64_t key, uint32_t *one,
 					size_t *len)
 {
-	*one = 'c';
+	*one = key < TSM_FRAME_CLUSTER_KEY ? key : 'c';
 	*len = 1;
 	return one;
 }
@@ -450,6 +492,197 @@ static void test_blink(void)
 	gltex_destroy(&txt);
 }
 
+/* the quad queued for cell @col of row 0 */
+static const struct gltex_quad *quad_at(struct gltex *gt, unsigned int col)
+{
+	float x1 = gt->off_x + gt->advance_x * col - 1.0;
+	float y1 = 1.0 - gt->off_y;
+	unsigned int i;
+
+	for (i = 0; i < gt->quads_num; i++)
+		if (gt->quads[i].x1 == x1 && gt->quads[i].y1 == y1)
+			return &gt->quads[i];
+	assert(!"no quad at the cell");
+	return NULL;
+}
+
+/*
+ * The mask gltex uploaded for the glyph drawn at cell @col of row 0, and the
+ * quad that draws it.
+ */
+static const struct upload *mask_at(struct gltex *gt, unsigned int col,
+				    const struct gltex_quad **quad)
+{
+	*quad = quad_at(gt, col);
+	for (unsigned int j = 0; j < n_uploads; j++)
+		if (uploads[j].tex == (*quad)->atlas->tex &&
+		    uploads[j].x == (GLint)((*quad)->texoff * FAKE_CELL_W))
+			return &uploads[j];
+	assert(!"no mask uploaded for the cell");
+	return NULL;
+}
+
+/*
+ * @mask is the blank glyph with the sprites of @a and @b (KMSCON_DECO_NONE:
+ * none) baked in, the cell's sprite repeated across a wide glyph.
+ */
+static void assert_mask(const struct upload *mask, enum kmscon_deco a, enum kmscon_deco b)
+{
+	struct kmscon_glyph *sa = kmscon_deco_render(a, FAKE_CELL_W, FAKE_CELL_H, &fake_deco);
+	struct kmscon_glyph *sb = kmscon_deco_render(b, FAKE_CELL_W, FAKE_CELL_H, &fake_deco);
+	unsigned int x, y, inked = 0;
+
+	assert(sa && mask->h == FAKE_CELL_H);
+	for (y = 0; y < FAKE_CELL_H; y++)
+		for (x = 0; x < (unsigned int)mask->w; x++) {
+			uint8_t va = sa->buf.data[y * FAKE_CELL_W + x % FAKE_CELL_W];
+			uint8_t vb = sb ? sb->buf.data[y * FAKE_CELL_W + x % FAKE_CELL_W] : 0;
+			uint8_t want = va > vb ? va : vb;
+
+			assert(mask->data[y * mask->w + x] == want);
+			inked += want != 0;
+		}
+	/* a sprite that drew nothing would pass the loop above */
+	assert(inked >= (unsigned int)mask->w / 2);
+	free(sa);
+	free(sb);
+}
+
+/* parse @bytes into a fresh screen and draw its frame */
+static void draw_bytes(struct kmscon_text *txt, const char *bytes, size_t len)
+{
+	struct tsm_frame_age age = {0};
+	struct tsm_screen_attr attr = {0};
+	const struct tsm_frame *frame;
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, FAKE_COLS, FAKE_ROWS) == 0);
+	tsm_vte_input(vte, bytes, len);
+	frame = tsm_screen_frame_since(con, &age);
+	assert(frame);
+	assert(gltex_prepare(txt, &attr) == 0);
+	assert(gltex_draw(txt, frame, false) == 0);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+}
+
+static void free_uploads(void)
+{
+	while (n_uploads)
+		free(uploads[--n_uploads].data);
+}
+
+/*
+ * #116: decorations as gltex draws them until it composes decoration sprites
+ * itself (ADR-102 step 6): deco.c's sprites baked into the glyph's mask and
+ * drawn in the cell's foreground. Every underline style, strike, both at
+ * once, SGR 58's coloured underline and a wide underlined cell. The
+ * configured decoration colours, forced or not, leave the tint at the
+ * foreground; step 6 is what makes them change it.
+ */
+static void test_decorations(void)
+{
+	static const char bytes[] = "\x1b[?25l\x1b[38;2;10;20;30m"
+				    "\x1b[4:1mA\x1b[4:2mB\x1b[4:3mC\x1b[4:4mD\x1b[4:5mE"
+				    "\x1b[4:0;9mF\x1b[4:1;9mG\x1b[29;4:1;58:2::255:0:0mH"
+				    "\x1b[59m\xe6\x97\xa5\x1b[0mI";
+	/* the sprites in each cell's mask, one column a cell, the wide one two */
+	static const enum kmscon_deco want[][2] = {
+		{KMSCON_DECO_SINGLE, KMSCON_DECO_NONE},	  {KMSCON_DECO_DOUBLE, KMSCON_DECO_NONE},
+		{KMSCON_DECO_CURLY, KMSCON_DECO_NONE},	  {KMSCON_DECO_DOTTED, KMSCON_DECO_NONE},
+		{KMSCON_DECO_DASHED, KMSCON_DECO_NONE},	  {KMSCON_DECO_STRIKE, KMSCON_DECO_NONE},
+		{KMSCON_DECO_SINGLE, KMSCON_DECO_STRIKE}, {KMSCON_DECO_SINGLE, KMSCON_DECO_NONE},
+		{KMSCON_DECO_SINGLE, KMSCON_DECO_NONE},
+	};
+	static const struct kmscon_text_deco decos[] = {
+		{.ul_fg = true, .strike_fg = true},
+		{.ul = {0, 255, 0}, .strike = {0, 0, 255}},
+		{.ul = {0, 255, 0}, .strike = {0, 0, 255}, .force = true},
+	};
+	const struct gltex_quad *q;
+	const struct upload *mask;
+	struct kmscon_text txt = {0};
+	unsigned int d, i, col;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+
+	for (d = 0; d < sizeof(decos) / sizeof(*decos); d++) {
+		txt.deco = decos[d];
+		/* the glyphs are new on the first pass only */
+		keep_uploads = !d;
+		draw_bytes(&txt, bytes, sizeof(bytes) - 1);
+		keep_uploads = false;
+
+		if (!d) {
+			/* ten cells' glyphs and the blank of the empty cells */
+			assert(n_uploads == 11);
+			for (i = 0, col = 0; i < sizeof(want) / sizeof(*want); i++, col++) {
+				mask = mask_at(txt.data, col, &q);
+				assert(mask->w == (i == 8 ? 2 : 1) * FAKE_CELL_W);
+				assert_mask(mask, want[i][0], want[i][1]);
+				if (i == 8)
+					col++; /* the wide cell's trailing half */
+			}
+			/* after SGR 0, no decoration: a blank mask */
+			mask = mask_at(txt.data, col, &q);
+			for (i = 0; i < FAKE_CELL_W * FAKE_CELL_H; i++)
+				assert(!mask->data[i]);
+		}
+		/* every decorated cell drawn in its foreground */
+		for (col = 0; col < 9; col++) {
+			q = quad_at(txt.data, col);
+			assert(q->fg.r == 10 && q->fg.g == 20 && q->fg.b == 30);
+		}
+	}
+	free_uploads();
+
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+}
+
+/*
+ * #116: a colour glyph from the font, ARGB, goes into the alpha atlas as its
+ * alpha and is drawn in the cell's foreground, until gltex has an RGBA atlas
+ * (ADR-102 step 6, #68).
+ */
+static void test_colour_glyph(void)
+{
+	static const char bytes[] = "\x1b[?25l\x1b[38;2;40;50;60m\xf0\x9f\x98\x80";
+	const struct gltex_quad *q;
+	const struct upload *mask;
+	struct kmscon_text txt = {0};
+	unsigned int x, y;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+
+	keep_uploads = true;
+	draw_bytes(&txt, bytes, sizeof(bytes) - 1);
+	keep_uploads = false;
+
+	mask = mask_at(txt.data, 0, &q);
+	assert(mask->w == 2 * FAKE_CELL_W && mask->h == FAKE_CELL_H);
+	for (y = 0; y < FAKE_CELL_H; y++)
+		for (x = 0; x < 2 * FAKE_CELL_W; x++)
+			assert(mask->data[y * mask->w + x] == COLOUR_PX(x, y) >> 24);
+	assert(q->texw == 2.0);
+	assert(q->fg.r == 40 && q->fg.g == 50 && q->fg.b == 60);
+	free_uploads();
+
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+}
+
 int main(void)
 {
 	/* gltex draws no image placements until ADR-103 step 3f, and says so */
@@ -457,5 +690,7 @@ int main(void)
 	test_bounded();
 	test_vertex_memory();
 	test_blink();
+	test_decorations();
+	test_colour_glyph();
 	return 0;
 }

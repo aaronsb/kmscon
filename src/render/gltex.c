@@ -49,9 +49,11 @@
  * the top band, and the mouse pointer last (#181). A frame without placements
  * draws each cell's background and text in one opaque pass, then the pointer.
  * Each image is a texture of its own, uploaded when a placement of it is first
- * drawn and scaled down to fit GL_MAX_TEXTURE_SIZE when it is larger; a
- * placement draws its source rectangle, clipped at its box and the screen, as
- * one quad, scaled and rotated on the GPU. The textures count in ADR-103's
+ * drawn and scaled down to fit GL_MAX_TEXTURE_SIZE when it is larger, or, when
+ * the whole image does not fit the budget, at the size the placement draws
+ * it; a placement draws its source rectangle, clipped at its box and the
+ * screen, as one quad, scaled and rotated on the GPU. An upload GL refuses is
+ * not tried again while the image is shown. The textures count in ADR-103's
  * image budget (image_budget.c) as bbulk's scaled pictures do: one that does
  * not fit is left out until the room in the budget grows, and those no frame
  * has drawn since go, least recently used first, once the textures pass
@@ -132,22 +134,32 @@ struct gltex_image {
 	uint64_t key;
 	GLuint tex;
 	unsigned int iw, ih; /* the image's size */
-	unsigned int w, h;   /* the texture's: the image's, unless scaled to fit */
+	unsigned int w, h;   /* the texture's: the image's, unless scaled */
 	bool scaled;	     /* smaller than the image */
-	GLint filter;	     /* its GL_TEXTURE_MIN_FILTER and MAG_FILTER */
-	uint64_t last_use;   /* the frame that last drew it */
+	/*
+	 * the image at the size a placement draws it, made where the whole
+	 * image does not fit the budget; made again when a placement draws it
+	 * larger
+	 */
+	bool drawn_size;
+	bool failed;	   /* GL refused it: not tried again, no texture */
+	GLint filter;	   /* its GL_TEXTURE_MIN_FILTER and MAG_FILTER */
+	uint64_t last_use; /* the frame that last drew it */
 	size_t bytes;
 };
 
 /*
  * A placement queued for the frame: @image's texture coordinates @u1, @v1 to
- * @u2, @v2 drawn over @x1, @y1 to @x2, @y2, in @band; @exact when it draws
- * one texel a pixel, so it is sampled as it is.
+ * @u2, @v2 drawn over @x1, @y1 to @x2, @y2, in @band, sampled within @clip
+ * (its source rectangle, half a texel in from each edge, so bilinear
+ * filtering takes nothing from beside it); @exact when it draws one texel a
+ * pixel, so it is sampled as it is.
  */
 struct gltex_pic {
 	struct gltex_image *image;
 	GLfloat x1, y1, x2, y2;
 	GLfloat u1, v1, u2, v2;
+	GLfloat clip[4];
 	uint8_t band;
 	bool exact;
 };
@@ -242,6 +254,7 @@ struct gltex {
 	GLuint uni_img_sin;
 	GLuint uni_img_proj;
 	GLuint uni_img_picture;
+	GLuint uni_img_clip;
 
 	GLfloat advance_x;
 	GLfloat advance_y;
@@ -398,6 +411,7 @@ static int image_shader_new(struct gltex *gt)
 	gt->uni_img_sin = gl_shader_get_uniform(gt->img_shader, "sin");
 	gt->uni_img_proj = gl_shader_get_uniform(gt->img_shader, "projection");
 	gt->uni_img_picture = gl_shader_get_uniform(gt->img_shader, "picture");
+	gt->uni_img_clip = gl_shader_get_uniform(gt->img_shader, "clip");
 	return 0;
 }
 
@@ -1041,7 +1055,8 @@ static void image_free(struct gltex *gt, struct gltex_image **pp)
 	struct gltex_image *gi = *pp;
 
 	*pp = gi->next;
-	gt->doomed[gt->doomed_num++] = gi->tex;
+	if (gi->tex)
+		gt->doomed[gt->doomed_num++] = gi->tex;
 	gt->image_bytes -= gi->bytes;
 	gt->images_num--;
 	image_budget_remove_picture(gi->bytes);
@@ -1091,7 +1106,7 @@ static void images_trim(struct gltex *gt, size_t want, size_t limit)
 	while (gt->image_bytes + want > limit) {
 		lru = NULL;
 		for (pp = &gt->images; *pp; pp = &(*pp)->next) {
-			if (image_in_use(gt, *pp))
+			if (image_in_use(gt, *pp) || (*pp)->failed)
 				continue;
 			if (!lru || (*pp)->last_use < (*lru)->last_use)
 				lru = pp;
@@ -1099,6 +1114,19 @@ static void images_trim(struct gltex *gt, size_t want, size_t limit)
 		if (!lru)
 			return;
 		image_free(gt, lru);
+	}
+}
+
+/* forget the uploads GL refused that this frame no longer shows */
+static void failed_free(struct gltex *gt)
+{
+	struct gltex_image **pp = &gt->images;
+
+	while (*pp) {
+		if ((*pp)->failed && !image_in_use(gt, *pp))
+			image_free(gt, pp);
+		else
+			pp = &(*pp)->next;
 	}
 }
 
@@ -1261,6 +1289,7 @@ static int image_upload(struct gltex *gt, struct gltex_image *gi, const struct t
 		gl_clear_error();
 		if (gi->tex)
 			gl_tex_free(&gi->tex, 1);
+		gi->tex = 0;
 		if (!gt->upload_warned)
 			log_warning("cannot load a %ux%u image into an OpenGL texture (%d: %s); "
 				    "it is not drawn",
@@ -1272,26 +1301,29 @@ static int image_upload(struct gltex *gt, struct gltex_image *gi, const struct t
 }
 
 /*
- * A texture for @img, the overlay's when @overlay, made within the frame: room
- * from this display's textures the frame does not draw, then from the budget
- * in ADR-103's order (image_budget_picture_room), as bbulk makes a scaled
- * picture. Returns 0, -ENOSPC when it does not fit, -ENOMEM or -EFAULT.
+ * A texture of @tw x @th for @img, the overlay's when @overlay, made within
+ * the frame: room from this display's textures the frame does not draw, then
+ * from the budget in ADR-103's order (image_budget_picture_room), as bbulk
+ * makes a scaled picture. Returns 0, -ENOSPC when it does not fit, -ENOMEM,
+ * or -EFAULT when GL refused it, which is remembered for the image's key, so
+ * it is not tried, and room not made for it, again on every frame.
  */
 static int image_new(struct kmscon_text *txt, bool overlay, uint64_t key,
-		     const struct tsm_frame_image *img, struct gltex_image **out)
+		     const struct tsm_frame_image *img, unsigned int tw, unsigned int th,
+		     struct gltex_image **out)
 {
 	struct gltex *gt = txt->data;
 	struct gltex_image *gi;
-	unsigned int tw, th, n;
-	size_t bytes;
+	size_t bytes = (size_t)tw * th * 4;
+	unsigned int n;
 	GLuint *doomed;
 	int ret;
 
-	image_fit(gt, img->width, img->height, &tw, &th);
-	bytes = (size_t)tw * th * 4;
-
-	/* room for its name among the textures given up, so that never fails */
-	n = gt->images_num + gt->doomed_num + 1;
+	/*
+	 * room for its name, and one more, among the textures given up, so
+	 * giving one up never fails, even a texture replaced by a larger one
+	 */
+	n = gt->images_num + gt->doomed_num + 2;
 	if (n > gt->doomed_size) {
 		doomed = realloc(gt->doomed, (n + 16) * sizeof(*doomed));
 		if (!doomed)
@@ -1318,7 +1350,10 @@ static int image_new(struct kmscon_text *txt, bool overlay, uint64_t key,
 	gi->scaled = tw != img->width || th != img->height;
 	gi->bytes = bytes;
 	ret = image_upload(gt, gi, img);
-	if (ret) {
+	if (ret == -EFAULT) {
+		gi->failed = true;
+		gi->bytes = bytes = 0;
+	} else if (ret) {
 		free(gi);
 		return ret;
 	}
@@ -1329,7 +1364,7 @@ static int image_new(struct kmscon_text *txt, bool overlay, uint64_t key,
 	gt->image_bytes += bytes;
 	image_budget_add_picture(bytes);
 	*out = gi;
-	return 0;
+	return ret;
 }
 
 /* room for @n placements this frame */
@@ -1356,12 +1391,104 @@ static int pics_reserve(struct gltex *gt, unsigned int n)
 	return 0;
 }
 
+/* free the textures of overlays before the one with key @key: there is one at a time */
+static void overlays_free(struct gltex *gt, uint64_t key)
+{
+	struct gltex_image **pp = &gt->images;
+
+	while (*pp) {
+		if ((*pp)->overlay && (*pp)->key != key)
+			image_free(gt, pp);
+		else
+			pp = &(*pp)->next;
+	}
+}
+
+/*
+ * The texture placement @fp draws from, the overlay's when @overlay, where @fp
+ * draws its source rectangle @dw x @dh pixels: the image's existing texture,
+ * or a new one of the whole image, scaled down only to fit
+ * GL_MAX_TEXTURE_SIZE. Where that does not fit the budget and @fp draws the
+ * image smaller, the texture is the image at the size @fp draws it (ADR-108:
+ * hwaccel on draws the images hwaccel off draws, and bbulk draws such a
+ * picture at its drawn size); one such is made again, larger, when a
+ * placement draws it larger. NULL when there is none: no image, GL refused
+ * it, or it does not fit, which marks the frame starved.
+ */
+static struct gltex_image *place_texture(struct kmscon_text *txt,
+					 const struct tsm_frame_placement *fp, bool overlay,
+					 unsigned int dw, unsigned int dh)
+{
+	struct gltex *gt = txt->data;
+	struct gltex_image *gi, *old, **pp;
+	struct tsm_frame_image img;
+	unsigned int fw, fh, tw, th;
+	int ret;
+
+	gi = image_find(gt, overlay, fp->image_key);
+	if (gi && gi->failed)
+		return NULL;
+	if (gi && gi->iw && gi->ih) {
+		/* the image at the size this placement draws it */
+		tw = ((uint64_t)gi->iw * dw + fp->src_width / 2) / fp->src_width;
+		th = ((uint64_t)gi->ih * dh + fp->src_height / 2) / fp->src_height;
+		if (!gi->drawn_size || (tw <= gi->w && th <= gi->h))
+			return gi;
+	}
+
+	if (kmscon_text_get_image(txt, overlay, fp->image_key, &img))
+		return gi;
+	if (img.stride % 4 || img.stride / 4 < img.width || !img.width || !img.height)
+		return gi;
+	if (overlay)
+		overlays_free(gt, fp->image_key);
+	image_fit(gt, img.width, img.height, &fw, &fh);
+	tw = ((uint64_t)img.width * dw + fp->src_width / 2) / fp->src_width;
+	th = ((uint64_t)img.height * dh + fp->src_height / 2) / fp->src_height;
+	image_fit(gt, tw ? tw : 1, th ? th : 1, &tw, &th);
+
+	/* a drawn-size texture drawn larger: its room is the new one's to try */
+	old = gi;
+	if (old) {
+		for (pp = &gt->images; *pp != old; pp = &(*pp)->next)
+			;
+		*pp = old->next;
+		gt->images_num--;
+		gt->image_bytes -= old->bytes;
+		image_budget_remove_picture(old->bytes);
+	}
+
+	ret = image_new(txt, overlay, fp->image_key, &img, fw, fh, &gi);
+	if (ret == -ENOSPC && (uint64_t)tw * th < (uint64_t)fw * fh) {
+		ret = image_new(txt, overlay, fp->image_key, &img, tw, th, &gi);
+		if (!ret)
+			gi->drawn_size = true;
+	}
+	if (ret == -ENOSPC)
+		gt->starved = true;
+	else if (ret == -EFAULT)
+		gi->last_use = gt->frame_count; /* remembered while shown */
+
+	if (old) {
+		/* put back: as it was, or among those given up */
+		old->next = gt->images;
+		gt->images = old;
+		gt->images_num++;
+		gt->image_bytes += old->bytes;
+		image_budget_add_picture(old->bytes);
+		if (!ret)
+			image_free(gt, &gt->images);
+		else
+			return old;
+	}
+	return ret ? NULL : gi;
+}
+
 /*
  * Queue placement @fp, the overlay's when @overlay, @cols x @rows cells of the
  * frame drawn: its picture's part inside its box and the grid, as bbulk
- * clips it, from its image's texture, made on the image's first draw. One
- * that draws nothing, or whose texture cannot be had, is left out; one whose
- * texture does not fit the budget marks the frame starved.
+ * clips it, from its image's texture (place_texture). One that draws nothing,
+ * or whose texture cannot be had, is left out.
  */
 static void place_queue(struct kmscon_text *txt, const struct tsm_frame_placement *fp, bool overlay,
 			unsigned int cols, unsigned int rows)
@@ -1369,11 +1496,10 @@ static void place_queue(struct kmscon_text *txt, const struct tsm_frame_placemen
 	struct gltex *gt = txt->data;
 	long long fw = FONT_WIDTH(txt), fh = FONT_HEIGHT(txt), gx, gy, px0, px1, py0, py1;
 	long long x0, x1, y0, y1, gw = cols * fw, gh = rows * fh;
-	double dw, dh, sx = gt->advance_x / fw, sy = gt->advance_y / fh;
-	struct tsm_frame_image img;
+	double sx = gt->advance_x / fw, sy = gt->advance_y / fh, lo, hi;
 	struct gltex_image *gi;
 	struct gltex_pic *p;
-	int ret;
+	unsigned int dw, dh, i;
 
 	if (!fp->cell_width || !fp->cell_height || !fp->width || !fp->height || !fp->src_width ||
 	    !fp->src_height || gt->pics_num >= gt->pics_size)
@@ -1398,39 +1524,46 @@ static void place_queue(struct kmscon_text *txt, const struct tsm_frame_placemen
 	y1 = y1 < gh ? y1 : gh;
 	if (x0 >= x1 || y0 >= y1)
 		return;
+	dw = px1 - px0;
+	dh = py1 - py0;
 
-	gi = image_find(gt, overlay, fp->image_key);
-	if (!gi) {
-		if (kmscon_text_get_image(txt, overlay, fp->image_key, &img))
-			return;
-		if (img.stride % 4 || img.stride / 4 < img.width || !img.width || !img.height)
-			return;
-		ret = image_new(txt, overlay, fp->image_key, &img, &gi);
-		if (ret == -ENOSPC)
-			gt->starved = true;
-		if (ret)
-			return;
-	}
-	if (fp->src_x >= gi->iw || fp->src_y >= gi->ih || fp->src_width > gi->iw - fp->src_x ||
-	    fp->src_height > gi->ih - fp->src_y)
+	gi = place_texture(txt, fp, overlay, dw, dh);
+	if (!gi || fp->src_x >= gi->iw || fp->src_y >= gi->ih ||
+	    fp->src_width > gi->iw - fp->src_x || fp->src_height > gi->ih - fp->src_y)
 		return;
 	gi->last_use = gt->frame_count;
 
 	/* the visible part's texture coordinates, of the image's whole */
-	dw = px1 - px0;
-	dh = py1 - py0;
 	p = &gt->pics[gt->pics_num++];
 	p->image = gi;
 	p->band = fp->band;
-	p->exact = dw == fp->src_width && dh == fp->src_height && !gi->scaled;
+	/* one texel a pixel, from a texel's edge */
+	p->exact = (uint64_t)gi->w * fp->src_width == (uint64_t)dw * gi->iw &&
+		   (uint64_t)gi->h * fp->src_height == (uint64_t)dh * gi->ih &&
+		   (uint64_t)fp->src_x * gi->w % gi->iw == 0 &&
+		   (uint64_t)fp->src_y * gi->h % gi->ih == 0;
 	p->x1 = gt->off_x + x0 * sx - 1.0;
 	p->x2 = gt->off_x + x1 * sx - 1.0;
 	p->y1 = 1.0 - gt->off_y - y0 * sy;
 	p->y2 = 1.0 - gt->off_y - y1 * sy;
-	p->u1 = (fp->src_x + (x0 - px0) * fp->src_width / dw) / gi->iw;
-	p->u2 = (fp->src_x + (x1 - px0) * fp->src_width / dw) / gi->iw;
-	p->v1 = (fp->src_y + (y0 - py0) * fp->src_height / dh) / gi->ih;
-	p->v2 = (fp->src_y + (y1 - py0) * fp->src_height / dh) / gi->ih;
+	p->u1 = (fp->src_x + (x0 - px0) * (double)fp->src_width / dw) / gi->iw;
+	p->u2 = (fp->src_x + (x1 - px0) * (double)fp->src_width / dw) / gi->iw;
+	p->v1 = (fp->src_y + (y0 - py0) * (double)fp->src_height / dh) / gi->ih;
+	p->v2 = (fp->src_y + (y1 - py0) * (double)fp->src_height / dh) / gi->ih;
+
+	/* the source rectangle in the texture's texels, half a texel in */
+	for (i = 0; i < 2; i++) {
+		unsigned int n = i ? gi->h : gi->w, size = i ? gi->ih : gi->iw;
+		unsigned int s0 = i ? fp->src_y : fp->src_x;
+		unsigned int s1 = s0 + (i ? fp->src_height : fp->src_width);
+
+		lo = (double)s0 * n / size + 0.5;
+		hi = (double)s1 * n / size - 0.5;
+		if (lo > hi)
+			lo = hi = (lo + hi) / 2;
+		p->clip[i] = lo / n;
+		p->clip[2 + i] = hi / n;
+	}
 }
 
 /*
@@ -1680,6 +1813,7 @@ static void pics_pass(struct gltex *gt, const float *mat, uint8_t band)
 			begun = true;
 		}
 		glBindTexture(GL_TEXTURE_2D, p->image->tex);
+		glUniform4f(gt->uni_img_clip, p->clip[0], p->clip[1], p->clip[2], p->clip[3]);
 		filter = p->exact ? GL_NEAREST : GL_LINEAR;
 		if (p->image->filter != filter) {
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
@@ -1779,6 +1913,7 @@ static int gltex_render(struct kmscon_text *txt)
 	}
 
 	images_trim(gt, 0, image_budget_cache_limit((uint64_t)gt->sw * gt->sh));
+	failed_free(gt);
 	doomed_flush(gt);
 	return ret;
 }

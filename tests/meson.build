@@ -94,7 +94,7 @@ if enable_renderer_gltex
         ],
         include_directories: src_inc,
         dependencies: [
-            libtsm_deps,
+            subproject('libtsm').get_variable('libtsm_test_dep'),
             shl_deps,
             htable_deps,
             math_deps,

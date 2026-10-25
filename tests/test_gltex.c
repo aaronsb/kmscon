@@ -55,7 +55,7 @@ static GLuint bound[2];		/* the texture glBindTexture last bound on each unit */
 /* the uniforms gltex asks for, each at its index here, and their values */
 static const char *const uniform_names[] = {
 	"cos",	"sin",	     "projection", "atlas",	"advance_htex", "advance_vtex", "colour",
-	"deco", "deco_htex", "deco_vtex",  "decorated", "layer",	"picture",
+	"deco", "deco_htex", "deco_vtex",  "decorated", "layer",	"picture",	"clip",
 };
 #define N_UNIFORMS (sizeof(uniform_names) / sizeof(*uniform_names))
 static GLint uniform_i[N_UNIFORMS];
@@ -73,7 +73,9 @@ enum {
 	U_DECORATED = 10,
 	U_LAYER = 11,
 	U_PICTURE = 12,
+	U_CLIP = 13,
 };
+static GLfloat uniform_clip[4]; /* the image shader's clip, glUniform4f's */
 
 /* the shader gl_shader_use made current, and the blend state */
 static struct gl_shader *program;
@@ -94,6 +96,7 @@ static struct draw_call {
 	bool blend;
 	GLenum src, dst;
 	GLint filter, mag;
+	GLfloat clip[4];
 } draws[4096];
 static unsigned int n_draws;	/* glDrawArrays calls since the last reset */
 static unsigned int n_rendered; /* glyphs rasterised */
@@ -115,6 +118,8 @@ static struct fake_tex {
 	uint8_t *data; /* the pixels glTexImage2D gave it, or NULL */
 } texs[4096], strays[16];
 static unsigned int n_tex_images; /* glTexImage2D calls with pixels */
+static unsigned int n_tex_rgba;	  /* glTexImage2D calls for RGBA storage */
+static bool fail_teximage;	  /* glTexImage2D of RGBA storage raises GL_OUT_OF_MEMORY */
 static unsigned int n_strays;
 
 /* the texture GL knows by @name, a new stray when it knows none */
@@ -197,6 +202,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count)
 		.dst = blend_dst,
 		.filter = tex_of(bound[0])->filter,
 		.mag = tex_of(bound[0])->mag,
+		.clip = {uniform_clip[0], uniform_clip[1], uniform_clip[2], uniform_clip[3]},
 		.tex = bound[0],
 		.deco_tex = bound[1],
 		.first = first,
@@ -243,6 +249,13 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
 	assert(internalformat == (GLint)format && type == GL_UNSIGNED_BYTE);
 	bytes_per_pixel(format);
 	assert(width > 0 && width <= texture_limit && height > 0 && height <= texture_limit);
+	if (format == GL_RGBA) {
+		n_tex_rgba++;
+		if (fail_teximage) {
+			gl_error = GL_OUT_OF_MEMORY;
+			return;
+		}
+	}
 	t->w = width;
 	t->h = height;
 	t->format = format;
@@ -254,6 +267,9 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
 		t->data = malloc(n);
 		memcpy(t->data, pixels, n);
 		n_tex_images++;
+	} else if (format == GL_RGBA) {
+		/* filled by glTexSubImage2D, as a picture with padded rows is */
+		t->data = calloc((size_t)width * height, 4);
 	}
 }
 void glTexParameteri(GLenum target, GLenum pname, GLint param)
@@ -278,6 +294,10 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
 	assert(t->live && t->w && level == 0 && format == t->format && type == GL_UNSIGNED_BYTE);
 	assert(xoffset >= 0 && yoffset >= 0 && width > 0 && height > 0);
 	assert(xoffset + width <= t->w && yoffset + height <= t->h);
+	if (t->data && format == GL_RGBA)
+		for (GLsizei y = 0; y < height; y++)
+			memcpy(&t->data[((size_t)(yoffset + y) * t->w + xoffset) * 4],
+			       (const uint8_t *)pixels + (size_t)y * width * 4, (size_t)width * 4);
 	if (width == STRIP_W) {
 		strip_uploads++;
 		if (fail_strip) {
@@ -298,6 +318,14 @@ void glUniform1f(GLint location, GLfloat v0)
 {
 	assert(location >= 0 && location < (GLint)N_UNIFORMS);
 	uniform_f[location] = v0;
+}
+void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)
+{
+	assert(location == U_CLIP);
+	uniform_clip[0] = v0;
+	uniform_clip[1] = v1;
+	uniform_clip[2] = v2;
+	uniform_clip[3] = v3;
 }
 void glUniform1i(GLint location, GLint v0)
 {
@@ -463,7 +491,10 @@ struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
 {
 	return txt->deco.strike_fg ? cell->fg : txt->deco.strike;
 }
-/* the images test placements show, by key, and the overlay's as text.c has it */
+/*
+ * the images test placements show, by key, and the overlay's and those of the
+ * screen being drawn as text.c has them
+ */
 static struct tsm_frame_image test_images[64];
 int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
 			  struct tsm_frame_image *out)
@@ -474,6 +505,8 @@ int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
 		*out = txt->overlay->image;
 		return 0;
 	}
+	if (txt->screen)
+		return tsm_screen_frame_image(txt->screen, key, out);
 	if (key >= 64 || !test_images[key].pixels)
 		return -ENOENT;
 	*out = test_images[key];
@@ -1356,7 +1389,9 @@ static void close_txt(struct kmscon_text *txt)
 {
 	gltex_unset(txt);
 	gltex_destroy(txt);
+	/* its textures and its display given back */
 	assert(image_budget_used() == 0);
+	assert(image_budget_displays_px() == 0);
 }
 
 /* one frame: @frame drawn and rendered, the draws recorded */
@@ -1794,6 +1829,265 @@ static void test_image_rotated(void)
 	close_txt(&txt);
 }
 
+/* the image shader's draws of the last frame sampled with @filter */
+static unsigned int draws_of(struct gltex *gt, GLint filter)
+{
+	unsigned int i, n = 0;
+
+	for (i = 0; i < n_draws; i++)
+		n += draws[i].program == gt->img_shader && draws[i].filter == filter;
+	return n;
+}
+
+/*
+ * An image whose whole texture does not fit the budget beside libtsm's copy
+ * of it (more than half the budget) is drawn as bbulk draws it (ADR-108):
+ * from a texture at the size the placement draws it, the scaler's pixels, a
+ * texel a pixel. A placement drawing it larger makes that texture again,
+ * larger, and one drawing it smaller uses the larger one.
+ */
+static void test_half_budget(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gltex_image *gi;
+	size_t img = (size_t)2048 * 1536 * 4;
+	uint32_t *want;
+	GLuint name;
+
+	max_texture_size = texture_limit = 4096;
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	image_budget_set_limit((size_t)16 << 20);
+	image_budget_add_picture(img); /* stands for libtsm's copy, which the frame draws */
+	make_image(50, 2048, 1536, 255);
+	place(0, 50, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT); /* shrunk to 320x240 */
+	run_frame(&txt, make_frame(1), false);
+	assert(!gt->starved && gt->pics_num == 1);
+	gi = texture_of(gt, 50);
+	assert(gi->drawn_size && gi->w == 320 && gi->h == 240 && gi->bytes == 320 * 240 * 4);
+	assert(gt->pics[0].exact && draws_of(gt, GL_NEAREST) == 1);
+	want = malloc(320 * 240 * 4);
+	assert(picture_scale(test_images[50].pixels, 2048, 2048, 1536, 320, 240, 0, 0, 320, 240,
+			     want) == 0);
+	assert(!memcmp(texs[gi->tex].data, want, 320 * 240 * 4));
+	free(want);
+
+	/* drawn larger: made again at that size, the smaller one given up */
+	name = gi->tex;
+	place(0, 50, 0, 0, 80, 30, TSM_FRAME_BAND_ABOVE_TEXT); /* 640x480 */
+	run_frame(&txt, make_frame(1), false);
+	gi = texture_of(gt, 50);
+	assert(gi->drawn_size && gi->w == 640 && gi->h == 480 && gt->images_num == 1);
+	assert(gt->image_bytes == 640 * 480 * 4 && !texs[name].live);
+	assert(gt->pics_num == 1 && gt->pics[0].exact);
+
+	/* drawn smaller again: the larger one serves */
+	name = gi->tex;
+	place(0, 50, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT);
+	run_frame(&txt, make_frame(1), false);
+	assert(texture_of(gt, 50)->tex == name && !gt->pics[0].exact);
+
+	image_budget_remove_picture(img);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+	close_txt(&txt);
+	max_texture_size = texture_limit = 2048;
+}
+
+/*
+ * An upload GL refuses is remembered while the image is shown: it is not
+ * tried again, nor room made for it, on later frames. Once no frame shows
+ * it, it is forgotten, and a later placement tries again.
+ */
+static void test_upload_failure(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gltex_image *gi;
+	unsigned int tries;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	make_image(51, 2 * FAKE_CELL_W, FAKE_CELL_H, 255);
+	place(0, 51, 0, 0, 2, 1, TSM_FRAME_BAND_ABOVE_TEXT);
+
+	fail_teximage = true;
+	tries = n_tex_rgba;
+	run_frame(&txt, make_frame(1), false);
+	assert(n_tex_rgba == tries + 1 && gt->pics_num == 0 && !gt->starved);
+	gi = image_find(gt, false, 51);
+	assert(gi && gi->failed && !gi->tex && !gi->bytes && image_budget_used() == 0);
+	run_frame(&txt, make_frame(1), false);
+	fail_teximage = false;
+	run_frame(&txt, make_frame(1), false);
+	assert(n_tex_rgba == tries + 1 && gt->pics_num == 0);
+
+	/* not shown, forgotten; shown again, tried again */
+	run_frame(&txt, make_frame(0), false);
+	assert(!image_find(gt, false, 51));
+	run_frame(&txt, make_frame(1), false);
+	assert(n_tex_rgba == tries + 2 && gt->pics_num == 1 && !texture_of(gt, 51)->failed);
+
+	close_txt(&txt);
+}
+
+/* a picture whose rows are padded goes up a row at a time, each row its own pixels */
+static void test_padded_rows(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gltex_image *gi;
+	unsigned int w = 2 * FAKE_CELL_W, h = FAKE_CELL_H, stride = w + 3, x, y;
+	uint32_t *px = calloc((size_t)stride * h, 4);
+
+	for (y = 0; y < h; y++)
+		for (x = 0; x < stride; x++)
+			px[y * stride + x] = x < w ? 0xff000000 | y << 8 | x : 0xdeadbeef;
+	free((void *)test_images[52].pixels);
+	test_images[52] = (struct tsm_frame_image){.width = w,
+						   .height = h,
+						   .stride = (size_t)stride * 4,
+						   .pixels = px,
+						   .opaque = true};
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	place(0, 52, 0, 0, 2, 1, TSM_FRAME_BAND_ABOVE_TEXT);
+	run_frame(&txt, make_frame(1), false);
+	gi = texture_of(gt, 52);
+	for (y = 0; y < h; y++)
+		assert(!memcmp(&texs[gi->tex].data[(size_t)y * w * 4], &px[y * stride], w * 4));
+	close_txt(&txt);
+}
+
+/*
+ * A placement drawing a source rectangle scaled is sampled half a texel
+ * inside it, so bilinear filtering takes nothing from beside it (a sprite
+ * sheet's neighbour).
+ */
+static void test_source_clip(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int i;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	make_image(53, 32, 16, 255);
+	place(0, 53, 0, 0, 4, 2, TSM_FRAME_BAND_ABOVE_TEXT);
+	placements[0].src_x = 8;
+	placements[0].src_width = 8; /* texels 8 to 16 of 32, drawn 32 wide */
+	run_frame(&txt, make_frame(1), false);
+	assert(gt->pics_num == 1 && !gt->pics[0].exact);
+	for (i = 0; i < n_draws && draws[i].program != gt->img_shader; i++)
+		;
+	assert(i < n_draws);
+	assert(near(draws[i].clip[0], 8.5 / 32) && near(draws[i].clip[2], 15.5 / 32));
+	assert(near(draws[i].clip[1], 0.5 / 16) && near(draws[i].clip[3], 15.5 / 16));
+	close_txt(&txt);
+}
+
+/* a new render timer display gives the last one's texture back */
+static void test_overlay_replaced(void)
+{
+	struct kmscon_text txt;
+	struct kmscon_text_overlay *ov[2];
+	struct gltex *gt;
+	GLuint name = 0;
+	unsigned int k;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	for (k = 0; k < 2; k++) {
+		ov[k] = calloc(1, sizeof(*ov[k]) + FAKE_CELL_W * FAKE_CELL_H * 4);
+		ov[k]->image = (struct tsm_frame_image){.width = FAKE_CELL_W,
+							.height = FAKE_CELL_H,
+							.stride = FAKE_CELL_W * 4,
+							.pixels = ov[k]->pixels,
+							.opaque = true};
+		ov[k]->placement = (struct tsm_frame_placement){.key = 1,
+								.image_key = k + 1,
+								.cols = 1,
+								.rows = 1,
+								.width = FAKE_CELL_W,
+								.height = FAKE_CELL_H,
+								.src_width = FAKE_CELL_W,
+								.src_height = FAKE_CELL_H,
+								.cell_width = FAKE_CELL_W,
+								.cell_height = FAKE_CELL_H,
+								.band = TSM_FRAME_BAND_ABOVE_TEXT,
+								.flags = TSM_FRAME_OPAQUE};
+		txt.overlay = ov[k];
+		run_frame(&txt, make_frame(0), false);
+		assert(gt->images_num == 1 && image_find(gt, true, k + 1));
+		assert(!name || !texs[name].live);
+		name = image_find(gt, true, k + 1)->tex;
+	}
+	txt.overlay = NULL;
+	free(ov[0]);
+	free(ov[1]);
+	close_txt(&txt);
+}
+
+/*
+ * A texture never evicts an image its own frame draws: a picture placed in
+ * scrollback and viewed there (not pinned, so evictable for another image)
+ * stays when its texture does not fit, and the placement waits for room.
+ */
+static void test_frame_draws(void)
+{
+	static uint32_t px[64 * 32];
+	struct tsm_test_image ti = {
+		.width = 64, .height = 32, .pixels = px, .kind = TSM_IMAGE_KITTY, .id = 1};
+	struct tsm_test_placement pl = {0};
+	struct tsm_frame_age age = {0};
+	struct tsm_screen_attr attr = {0};
+	const struct tsm_frame *frame;
+	struct kmscon_text txt;
+	struct tsm_screen *con;
+	struct gltex *gt;
+	uint64_t key, pkey;
+	unsigned int i;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, FAKE_COLS, FAKE_ROWS) == 0);
+	tsm_screen_set_max_sb(con, 100);
+	assert(tsm_screen_set_cell_size(con, FAKE_CELL_W, FAKE_CELL_H) == 0);
+	assert(image_budget_add_screen(con) == 0);
+	assert(tsm_screen_test_image(con, &ti, &key) == 0);
+	pl.image = key;
+	assert(tsm_screen_test_place(con, &pl, &pkey) == 0);
+	for (i = 0; i < 2 * FAKE_ROWS; i++)
+		tsm_screen_newline(con);
+	tsm_screen_sb_up(con, 2 * FAKE_ROWS);
+	/* no room for the texture beside the image */
+	image_budget_set_limit(image_budget_used() + 64 * 32 * 4 - 1);
+
+	txt.screen = con;
+	frame = tsm_screen_frame_since(con, &age);
+	assert(frame && frame->placement_count == 1);
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(gltex_draw(&txt, frame, false) == 0);
+	assert(gltex_render(&txt) == 0);
+	assert(tsm_screen_test_image_count(con) == 1);
+	assert(gt->starved && gt->pics_num == 0 && !gltex_starved(&txt));
+
+	/* room: drawn */
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+	assert(gltex_starved(&txt));
+	frame = tsm_screen_frame_since(con, &age);
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(gltex_draw(&txt, frame, false) == 0);
+	assert(gltex_render(&txt) == 0);
+	assert(gt->pics_num == 1 && tsm_screen_test_image_count(con) == 1);
+	txt.screen = NULL;
+
+	image_budget_remove_screen(con);
+	tsm_screen_unref(con);
+	close_txt(&txt);
+}
+
 int main(void)
 {
 	/* gltex draws image placements (ADR-103 steps 3f and 4e), and says so */
@@ -1815,5 +2109,11 @@ int main(void)
 	test_band_order();
 	test_pointer_last();
 	test_image_rotated();
+	test_half_budget();
+	test_upload_failure();
+	test_padded_rows();
+	test_source_clip();
+	test_overlay_replaced();
+	test_frame_draws();
 	return 0;
 }

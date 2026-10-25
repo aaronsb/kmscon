@@ -78,6 +78,24 @@ uint64_t image_budget_displays_px(void)
 	return budget.displays_px;
 }
 
+uint64_t image_budget_display_share(uint64_t px)
+{
+	uint64_t all = budget.displays_px, limit = image_budget_limit();
+
+	/* divided before it is multiplied, so a set limit of up to
+	 * IMAGE_BUDGET_LIMIT_MAX on the largest displays does not wrap */
+	if (!all)
+		return limit;
+	return limit / all * px + limit % all * px / all;
+}
+
+size_t image_budget_cache_limit(uint64_t px)
+{
+	uint64_t screens = px * 4 * 2, share = image_budget_display_share(px);
+
+	return screens < share ? screens : share;
+}
+
 /*
  * The index of the screen whose image tsm_screen_image_victim names first
  * across the screens @left allows (all when NULL), and that image in @best;

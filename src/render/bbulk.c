@@ -923,31 +923,10 @@ static int places_update(struct kmscon_text *txt, const struct tsm_frame *frame,
 	return 0;
 }
 
-/*
- * This display's share of the budget by size: limit x px / all, divided
- * before it is multiplied, so a set limit of up to IMAGE_BUDGET_LIMIT_MAX on
- * the largest displays does not wrap 64 bits
- */
-static uint64_t picture_share(struct bbulk *bb)
-{
-	uint64_t px = (uint64_t)bb->sw * bb->sh, all = image_budget_displays_px();
-	uint64_t limit = image_budget_limit();
-
-	if (!all)
-		return limit;
-	return limit / all * px + limit % all * px / all;
-}
-
-/*
- * This display's scaled pictures between frames: twice its screen in ARGB, or
- * its share of the budget if that is less, so the displays' pictures together
- * stay within it and leave a frame room to scale more
- */
+/* this display's scaled pictures between frames (image_budget_cache_limit) */
 static size_t picture_limit(struct bbulk *bb)
 {
-	uint64_t screens = (uint64_t)bb->sw * bb->sh * 4 * 2, share = picture_share(bb);
-
-	return screens < share ? screens : share;
+	return image_budget_cache_limit((uint64_t)bb->sw * bb->sh);
 }
 
 /*

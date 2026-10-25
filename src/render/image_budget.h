@@ -83,6 +83,15 @@ int image_budget_count_display(const void *disp, uint64_t px);
 void image_budget_uncount_display(const void *disp);
 /* the pixels of every display counted */
 uint64_t image_budget_displays_px(void);
+/* a display of @px pixels' share of the limit by size: limit x px / all */
+uint64_t image_budget_display_share(uint64_t px);
+/*
+ * What a renderer drawing a display of @px pixels keeps between frames, its
+ * scaled pictures or textures: twice its screen in ARGB, or its share of the
+ * budget by size if that is less, so the displays' caches together stay
+ * within it and leave a frame room to make more
+ */
+size_t image_budget_cache_limit(uint64_t px);
 
 /*
  * A renderer's cache of pictures. @trim frees pictures its last frame did not

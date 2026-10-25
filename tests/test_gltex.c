@@ -10,6 +10,13 @@
  * counts the textures gltex creates, keeps the pixels it uploads, records each
  * draw's textures and uniforms, and checks where its glyphs land in them and
  * in the frame. We include the implementation to reach its statics.
+ *
+ * Image placements (ADR-103 steps 3f and 4e): one texture per image, uploaded
+ * on its first draw as the image's bytes, scaled down to fit
+ * GL_MAX_TEXTURE_SIZE; the textures count in the image budget and those no
+ * frame draws go past the cache's bound; the frame is drawn in ADR-103's
+ * layers, each with its blend state, and the pointer last (#181). The image
+ * budget and the scaler are the real ones.
  */
 
 #include <GLES2/gl2.h>
@@ -20,6 +27,8 @@
 #include <string.h>
 #include "../src/font/font.h"
 #include "../src/render/deco.h"
+#include "../src/render/image_budget.h"
+#include "../src/render/picture.h"
 #include "../src/render/text.h"
 #include "../src/shl/gl.h"
 #include "../src/video/video.h"
@@ -45,13 +54,15 @@ static GLuint bound[2];		/* the texture glBindTexture last bound on each unit */
 
 /* the uniforms gltex asks for, each at its index here, and their values */
 static const char *const uniform_names[] = {
-	"cos",	  "sin",  "projection", "atlas",     "advance_htex", "advance_vtex",
-	"colour", "deco", "deco_htex",	"deco_vtex", "decorated",
+	"cos",	"sin",	     "projection", "atlas",	"advance_htex", "advance_vtex", "colour",
+	"deco", "deco_htex", "deco_vtex",  "decorated", "layer",	"picture",
 };
 #define N_UNIFORMS (sizeof(uniform_names) / sizeof(*uniform_names))
 static GLint uniform_i[N_UNIFORMS];
 static GLfloat uniform_f[N_UNIFORMS];
 enum {
+	U_COS = 0,
+	U_SIN = 1,
 	U_ATLAS = 3,
 	U_ADVANCE_H = 4,
 	U_ADVANCE_V = 5,
@@ -60,15 +71,29 @@ enum {
 	U_DECO_H = 8,
 	U_DECO_V = 9,
 	U_DECORATED = 10,
+	U_LAYER = 11,
+	U_PICTURE = 12,
 };
 
-/* a draw: the textures on units 0 and 1, and the uniforms it was drawn with */
+/* the shader gl_shader_use made current, and the blend state */
+static struct gl_shader *program;
+static bool blend_on;
+static GLenum blend_src, blend_dst;
+
+/*
+ * a draw: the textures on units 0 and 1, the uniforms it was drawn with, its
+ * shader, the blend state, and the filter of the texture on unit 0
+ */
 static struct draw_call {
 	GLuint tex, deco_tex;
 	GLint first;
 	GLsizei count;
-	GLint colour, atlas_unit, deco_unit;
-	GLfloat advance_h, advance_v, deco_h, deco_v, decorated;
+	GLint colour, atlas_unit, deco_unit, layer, picture_unit;
+	GLfloat advance_h, advance_v, deco_h, deco_v, decorated, cos, sin;
+	struct gl_shader *program;
+	bool blend;
+	GLenum src, dst;
+	GLint filter, mag;
 } draws[4096];
 static unsigned int n_draws;	/* glDrawArrays calls since the last reset */
 static unsigned int n_rendered; /* glyphs rasterised */
@@ -85,7 +110,11 @@ static struct fake_tex {
 	bool live;     /* generated and not deleted, or bound as a stray */
 	GLsizei w, h;  /* its storage; 0 before glTexImage2D */
 	GLenum format; /* its storage's format */
+	GLint filter;  /* GL_TEXTURE_MIN_FILTER, which MAG_FILTER must match */
+	GLint mag;
+	uint8_t *data; /* the pixels glTexImage2D gave it, or NULL */
 } texs[4096], strays[16];
+static unsigned int n_tex_images; /* glTexImage2D calls with pixels */
 static unsigned int n_strays;
 
 /* the texture GL knows by @name, a new stray when it knows none */
@@ -136,14 +165,38 @@ void glBindTexture(GLenum target, GLuint texture)
 	tex_of(texture);
 	bound_tex = texture;
 }
+void glBlendFunc(GLenum sfactor, GLenum dfactor)
+{
+	blend_src = sfactor;
+	blend_dst = dfactor;
+}
 void glClear(GLbitfield mask) {}
 void glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {}
-void glDisable(GLenum cap) {}
+void glDisable(GLenum cap)
+{
+	assert(cap == GL_BLEND);
+	blend_on = false;
+}
+void glEnable(GLenum cap)
+{
+	assert(cap == GL_BLEND);
+	blend_on = true;
+}
 void glDisableVertexAttribArray(GLuint index) {}
 void glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
 	assert(n_draws < sizeof(draws) / sizeof(*draws));
 	draws[n_draws++] = (struct draw_call){
+		.layer = uniform_i[U_LAYER],
+		.picture_unit = uniform_i[U_PICTURE],
+		.cos = uniform_f[U_COS],
+		.sin = uniform_f[U_SIN],
+		.program = program,
+		.blend = blend_on,
+		.src = blend_src,
+		.dst = blend_dst,
+		.filter = tex_of(bound[0])->filter,
+		.mag = tex_of(bound[0])->mag,
 		.tex = bound[0],
 		.deco_tex = bound[1],
 		.first = first,
@@ -168,8 +221,13 @@ GLenum glGetError(void)
 	gl_error = GL_NO_ERROR;
 	return err;
 }
-/* GL_MAX_TEXTURE_SIZE, which a test may lower */
+/*
+ * GL_MAX_TEXTURE_SIZE, which a test may lower, and the largest texture
+ * glTexImage2D takes: the same, but for test_glyph_fallback, whose texture one
+ * cell wide is still a cell high
+ */
 static GLint max_texture_size = 2048;
+static GLint texture_limit = 2048;
 void glGetIntegerv(GLenum pname, GLint *data)
 {
 	*data = max_texture_size;
@@ -184,10 +242,31 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
 	/* GLES 2 has no conversion: the storage takes the format of the pixels */
 	assert(internalformat == (GLint)format && type == GL_UNSIGNED_BYTE);
 	bytes_per_pixel(format);
-	assert(width > 0 && width <= 2048 && height > 0 && height <= 2048);
+	assert(width > 0 && width <= texture_limit && height > 0 && height <= texture_limit);
 	t->w = width;
 	t->h = height;
 	t->format = format;
+	free(t->data);
+	t->data = NULL;
+	if (pixels) {
+		size_t n = (size_t)width * height * bytes_per_pixel(format);
+
+		t->data = malloc(n);
+		memcpy(t->data, pixels, n);
+		n_tex_images++;
+	}
+}
+void glTexParameteri(GLenum target, GLenum pname, GLint param)
+{
+	struct fake_tex *t = tex_of(bound_tex);
+
+	assert(target == GL_TEXTURE_2D && (param == GL_NEAREST || param == GL_LINEAR));
+	if (pname == GL_TEXTURE_MIN_FILTER)
+		t->filter = param;
+	else if (pname == GL_TEXTURE_MAG_FILTER)
+		t->mag = param;
+	else
+		assert(!"a parameter gltex does not set");
 }
 void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
 		     GLsizei height, GLenum format, GLenum type, const void *pixels)
@@ -242,10 +321,11 @@ bool gl_has_error(struct gl_shader *shader)
 {
 	return false;
 }
+static unsigned int n_shaders;
 int gl_shader_new(struct gl_shader **out, const char *vert, int vert_len, const char *frag,
 		  int frag_len, char **attr, size_t attr_count)
 {
-	*out = (struct gl_shader *)0x1;
+	*out = (struct gl_shader *)(uintptr_t)++n_shaders;
 	return 0;
 }
 void gl_shader_unref(struct gl_shader *shader) {}
@@ -257,13 +337,19 @@ GLuint gl_shader_get_uniform(struct gl_shader *shader, const char *name)
 	assert(!"a uniform the shader does not have");
 	return 0;
 }
-void gl_shader_use(struct gl_shader *shader) {}
+void gl_shader_use(struct gl_shader *shader)
+{
+	program = shader;
+}
+/* as shl's: bound, and filtered GL_LINEAR */
 void gl_tex_new(GLuint *tex, size_t num)
 {
 	for (size_t i = 0; i < num; i++) {
 		tex[i] = ++n_textures;
 		assert(tex[i] < sizeof(texs) / sizeof(*texs));
-		texs[tex[i]] = (struct fake_tex){.name = tex[i], .live = true};
+		texs[tex[i]] = (struct fake_tex){
+			.name = tex[i], .live = true, .filter = GL_LINEAR, .mag = GL_LINEAR};
+		bound_tex = tex[i];
 	}
 }
 void gl_tex_free(GLuint *tex, size_t num)
@@ -271,6 +357,8 @@ void gl_tex_free(GLuint *tex, size_t num)
 	for (size_t i = 0; i < num; i++) {
 		assert(texs[tex[i]].live);
 		texs[tex[i]].live = false;
+		free(texs[tex[i]].data);
+		texs[tex[i]].data = NULL;
 	}
 }
 
@@ -375,6 +463,22 @@ struct tsm_screen_color kmscon_text_strike_color(struct kmscon_text *txt,
 {
 	return txt->deco.strike_fg ? cell->fg : txt->deco.strike;
 }
+/* the images test placements show, by key, and the overlay's as text.c has it */
+static struct tsm_frame_image test_images[64];
+int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
+			  struct tsm_frame_image *out)
+{
+	if (overlay) {
+		if (!txt->overlay || txt->overlay->placement.image_key != key)
+			return -ENOENT;
+		*out = txt->overlay->image;
+		return 0;
+	}
+	if (key >= 64 || !test_images[key].pixels)
+		return -ENOENT;
+	*out = test_images[key];
+	return 0;
+}
 
 #include "../src/render/gltex.c"
 
@@ -474,17 +578,22 @@ static size_t heap_in_use(void)
 }
 
 /*
- * gltex_render() drew every queued quad once, from its own atlas: each atlas
- * with quads in one draw over its slots of the shared vertex arrays, which
- * hold its quads in the order they were queued. Each draw has its atlas on
- * unit 0, sampled untinted when it is an RGBA atlas, and the decoration
- * sprites' atlas on unit 1.
+ * gltex_render() drew a frame without placements: every queued quad once, from
+ * its own atlas, whole and opaque: each atlas with quads in one draw over its
+ * slots of the shared vertex arrays, which hold its quads in the order they
+ * were queued. Each draw has its atlas on unit 0, sampled untinted when it is
+ * an RGBA atlas, and the decoration sprites' atlas on unit 1. The pointer, if
+ * any, is the last draw, from the slot after the cells' (#181).
  */
 static void check_render(struct gltex *gt)
 {
 	struct atlas *atlas;
 	unsigned int i, n = 0, total = 0;
 
+	assert(!gt->pics_num);
+	for (i = 0; i < n_draws; i++)
+		assert(draws[i].program == gt->shader && draws[i].layer == LAYER_CELL &&
+		       !draws[i].blend);
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{
 		if (!atlas->cache_num)
@@ -511,8 +620,13 @@ static void check_render(struct gltex *gt)
 		atlas->cache_num = 0; /* counted again below */
 		n++;
 	}
-	assert(n == n_draws);
+	assert(n + gt->has_pointer == n_draws);
 	assert(total == gt->quads_num);
+	if (gt->has_pointer) {
+		assert(draws[n].tex == gt->pointer.atlas->tex);
+		assert(draws[n].first == (GLint)(6 * gt->quads_size) && draws[n].count == 6);
+		assert(gt->cache_pos[gt->quads_size * 12] == gt->pointer.x1);
+	}
 
 	for (i = 0; i < gt->quads_num; i++) {
 		const struct gltex_quad *q = &gt->quads[i];
@@ -522,7 +636,7 @@ static void check_render(struct gltex *gt)
 		assert(gt->cache_texpos[slot * 12] == q->texoff);
 		assert(gt->cache_texpos[slot * 12 + 4] == q->texoff + q->texw);
 		assert(gt->cache_fgcol[slot * 18] == (GLfloat)(q->fg.r / 255.0));
-		assert(gt->cache_bgcol[slot * 18 + 17] == (GLfloat)(q->bg.b / 255.0));
+		assert(gt->cache_bgcol[slot * 24 + 22] == (GLfloat)(q->bg.b / 255.0));
 		assert(gt->cache_ulcol[slot * 18 + 1] == (GLfloat)(q->ul.g / 255.0));
 		assert(gt->cache_strikecol[slot * 18 + 15] == (GLfloat)(q->strike.r / 255.0));
 		/* each vertex's x within the quad's cells: 0 on the left, texw on the right */
@@ -1160,6 +1274,526 @@ static void test_glyph_fallback(void)
 	max_texture_size = 2048;
 }
 
+/* ---- the image layer (ADR-103 steps 3f and 4e) ---- */
+
+static struct tsm_frame_cell frame_cells[FAKE_COLS * FAKE_ROWS];
+static struct tsm_frame_placement placements[16];
+static struct tsm_frame image_frame;
+
+/* a frame of blank cells on the default background, with the first @n placements */
+static const struct tsm_frame *make_frame(unsigned int n)
+{
+	unsigned int i;
+
+	for (i = 0; i < FAKE_COLS * FAKE_ROWS; i++)
+		frame_cells[i] = (struct tsm_frame_cell){.key = ' ', .width = 1};
+	memset(&image_frame, 0, sizeof(image_frame));
+	image_frame.cols = FAKE_COLS;
+	image_frame.rows = FAKE_ROWS;
+	image_frame.cell_size = sizeof(*frame_cells);
+	image_frame.cells = frame_cells;
+	image_frame.placement_size = sizeof(*placements);
+	image_frame.placement_count = n;
+	image_frame.placements = n ? placements : NULL;
+	return &image_frame;
+}
+
+/*
+ * Test image @key, @w x @h: each pixel's value names its place, with alpha
+ * @a, premultiplied, so a swap or a shift of any bytes shows
+ */
+static void make_image(uint64_t key, unsigned int w, unsigned int h, uint8_t a)
+{
+	uint32_t *px = calloc((size_t)w * h, 4);
+	unsigned int x, y;
+
+	for (y = 0; y < h; y++)
+		for (x = 0; x < w; x++)
+			px[y * w + x] = (uint32_t)a << 24 | (x * 7 + key) % a << 16 |
+					(y * 5 + key) % a << 8 | (x + y) % a;
+	free((void *)test_images[key].pixels);
+	test_images[key] = (struct tsm_frame_image){
+		.width = w, .height = h, .stride = (size_t)w * 4, .pixels = px, .opaque = a == 255};
+}
+
+/*
+ * Placement @i of image @key, its whole drawn over @cols x @rows cells at @col,
+ * @row in @band, at the cell size it was made in
+ */
+static void place(unsigned int i, uint64_t key, int row, unsigned int col, unsigned int cols,
+		  unsigned int rows, uint8_t band)
+{
+	struct tsm_frame_placement *p = &placements[i];
+
+	memset(p, 0, sizeof(*p));
+	p->key = 100 + i;
+	p->image_key = key;
+	p->row = row;
+	p->col = col;
+	p->cols = cols;
+	p->rows = rows;
+	p->width = cols * FAKE_CELL_W;
+	p->height = rows * FAKE_CELL_H;
+	p->src_width = test_images[key].width;
+	p->src_height = test_images[key].height;
+	p->cell_width = FAKE_CELL_W;
+	p->cell_height = FAKE_CELL_H;
+	p->band = band;
+	p->flags = TSM_FRAME_CHANGED | (test_images[key].opaque ? TSM_FRAME_OPAQUE : 0);
+}
+
+static void open_txt(struct kmscon_text *txt, enum Orientation orientation)
+{
+	memset(txt, 0, sizeof(*txt));
+	txt->font = &fake_font;
+	txt->disp = (struct display *)0x1;
+	txt->orientation = orientation;
+	assert(gltex_init(txt) == 0);
+	assert(gltex_set(txt) == 0);
+}
+
+static void close_txt(struct kmscon_text *txt)
+{
+	gltex_unset(txt);
+	gltex_destroy(txt);
+	assert(image_budget_used() == 0);
+}
+
+/* one frame: @frame drawn and rendered, the draws recorded */
+static void run_frame(struct kmscon_text *txt, const struct tsm_frame *frame, bool pointer)
+{
+	struct tsm_screen_attr attr = {0};
+
+	assert(gltex_prepare(txt, &attr) == 0);
+	assert(gltex_draw(txt, frame, false) == 0);
+	if (pointer)
+		assert(gltex_draw_pointer(txt, 100, 100) == 0);
+	n_draws = 0;
+	assert(gltex_render(txt) == 0);
+}
+
+static bool near(double a, double b)
+{
+	return a - b < 1e-6 && b - a < 1e-6;
+}
+
+/* the texture of image @key, which must have one */
+static struct gltex_image *texture_of(struct gltex *gt, uint64_t key)
+{
+	struct gltex_image *gi = image_find(gt, false, key);
+
+	assert(gi && texs[gi->tex].live);
+	return gi;
+}
+
+/*
+ * One texture per image key, uploaded on the first draw of a placement of it
+ * as the image's bytes, and kept: two placements of one image share it, a
+ * second frame uploads nothing. Each texture counts in the image budget. A
+ * placement drawn a texel a pixel is sampled as it is; one scaled, bilinear.
+ * Each placement is one quad, with its picture's texture coordinates.
+ */
+static void test_image_texture(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gltex_image *a, *b;
+	const struct tsm_frame *frame;
+	unsigned int uploads_before, i, n_pic_draws = 0;
+	size_t want;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	make_image(1, 2 * FAKE_CELL_W, 2 * FAKE_CELL_H, 255);
+	make_image(2, 3 * FAKE_CELL_W, FAKE_CELL_H, 128);
+	place(0, 1, 1, 2, 2, 2, TSM_FRAME_BAND_ABOVE_TEXT);
+	place(1, 1, 5, 10, 4, 4, TSM_FRAME_BAND_ABOVE_TEXT); /* twice its size */
+	place(2, 2, 0, 0, 3, 1, TSM_FRAME_BAND_BELOW_TEXT);
+	frame = make_frame(3);
+
+	uploads_before = n_tex_images;
+	run_frame(&txt, frame, false);
+	assert(gt->images_num == 2 && n_tex_images == uploads_before + 2);
+	a = texture_of(gt, 1);
+	b = texture_of(gt, 2);
+	for (i = 1; i <= 2; i++) {
+		const struct gltex_image *gi = i == 1 ? a : b;
+		const struct fake_tex *t = &texs[gi->tex];
+
+		assert(t->format == GL_RGBA && t->w == (GLsizei)test_images[i].width &&
+		       t->h == (GLsizei)test_images[i].height);
+		/* the bytes as they are in memory, for the shader to swizzle */
+		assert(!memcmp(t->data, test_images[i].pixels, (size_t)t->w * t->h * 4));
+	}
+	want = (size_t)16 * 32 * 4 + (size_t)24 * 16 * 4;
+	assert(gt->image_bytes == want && image_budget_used() == want);
+
+	/* the quads: one each, in the frame's order */
+	assert(gt->pics_num == 3);
+	assert(gt->pics[0].image == a && gt->pics[1].image == a && gt->pics[2].image == b);
+	assert(gt->pics[0].exact && !gt->pics[1].exact && gt->pics[2].exact);
+	assert(near(gt->pics[0].x1, gt->off_x + 2 * gt->advance_x - 1.0));
+	assert(near(gt->pics[0].x2, gt->off_x + 4 * gt->advance_x - 1.0));
+	assert(near(gt->pics[0].y1, 1.0 - gt->off_y - gt->advance_y));
+	assert(near(gt->pics[0].y2, 1.0 - gt->off_y - 3 * gt->advance_y));
+	assert(near(gt->pics[1].x2, gt->off_x + 14 * gt->advance_x - 1.0));
+	for (i = 0; i < 3; i++)
+		assert(gt->pics[i].u1 == 0 && gt->pics[i].v1 == 0 && gt->pics[i].u2 == 1 &&
+		       gt->pics[i].v2 == 1);
+	for (i = 0; i < 3; i++) {
+		/* the vertex arrays hold each quad at its slot */
+		assert(gt->pic_pos[i * 12] == gt->pics[i].x1 &&
+		       gt->pic_pos[i * 12 + 3] == gt->pics[i].y2);
+		assert(gt->pic_texpos[i * 12 + 4] == gt->pics[i].u2);
+	}
+	for (i = 0; i < n_draws; i++) {
+		if (draws[i].program != gt->img_shader)
+			continue;
+		assert(draws[i].count == 6 && draws[i].picture_unit == 0);
+		assert(draws[i].first % 6 == 0);
+		/* a texel a pixel: as it is; scaled: bilinear */
+		assert(draws[i].filter ==
+		       (gt->pics[draws[i].first / 6].exact ? GL_NEAREST : GL_LINEAR));
+		assert(draws[i].mag == draws[i].filter);
+		assert(draws[i].tex == gt->pics[draws[i].first / 6].image->tex);
+		n_pic_draws++;
+	}
+	assert(n_pic_draws == 3);
+
+	/* the next frame uploads nothing */
+	run_frame(&txt, frame, false);
+	assert(n_tex_images == uploads_before + 2 && gt->images_num == 2);
+	assert(texture_of(gt, 1) == a && texture_of(gt, 2) == b);
+
+	close_txt(&txt);
+}
+
+/*
+ * The picture's part inside its box and the screen: a placement cut at the
+ * right edge, one whose top has scrolled above the view, and a source
+ * rectangle, each drawn from the texture coordinates of what shows.
+ */
+static void test_image_clip(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	const struct tsm_frame *frame;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	make_image(3, 4 * FAKE_CELL_W, 2 * FAKE_CELL_H, 255);
+	place(0, 3, 0, FAKE_COLS - 1, 4, 2, TSM_FRAME_BAND_ABOVE_TEXT); /* one column shows */
+	place(1, 3, -1, 10, 4, 2, TSM_FRAME_BAND_ABOVE_TEXT);		/* its lower row shows */
+	place(2, 3, 5, 20, 2, 2, TSM_FRAME_BAND_ABOVE_TEXT);
+	placements[2].src_x = 2 * FAKE_CELL_W; /* the right half, at its size */
+	placements[2].src_width = 2 * FAKE_CELL_W;
+	frame = make_frame(3);
+	run_frame(&txt, frame, false);
+
+	assert(gt->pics_num == 3);
+	assert(near(gt->pics[0].x2, gt->off_x + FAKE_COLS * gt->advance_x - 1.0));
+	assert(near(gt->pics[0].u1, 0) && near(gt->pics[0].u2, 0.25));
+	assert(near(gt->pics[0].v1, 0) && near(gt->pics[0].v2, 1));
+	assert(near(gt->pics[1].y1, 1.0 - gt->off_y) &&
+	       near(gt->pics[1].y2, 1.0 - gt->off_y - gt->advance_y));
+	assert(near(gt->pics[1].v1, 0.5) && near(gt->pics[1].v2, 1));
+	assert(near(gt->pics[2].u1, 0.5) && near(gt->pics[2].u2, 1));
+	assert(gt->pics[2].exact);
+	/* one image, one texture */
+	assert(gt->images_num == 1);
+
+	close_txt(&txt);
+}
+
+/*
+ * An image larger than GL_MAX_TEXTURE_SIZE, the GPU's own and not the
+ * atlases' 2048, is uploaded scaled to fit, its aspect kept, as picture_scale
+ * makes it; its placements draw the whole of it, scaled.
+ */
+static void test_image_scaled(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gltex_image *gi;
+	uint32_t *want;
+
+	max_texture_size = texture_limit = 4096;
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	assert(gt->max_image_size == 4096 && gt->max_tex_size == 2048);
+	close_txt(&txt);
+
+	max_texture_size = texture_limit = 64;
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	make_image(4, 200, 100, 255);
+	place(0, 4, 0, 0, 25, 6, TSM_FRAME_BAND_ABOVE_TEXT);
+	run_frame(&txt, make_frame(1), false);
+
+	gi = texture_of(gt, 4);
+	assert(gi->w == 64 && gi->h == 32 && gi->scaled);
+	assert(gi->iw == 200 && gi->ih == 100);
+	assert(texs[gi->tex].w == 64 && texs[gi->tex].h == 32);
+	want = malloc(64 * 32 * 4);
+	assert(picture_scale(test_images[4].pixels, 200, 200, 100, 64, 32, 0, 0, 64, 32, want) ==
+	       0);
+	assert(!memcmp(texs[gi->tex].data, want, 64 * 32 * 4));
+	free(want);
+	assert(gi->bytes == 64 * 32 * 4 && image_budget_used() == 64 * 32 * 4);
+	assert(gt->pics_num == 1 && !gt->pics[0].exact);
+	assert(gt->pics[0].u2 == 1 && gt->pics[0].v2 == 1);
+
+	close_txt(&txt);
+	max_texture_size = texture_limit = 2048;
+}
+
+/* image @key has a texture */
+static bool has_texture(struct gltex *gt, uint64_t key)
+{
+	return image_find(gt, false, key);
+}
+
+/*
+ * The textures past image_budget_cache_limit (twice the screen in ARGB here)
+ * that no frame draws now go, least recently drawn first; those a frame draws
+ * stay, however many. The budget's own call for room frees those the last
+ * frame did not draw, and their names are deleted once the context is
+ * gltex's, at its next frame. A texture that does not fit the budget leaves
+ * its placement out, and the display asks to be drawn again once the budget
+ * has room.
+ */
+static void test_image_evict(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gltex_image *gi;
+	size_t one = (size_t)320 * 240 * 4, limit;
+	unsigned int k;
+	GLuint name;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	limit = image_budget_cache_limit((uint64_t)disp_w * disp_h);
+	assert(limit == (size_t)640 * 480 * 4 * 2 && limit / one == 8);
+
+	/* a new picture each frame, as a video sends: the oldest go */
+	for (k = 10; k < 30; k++) {
+		make_image(k, 320, 240, 255);
+		place(0, k, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT);
+		run_frame(&txt, make_frame(1), false);
+		assert(gt->pics_num == 1 && gt->pics[0].image == texture_of(gt, k));
+		assert(gt->image_bytes <= limit && image_budget_used() == gt->image_bytes);
+	}
+	assert(gt->images_num == 8);
+	for (k = 10; k < 30; k++)
+		assert(has_texture(gt, k) == (k >= 22));
+
+	/* ten drawn at once all stay, past the bound; a frame drawing none trims them */
+	for (k = 0; k < 10; k++)
+		place(k, 20 + k, (k % 2) * 15, (k / 2) % 2 * 40, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT);
+	run_frame(&txt, make_frame(10), false);
+	assert(gt->pics_num == 10 && gt->images_num == 10 && gt->image_bytes == 10 * one);
+	for (k = 20; k < 30; k++)
+		assert(has_texture(gt, k));
+	run_frame(&txt, make_frame(0), false);
+	assert(gt->images_num == 8 && gt->image_bytes <= limit);
+
+	/* the budget asks for room: the textures the last frame did not draw go */
+	place(0, 29, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT);
+	run_frame(&txt, make_frame(1), false);
+	gi = texture_of(gt, 28);
+	name = gi->tex;
+	image_budget_set_limit(one);
+	assert(gt->images_num == 1 && has_texture(gt, 29) && !has_texture(gt, 28));
+	assert(image_budget_used() == one);
+	assert(texs[name].live); /* not this display's context yet */
+	run_frame(&txt, make_frame(1), false);
+	assert(!texs[name].live);
+
+	/* one that does not fit is left out, and drawn once the budget grows */
+	make_image(40, 320, 240, 255);
+	place(0, 40, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT);
+	place(1, 29, 15, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT);
+	run_frame(&txt, make_frame(2), false);
+	assert(!has_texture(gt, 40) && gt->starved);
+	assert(gt->pics_num == 1 && gt->pics[0].image == texture_of(gt, 29));
+	assert(!gltex_starved(&txt));
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+	assert(gltex_starved(&txt));
+	run_frame(&txt, make_frame(2), false);
+	assert(has_texture(gt, 40) && gt->pics_num == 2 && !gt->starved);
+	assert(!gltex_starved(&txt));
+
+	/* a session in the background gives every texture back */
+	gltex_release(&txt);
+	assert(!gt->images && !gt->image_bytes && image_budget_used() == 0);
+	assert(!gt->doomed_num);
+
+	close_txt(&txt);
+}
+
+/* the draws of @pass: the image shader for a band (-1), or the cells' layer */
+static unsigned int next_draws(struct gltex *gt, unsigned int *i, int layer, bool blend)
+{
+	unsigned int n = 0;
+
+	while (*i < n_draws &&
+	       (layer < 0 ? draws[*i].program == gt->img_shader
+			  : draws[*i].program == gt->shader && draws[*i].layer == layer &&
+				    !(draws[*i].first == (GLint)(6 * gt->quads_size) &&
+				      draws[*i].count == 6))) {
+		assert(draws[*i].blend == blend);
+		if (blend)
+			assert(draws[*i].src == GL_ONE && draws[*i].dst == GL_ONE_MINUS_SRC_ALPHA);
+		(*i)++;
+		n++;
+	}
+	return n;
+}
+
+/*
+ * ADR-103's layers: the lowest band, the backgrounds that are not the default
+ * (opaque), the middle band, the text blended premultiplied over it, the top
+ * band with the overlay last, each band's pictures blended premultiplied; the
+ * pointer last of all, whole and opaque (#181). A background is marked for
+ * the background pass only when it is not the default.
+ */
+static void test_band_order(void)
+{
+	struct kmscon_text txt;
+	struct kmscon_text_overlay *ov;
+	struct gltex *gt;
+	const struct tsm_frame *frame;
+	unsigned int i = 0, slot;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	make_image(5, FAKE_CELL_W, FAKE_CELL_H, 255);
+	make_image(6, FAKE_CELL_W, FAKE_CELL_H, 200);
+	make_image(7, FAKE_CELL_W, FAKE_CELL_H, 100);
+	place(0, 5, 2, 2, 1, 1, TSM_FRAME_BAND_BELOW_BG);
+	place(1, 6, 2, 2, 1, 1, TSM_FRAME_BAND_BELOW_TEXT);
+	place(2, 7, 2, 2, 1, 1, TSM_FRAME_BAND_ABOVE_TEXT);
+	frame = make_frame(3);
+	frame_cells[0].bg = (struct tsm_screen_color){9, 9, 9};
+	frame_cells[1].key = 'A';
+
+	ov = calloc(1, sizeof(*ov) + FAKE_CELL_W * 2 * FAKE_CELL_H * 4);
+	ov->image = (struct tsm_frame_image){.width = 2 * FAKE_CELL_W,
+					     .height = FAKE_CELL_H,
+					     .stride = 2 * FAKE_CELL_W * 4,
+					     .pixels = ov->pixels,
+					     .opaque = true};
+	ov->placement = (struct tsm_frame_placement){.key = 1,
+						     .image_key = 1,
+						     .cols = 2,
+						     .rows = 1,
+						     .width = 2 * FAKE_CELL_W,
+						     .height = FAKE_CELL_H,
+						     .src_width = 2 * FAKE_CELL_W,
+						     .src_height = FAKE_CELL_H,
+						     .cell_width = FAKE_CELL_W,
+						     .cell_height = FAKE_CELL_H,
+						     .z = INT32_MAX,
+						     .band = TSM_FRAME_BAND_ABOVE_TEXT,
+						     .flags = TSM_FRAME_OPAQUE};
+	txt.overlay = ov;
+
+	run_frame(&txt, frame, true);
+	assert(gt->pics_num == 4);
+	assert(gt->pics[3].image->overlay);
+	assert(near(gt->pics[3].x1, gt->off_x + (FAKE_COLS - 2) * gt->advance_x - 1.0));
+
+	assert(next_draws(gt, &i, -1, true) == 1); /* the lowest band */
+	assert(draws[0].tex == texture_of(gt, 5)->tex);
+	assert(next_draws(gt, &i, LAYER_BACKGROUND, false) >= 1);
+	assert(next_draws(gt, &i, -1, true) == 1); /* the middle band */
+	assert(draws[i - 1].tex == texture_of(gt, 6)->tex);
+	assert(next_draws(gt, &i, LAYER_TEXT, true) >= 1);
+	assert(next_draws(gt, &i, -1, true) == 2); /* the top band, the overlay last */
+	assert(draws[i - 2].tex == texture_of(gt, 7)->tex);
+	assert(draws[i - 1].tex == image_find(gt, true, 1)->tex);
+	/* the pointer, last */
+	assert(i == n_draws - 1);
+	assert(draws[i].program == gt->shader && draws[i].layer == LAYER_CELL && !draws[i].blend);
+	assert(draws[i].first == (GLint)(6 * gt->quads_size) && draws[i].count == 6);
+	assert(draws[i].tex == gt->pointer.atlas->tex);
+
+	/* the background pass draws cell 0's background, not the default ones */
+	for (slot = 0; slot < gt->quads_num; slot++) {
+		const struct gltex_quad *q = &gt->quads[slot];
+		unsigned int s = q->atlas->cache_off, k;
+
+		for (k = 0; k < slot; k++)
+			s += gt->quads[k].atlas == q->atlas;
+		assert(gt->cache_bgcol[s * 24 + 3] == (q->bg.r == 9 ? 1.0 : 0.0));
+		assert(gt->cache_bgcol[s * 24 + 23] == gt->cache_bgcol[s * 24 + 3]);
+	}
+
+	/* without placements, one opaque pass, and the pointer last */
+	txt.overlay = NULL;
+	run_frame(&txt, make_frame(0), true);
+	check_render(gt);
+
+	free(ov);
+	close_txt(&txt);
+}
+
+/*
+ * #181: the pointer's glyph in an atlas drawn before a cell's under it is
+ * still drawn last, over every cell.
+ */
+static void test_pointer_last(void)
+{
+	static const char bytes[] = "\x1b[?25lBCDEFGH";
+	struct kmscon_text txt;
+	struct gltex *gt;
+	struct gl_glyph *pointer, *b;
+
+	max_texture_size = 2 * FAKE_CELL_W; /* two glyphs an atlas, a cell high */
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
+	assert(gltex_draw_pointer(&txt, 4, 8) == 0);
+	pointer = find_glyph(&txt, 'I', 0, 1);
+	b = find_glyph(&txt, 'B', 0, 1);
+	/* new atlases go first in the list, so the pointer's is drawn before B's */
+	assert(pointer->atlas != b->atlas);
+	assert(dlist_first(&gt->atlases, struct atlas, list) == pointer->atlas);
+	n_draws = 0;
+	assert(gltex_render(&txt) == 0);
+	check_render(gt);
+	assert(draws[n_draws - 1].tex == pointer->atlas->tex);
+
+	close_txt(&txt);
+	max_texture_size = 2048;
+}
+
+/* a turned display turns its pictures with its cells, in the image shader */
+static void test_image_rotated(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int i, n = 0;
+
+	open_txt(&txt, OR_RIGHT);
+	gt = txt.data;
+	assert(gt->cos == 0 && gt->sin == 1);
+	make_image(8, 2 * FAKE_CELL_W, FAKE_CELL_H, 255);
+	place(0, 8, 1, 1, 2, 1, TSM_FRAME_BAND_ABOVE_TEXT);
+	run_frame(&txt, make_frame(1), false);
+	for (i = 0; i < n_draws; i++) {
+		assert(draws[i].cos == gt->cos && draws[i].sin == gt->sin);
+		n += draws[i].program == gt->img_shader;
+	}
+	assert(n == 1 && gt->pics[0].exact);
+	/* in the cells' coordinates, which the vertex shader turns */
+	assert(near(gt->pics[0].x1, gt->off_x + gt->advance_x - 1.0));
+	assert(near(gt->pics[0].y2, 1.0 - gt->off_y - 2 * gt->advance_y));
+
+	close_txt(&txt);
+}
+
 int main(void)
 {
 	/* gltex draws no image placements until ADR-103 step 3f, and says so */
@@ -1174,5 +1808,12 @@ int main(void)
 	test_colour_glyph();
 	test_strip_failure();
 	test_glyph_fallback();
+	test_image_texture();
+	test_image_clip();
+	test_image_scaled();
+	test_image_evict();
+	test_band_order();
+	test_pointer_last();
+	test_image_rotated();
 	return 0;
 }

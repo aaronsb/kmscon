@@ -33,6 +33,8 @@ if enable_renderer_gltex
             'mod_gltex.c',
             embed_gen.process('gltex_atlas.vert', extra_args: shader_regex),
             embed_gen.process('gltex_atlas.frag', extra_args: shader_regex),
+            embed_gen.process('gltex_image.vert', extra_args: shader_regex),
+            embed_gen.process('gltex_image.frag', extra_args: shader_regex),
         ],
         name_prefix: '',
         dependencies: [

@@ -73,12 +73,22 @@ if enable_renderer_gltex
         [
             'test_gltex.c',
             '../src/render/deco.c',
+            '../src/render/image_budget.c',
+            '../src/render/picture.c',
             embed_gen.process(
                 '../src/render/gltex_atlas.vert',
                 extra_args: shader_regex,
             ),
             embed_gen.process(
                 '../src/render/gltex_atlas.frag',
+                extra_args: shader_regex,
+            ),
+            embed_gen.process(
+                '../src/render/gltex_image.vert',
+                extra_args: shader_regex,
+            ),
+            embed_gen.process(
+                '../src/render/gltex_image.frag',
                 extra_args: shader_regex,
             ),
         ],

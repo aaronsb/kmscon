@@ -1393,6 +1393,7 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 	char *data;
 	int m, sl;
 	pid_t pid;
+	bool ended = false; /* the writer closed the pty */
 
 	memset(r, 0, sizeof(*r));
 	r->coalesce = coalesce;
@@ -1423,7 +1424,8 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 	assert(fcntl(m, F_SETFL, fcntl(m, F_GETFL) | O_NONBLOCK) == 0);
 
 	while (parsed < total || cd.due_ns) {
-		struct pollfd pfd = {m, POLLIN, 0};
+		/* a closed pty polls as hung up at once: from then on poll only waits */
+		struct pollfd pfd = {ended ? -1 : m, POLLIN, 0};
 		uint64_t now = real_now();
 		int timeout = 2000;
 		unsigned int num, last = 0, n_reads = 0;
@@ -1438,11 +1440,13 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 			terminal_coalesce_end(&cd);
 			real_present(r, parsed, &co, &cd);
 		}
-		for (num = 50; num; num--) {
+		for (num = 50; num && !ended; num--) {
 			uint64_t start;
 			ssize_t n;
 
 			n = read(m, buf, sizeof(buf));
+			/* a pty master reads EIO once the writer is gone and nothing is left */
+			ended = !n || (n < 0 && errno == EIO);
 			if (n <= 0)
 				break;
 			start = real_now();
@@ -1454,8 +1458,7 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 			r->full_reads += n >= NREAD;
 		}
 		if (!n_reads) {
-			if (!cd.due_ns && parsed < total && poll(&pfd, 1, 0) == 0 &&
-			    waitpid(pid, NULL, WNOHANG) == pid)
+			if (ended && !cd.due_ns)
 				break;
 			continue;
 		}
@@ -1486,10 +1489,11 @@ static void real_run(const struct sched *sc, bool coalesce, struct real *r)
 	r->ns = cd.presented_ns + DRAW_NS - t0;
 	waitpid(pid, NULL, 0);
 	close(m);
-	assert(parsed == total);
 
 	/* the cells each present showed mixed, against the end of the write in progress */
-	{
+	if (parsed != total) {
+		sim_fail(sc->name, "real pty", "the writer ended before its last write");
+	} else {
 		struct sim s;
 		size_t fed = 0;
 

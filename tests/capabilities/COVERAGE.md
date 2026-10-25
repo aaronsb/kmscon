@@ -2,7 +2,7 @@
 
 Each feature the fork built, the tests that would catch a regression of it, and the paths those tests reach. A gap is either closed by a light test in the same change as this map or filed. `#N` is an aaronsb/kmscon issue or PR, `libtsm#N` an aaronsb/libtsm one. Probes are rows of [capabilities.list](capabilities.list), run by the `capabilities` meson test against the pinned libtsm.
 
-Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex); video D2 (drm2d) / FB (fbdev). Tier 1 is libtsm's replay in three views (cell state `golden/`, `golden-draw2/`, `golden-frame/`); tier 2 is `tests/test_pixels.c` (FT + BB + the real drm2d blend into a fake display at normal orientation); tier 3's default variants run PG + BB + D2 in a VM with blink off; its GL variant (GT on drm3d) is outside the default run (#17). No test reaches unifont, psf or fbdev end to end, or a real GL context.
+Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex); video D2 (drm2d) / FB (fbdev). Tier 1 is libtsm's replay in three views (cell state `golden/`, `golden-draw2/`, `golden-frame/`); tier 2 is `tests/test_pixels.c` (FT + BB + the real drm2d blend into a fake display at normal orientation); tier 3's default variants run PG + BB + D2 in a VM with blink off; its GL variant runs PG + GT on drm3d under virgl. No test reaches unifont, psf or fbdev end to end, or a real GL context.
 
 ## libtsm
 

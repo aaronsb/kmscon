@@ -16,7 +16,7 @@ worker process.
     t3.py provision                       build the base image from the pinned image, or
                                           reuse it, and link fork/vm/base.qcow2 to it
     t3.py run [--jobs N] [VARIANT ...]    install the package, run the scenario, compare
-                                          (default: the 2D variants)
+                                          (default: every variant)
     t3.py run --pkg-dir DIR --pkg-name NAME --compare-only
                                           the same for another build, such as
                                           upstream's (fork/upstream.mk)

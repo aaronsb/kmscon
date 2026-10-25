@@ -274,3 +274,32 @@ void terminal_coalesce_end(struct terminal_coalesce_display *d)
 {
 	d->due_ns = 0;
 }
+
+/* @r has been asked a frame for its due time, and that frame may still come */
+static bool retry_asking(const struct terminal_retry *r, uint64_t now_ns)
+{
+	return r->asked == r->due && now_ns < r->asked_ns + TERMINAL_RETRY_ASK_NS;
+}
+
+uint64_t terminal_retry_earliest(uint64_t arm_ns, const struct terminal_retry *r, bool awake,
+				 uint64_t now_ns)
+{
+	uint64_t t = r->due;
+
+	if (!awake || !t)
+		return arm_ns;
+	if (retry_asking(r, now_ns))
+		t = r->asked_ns + TERMINAL_RETRY_ASK_NS;
+	if (t < now_ns + TERMINAL_RETRY_MIN_NS)
+		t = now_ns + TERMINAL_RETRY_MIN_NS;
+	return !arm_ns || t < arm_ns ? t : arm_ns;
+}
+
+bool terminal_retry_ask(struct terminal_retry *r, uint64_t now_ns)
+{
+	if (!r->due || r->due > now_ns || retry_asking(r, now_ns))
+		return false;
+	r->asked = r->due;
+	r->asked_ns = now_ns;
+	return true;
+}

@@ -3,13 +3,16 @@
 # look-for: The last of N pictures under its caption. Logo+= once turns the
 # look-for: screen a quarter and the picture shows turned. Do not scroll while
 # look-for: turned. Logo+- once turns it back; then Shift+PageUp to the top:
-# look-for: picture 1's caption over blank cells, picture 2 on drawn.
+# look-for: picture 1's caption over blank cells, picture 2 on drawn. With
+# look-for: --hwaccel, picture 1 drawn too: the GPU's turned copy has a budget
+# look-for: of its own and evicts nothing (ADR-103's Memory section).
 # wrong-looks-like: After Logo+=, the last picture missing, its caption over
 # wrong-looks-like: blank cells (left out for the budget); in scrollback, a
-# wrong-looks-like: picture after the first blank, or the first still drawn.
-# wrong-looks-like: Scrolling (wheel, Shift+Up, Shift+PageUp) while turned or
-# wrong-looks-like: upside down blanks more pictures by design (ADR-103 Q1):
-# wrong-looks-like: press r to redraw the page and repeat the keys exactly.
+# wrong-looks-like: picture after the first blank, or, without --hwaccel, the
+# wrong-looks-like: first still drawn. Without --hwaccel, scrolling (wheel,
+# wrong-looks-like: Shift+Up, Shift+PageUp) while turned or upside down blanks
+# wrong-looks-like: more pictures by design (ADR-103 Q1): press r to redraw the
+# wrong-looks-like: page and repeat the keys exactly.
 # screen-text: none, sixel pictures do not print as rows
 # The image budget under pressure (ADR-103's Q1 note): a turned or zoomed
 # screen draws a scaled copy of each picture on it, and the copy for a
@@ -24,7 +27,11 @@
 # others wholly in scrollback. With a set image-storage-limit the pictures
 # do not fill it, and nothing is evicted. Scrolled back while turned, each
 # picture that comes into view needs its own copy and evicts the oldest
-# again, so the page asks to turn the screen back before scrolling.
+# again, so the page asks to turn the screen back before scrolling. With
+# hwaccel on, gltex's copies are textures in a budget of their own, which
+# evict no picture, so every picture stays. With
+# hwaccel on, gltex's copies are textures in a budget of their own, which
+# evict no picture, so every picture stays.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sixel-common.inc"
 sixel_offered
 cell_size

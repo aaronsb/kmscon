@@ -85,12 +85,14 @@ CHECKS = {
                            "to the photo-scroll golden, nothing of the photograph left on "
                            "the lines.",
     "sixel-evict-rotated": "The sixel-evict screen turned with Logo+=: a scaled copy of the last "
-                           "picture, which fits the full image budget only once picture 1 is "
-                           "evicted from scrollback (ADR-103's Q1 note). Correct: the last "
+                           "picture, which on bbulk fits the full image budget only once picture "
+                           "1 is evicted from scrollback (ADR-103's Q1 note); gltex's copy is a "
+                           "texture in a budget of its own and evicts nothing. Correct: the last "
                            "picture drawn, turned, under its caption.",
     "sixel-evict-history": "Turned back with Logo+-, then Shift+PageUp to the top of the "
                            "scrollback. Correct: picture 1's caption over blank cells, the "
-                           "pictures after it drawn under theirs.",
+                           "pictures after it drawn under theirs; on gltex (the GL variant) "
+                           "picture 1 drawn too, as its turned copy evicted nothing.",
     "sixel-evict-zoomed": "Scrolled down, then zoomed with Ctrl+=: a scaled copy of the last "
                           "picture for the larger cells. Correct: the last picture drawn, "
                           "scaled to the larger cells, under its caption.",

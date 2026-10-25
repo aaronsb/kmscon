@@ -30,9 +30,11 @@
 # if any.
 #
 # VT_DEMO_DRY_RUN=1 picks the VT and prints the run-vt.sh command without
-# running it. For the tests, VT_DEMO_ACTIVE, VT_DEMO_LOGINCTL, VT_DEMO_SUDO
-# (empty: no sudo), VT_DEMO_RUN_VT and VT_DEMO_FEEDBACK replace the sysfs file,
-# loginctl, sudo, run-vt.sh and the feedback file.
+# running it. For the tests, VT_DEMO_ACTIVE, VT_DEMO_LOGINCTL and
+# VT_DEMO_FEEDBACK replace the sysfs file, loginctl and the feedback file, and
+# VT_DEMO_SUDO (empty: no sudo) and VT_DEMO_RUN_VT replace sudo and run-vt.sh.
+# Those two decide what runs as root, so they count only in a dry run or with
+# VT_DEMO_TEST=1, never from a stale export in the operator's shell.
 set -euo pipefail
 
 usage() {
@@ -102,8 +104,12 @@ here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 dry=${VT_DEMO_DRY_RUN:-}
 active_file=${VT_DEMO_ACTIVE:-/sys/class/tty/tty0/active}
 loginctl=${VT_DEMO_LOGINCTL:-loginctl}
-sudo=${VT_DEMO_SUDO-sudo}
-run_vt=${VT_DEMO_RUN_VT:-$here/run-vt.sh}
+sudo=sudo
+run_vt=$here/run-vt.sh
+if [ -n "$dry" ] || [ "${VT_DEMO_TEST:-}" = 1 ]; then
+	sudo=${VT_DEMO_SUDO-sudo}
+	run_vt=${VT_DEMO_RUN_VT:-$run_vt}
+fi
 # run-vt.sh starts the demo with a cleared environment, so the dev build's
 # answers always go to demo.sh's default file; DEMO_FEEDBACK would not reach it.
 feedback=${VT_DEMO_FEEDBACK:-/tmp/kmscon-demo/feedback.tsv}
@@ -233,6 +239,11 @@ if [ ${#session[@]} -eq 0 ] || { [ -n "$login" ] && [ -n "$run" ]; }; then
 	echo "results: $(readlink -m "$feedback")"
 fi
 
+# A login ends at its logout or at Ctrl-C (130); either is a normal end.
+if [ -n "$login" ] && [ "$status" -eq 130 ]; then
+	echo "vt-login: ended with Ctrl-C"
+	status=0
+fi
 if [ "$status" -ne 0 ]; then
 	echo "vt-demo: run-vt.sh exited with status $status: kmscon failed or the demo was cut short" >&2
 	exit "$status"

@@ -18,9 +18,12 @@
 # show asks for, or --showcase-audio=DEVICE through mpv's audio device DEVICE.
 # --login runs kmscon's own login prompt (/bin/login, through PAM) in place
 # of the demo, so the session is a logind session, given the sound cards
-# while its VT is on screen; it runs until this script is interrupted.
-# --dry-run prints every command and runs none; it needs no root. A dry run
-# takes the module directory from RUN_VT_MODULEDIR when set, for the tests.
+# while its VT is on screen. The first logout ends the run; so do Ctrl-C, a
+# kmscon crash and kmscon's limit on logins failing in a row.
+# --dry-run prints every command and runs none; it needs no root. For the
+# tests, a dry run takes the module directory from RUN_VT_MODULEDIR, calls
+# RUN_VT_LOGINCTL for the session checks, takes the units in RUN_VT_ACTIVE as
+# the active ones, and starts RUN_VT_CHILD in kmscon's place and waits on it.
 #
 # kmscon loads its backend modules from a path compiled in (/usr/lib/kmscon)
 # with no option to change it, and would otherwise load the stock package's
@@ -30,7 +33,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,23s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,26s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -72,8 +75,13 @@ stage=$(readlink -m "$here/../build/demo-root")
 kmscon=$stage/usr/bin/kmscon
 modules=$stage/usr/lib/kmscon
 moduledir=/usr/lib/kmscon
-# Only a dry run, which mounts nothing, lets the tests point it elsewhere.
-[ -z "$dry" ] || moduledir=${RUN_VT_MODULEDIR:-$moduledir}
+loginctl=loginctl
+# Only a dry run, which mounts and stops nothing, lets the tests point these
+# elsewhere.
+if [ -n "$dry" ]; then
+	moduledir=${RUN_VT_MODULEDIR:-$moduledir}
+	loginctl=${RUN_VT_LOGINCTL:-}
+fi
 checkout=$(readlink -m "$here/../..")
 showcase=$checkout/fork/showcase/bad-apple.sh
 # The units that may hold the VT: the stock kmscon, a getty, and autovt@,
@@ -167,21 +175,40 @@ if [ -n "$video" ] && [ -z "$dry" ]; then
 		die "$user cannot read the showcase video $video"
 fi
 
+# Prints "ID STATE" for each logind session on VT $vt, and fails when loginctl
+# cannot list the sessions. A session that ends between the list and the
+# query is gone, so it is skipped.
+vt_sessions() {
+	local list s props
+	list=$("$loginctl" list-sessions --no-legend) || return 1
+	while read -r s _; do
+		[ -n "$s" ] || continue
+		props=$("$loginctl" show-session -p VTNr -p State "$s" 2>/dev/null) || continue
+		[ "$(sed -n 's/^VTNr=//p' <<<"$props")" != "$vt" ] ||
+			echo "$s $(sed -n 's/^State=//p' <<<"$props")"
+	done <<<"$list"
+}
+
 # Refuse the VT on screen (the one this command was typed on) and any VT a
 # logind session sits on, the graphical one included: stopping the unit there
-# would end that session.
+# would end that session. When the sessions cannot be listed, refuse too.
 if [ -n "$dry" ]; then
 	show fgconsole
 	echo "  (refuse if it prints $vt)"
-	show loginctl list-sessions --no-legend
-	echo "  (for each session: loginctl show-session -p VTNr --value ID; refuse if one is on VT $vt)"
-else
+fi
+if [ -z "$dry" ]; then
 	fg=$(fgconsole) || die "fgconsole failed, so the VT on screen is unknown"
 	[ "$fg" != "$vt" ] || die "VT $vt is on screen now; run this from another VT"
-	for s in $(loginctl list-sessions --no-legend | awk '{print $1}'); do
-		[ "$(loginctl show-session -p VTNr --value "$s")" != "$vt" ] ||
-			die "logind session $s ($(loginctl show-session -p Name -p Type --value "$s" | paste -sd' ')) is on VT $vt; pick another VT"
-	done
+fi
+if [ -n "$loginctl" ]; then
+	on_vt=$(vt_sessions) || die "loginctl list-sessions failed, so whether a session is on VT $vt is unknown"
+	if [ -n "$on_vt" ]; then
+		s=${on_vt%% *}
+		die "logind session $s ($("$loginctl" show-session -p Name -p Type --value "$s" | paste -sd' ')) is on VT $vt; pick another VT"
+	fi
+else
+	show loginctl list-sessions --no-legend
+	echo "  (for each session: loginctl show-session -p VTNr -p State ID; refuse if one is on VT $vt, or if the list fails)"
 fi
 
 # The VT's units that run now: each is stopped below and started again on
@@ -196,24 +223,29 @@ for u in "${units[@]}"; do
 	fi
 done
 if [ -n "$dry" ]; then
-	echo "  (the rest assumes ${units[0]} is active)"
-	active=("${units[0]}")
+	read -ra active <<<"${RUN_VT_ACTIVE-${units[0]}}"
+	echo "  (the rest assumes ${active[*]:-none of them} active)"
 fi
 
 child=
 # shellcheck disable=SC2329 # invoked by the EXIT trap
 # A second signal, or a closed terminal or pipe, must not cut it short before
-# the unit is started again, so it ignores them while it runs.
+# the unit is started again, so it ignores them while it runs. A child, kmscon
+# or a dry run's stand-in, is stopped for real either way.
 restore() {
 	trap - EXIT
 	trap '' INT TERM HUP PIPE
 	if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
-		run kill -TERM "$child" || true
+		show kill -TERM "$child"
+		kill -TERM "$child" 2>/dev/null || true
 		for _ in $(seq 50); do
 			kill -0 "$child" 2>/dev/null || break
 			sleep 0.1
 		done
-		! kill -0 "$child" 2>/dev/null || run kill -KILL "$child" || true
+		if kill -0 "$child" 2>/dev/null; then
+			show kill -KILL "$child"
+			kill -KILL "$child" 2>/dev/null || true
+		fi
 		wait "$child" 2>/dev/null || true
 	fi
 	if [ ${#active[@]} -gt 0 ]; then
@@ -247,8 +279,8 @@ if [ -n "$login" ]; then
            the showcase with its soundtrack (--from N starts at act N); this
            login holds the sound cards while VT $vt is on screen, so no
            audio group is needed
-     log out when done; a new prompt follows, as on the stock console
-  3. Ctrl-C here ends it (the login too, if still open)"
+     until someone logs in, the prompt comes back after login's timeout
+  3. log out to end it; Ctrl-C here ends it too, the login with it"
 elif [ -n "$video" ]; then
 	what="press a key to start the showcase; q ends it at any time"
 else
@@ -269,10 +301,11 @@ EOF
 # The demo runs as $user, never as root. With --login, /bin/login runs as
 # root and PAM decides who logs in, as under the stock unit; pam_systemd makes
 # the login a logind session on VT $vt, from the XDG_VTNR and XDG_SEAT kmscon
-# sets. It runs without --oneshot, so a logout, or login's own timeout at the
-# prompt, brings a new prompt rather than the end. kmscon is started in the
-# background so that it ignores Ctrl-C (bash does that for background jobs) and this
-# script decides how it stops: SIGTERM from restore(), which kmscon handles by
+# sets. It runs without --oneshot, so login's own timeout at the prompt (60 s
+# by default) brings a new prompt rather than the end; this script ends the run
+# at the first logout instead, below. kmscon is started in the background so
+# that it ignores Ctrl-C (bash does that for background jobs) and this script
+# decides how it stops: SIGTERM from restore(), which kmscon handles by
 # releasing the VT. unshare and sh exec, so $! is kmscon's own PID. kmscon
 # starts its child with execve, without a PATH search, so its path is absolute.
 # kmscon and setpriv both clear the environment, so DEMO_LABEL, which names the
@@ -300,11 +333,36 @@ cmd=(unshare --mount --propagation private --
 	"$kmscon" --vt="tty$vt" --no-switchvt --configdir "$here" "${once[@]}" "${extra[@]}"
 	--login -- "${login_argv[@]}")
 show "${cmd[@]}"
-[ -z "$dry" ] || exit 0
+if [ -n "$dry" ]; then
+	[ -n "${RUN_VT_CHILD:-}" ] || exit 0
+	cmd=(/bin/sh -c "$RUN_VT_CHILD")
+fi
 "${cmd[@]}" &
 child=$!
+# With --login, the first logout ends the run, so a login left behind does
+# not keep a root dev build on the VT: once a session on VT $vt has been open,
+# no open one there (none, or only one closing) means its user logged out.
+# Before anyone logs in, kmscon puts up a new prompt each time login gives up.
+# A poll whose list fails tells nothing, and the next one asks again.
+if [ -n "$login" ] && [ -n "$loginctl" ]; then
+	seen=
+	while kill -0 "$child" 2>/dev/null; do
+		sleep 1 &
+		wait $! || true
+		now=$(vt_sessions) || continue
+		if awk 'NF && $2 != "closing" { open = 1 } END { exit !open }' <<<"$now"; then
+			seen=1
+		elif [ -n "$seen" ]; then
+			echo "vt-login: session ended"
+			exit 0
+		fi
+	done
+fi
 status=0
 wait "$child" || status=$?
 child=
-[ "$status" -eq 0 ] || echo "run-vt: kmscon exited with status $status" >&2
+# With --login, kmscon ending on its own is never the expected end.
+if [ "$status" -ne 0 ] || [ -n "$login" ]; then
+	echo "run-vt: kmscon exited with status $status" >&2
+fi
 exit "$status"

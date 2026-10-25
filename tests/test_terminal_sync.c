@@ -6,16 +6,17 @@
  * a frame end, the timeout and its wait for unparsed output, the resets that
  * end a hold, a stale timer, a flip in flight, a display that lost its
  * picture, the timer's arm time, a hold whose timer cannot be armed, and the
- * limit on sync-timeout, and the coalescing of output outside a hold. The last runs a schedule the
- * way terminal.c does, through the same calls (terminal_sync_draw for a redraw request,
- * terminal_sync_flipped at a flip, terminal_sync_arm_ns to arm): a program's
- * output bracketed in mode 2026, fed through tsm_vte_input_bounded in reads
- * of random sizes, a redraw at the end of every loop turn, flips that take a
- * random number of turns, one frame that stalls past the timeout, and
- * displays that lose their picture mid-frame. Every present must show a
- * whole frame, except at an expiry or on a display that lost its picture.
- * With mode 2026 not offered, the same schedule must present part-written
- * frames, so the check is seen to catch them.
+ * limit on sync-timeout, and the coalescing of output outside a hold. The
+ * last runs a schedule the way terminal.c does, through the same calls
+ * (terminal_sync_draw for a redraw request, terminal_sync_flipped at a flip,
+ * terminal_sync_arm_ns to arm): a program's output bracketed in mode 2026,
+ * fed through tsm_vte_input_bounded in reads of random sizes, a redraw at
+ * the end of every loop turn, flips that take a random number of turns, one
+ * frame that stalls past the timeout, and displays that lose their picture
+ * mid-frame. Every present must show a whole frame, except at an expiry or
+ * on a display that lost its picture. With mode 2026 not offered, the same
+ * schedule must present part-written frames, so the check is seen to catch
+ * them.
  */
 
 #undef NDEBUG
@@ -383,9 +384,16 @@ static void test_coalesce(void)
 	       90 * MS + refresh);
 	assert(terminal_sync_coalesce(&t.sync, true, 90 * MS + refresh, 4 * MS, 90 * MS, refresh) ==
 	       0);
-	/* a display that does not report its refresh is taken as 60 Hz */
+	/* a display that does not report its refresh, or reports 1 or 2000 Hz, is taken as 60 Hz */
 	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, 0) ==
 	       4 * MS + TERMINAL_SYNC_REFRESH_NS);
+	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, 1000 * 1000 * MS) ==
+	       4 * MS + TERMINAL_SYNC_REFRESH_NS);
+	assert(terminal_sync_coalesce(&t.sync, true, 4 * MS, 4 * MS, 0, 500 * 1000) ==
+	       4 * MS + TERMINAL_SYNC_REFRESH_NS);
+	/* 20 and 1000 Hz stand */
+	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, 50 * MS) == 54 * MS);
+	assert(terminal_sync_coalesce(&t.sync, true, 4 * MS, 4 * MS, 0, MS) == 5 * MS);
 
 	feed(&t, "\e[?2026habc");
 	assert(terminal_sync_input(&t.sync, 5 * MS, true) == TERMINAL_SYNC_ARM);

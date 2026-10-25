@@ -211,7 +211,7 @@ uint64_t terminal_sync_coalesce(const struct terminal_sync *s, bool mid_write, u
 	/* a hold decides for itself, and presents its frame end at once */
 	if (!mid_write || terminal_sync_holding(s))
 		return 0;
-	if (!refresh_ns)
+	if (refresh_ns < TERMINAL_SYNC_REFRESH_MIN_NS || refresh_ns > TERMINAL_SYNC_REFRESH_MAX_NS)
 		refresh_ns = TERMINAL_SYNC_REFRESH_NS;
 	if (!waited_ns)
 		waited_ns = now_ns;

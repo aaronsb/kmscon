@@ -145,20 +145,26 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
  * or once one refresh of the display has passed since its last present,
  * whichever comes first; when the write began after that refresh had passed,
  * as after an idle spell, the refresh is counted from the first turn that
- * waited. Output is never shown more than one refresh late. Every other redraw request (a key
- * press, the blink timers, the pointer, a frame end, a lost picture) draws as before, so a
- * keystroke's echo, a short read, draws at once.
+ * waited. The wait adds at most one refresh interval. Every other redraw
+ * request (a key press, the blink timers, the pointer, a frame end, a lost
+ * picture) draws as before, so a keystroke's echo, a short read, draws at
+ * once.
  */
 
-/* the refresh assumed for a display that does not report its own, 60 Hz */
+/*
+ * The refresh assumed for a display that does not report its own, or reports
+ * one outside 20 to 1000 Hz (fbdev forces 1 Hz when the mode says 0): 60 Hz.
+ */
 #define TERMINAL_SYNC_REFRESH_NS (1000000000ULL / 60)
+#define TERMINAL_SYNC_REFRESH_MIN_NS (1000000000ULL / 1000)
+#define TERMINAL_SYNC_REFRESH_MAX_NS (1000000000ULL / 20)
 
 /*
  * The child's output changed a display's screen at @now_ns. @mid_write: the
  * terminal is part way through the child's write, as above. @presented_ns:
  * the display's last present; @waited_ns: the first turn since then whose
  * draw waited (0: none, this one is); @refresh_ns: the display's refresh
- * (0: unknown). Returns 0 to draw now, which a hold turns into a redraw
+ * (0: unknown, as is one out of range). Returns 0 to draw now, which a hold turns into a redraw
  * owed, or the time by which to draw if no turn has drawn by then.
  */
 uint64_t terminal_sync_coalesce(const struct terminal_sync *s, bool mid_write, uint64_t now_ns,

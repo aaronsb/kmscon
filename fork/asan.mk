@@ -28,6 +28,9 @@ asan: image ## Run kmscon's tests built with ASan and UBSan in fork/build/asan (
 	$(RUN) sh -c '[ -f $(ASAN_BUILD)/build.ninja ] || meson setup $(ASAN_BUILD) $(SETUP_ARGS) -Db_sanitize=address,undefined -Db_lundef=false; \
 		meson compile -C $(ASAN_BUILD) || exit 1; \
 		tests="$(ASAN_TESTS)"; \
-		[ -n "$$tests" ] || tests=$$(meson test -C $(ASAN_BUILD) --no-rebuild --list --suite kmscon | sed s/^kmscon:// | grep -vxF $(addprefix -e ,$(ASAN_SKIP))); \
+		if [ -z "$$tests" ]; then \
+			tests=$$(meson test -C $(ASAN_BUILD) --no-rebuild --list --suite kmscon | sed s/^kmscon:// | grep -vxF -e "" $(addprefix -e ,$(ASAN_SKIP))); \
+			[ -z "$(strip $(ASAN_SKIP))" ] || echo "asan: skipping $(strip $(ASAN_SKIP)) (#213)"; \
+		fi; \
 		[ -n "$$tests" ] || { echo "asan: no tests to run"; exit 1; }; \
 		$(ASAN_ENV) meson test -C $(ASAN_BUILD) --no-rebuild --print-errorlogs $$tests'

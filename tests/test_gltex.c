@@ -13,8 +13,9 @@
  *
  * Image placements (ADR-103 steps 3f and 4e): one texture per image, uploaded
  * on its first draw as the image's bytes, scaled down to fit
- * GL_MAX_TEXTURE_SIZE; the textures count in the image budget and those no
- * frame draws go past the cache's bound; the frame is drawn in ADR-103's
+ * GL_MAX_TEXTURE_SIZE; the textures count in the image budget's own budget
+ * for textures, apart from libtsm's images, and those no frame draws go past
+ * the cache's bound; the frame is drawn in ADR-103's
  * layers, each with its blend state, and the pointer last (#181). The image
  * budget and the scaler are the real ones.
  */
@@ -1390,7 +1391,7 @@ static void close_txt(struct kmscon_text *txt)
 	gltex_unset(txt);
 	gltex_destroy(txt);
 	/* its textures and its display given back */
-	assert(image_budget_used() == 0);
+	assert(image_budget_used() == 0 && image_budget_textures() == 0);
 	assert(image_budget_displays_px() == 0);
 }
 
@@ -1424,7 +1425,8 @@ static struct gltex_image *texture_of(struct gltex *gt, uint64_t key)
 /*
  * One texture per image key, uploaded on the first draw of a placement of it
  * as the image's bytes, and kept: two placements of one image share it, a
- * second frame uploads nothing. Each texture counts in the image budget. A
+ * second frame uploads nothing. Each texture counts in the textures' budget,
+ * not in the images'. A
  * placement drawn a texel a pixel is sampled as it is; one scaled, bilinear.
  * Each placement is one quad, with its picture's texture coordinates.
  */
@@ -1461,7 +1463,8 @@ static void test_image_texture(void)
 		assert(!memcmp(t->data, test_images[i].pixels, (size_t)t->w * t->h * 4));
 	}
 	want = (size_t)16 * 32 * 4 + (size_t)24 * 16 * 4;
-	assert(gt->image_bytes == want && image_budget_used() == want);
+	assert(gt->image_bytes == want && image_budget_textures() == want);
+	assert(image_budget_used() == 0);
 
 	/* the quads: one each, in the frame's order */
 	assert(gt->pics_num == 3);
@@ -1574,7 +1577,7 @@ static void test_image_scaled(void)
 	       0);
 	assert(!memcmp(texs[gi->tex].data, want, 64 * 32 * 4));
 	free(want);
-	assert(gi->bytes == 64 * 32 * 4 && image_budget_used() == 64 * 32 * 4);
+	assert(gi->bytes == 64 * 32 * 4 && image_budget_textures() == 64 * 32 * 4);
 	assert(gt->pics_num == 1 && !gt->pics[0].exact);
 	assert(gt->pics[0].u2 == 1 && gt->pics[0].v2 == 1);
 
@@ -1617,7 +1620,7 @@ static void test_image_evict(void)
 		place(0, k, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT);
 		run_frame(&txt, make_frame(1), false);
 		assert(gt->pics_num == 1 && gt->pics[0].image == texture_of(gt, k));
-		assert(gt->image_bytes <= limit && image_budget_used() == gt->image_bytes);
+		assert(gt->image_bytes <= limit && image_budget_textures() == gt->image_bytes);
 	}
 	assert(gt->images_num == 8);
 	for (k = 10; k < 30; k++)
@@ -1633,14 +1636,14 @@ static void test_image_evict(void)
 	run_frame(&txt, make_frame(0), false);
 	assert(gt->images_num == 8 && gt->image_bytes <= limit);
 
-	/* the budget asks for room: the textures the last frame did not draw go */
+	/* a smaller limit asks for room: the textures the last frame did not draw go */
 	place(0, 29, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT);
 	run_frame(&txt, make_frame(1), false);
 	gi = texture_of(gt, 28);
 	name = gi->tex;
 	image_budget_set_limit(one);
 	assert(gt->images_num == 1 && has_texture(gt, 29) && !has_texture(gt, 28));
-	assert(image_budget_used() == one);
+	assert(image_budget_textures() == one);
 	assert(texs[name].live); /* not this display's context yet */
 	run_frame(&txt, make_frame(1), false);
 	assert(!texs[name].live);
@@ -1661,7 +1664,7 @@ static void test_image_evict(void)
 
 	/* a session in the background gives every texture back */
 	gltex_release(&txt);
-	assert(!gt->images && !gt->image_bytes && image_budget_used() == 0);
+	assert(!gt->images && !gt->image_bytes && image_budget_textures() == 0);
 	assert(!gt->doomed_num);
 
 	close_txt(&txt);
@@ -1840,8 +1843,9 @@ static unsigned int draws_of(struct gltex *gt, GLint filter)
 }
 
 /*
- * An image whose whole texture does not fit the budget beside libtsm's copy
- * of it (more than half the budget) is drawn as bbulk draws it (ADR-108):
+ * An image whose whole texture does not fit the textures' budget beside the
+ * textures another display's frame draws (here its own texture of the same
+ * image, more than half the budget) is drawn as bbulk draws it (ADR-108):
  * from a texture at the size the placement draws it, the scaler's pixels, a
  * texel a pixel. A placement drawing it larger makes that texture again,
  * larger, and one drawing it smaller uses the larger one.
@@ -1859,7 +1863,7 @@ static void test_half_budget(void)
 	open_txt(&txt, OR_NORMAL);
 	gt = txt.data;
 	image_budget_set_limit((size_t)16 << 20);
-	image_budget_add_picture(img); /* stands for libtsm's copy, which the frame draws */
+	image_budget_add_texture(img); /* stands for another display's texture of it */
 	make_image(50, 2048, 1536, 255);
 	place(0, 50, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT); /* shrunk to 320x240 */
 	run_frame(&txt, make_frame(1), false);
@@ -1906,7 +1910,7 @@ static void test_half_budget(void)
 	run_frame(&txt, make_frame(1), false);
 	assert(texture_of(gt, 50) == gi && gt->pics_num == 1 && gt->pics[0].exact);
 
-	image_budget_remove_picture(img);
+	image_budget_remove_texture(img);
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 	close_txt(&txt);
 	max_texture_size = texture_limit = 2048;
@@ -1934,7 +1938,7 @@ static void test_upload_failure(void)
 	run_frame(&txt, make_frame(1), false);
 	assert(n_tex_rgba == tries + 1 && gt->pics_num == 0 && !gt->starved);
 	gi = image_find(gt, false, 51);
-	assert(gi && gi->failed && !gi->tex && !gi->bytes && image_budget_used() == 0);
+	assert(gi && gi->failed && !gi->tex && !gi->bytes && image_budget_textures() == 0);
 	run_frame(&txt, make_frame(1), false);
 	fail_teximage = false;
 	run_frame(&txt, make_frame(1), false);
@@ -1967,7 +1971,7 @@ static void test_grow_failure(void)
 	open_txt(&txt, OR_NORMAL);
 	gt = txt.data;
 	image_budget_set_limit((size_t)16 << 20);
-	image_budget_add_picture(img); /* stands for libtsm's copy */
+	image_budget_add_texture(img); /* stands for another display's texture of it */
 	make_image(54, 2048, 1536, 255);
 	place(0, 54, 0, 0, 40, 15, TSM_FRAME_BAND_ABOVE_TEXT); /* 320x240 */
 	run_frame(&txt, make_frame(1), false);
@@ -1990,7 +1994,7 @@ static void test_grow_failure(void)
 	gi = texture_of(gt, 54);
 	assert(n_tex_rgba == tries + 2 && gi->w == 640 && gi->h == 480 && gt->images_num == 1);
 
-	image_budget_remove_picture(img);
+	image_budget_remove_texture(img);
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 	close_txt(&txt);
 	max_texture_size = texture_limit = 2048;
@@ -2094,9 +2098,10 @@ static void test_overlay_replaced(void)
 }
 
 /*
- * A texture never evicts an image its own frame draws: a picture placed in
- * scrollback and viewed there (not pinned, so evictable for another image)
- * stays when its texture does not fit, and the placement waits for room.
+ * A texture never evicts an image, not even one its own frame draws: a
+ * picture placed in scrollback and viewed there (not pinned, so evictable for
+ * another image) stays when its texture does not fit the textures' budget,
+ * and the placement waits for room.
  */
 static void test_frame_draws(void)
 {
@@ -2111,6 +2116,7 @@ static void test_frame_draws(void)
 	struct tsm_screen *con;
 	struct gltex *gt;
 	uint64_t key, pkey;
+	size_t other;
 	unsigned int i;
 
 	open_txt(&txt, OR_NORMAL);
@@ -2126,8 +2132,9 @@ static void test_frame_draws(void)
 	for (i = 0; i < 2 * FAKE_ROWS; i++)
 		tsm_screen_newline(con);
 	tsm_screen_sb_up(con, 2 * FAKE_ROWS);
-	/* no room for the texture beside the image */
-	image_budget_set_limit(image_budget_used() + 64 * 32 * 4 - 1);
+	/* no room for the texture beside other displays' */
+	other = image_budget_limit() - 64 * 32 * 4 + 1;
+	image_budget_add_texture(other);
 
 	txt.screen = con;
 	frame = tsm_screen_frame_since(con, &age);
@@ -2139,7 +2146,7 @@ static void test_frame_draws(void)
 	assert(gt->starved && gt->pics_num == 0 && !gltex_starved(&txt));
 
 	/* room: drawn */
-	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+	image_budget_remove_texture(other);
 	assert(gltex_starved(&txt));
 	frame = tsm_screen_frame_since(con, &age);
 	assert(gltex_prepare(&txt, &attr) == 0);
@@ -2148,6 +2155,60 @@ static void test_frame_draws(void)
 	assert(gt->pics_num == 1 && tsm_screen_test_image_count(con) == 1);
 	txt.screen = NULL;
 
+	image_budget_remove_screen(con);
+	tsm_screen_unref(con);
+	close_txt(&txt);
+}
+
+/*
+ * The image budget just full of pictures, every one placed on the screen:
+ * bbulk draws them all, from libtsm's copies, and so does gltex (ADR-108).
+ * Its textures count in a budget of their own, so they take no room from
+ * libtsm's pictures.
+ */
+static void test_budget_full(void)
+{
+	static uint32_t px[160 * 96];
+	struct tsm_test_image ti = {.width = 160, .height = 96, .pixels = px};
+	struct tsm_test_placement pl = {0};
+	struct tsm_frame_age age = {0};
+	struct tsm_screen_attr attr = {0};
+	const struct tsm_frame *frame;
+	struct kmscon_text txt;
+	struct tsm_screen *con;
+	struct gltex *gt;
+	uint64_t key, pkey;
+	size_t held;
+	unsigned int i;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, FAKE_COLS, FAKE_ROWS) == 0);
+	assert(tsm_screen_set_cell_size(con, FAKE_CELL_W, FAKE_CELL_H) == 0);
+	assert(image_budget_add_screen(con) == 0);
+	/* four sixel pictures, 20 x 6 cells each, down the screen */
+	for (i = 0; i < 4; i++) {
+		assert(tsm_screen_test_image(con, &ti, &key) == 0);
+		pl = (struct tsm_test_placement){.image = key, .row = 6 * i};
+		assert(tsm_screen_test_place(con, &pl, &pkey) == 0);
+	}
+	held = image_budget_used();
+	image_budget_set_limit(held);
+	assert(image_budget_used() == held && image_budget_limit() == held);
+
+	txt.screen = con;
+	frame = tsm_screen_frame_since(con, &age);
+	assert(frame && frame->placement_count == 4);
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(gltex_draw(&txt, frame, false) == 0);
+	assert(gltex_render(&txt) == 0);
+	assert(!gt->starved && gt->pics_num == 4 && gt->images_num == 4);
+	assert(tsm_screen_test_image_count(con) == 4 && image_budget_used() == held);
+	assert(image_budget_textures() == 4 * sizeof(px));
+	txt.screen = NULL;
+
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
 	image_budget_remove_screen(con);
 	tsm_screen_unref(con);
 	close_txt(&txt);
@@ -2181,5 +2242,6 @@ int main(void)
 	test_source_clip();
 	test_overlay_replaced();
 	test_frame_draws();
+	test_budget_full();
 	return 0;
 }

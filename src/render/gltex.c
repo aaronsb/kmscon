@@ -50,14 +50,16 @@
  * draws each cell's background and text in one opaque pass, then the pointer.
  * Each image is a texture of its own, uploaded when a placement of it is first
  * drawn and scaled down to fit GL_MAX_TEXTURE_SIZE when it is larger, or, when
- * the whole image does not fit the budget, at the size the placement draws
+ * the whole image does not fit the textures' budget, at the size the placement draws
  * it; a placement draws its source rectangle, clipped at its box and the
  * screen, as one quad, scaled and rotated on the GPU. An upload GL refuses is
  * not tried again while the image is shown. The textures count in ADR-103's
- * image budget (image_budget.c) as bbulk's scaled pictures do: one that does
- * not fit is left out until the room in the budget grows, and those no frame
- * has drawn since go, least recently used first, once the textures pass
- * image_budget_cache_limit, or when the budget asks for room. Upstream draws
+ * image budget (image_budget.c) apart from libtsm's images and bbulk's
+ * pictures, in a budget of their own under the same limit, so they never take
+ * room from an image: one that does not fit is left out until the room grows,
+ * and those no frame has drawn since go, least recently used first, once the
+ * textures pass image_budget_cache_limit, or when another texture or a smaller
+ * limit asks for room. Upstream draws
  * each cell opaque in one pass per atlas; this departure is recorded in
  * ADR-103's gltex section (ADR-303).
  */
@@ -138,7 +140,7 @@ struct gltex_image {
 	bool scaled;	     /* smaller than the image */
 	/*
 	 * the image at the size a placement draws it, made where the whole
-	 * image does not fit the budget; made again when a placement draws it
+	 * image does not fit the textures' budget; made again when a placement draws it
 	 * larger
 	 */
 	bool drawn_size;
@@ -228,8 +230,7 @@ struct gltex {
 	 * their vertex arrays; the textures, most recently made first, and
 	 * their bytes; the names of textures given up between frames, deleted
 	 * once the GL context is ours again (room for one per texture, so
-	 * giving one up never fails); and the frame's placements while it is
-	 * drawn, for the budget's question of which images it draws.
+	 * giving one up never fails).
 	 */
 	struct gltex_pic *pics;
 	unsigned int pics_num;
@@ -242,7 +243,6 @@ struct gltex {
 	GLuint *doomed;
 	unsigned int doomed_num;
 	unsigned int doomed_size;
-	const struct tsm_frame *frame;
 	uint64_t frame_count;
 	unsigned int max_image_size; /* GL_MAX_TEXTURE_SIZE */
 	struct display *counted;     /* the display counted in the image budget, while set */
@@ -506,7 +506,7 @@ static int gltex_set(struct kmscon_text *txt)
 	gt->counted = txt->disp;
 	gt->cache.trim = gltex_trim;
 	gt->cache.trimmable = gltex_trimmable;
-	image_budget_add_cache(&gt->cache);
+	image_budget_add_texture_cache(&gt->cache);
 
 	gl_clear_error();
 	return 0;
@@ -542,7 +542,7 @@ static void gltex_unset(struct kmscon_text *txt)
 	shl_hashtable_free(gt->glyphs);
 	images_free(gt, gl);
 	if (gt->counted) {
-		image_budget_remove_cache(&gt->cache);
+		image_budget_remove_texture_cache(&gt->cache);
 		image_budget_uncount_display(gt->counted);
 		gt->counted = NULL;
 	}
@@ -1060,7 +1060,7 @@ static void image_free(struct gltex *gt, struct gltex_image **pp)
 		gt->doomed[gt->doomed_num++] = gi->tex;
 	gt->image_bytes -= gi->bytes;
 	gt->images_num--;
-	image_budget_remove_picture(gi->bytes);
+	image_budget_remove_texture(gi->bytes);
 	free(gi);
 }
 
@@ -1134,9 +1134,9 @@ static void failed_free(struct gltex *gt)
 }
 
 /*
- * The budget asks for @want bytes, between frames or within another
+ * The textures' budget asks for @want bytes, between frames or within another
  * renderer's: the textures the last frame did not draw go, least recently
- * used first (ADR-103's first step of eviction).
+ * used first.
  */
 static void gltex_trim(struct image_budget_cache *cache, size_t want)
 {
@@ -1176,24 +1176,6 @@ static void gltex_release(struct kmscon_text *txt)
 	gt->starved = false;
 	if (!display_use(txt->disp))
 		doomed_flush(gt);
-}
-
-/*
- * @con's image @key is shown by a placement of the frame that renderer @data
- * draws; without the frame's screen, every image counts as drawn
- */
-static bool frame_draws(struct tsm_screen *con, uint64_t key, void *data)
-{
-	struct kmscon_text *txt = data;
-	struct gltex *gt = txt->data;
-	unsigned int i;
-
-	if (con != txt->screen)
-		return !txt->screen;
-	for (i = 0; gt->frame && gt->frame->placements && i < gt->frame->placement_count; i++)
-		if (tsm_frame_placement_at(gt->frame, i)->image_key == key)
-			return true;
-	return false;
 }
 
 static struct gltex_image *image_find(struct gltex *gt, bool overlay, uint64_t key)
@@ -1306,8 +1288,8 @@ static int image_upload(struct gltex *gt, struct gltex_image *gi, const struct t
 /*
  * A texture of @tw x @th for @img, the overlay's when @overlay, made within
  * the frame: room from this display's textures the frame does not draw, then
- * from the budget in ADR-103's order (image_budget_picture_room), as bbulk
- * makes a scaled picture. Returns 0, -ENOSPC when it does not fit, -ENOMEM,
+ * from the other displays' (image_budget_texture_room), never from libtsm's
+ * images or bbulk's pictures. Returns 0, -ENOSPC when it does not fit, -ENOMEM,
  * or -EFAULT when GL refused it, which is remembered for the image's key, so
  * it is not tried, and room not made for it, again on every frame.
  */
@@ -1336,9 +1318,8 @@ static int image_new(struct kmscon_text *txt, bool overlay, uint64_t key,
 	}
 
 	images_trim(gt, bytes, image_budget_cache_limit((uint64_t)gt->sw * gt->sh));
-	images_trim(gt, bytes + image_budget_used() - gt->image_bytes, image_budget_limit());
-	if (image_budget_used() + bytes > image_budget_limit() &&
-	    image_budget_picture_room(bytes, frame_draws, txt))
+	images_trim(gt, bytes + image_budget_textures() - gt->image_bytes, image_budget_limit());
+	if (image_budget_texture_room(bytes))
 		return -ENOSPC;
 
 	gi = calloc(1, sizeof(*gi));
@@ -1365,7 +1346,7 @@ static int image_new(struct kmscon_text *txt, bool overlay, uint64_t key,
 	gt->images = gi;
 	gt->images_num++;
 	gt->image_bytes += bytes;
-	image_budget_add_picture(bytes);
+	image_budget_add_texture(bytes);
 	*out = gi;
 	return ret;
 }
@@ -1411,7 +1392,7 @@ static void overlays_free(struct gltex *gt, uint64_t key)
  * The texture placement @fp draws from, the overlay's when @overlay, where @fp
  * draws its source rectangle @dw x @dh pixels: the image's existing texture,
  * or a new one of the whole image, scaled down only to fit
- * GL_MAX_TEXTURE_SIZE. Where that does not fit the budget and @fp draws the
+ * GL_MAX_TEXTURE_SIZE. Where that does not fit the textures' budget and @fp draws the
  * image smaller, the texture is the image at the size @fp draws it (ADR-108:
  * hwaccel on draws the images hwaccel off draws, and bbulk draws such a
  * picture at its drawn size); one such is made again, larger, when a
@@ -1458,7 +1439,7 @@ static struct gltex_image *place_texture(struct kmscon_text *txt,
 		*pp = old->next;
 		gt->images_num--;
 		gt->image_bytes -= old->bytes;
-		image_budget_remove_picture(old->bytes);
+		image_budget_remove_texture(old->bytes);
 	}
 
 	ret = image_new(txt, overlay, fp->image_key, &img, fw, fh, &gi);
@@ -1478,7 +1459,7 @@ static struct gltex_image *place_texture(struct kmscon_text *txt,
 		gt->images = old;
 		gt->images_num++;
 		gt->image_bytes += old->bytes;
-		image_budget_add_picture(old->bytes);
+		image_budget_add_texture(old->bytes);
 		if (!ret) {
 			image_free(gt, &gt->images);
 		} else {
@@ -1660,10 +1641,8 @@ static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 		}
 	}
 
-	gt->frame = frame;
 	gt->starved = false;
 	gltex_draw_placements(txt, frame, cols, rows);
-	gt->frame = NULL;
 	gt->starved_gen = image_budget_gen();
 	return 0;
 }

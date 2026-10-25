@@ -26,8 +26,11 @@
 /*
  * ADR-103's image budget, image-storage-limit: one per kmscon process. It
  * covers the images in every libtsm screen's stores, main and alternate, of
- * every terminal, and the renderers' scaled pictures. kmscon is one thread, so
- * this is plain process state. A renderer module (mod-gltex) links its own copy
+ * every terminal, and the renderers' scaled pictures in system memory (bbulk).
+ * The renderers' textures in video memory (gltex) count apart, in a budget of
+ * their own under the same limit: they free only one another, so a texture
+ * never takes room from an image (ADR-103's Memory section). kmscon is one
+ * thread, so this is plain process state. A renderer module (mod-gltex) links its own copy
  * of image_budget.c through the render library; the calls a renderer makes are
  * exported (SHL_EXPORT in image_budget.c), so the module's bind to kmscon's
  * state rather than to its copy's (tests/check_module_symbols.py).
@@ -73,9 +76,11 @@
 void image_budget_set_limit(size_t limit);
 /* the limit in bytes now */
 size_t image_budget_limit(void);
-/* the bytes held: libtsm's images and the renderers' pictures */
+/* the bytes held: libtsm's images and the renderers' pictures, not their textures */
 size_t image_budget_used(void);
-/* moves whenever the limit or the room under it grows */
+/* the renderers' textures' bytes, held apart under the same limit */
+size_t image_budget_textures(void);
+/* moves whenever the limit or the room under it grows, the textures' included */
 uint64_t image_budget_gen(void);
 
 /*
@@ -130,6 +135,27 @@ int image_budget_picture_room(size_t bytes, image_budget_drawn_cb drawn, void *d
 /* a renderer's picture of @bytes, made or freed; made only once it fits */
 void image_budget_add_picture(size_t bytes);
 void image_budget_remove_picture(size_t bytes);
+
+/*
+ * A renderer's cache of textures, in the textures' budget: its @trim and
+ * @trimmable are those of a cache of pictures, and are called the same way,
+ * for room for another renderer's texture or for a limit that shrank.
+ */
+void image_budget_add_texture_cache(struct image_budget_cache *cache);
+void image_budget_remove_texture_cache(struct image_budget_cache *cache);
+
+/*
+ * Room for a texture of @bytes that a renderer makes within a frame, once its
+ * own textures gave what they can: the other renderers' textures their last
+ * frame did not draw, least recently used first. Nothing is freed unless that
+ * makes the texture fit, and no image or picture is freed for it. Returns 0,
+ * or -ENOSPC when it does not fit.
+ */
+int image_budget_texture_room(size_t bytes);
+
+/* a renderer's texture of @bytes, made or freed; made only once it fits */
+void image_budget_add_texture(size_t bytes);
+void image_budget_remove_texture(size_t bytes);
 
 /*
  * @con's images reserve from the budget, and are evicted for other screens'

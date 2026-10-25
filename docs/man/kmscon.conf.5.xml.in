@@ -620,7 +620,11 @@ font-name=Ubuntu Mono
           <para>The memory for pictures programs draw, in bytes: every image
                 in every terminal kmscon runs, on the main and alternate
                 screens, and the scaled copies the renderer keeps, all within
-                one limit for the kmscon process. <literal>auto</literal> is
+                one limit for the kmscon process. With
+                <option>hwaccel</option>, the copies the GPU keeps of the
+                pictures it draws are held to the same limit apart from these,
+                so they take no room from the pictures, and kmscon can hold up
+                to twice the limit. <literal>auto</literal> is
                 four frames of kmscon's displays in ARGB (width times height
                 times 4, added over the displays), at least 16 MiB and at most
                 192 MiB: 16 MiB at 1366x768, 31.6 MiB at 1920x1080, 192 MiB

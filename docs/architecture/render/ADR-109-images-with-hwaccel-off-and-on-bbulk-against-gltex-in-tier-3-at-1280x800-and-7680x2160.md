@@ -154,7 +154,7 @@ ADR-108 expects, for the same workload at the same size, lower CPU time per fram
 
 - (Superseded 2026-10-25: three copies at their own size at 7680x2160 no longer hold; see Correction for the revised verdicts.) **Holds on both counts:** scaled pictures at both sizes; three copies at their own size at 7680x2160, over PNG and shared memory; the photograph with scrolling text at both sizes.
 - (Superseded 2026-10-25 for `mpv --vo=kitty`: see Correction.) **Lower presented rate, by the rule above:** `mpv --vo=kitty` at 7680x2160 at the default budget, with no frame presented inside the window against 28.7 and 30.9 with `hwaccel` off; and `mpv-sixel` at 7680x2160, 1.31 and 1.13 below off (27.2 and 27.3 against 28.5), where mpv also sent fewer frames (26.7 against 27.9 and 28.0).
-- **Higher CPU time:** pictures at their own size at 1280x800 (one or three copies); one copy at its own size at 7680x2160; `mpv --vo=kitty` at 1280x800; `mpv-sixel` at 7680x2160. In each, bbulk's damage is a fraction of the screen and gltex redraws all of it. `mpv-sixel` at 1280x800 is within the runs' spread (off 0.57 and 0.75 ms, on 0.69 and 0.72).
+- (Superseded 2026-10-25 in part, see Correction: at 7680x2160 the list now also holds three PNG copies at their own size and `mpv --vo=kitty`, three shared memory copies are not lower beyond the spread, and the one-copy entry rests on run 3. For three copies, bbulk's damage is 88% of the screen, so the reason given below does not apply to them.) **Higher CPU time:** pictures at their own size at 1280x800 (one or three copies); one copy at its own size at 7680x2160; `mpv --vo=kitty` at 1280x800; `mpv-sixel` at 7680x2160. In each, bbulk's damage is a fraction of the screen and gltex redraws all of it. `mpv-sixel` at 1280x800 is within the runs' spread (off 0.57 and 0.75 ms, on 0.69 and 0.72).
 - (Explained 2026-10-25: at 1G libtsm's own budget held mpv's frames; run 3 measures the same case at the default budget after the fix. See Correction.) **Experiment A** (`image-storage-limit=1G`, unverified, one run) fails both halves against `hwaccel` off at the default budget: 10.10 ms per drawn frame against 5.34 and 5.36, and 22.2 frames a second presented against 28.7 and 30.9, with mpv sending 14.1 against 14.7 and 16.0.
 
 ## Against ADR-103's targets
@@ -165,13 +165,13 @@ ADR-108 expects, for the same workload at the same size, lower CPU time per fram
 
 ## What this does not show
 
-- **Bare metal, with `hwaccel` on.** The GPU is the host's, reached through virgl: the guest's Mesa encodes GL commands for virtio-gpu, and the host's virglrenderer runs them inside QEMU. kmscon's thread CPU time with `hwaccel` on therefore includes the guest driver's encoding, and leaves out the host's virglrenderer work and the GPU's own time. Neither was measured, so the figures do not show whether the total CPU time falls with `hwaccel` on, only that kmscon's thread spends less.
+- (Superseded 2026-10-25 in part, see Correction: for the player at its own size, PNG, and `mpv --vo=kitty` at 7680x2160, kmscon's thread spends more with `hwaccel` on, not less.) **Bare metal, with `hwaccel` on.** The GPU is the host's, reached through virgl: the guest's Mesa encodes GL commands for virtio-gpu, and the host's virglrenderer runs them inside QEMU. kmscon's thread CPU time with `hwaccel` on therefore includes the guest driver's encoding, and leaves out the host's virglrenderer work and the GPU's own time. Neither was measured, so the figures do not show whether the total CPU time falls with `hwaccel` on, only that kmscon's thread spends less.
 - **Bare metal, with `hwaccel` off.** bbulk in the VM writes a virtio-vga framebuffer in the guest's RAM. A real dumb buffer can be write-combined or uncached memory (ADR-104's finding on scanout memory), so bbulk's cost on the operator's hardware is not shown either.
-- **That gltex drew the pictures during the windows.** Every screen clears before tier 3 captures it, so no capture shows a picture from a measured window. The frames drawn, the damage and the rates are what the render timer reports; #188's own tier 3 captures of the image screens show gltex drawing pictures, outside these windows.
+- (Added 2026-10-25, see Correction: for the player at its own size and `mpv --vo=kitty` at 7680x2160 in runs 1 and 2, gltex did not draw them; libtsm had refused the images.) **That gltex drew the pictures during the windows.** Every screen clears before tier 3 captures it, so no capture shows a picture from a measured window. The frames drawn, the damage and the rates are what the render timer reports; #188's own tier 3 captures of the image screens show gltex drawing pictures, outside these windows.
 - **The image helper's CPU time,** which the player's figures leave out.
 - **The display.** "Presented" counts the guest's page flips; what reaches a monitor through `egl-headless` and virtio-gpu was not measured.
 - **Other machines and sizes.** Only the 4-vCPU guest: no GL variant has one vCPU, so the potato's GL figures are unknown; 1366x768 and 1920x1080 did not run.
-- **The cause of the 7680x2160 stall,** and anything about budgets other than auto and the unverified 1G.
+- (Superseded 2026-10-25: the stall's cause is traced; see Correction.) **The cause of the 7680x2160 stall,** and anything about budgets other than auto and the unverified 1G.
 - **The texture upload's share** of gltex's time per frame.
 
 ## Figures in #188's body that the logs do not reproduce
@@ -217,7 +217,9 @@ Traced in tier 3 with a reservation logged in `screen_reserve` (`trace-logging.d
 | traceC | 2D | 120, every one fits | 201,326,592 | 28.2 of 14.7 |
 | traceD | GL, with the export applied, `kp-png-1-w0` | 1,823, every one fits, with a 2540x1900 frame held (19.3 MB of images) | 201,326,592 | 26.2 of 27.1 |
 
-The trace builds name themselves `b5ee3ba4+dirty`; which of them carried the export shows in the limit they reserved against. Their rates carry the cost of the logging and are not used below.
+traceA's package is `10.0.4.r660.gb5ee3ba`, `b5ee3ba` with the logging only, which has no diff of its own in the directory; traceB to traceD ran package `10.0.4.r660.gb5ee3ba4`, whose change from `b5ee3ba` is `trace-logging.diff`, the logging plus the export. The harness names every trace's tree `b5ee3ba4+dirty`, so the package and the limit reserved against tell the builds apart. `traceA/2d-7680x2160/` is an aborted run with an empty event log, absent from `traceA.log`. The traces' rates carry the cost of the logging and are not used below.
+
+In traceB, once fixed, libtsm's copy of mpv's frames and gltex's textures of them peak at 98,447,260 and 98,444,700 bytes, 196,891,960 of the 201,326,592 budget: every frame on screen is held twice, and full-screen `mpv --vo=kitty` at 7680x2160 runs within 2% of the default budget's edge. Run 3's `kp-mpv` runs at that edge too.
 
 ### The stall, explained
 
@@ -239,7 +241,7 @@ The photograph's sizes are the box chafa was given; its picture is at most that.
 
 ### Run 3
 
-- **Build.** kmscon package `10.0.4.r664.g398cd6c5`, built at `398cd6c5` on #188's branch, with libtsm `7aae406`. Against `49996fc`, runs 1 and 2's build, it carries two source changes: `e0e53ffa`, the fix, and `b6280e54`, #188's review round 1. That change makes gltex draw an image over half the budget at its drawn size, makes "exact" sampling mean one texel a pixel from a texel's edge, clips a scaled placement's sampling to its source rectangle in the image shader, and remembers an upload GL refused. A run 3 figure therefore differs from runs 1 and 2 by both changes.
+- **Build.** kmscon package `10.0.4.r664.g398cd6c5`, built at `398cd6c5` on #188's branch, with libtsm `7aae406`. Against `49996fc`, runs 1 and 2's build, it carries #188's commits `f298aa2` (ADR-103's text and a comment in `gltex.c`) and `b5ee3ba` (ADR-103's text), and the four after `b5ee3ba`: `b6280e54`, #188's review round 1; `69c852d6`, ADR-103's text and tier 3 dropping the `skipped` status; `e0e53ffa`, the fix; and `398cd6c5`, ADR-103's text. Two of them change what kmscon does: `e0e53ffa` and `b6280e54`. That change makes gltex draw an image over half the budget at its drawn size, makes "exact" sampling mean one texel a pixel from a texel's edge, clips a scaled placement's sampling to its source rectangle in the image shader, and remembers an upload GL refused. A run 3 figure therefore differs from runs 1 and 2 by both changes.
 - **What ran.** The GL variants only, `gl-1280x800` and the temporary `gl-7680x2160`, once, with the same installer, measuring screens, host and guest (`run3.log`, `run3/`). The figures with `hwaccel` off stay those of runs 1 and 2: traceC shows the 2D budget held mpv's frames, and neither change touches bbulk.
 - **Figures.** Recomputed from `run3/*/serial.log` and `events.log` with the same separate parser; they match `run3-figures.md` to the last digit printed. Each log names `backend [drm3d] text renderer [gltex]`.
 - **Where the defect did not reach,** run 3 agrees with runs 1 and 2. At 7680x2160: the scaled player 8.64 ms against 8.60 to 8.89, the photograph 8.57 against 7.66 to 8.77, `mpv-sixel` 9.18 against 9.06 to 9.29. At 1280x800 every cell is within 0.10 ms of runs 1 and 2, mostly above. So `b6280e54` moved little where the two can be compared.
@@ -251,7 +253,7 @@ Run 3, every GL cell: CPU per drawn frame (median), presented of sent, and kmsco
 | Player, PNG, 1 copy, scaled | 0.71 ms; 29.7 of 29.4; 1.3 ms | 8.64 ms; 29.5 of 29.3; 9.4 ms |
 | Player, PNG, 3 copies, scaled | 0.70 ms; 30.4 of 29.7; 1.2 ms | 8.64 ms; 30.5 of 29.7; 9.8 ms |
 | Player, PNG, 1 copy at its own size | 0.72 ms; 29.8 of 29.7; 1.2 ms | 10.94 ms; 29.8 of 29.5; 17.4 ms |
-| Player, PNG, 3 copies at their own size | 0.75 ms; 30.7 of 29.7; 1.3 ms | 11.10 ms; 30.0 of 29.5; 17.7 ms |
+| Player, PNG, 3 copies at their own size | 0.75 ms; 30.7 of 29.7; 1.2 ms | 11.10 ms; 30.0 of 29.5; 17.7 ms |
 | Player, shared memory, 3 copies at their own size | 0.69 ms; 29.9 of 29.7; 1.1 ms | 9.63 ms; 29.4 of 29.7; 14.0 ms |
 | `mpv --vo=kitty` inline | 0.69 ms; 59.0 of 29.7; 5.1 ms | 9.82 ms; 27.1 of 13.6; 60.0 ms |
 | Photograph, text scrolling (presented only) | 0.42 ms; 75.2 | 8.57 ms; 37.6 |

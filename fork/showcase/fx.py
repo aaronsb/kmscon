@@ -2,10 +2,11 @@
 """The drawing commands of fork/showcase/bad-apple.sh (#75).
 
 Everything that draws more than a line of text runs through here: the video
-acts' frame caches and their player (frames.py), the effects (effects.py),
-the scenes of letters, typing, placeholders and cats (scenes.py), all drawn
-through the painters of screen.py. Standard library only; ffmpeg, img2txt and
-toilet are run as programs.
+acts' frame caches and their player (frames.py), act 7's kitty graphics
+player (kitty.py), the effects (effects.py), the scenes of letters, typing,
+placeholders and cats (scenes.py), all drawn through the painters of
+screen.py. Standard library only; ffmpeg, img2txt and toilet are run as
+programs.
 
 Keys: q ends the show (exit status 10, which bad-apple.sh takes as "quit");
 Ctrl-C exits 130. The terminal's mode is left as the caller set it, except
@@ -22,6 +23,7 @@ import tty
 
 import effects
 import frames
+import kitty
 import scenes
 from screen import ESC, AnyKey, Quit, geom, out, wait, watch_resize
 
@@ -108,6 +110,32 @@ def parser():
     p.add_argument("--seconds", type=float, default=0)
     p.add_argument("--placeholder", default="")
     p.add_argument("--title", default="")
+    p.add_argument("--report", default="")
+
+    p = cmd("kitty", kitty.cmd_kitty, "act 7's video through kitty graphics, up to three copies")
+    p.add_argument("--video", required=True)
+    p.add_argument("--start", type=float, default=0)
+    p.add_argument("--seconds", type=float, default=0, help="0: to the end")
+    p.add_argument("--transport", default="png", choices=kitty.TRANSPORTS)
+    p.add_argument("--fallback", default="png,raw", help="transports to try when the first is refused")
+    p.add_argument("--width", type=int, default=0, help="frames are decoded this many pixels wide (0: a copy's own size, at most 2160 tall)")
+    p.add_argument("--level", type=int, default=1, help="zlib's level for zlib and png")
+    p.add_argument("--cell-w", type=int, default=10)
+    p.add_argument("--cell-h", type=int, default=20)
+    p.add_argument("--banner-rows", type=int, default=0, help="rows left free at the bottom")
+    p.add_argument("--gap", type=int, default=2, help="columns between copies")
+    p.add_argument("--slide-at", type=float, default=-1, help="seconds into the act copy 1 slides left")
+    p.add_argument("--copy2-at", type=float, default=-1)
+    p.add_argument("--copy3-at", type=float, default=-1)
+    p.add_argument("--move", type=float, default=1.2, help="seconds each slide takes")
+    p.add_argument("--bounce", type=float, default=0.12, help="overshoot, a share of the distance")
+    p.add_argument("--copies", type=int, default=0, help="hold this many copies still (measuring)")
+    p.add_argument("--audio-ipc", default="", help="mpv's IPC socket: follow its time-pos")
+    p.add_argument("--audio-wait", type=float, default=3.0, help="seconds to wait for mpv's first answer")
+    p.add_argument("--audio-started", type=float, default=None,
+                   help="when the soundtrack started (seconds since the epoch): the clock until, or if never, mpv answers")
+    p.add_argument("--unpaced", action="store_true", help="every frame, as fast as the terminal takes them")
+    p.add_argument("--probe-timeout", type=float, default=1.0)
     p.add_argument("--report", default="")
 
     p = cmd("placeholder", scenes.cmd_placeholder, "a framed panel of static with text")

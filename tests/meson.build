@@ -517,6 +517,7 @@ test(
     'showcase',
     python,
     args: [files('showcase/showcase.py'), '--root', meson.project_source_root()],
+    timeout: 120,
 )
 
 # The harness's own Python: the run and comparison page generators

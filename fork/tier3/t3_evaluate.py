@@ -50,10 +50,31 @@ KNOWN_BOTTLENECKS = {}
 # A case compared with another case's golden: back from the scrollback, and
 # back from tty3 (vt-restore, with the last screen's).
 SAME_AS = {"photo-scrollforward": "photo-scroll", "vt-restore": SCREENS[-1]}
-# Every case of a variant: each screen and the keyed cases after it, then
-# the VT switch (a check without a golden) and the restore after it.
-CASES = [c for name in SCREENS for c in [name] + [k for s, k, _ in KEYED if s == name]] \
-    + ["vt-switch", "vt-restore"]
+# The screens that draw sixel or kitty pictures. A terminal offers images only
+# where its renderer draws placements (ADR-103), which gltex does not until
+# ADR-103 steps 3f and 4e, so a variant without images (VARIANTS' "images")
+# skips them: there each would print that the terminal offers no images, and
+# the screens after it would wait for pictures that never come.
+IMAGE_SCREENS = ["sixel", "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict",
+                 "photos", "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "kitty",
+                 "kitty-photo", "kitty-files", "kitty-layers", "flood"]
+
+
+def screens(images=True):
+    """The screens a variant draws, in order: every one, or with `images`
+    false those that draw no pictures."""
+    return [s for s in SCREENS if images or s not in IMAGE_SCREENS]
+
+
+def cases(images=True):
+    """Every case of a variant: each of its screens and the keyed cases after
+    it, then the VT switch (a check without a golden) and the restore after
+    it."""
+    return [c for name in screens(images)
+            for c in [name] + [k for s, k, _ in KEYED if s == name]] + ["vt-switch", "vt-restore"]
+
+
+CASES = cases()
 # What each check shows and what correct looks like, for the conformance run
 # page; a screen's comes from the header comment of its script (describe).
 CHECKS = {

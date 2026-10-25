@@ -9,13 +9,16 @@ import subprocess
 import time
 
 import t3_bench
+import t3_evaluate
 from t3_common import BASE, GUEST, RUNDIR, rel
-from t3_evaluate import BENCHMARKS, CASES, KEYED, KEYS_AFTER, SCREENS, evaluate
+from t3_evaluate import BENCHMARKS, KEYED, KEYS_AFTER, evaluate, screens
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
 
 # Display variants. Each boots its own guest from the base image, with its
 # own vCPUs and memory; the 2D variants draw through drm2d and bbulk, the GL
-# variant through drm3d and gltex on virgl.
+# variant through drm3d and gltex on virgl. "images": False marks a variant
+# whose renderer draws no image placements, so kmscon offers no images there
+# and the variant skips the image screens (t3_evaluate.IMAGE_SCREENS).
 VARIANTS = {
     "2d-1280x800": {
         "device": "virtio-vga,xres=1280,yres=800,edid=on",
@@ -63,6 +66,8 @@ VARIANTS = {
                    % os.environ.get("T3_RENDERNODE", "/dev/dri/renderD128"),
         "conf": "kmscon-gl.conf",
         "renderer": "gltex",
+        # gltex draws no placements until ADR-103 steps 3f and 4e (ADR-108)
+        "images": False,
         "capture": "vnc",
         "cpus": 4,
         "memory_mb": 4096,
@@ -84,6 +89,12 @@ BENCH_TIMEOUT = 300
 
 def uses_virgl(variant):
     return VARIANTS[variant]["device"].startswith("virtio-vga-gl")
+
+
+def variant_cases(variant):
+    """The cases `variant` runs: without the image screens where it has no
+    images."""
+    return t3_evaluate.cases(VARIANTS[variant].get("images", True))
 
 
 def newest_packages(pkgdir, name):
@@ -250,7 +261,7 @@ def run_variant(variant, timing, pkgs, log):
             vm.wait_event("T3-LOGIN", timeout=60)
         last = wait_stable(vm, tmp)
         phase("login")
-        for name in SCREENS:
+        for name in screens(v.get("images", True)):
             vm.type("t3 %s\n" % name)
             vm.wait_event("T3-DONE %s" % name,
                           timeout=BENCH_TIMEOUT if name in BENCHMARKS else SCREEN_TIMEOUT)
@@ -331,7 +342,7 @@ def failure_meta(error, pkgs):
 def failed_variant(variant, error, pkgs, log):
     log("%s: %s" % (variant, error))
     meta = failure_meta(error, pkgs)
-    return [evaluate(variant, case, None, meta, log) for case in CASES], meta
+    return [evaluate(variant, case, None, meta, log) for case in variant_cases(variant)], meta
 
 
 def variant_job(variant, pkgs, log):
@@ -349,7 +360,7 @@ def variant_job(variant, pkgs, log):
         log(str(e))
         caps, meta = {}, failure_meta(str(e), pkgs)
     start = time.time()
-    cases = [evaluate(variant, case, caps.get(case), meta, log) for case in CASES]
+    cases = [evaluate(variant, case, caps.get(case), meta, log) for case in variant_cases(variant)]
     timing["evaluate"] = round(time.time() - start, 1)
     log("phase evaluate took %.1f s" % timing["evaluate"])
     meta["timing"] = timing

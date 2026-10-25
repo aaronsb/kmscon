@@ -403,6 +403,46 @@ class VariantTest(unittest.TestCase):
         self.assertFalse(t3_scenario.uses_virgl("2d-1366x768-potato"))
         self.assertIn("2d-1366x768-potato", t3_scenario.DEFAULT_VARIANTS)
 
+    def test_gl_draws_no_images(self):
+        # gltex draws no placements until ADR-103 steps 3f and 4e, so the GL
+        # variant runs every screen but the image ones, and the 2D variants
+        # run them all.
+        self.assertIs(t3_scenario.VARIANTS["gl-1280x800"]["images"], False)
+        gl = t3_scenario.variant_cases("gl-1280x800")
+        for name in t3_evaluate.SCREENS:
+            with self.subTest(name):
+                self.assertEqual(name in gl, name not in t3_evaluate.IMAGE_SCREENS)
+        for screen, case, _ in t3_evaluate.KEYED:
+            self.assertEqual(case in gl, screen not in t3_evaluate.IMAGE_SCREENS)
+        self.assertEqual(gl[-3:], [t3_evaluate.SCREENS[-1], "vt-switch", "vt-restore"])
+        self.assertIn("s1-scroll", gl)
+        for name in t3_scenario.DEFAULT_VARIANTS:
+            self.assertEqual(t3_scenario.variant_cases(name), t3_evaluate.CASES)
+
+    def test_image_screens(self):
+        # A screen that sends a picture sources sixel-common.inc or
+        # kitty-common.inc, directly or through acceptance.inc and
+        # tmux-grid.inc, or writes a sixel DCS itself (sixel-bound); each is
+        # listed, so a variant without images skips it.
+        screens = os.path.join(t3_evaluate.GUEST, "screens")
+
+        def sends_images(path, seen=()):
+            with open(path) as f:
+                text = f.read()
+            if re.search(r"(\$esc'|\\033|\\e)P[\d;]*q", text):
+                return True
+            for inc in re.findall(r"([\w-]+\.inc)", text):
+                if inc in ("sixel-common.inc", "kitty-common.inc"):
+                    return True
+                if inc not in seen and sends_images(os.path.join(screens, inc), seen + (inc,)):
+                    return True
+            return False
+
+        for name in t3_evaluate.SCREENS:
+            with self.subTest(name):
+                self.assertEqual(sends_images(os.path.join(screens, name + ".sh")),
+                                 name in t3_evaluate.IMAGE_SCREENS)
+
     def test_qemu_gets_the_machine(self):
         class Started(Exception):
             pass

@@ -1667,6 +1667,8 @@ static void pin_fonts(const char *font_dir)
 		fprintf(stderr, "test_pixels: cannot install the font configuration\n");
 		exit(2);
 	}
+	/* the current configuration holds its own reference, so the next pin frees this one */
+	FcConfigDestroy(cfg);
 }
 
 /* Every font the backend can draw from, regular and bold, must be a pinned file. */

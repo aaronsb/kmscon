@@ -88,6 +88,7 @@ void test_parse_mode(const char *config, struct kmscon_conf_mode *mode, int num_
 		assert(conf->modes[i].height == mode[i].height);
 		assert(conf->modes[i].refresh_rate == mode[i].refresh_rate);
 	}
+	kmscon_conf_free(ctx);
 }
 
 static char *screen_conf = "screen=normal\n"
@@ -125,14 +126,20 @@ void test_parse_screen(const char *config, struct kmscon_conf_screen *screen, in
 		assert(conf->screens[i].enabled == screen[i].enabled);
 		assert(conf->screens[i].orientation == screen[i].orientation);
 	}
+	kmscon_conf_free(ctx);
 }
+
+/* the context parse_conf() made last, freed when it makes the next and at the end */
+static struct conf_ctx *last_ctx;
 
 static struct kmscon_conf_t *parse_conf(struct conf_ctx **ctx, const char *config)
 {
 	char *buf;
 	int ret;
 
+	kmscon_conf_free(last_ctx);
 	kmscon_conf_new(ctx);
+	last_ctx = *ctx;
 	conf_ctx_reset(*ctx);
 
 	buf = strdup(config);
@@ -254,6 +261,7 @@ static void test_parse_blink(void)
 	free(buf);
 	conf = conf_ctx_get_mem(ctx);
 	assert(conf->blink);
+	kmscon_conf_free(ctx);
 }
 
 /* sync-timeout is 200 ms by default; 0 turns mode 2026 off (ADR-201) */
@@ -311,6 +319,7 @@ static void test_parse_render_timer(void)
 	free(buf);
 	conf = conf_ctx_get_mem(ctx);
 	assert(conf->render_timer == KMSCON_RENDER_TIMER_BOTH);
+	kmscon_conf_free(ctx);
 }
 
 /*
@@ -392,6 +401,7 @@ int main()
 	test_parse_sync_timeout();
 	test_parse_render_timer();
 	test_parse_images();
+	kmscon_conf_free(last_ctx);
 
 	return 0;
 }

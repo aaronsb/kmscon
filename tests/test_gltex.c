@@ -2,7 +2,8 @@
  * The gltex glyph cache stays bounded. A cluster's frame key carries the
  * screen's generation, so a screen that re-creates its clusters asks for new
  * keys every frame; the atlases must not grow with them. Its memory stays
- * linear in the cell count at a 4K cell grid. Blinking cells lose their glyph
+ * linear in the cell count at a 4K cell grid. The GL stubs hold gltex to the
+ * GLES 2 texture rules a real driver enforces (#17). Blinking cells lose their glyph
  * in the hidden phase. Decorations and colour glyphs reach the atlas as masks,
  * from the real decoration sprites (deco.c). The GL and display calls are
  * stubs: the test counts the textures gltex creates, keeps the masks it
@@ -39,6 +40,17 @@ static struct draw_call {
 static unsigned int n_draws;	/* glDrawArrays calls since the last reset */
 static unsigned int n_rendered; /* glyphs rasterised */
 
+/*
+ * What GL knows of each texture name, so the stubs fail where a driver would
+ * raise GL_INVALID_OPERATION or GL_INVALID_VALUE (#17): a name is bound only
+ * once generated, and a glyph is uploaded only into a texture glTexImage2D
+ * gave storage, and inside it.
+ */
+static struct fake_tex {
+	bool live;    /* generated and not deleted */
+	GLsizei w, h; /* its storage; 0 before glTexImage2D */
+} texs[4096];
+
 /* the glyph masks uploaded while keep_uploads is set */
 static bool keep_uploads;
 static struct upload {
@@ -53,6 +65,7 @@ static unsigned int n_uploads;
 void glActiveTexture(GLenum texture) {}
 void glBindTexture(GLenum target, GLuint texture)
 {
+	assert(texture < sizeof(texs) / sizeof(*texs) && texs[texture].live);
 	bound_tex = texture;
 }
 void glClear(GLbitfield mask) {}
@@ -77,12 +90,21 @@ void glPixelStorei(GLenum pname, GLint param) {}
 void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
 		  GLint border, GLenum format, GLenum type, const void *pixels)
 {
+	assert(texs[bound_tex].live && level == 0);
+	assert(internalformat == GL_ALPHA && format == GL_ALPHA && type == GL_UNSIGNED_BYTE);
+	assert(width > 0 && width <= 2048 && height > 0 && height <= 2048);
+	texs[bound_tex].w = width;
+	texs[bound_tex].h = height;
 }
 void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width,
 		     GLsizei height, GLenum format, GLenum type, const void *pixels)
 {
+	const struct fake_tex *t = &texs[bound_tex];
 	struct upload *u;
 
+	assert(t->live && t->w && level == 0 && format == GL_ALPHA && type == GL_UNSIGNED_BYTE);
+	assert(xoffset >= 0 && yoffset >= 0 && width > 0 && height > 0);
+	assert(xoffset + width <= t->w && yoffset + height <= t->h);
 	if (!keep_uploads)
 		return;
 	assert(format == GL_ALPHA && type == GL_UNSIGNED_BYTE && yoffset == 0);
@@ -124,9 +146,19 @@ GLuint gl_shader_get_uniform(struct gl_shader *shader, const char *name)
 void gl_shader_use(struct gl_shader *shader) {}
 void gl_tex_new(GLuint *tex, size_t num)
 {
-	*tex = ++n_textures;
+	for (size_t i = 0; i < num; i++) {
+		tex[i] = ++n_textures;
+		assert(tex[i] < sizeof(texs) / sizeof(*texs));
+		texs[tex[i]] = (struct fake_tex){.live = true};
+	}
 }
-void gl_tex_free(GLuint *tex, size_t num) {}
+void gl_tex_free(GLuint *tex, size_t num)
+{
+	for (size_t i = 0; i < num; i++) {
+		assert(texs[tex[i]].live);
+		texs[tex[i]].live = false;
+	}
+}
 
 /* ---- display ---- */
 unsigned int display_get_width(struct display *disp)
@@ -440,6 +472,48 @@ static void assert_drawn(struct kmscon_text *txt, const struct tsm_frame *frame,
 }
 
 /*
+ * #17: the first glyph of a fresh gltex goes into a new atlas, with a texture
+ * gltex generated and gave storage. gltex before 9e12309 took the first entry
+ * of its atlas list without checking the list was empty; on an empty list that
+ * is the list head inside struct gltex, read as an atlas, so the glyph went to
+ * a texture name made of a float's bits whenever the bytes after the head
+ * passed for room. Under virgl every upload then failed with
+ * GL_INVALID_OPERATION and the screen stayed black. The display leaves a
+ * margin, so the offsets next to the head are not zero.
+ */
+static void test_first_glyph(void)
+{
+	struct kmscon_text txt = {0};
+	struct gl_glyph *g;
+	struct gltex *gt;
+	unsigned int before = n_textures;
+
+	disp_w = 645;
+	disp_h = 490;
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+	assert(dlist_empty(&gt->atlases));
+	assert(gt->off_x != 0 && gt->off_y != 0);
+
+	g = find_glyph(&txt, 'A', 0, 1, 0, false);
+	assert(g);
+	assert(n_textures == before + 1);
+	assert(!dlist_empty(&gt->atlases));
+	assert(g->atlas == dlist_first(&gt->atlases, struct atlas, list));
+	assert(g->atlas->tex == n_textures && texs[g->atlas->tex].w);
+	assert(g->texoff == 0 && g->atlas->fill == 1);
+
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+	disp_w = 640;
+	disp_h = 480;
+}
+
+/*
  * Blinking text (SGR 5): in the hidden phase a blinking cell is drawn with no
  * glyph and keeps its colours, underline and strike; steady cells, and a cell
  * whose blink SGR 25 ended, keep their glyphs. gltex clears and draws every
@@ -689,6 +763,7 @@ int main(void)
 	assert(!kmscon_text_gltex_ops.draws_images);
 	test_bounded();
 	test_vertex_memory();
+	test_first_glyph();
 	test_blink();
 	test_decorations();
 	test_colour_glyph();

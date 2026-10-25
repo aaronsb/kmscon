@@ -27,6 +27,7 @@ terminfo-strike               missing #94        smxx/rmxx: SGR 9/29 are impleme
 terminfo-styled-underline     missing #94        Smulx: SGR 4:0-5 are implemented (ADR-102)
 terminfo-underline-colour     missing #94        Setulc: SGR 58/59 are implemented (ADR-102)
 terminfo-truecolor            works   -          Tc, setrgbf and setrgbb (upstream 114d109) for SGR 38;2 and 48;2
+terminfo-setrgb               works   -          setrgbf and setrgbb expand with no empty final parameter, which xterm reads as SGR 0 (upstream 114d109 ends both in ";m")
 terminfo-bracketed-paste      missing #94        BD/BE/PS/PE: mode 2004 is implemented
 terminfo-sgr-mouse            missing #94        XM: mode 1006 is implemented; kmous alone selects X10 mouse
 terminfo-sync                 works   -          Sync for mode 2026 (ADR-201 step 5)

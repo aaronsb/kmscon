@@ -384,7 +384,7 @@ static void set_retry_arm(struct kmscon_terminal *term)
 
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		scr->retry.due = kmscon_text_retry_due(scr->txt);
+		scr->retry.due = scr->enabled ? kmscon_text_retry_due(scr->txt) : 0;
 		due = terminal_retry_earliest(due, &scr->retry, term->awake, now);
 	}
 	/* 0 disarms a timer */
@@ -703,7 +703,7 @@ static void set_retry_event(struct ev_timer *timer, uint64_t count, void *data)
 
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		scr->retry.due = kmscon_text_retry_due(scr->txt);
+		scr->retry.due = scr->enabled ? kmscon_text_retry_due(scr->txt) : 0;
 		if (terminal_retry_ask(&scr->retry, now))
 			redraw_screen(scr, false);
 	}

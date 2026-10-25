@@ -231,8 +231,12 @@ void terminal_coalesce_end(struct terminal_coalesce_display *d);
  * display the timer has asked a frame of is not asked again for the same due
  * time until TERMINAL_RETRY_ASK_NS has passed: a frame that tries the set
  * moves the due time (a second on, or to none), and one that a flip or a
- * hold of mode 2026 defers, or that a disabled display or a session not yet
- * in the foreground drops, is asked again then.
+ * hold of mode 2026 defers, or that a session not yet in the foreground
+ * drops, is asked again then. A session held out of the foreground (OSC
+ * setBackground, another session on screen) is asked once a second for as
+ * long as that lasts: a bounded wakeup, not a spin. The terminal reads no due
+ * time for a disabled display, whose frames are dropped until the size update
+ * that enables it sets its text again.
  */
 #define TERMINAL_RETRY_MIN_NS (1000000000ULL / 1000)
 #define TERMINAL_RETRY_ASK_NS 1000000000ULL

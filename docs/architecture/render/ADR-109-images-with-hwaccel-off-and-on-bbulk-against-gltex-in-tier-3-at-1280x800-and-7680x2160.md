@@ -2,7 +2,7 @@
 contract: adr/v1
 kind: evidence
 capability: images
-status: proposed
+status: accepted
 date: 2026-10-25
 deciders:
   - aaronsb
@@ -13,7 +13,7 @@ related: []
 
 ## Scope and method
 
-ADR-108's decision 6: the same image and video workloads run with `hwaccel` off (drm2d with bbulk, the CPU path) and on (drm3d with gltex, the GPU path), once gltex draws image placements (aaronsb/kmscon#188, ADR-103 steps 3f and 4e). ADR-108's observable expects kmscon's CPU time per frame to be lower with `hwaccel` on and the presented rate no lower, and asks for the comparison to be recorded whichever way it comes out. Measured on 2026-10-25 in tier 3's VMs; the operator's run on the same machine's GPU without a VM is still to come (Real hardware, pending).
+ADR-108's decision 6: the same image and video workloads run with `hwaccel` off (drm2d with bbulk, the CPU path) and on (drm3d with gltex, the GPU path), once gltex draws image placements (aaronsb/kmscon#188, ADR-103 steps 3f and 4e). ADR-108's observable expects kmscon's CPU time per frame to be lower with `hwaccel` on and the presented rate no lower, and asks for the comparison to be recorded whichever way it comes out. Measured on 2026-10-25 in tier 3's VMs; the operator's run on the same machine's GPU without a VM is still to come (Real hardware, pending). (Added 2026-10-25: it is in, in "Real hardware, 2026-10-25".)
 
 > Corrected 2026-10-25: on the GL variants libtsm refused every image over 16 MiB, so the GL cells at 7680x2160 for the player at its own size and for `mpv --vo=kitty` measured frames without the picture. They are marked [superseded] where they stand, and the appended section "Correction, 2026-10-25: GL images above 16 MiB were refused" gives the defect, its fix, a third run and the revised verdicts.
 
@@ -189,7 +189,7 @@ Every figure in #188's performance table matches run 2 at the precision shown, a
 
 ## Real hardware (pending)
 
-The operator's run on north's RX 7900 without a VM, on a VT at 7680x2160, is to be appended here as a dated section. It runs the same pages with `hwaccel` off and on, from a checkout that holds #188 (its head, `b5ee3ba`, or main once it merges): (Superseded 2026-10-25: the checkout must hold #188 at `e0e53ffa` or later, the budget fix; at `b5ee3ba` images over 16 MiB are refused on gltex. See Correction.)
+(Done 2026-10-25: the runs are in "Real hardware, 2026-10-25: the RX 7900 at 7680x2160" below. They used `KIT=kitty` and `KIT=sixel` and the showcase's act 7 with sound, not the commands as written here.) The operator's run on north's RX 7900 without a VM, on a VT at 7680x2160, is to be appended here as a dated section. It runs the same pages with `hwaccel` off and on, from a checkout that holds #188 (its head, `b5ee3ba`, or main once it merges): (Superseded 2026-10-25: the checkout must hold #188 at `e0e53ffa` or later, the budget fix; at `b5ee3ba` images over 16 MiB are refused on gltex. See Correction.)
 
 ```sh
 make vt-demo KIT=all DEMO_ARGS='--mode=7680x2160 --no-use-original-mode --render-timer=both'
@@ -288,3 +288,86 @@ With the correction, the expectation holds at 7680x2160 for scaled pictures and 
 
 - **7680x2160, kmscon not the bottleneck,** with `hwaccel` on: met for the player at its own size (14.0 to 17.7 ms per frame sent, the frames sent presented, the helper's work left out); missed for `mpv --vo=kitty` (60.0 ms per frame sent).
 - **7680x2160, 16.7 ms per frame:** every median with `hwaccel` on is under it, at most 11.10 ms.
+
+## Real hardware, 2026-10-25: the RX 7900 at 7680x2160
+
+### What ran
+
+- **Machine.** The operator's workstation, north, without a VM: AMD Radeon RX 7900 (PCI 1002:744c, radeonsi, Mesa 26.2.5). One display at 7680x2160, `DP-8` in runs 1 to 5 and `DP-7` in runs 6 and 7, as each log's `Display` line names it.
+- **kmscon.** Dev builds of the local demo branch `demo/morning-2026-10-25`, staged by `make vt-demo` or `make showcase`. Each run's log names its build. Runs 1 to 3 ran `g1a319907`, which carries #188's budget fix (`e0e53ffa`) but neither of its round 3 fixes: the textures' budget of their own (`309304de`) and the glyph-atlas sampling (`7ee63c9d`, #197). Run 5 ran `gaec40b59` and runs 6 and 7 ran `g77457cc1`, which carry both. None of the three commits is on main; #188's final head is.
+- **Options.** `--font-name="Monoid Nerd Font Mono" --font-size=30 --mode=7680x2160 --no-use-original-mode`, pango, a 20x40 cell, a 384x54 grid. Add `--hwaccel` for the GL runs, and `--render-timer=both`, so the on-screen figures redraw once a second and count in the timer's own lines.
+- **Evidence.** In `/home/aaron/Projects/terminal/emulators/session-artifacts-2026-10-25/morning-vt/`: each run's kmscon log (`runN-*.log`, with the render timer's lines), the command's output (`runN-*.out`), and snapshots of the demo's feedback file after runs 1 to 5. Every run's output reports 0 `atomic commit failed`, 0 `vt_timeout` and 0 `still in the image budget` lines.
+
+| Run | Path | Pages | Build | Operator's ratings |
+|---|---|---|---|---|
+| 1 | on, gltex | `KIT=kitty`: kitty, kitty-photo, kitty-files, kitty-layers | `g1a319907` | 4 of 4 right |
+| 2 | on, gltex | `KIT=sixel`: sixel, ramps, article, photos, sixel-evict, photo-scroll, mpv-sixel, tmux-2x2, tmux-3x3 | `g1a319907` | 8 of 9 right; sixel-evict wrong |
+| 3 | off, bbulk | `KIT=sixel` | `g1a319907` | 9 of 9 right |
+| 5 | on, gltex | `KIT=sixel` | `gaec40b59` | 9 of 9 right |
+| 6 | on, gltex | the showcase's act 7 (`FROM=7`, with sound) | `g77457cc1` | not rated in the feedback file |
+| 7 | off, bbulk | the showcase's act 7 | `g77457cc1` | not rated in the feedback file |
+
+Run 4 ran the text kit on bbulk for another workstream (ADR-201) and is not used here.
+
+### How the figures are windowed
+
+The kmscon log carries no timestamps. The render timer writes one line per display per second, in order, so a window is a run of consecutive lines, chosen by its signature and the page order. In each window, CPU time is the median of the seconds' medians (every second in these windows drew frames). The 95th percentile is the 95th percentile of those medians, alongside the largest second's own 95th percentile and its maximum. The presented rate is the median of the seconds' rates. The parser, `vt.py`, is kept with `recompute.py` in `/home/aaron/Projects/terminal/emulators/session-artifacts-2026-10-25/evidence-109-scripts/` (`python3 -I vt.py <log> [first end]`) and is separate from the harness's.
+
+- **Act 7.** The act's seconds run from the first line above 20 presents a second after the start screen to the last before the end card's steady 44 a second. The windows below are the 59 seconds wholly inside: lines 14 to 72 of run 6 and 4 to 62 of run 7, counted from 0. Each frame is 2246x1680 (15.1 MB in ARGB), placed in a 112x42-cell box of 2240x1680, both computed from the player's layout for this grid. Both renderers therefore draw it slightly scaled. Three copies show from the cue at 1:10 to the end card at 1:46, the act's last 36 seconds. In run 7 the damage shows it: 87.5% to 90.8% of the screen on lines 28 to 62, three boxes (68%) and the scroller's rows (22%), against 43% to 46% with one copy. For run 6 the same 35 lines from the end, 38 to 72, stand for that phase.
+- **mpv-sixel.** Five consecutive lines at about 34 presents a second, after the photo pages and before the tmux grids. In run 3 they carry 11.9% to 17.4% damage, mpv's 1920x1080 window being 12.5% of the screen. Those are lines 48 to 52 of run 3, 85 to 89 of run 2, and 36 to 40 of run 5.
+- **Pages at rest.** Every line with at most 5 presents a second, the cursor's blink and the on-screen figures, after the first line.
+- **The tmux grids** are not separated: the logs hold stretches that fit them, but not cleanly enough to attribute.
+
+### Figures
+
+| Workload | Off: bbulk | On: gltex |
+|---|---|---|
+| Act 7, all 59 s: CPU per drawn frame | 38.37 ms (95th of medians 38.58; largest second's 95th 43.00; max 43.86) | 2.37 ms (95th of medians 2.73; largest second's 95th 3.57; max 4.69) |
+| Act 7, all 59 s: presented per second | 29.9 (24.0 to 40.0) | 71.0 (68.8 to 75.0) |
+| Act 7, three copies, 35 s: CPU per drawn frame | 38.51 ms | 2.31 ms |
+| Act 7, three copies, 35 s: presented per second | 29.8 (27.9 to 31.5) | 70.9 (68.8 to 74.8) |
+| mpv-sixel, 5 s: CPU per drawn frame | 1.68 ms (run 3) | 2.17 ms (run 2), 2.19 ms (run 5) |
+| mpv-sixel, 5 s: presented per second | 34.0 (run 3) | 34.0 (run 2), 34.0 (run 5) |
+| Pages at rest: CPU per drawn frame | 0.73 ms (run 3, 35 s; damage 0.05%) | 2.38 ms (run 1, 47 s), 2.44 ms (run 2, 38 s), 2.39 ms (run 5, 15 s) |
+
+- **Act 7's presented rates are not frame counts of the video.** The act plays one 29.97 frame-a-second video, each frame sent once and placed up to three times, under a scroller that draws 40 frames a second in a process of its own (`BANNER_FPS`). Together that is about 70 updates a second (29.97 and 40), computed from the two senders' settings. gltex presents 69 to 75 a second, so it drew them as they came. bbulk presents about 30 at a median of 38 ms a frame. With three copies, its mean of 28.9 ms over 29.6 frames a second keeps its thread busy about 86% of each second. So it draws less often than the updates arrive and folds several into one frame. The player's own count of frames shown and dropped was not kept (`ACT7_REPORT` was unset), so whether bbulk kept every video frame is not known.
+- **mpv-sixel** plays a 30 frame-a-second clip, and both renderers present 34 a second. mpv's own counts were not kept in these runs, so what the extra presents carry, and whether either path dropped frames, is not shown.
+- **At rest,** bbulk redraws only the cursor's cell and the figures (0.05% of the screen). gltex redraws all of it every frame.
+
+### The operator's judgement
+
+From the feedback file, verbatim:
+
+- Run 2, 2026-10-25 08:49, sixel-evict, wrong: "pictures 1-5 do not appear: they just have the empty space for the picture. 6- through the remaining show the various colored strips". This was the texture budget shared with libtsm's images, fixed in #188 by `309304de` before run 5, which rated the page right.
+- Run 2, 08:50, tmux-3x3, right: "right visually, but performance is degraded a bit (less frames, choppier)".
+- Run 3 (bbulk), 08:54, tmux-2x2, right: "framerate was not as fast as single video and frame consistency had some 'burstiness' to consistency (frame replay timing had bursting jitter)"; tmux-3x3, right: "same bursting jitter as last, with an even lower overall framerate".
+
+Relayed by the team lead from the operator's session on 2026-10-25, verbatim. These are not in the feedback file:
+
+- On run 2's text, thin glyphs and artifacts at their edges, filed as #197 and fixed in `7ee63c9d`.
+- On run 5: "the text was crisp and accurate just like cpu rendering".
+- On run 6: "with three video streams on screen it renders at a constant 72 fps". The act sends one video placed as three copies, and the 72 counts the scroller's updates too (above).
+
+### Against ADR-108's expectation, on the real hardware
+
+- **Act 7, kitty video at 7680x2160 drawn slightly scaled, up to three copies, under a scroller: holds on both counts.** gltex takes 2.37 ms per drawn frame against bbulk's 38.37, about a sixteenth, and presents 71.0 a second against 29.9. It agrees in direction with the VM's scaled player (8.6 against 30 to 35 ms). The workload is the showcase's, not tier 3's player, so the two are not the same cell.
+- **mpv-sixel at 7680x2160: higher CPU time with gltex,** 2.17 to 2.19 ms against 1.68. The presented rate is the same, 34.0. This agrees with the VM's verdict on CPU (9.1 to 9.3 against 2.6 ms), and on the real hardware the gap is about half a millisecond. The VM's lower presented rate is not seen here, and the GL edge-second bias does not apply to these medians of whole seconds.
+- **Pages at rest:** gltex's full redraw costs 2.38 to 2.44 ms a frame against bbulk's 0.73 for the cursor alone. This is a few frames a second, not a workload ADR-108 names.
+- **VM-only:**
+  - every cell at 1280x800;
+  - at 7680x2160, the tier 3 player at its own size (PNG and shared memory, one and three copies);
+  - `mpv --vo=kitty`;
+  - the photograph beside scrolling text;
+  - the tmux grids, which the logs do not separate.
+
+### Limits
+
+- **One run of each,** with no repeat to measure the spread. The two act 7 runs share a build and the mpv-sixel comparison pairs runs 2 and 3 on one build, while runs 1, 2 and 5, and runs 3 and 5, differ in build.
+- **The render timer measures kmscon's thread only:** its CPU time from preparing a frame to queuing its flip. With gltex that includes radeonsi's work on that thread. It leaves out the GPU's own time, any driver threads, and the kernel's, and nothing else was measured. The figures show that kmscon's thread spends less with `hwaccel` on, not that the machine does.
+- **Windows are chosen by signature in an untimed log,** as above. The act 7 phases rest on the cue sheet's times.
+- **Act 7 is the showcase's choreography,** with moving copies, a 40 frame-a-second scroller and sound. It is not tier 3's player.
+- **The operator's ratings judge what is seen;** they are not measurements. Run 6 and 7's figures carry the only judgement of act 7, the operator's sentence above.
+
+## Acceptance (2026-10-25)
+
+Accepted on 2026-10-25 at the team lead's direction, once the operator's real-hardware runs above were in, as the record's Scope set out. The correction of the same date stands as part of the record.

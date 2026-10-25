@@ -26,21 +26,25 @@ The transports (--transport; png by default, the cheapest inline one):
         and unlinks it
 
 Every command carries q=2, so the terminal sends nothing back into the
-show's input, and C=1, so the cursor stays where it was. Frames follow the
-soundtrack's clock (mpv's time-pos over its IPC socket, --audio-ipc), or the
-monotonic clock without one, and are dropped, never delayed, when the
-terminal falls behind.
+show's input, and every placement C=1, so the cursor stays where it was.
+Frames follow the soundtrack's clock (mpv's time-pos over its IPC socket,
+--audio-ipc), else a wall clock started with the soundtrack (--audio-started)
+or the monotonic clock, and are dropped, never delayed, when the terminal
+falls behind.
 """
 
 import base64
+import contextlib
 import functools
 import json
 import math
 import os
 import select
+import signal
 import socket
 import struct
 import subprocess
+import sys
 import time
 import zlib
 
@@ -52,6 +56,7 @@ QUERY_ID = 7500             # the transport probe's a=q
 CHUNK = 4096                # the spec's largest chunk of base64
 COPIES = 3
 TICK = 1 / 60               # how often a moving copy is placed again
+SHM_KEEP = 64               # shm names remembered for the cleanup; older ones are unlinked
 ST = ESC + "\\"
 
 
@@ -91,10 +96,11 @@ class Encoder:
     shm writes each frame to /dev/shm (where Linux keeps POSIX shared memory
     objects; shm_open("/name") opens /dev/shm/name) under a new name."""
 
-    def __init__(self, transport, w, h, level=1):
+    def __init__(self, transport, w, h, level=1, prefix="kmscon-showcase"):
         if transport not in TRANSPORTS:
             raise ValueError(f"no transport {transport!r}: {', '.join(TRANSPORTS)}")
         self.transport, self.w, self.h, self.level = transport, w, h, level
+        self.prefix = f"/{prefix}-{os.getpid()}-"
         self.pix = "gray" if transport == "png" else "rgb24"
         self.frame_bytes = w * h * (1 if transport == "png" else 3)
         self.names = []
@@ -112,33 +118,46 @@ class Encoder:
         return apc(f"{keys},f=24,s={self.w},v={self.h},t=s,S={len(frame)}", b64(name.encode()))
 
     def shm_write(self, data):
-        self.serial += 1
-        name = f"/kmscon-showcase-{os.getpid()}-{self.serial}"
-        fd = os.open("/dev/shm" + name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        """A new object holding data, under the next free name: one a
+        crashed run of a reused pid left is skipped. The name SHM_KEEP
+        objects back is unlinked, read or not (about two seconds of video,
+        far longer than a terminal takes to read one)."""
+        while True:
+            self.serial += 1
+            name = f"{self.prefix}{self.serial}"
+            try:
+                fd = os.open("/dev/shm" + name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                break
+            except FileExistsError:
+                continue
         try:
             os.write(fd, data)
         finally:
             os.close(fd)
         self.names.append(name)
-        if len(self.names) > 64:
-            del self.names[0]
+        if len(self.names) > SHM_KEEP:
+            unlink_shm(self.names.pop(0))
         return name
 
     def close(self):
         """Removes the objects the terminal has not read: those it refused,
         or had not reached when the player stopped."""
         for name in self.names:
-            try:
-                os.unlink("/dev/shm" + name)
-            except OSError:
-                pass
+            unlink_shm(name)
         self.names = []
+
+
+def unlink_shm(name):
+    try:
+        os.unlink("/dev/shm" + name)
+    except FileNotFoundError:
+        pass
 
 
 def query(transport):
     """The spec's a=q of one pixel in this transport, which loads and checks
     the data without storing it."""
-    e = Encoder(transport, 1, 1)
+    e = Encoder(transport, 1, 1, prefix="kmscon-showcase-probe")
     frame = b"\0" if transport == "png" else b"\0\0\0"
     cmd = e.transmit(QUERY_ID, frame).replace(f"a=t,i={QUERY_ID},q=2", f"a=q,i={QUERY_ID}", 1)
     return cmd, e
@@ -178,7 +197,7 @@ class Layout:
 
     def __init__(self, cols, rows, cell_w, cell_h, aspect, gap=2, copies=COPIES):
         self.cols, self.rows = cols, rows
-        r = max(1, rows)
+        r = max(0, rows)  # 0: no rows above the scroller, and nothing placed
         while r > 1 and copies * self.width(r, cell_w, cell_h, aspect) + (copies - 1) * gap > cols - 2:
             r -= 1
         self.r = r
@@ -264,7 +283,9 @@ class Choreography:
 def placements(image_id, lay, pos):
     """Places image_id at each (placement id, column): copy 1 in front
     (z=3), each later one behind the one before, so a copy sliding out from
-    behind another starts hidden."""
+    behind another starts hidden. A layout with no rows places nothing."""
+    if lay.r < 1:
+        return ""
     return "".join(cup(lay.top, x) + apc(f"a=p,i={image_id},p={p},c={lay.c},r={lay.r},z={4 - p},C=1,q=2")
                    for p, x in pos)
 
@@ -280,29 +301,38 @@ class Clock:
     """Seconds since the act started. With an mpv IPC socket, the
     soundtrack's own position (time-pos, less start), read every quarter
     second and followed between reads on the monotonic clock, so a frame
-    shows when its sound plays; until mpv answers (up to wait seconds), the
-    clock holds at 0. Without one, or if mpv never answers, the monotonic
-    clock from the first read."""
+    shows when its sound plays. Until mpv answers, and for good when it has
+    not answered within wait seconds (no socket, or one it could not make),
+    a wall clock from started, the time the soundtrack was started, so the
+    video stays with the sound; fallback then says why. Without started, the
+    clock holds at 0 while it waits and then counts from when it was made.
+    Without a socket, the monotonic clock from when it was made."""
 
-    def __init__(self, ipc="", start=0.0, wait=3.0, now=time.monotonic):
+    def __init__(self, ipc="", start=0.0, wait=3.0, started=None, now=time.monotonic, wall=time.time):
         self.now_fn = now
         self.start = start
         self.sock = None
         self.buf = b""
         self.offset = None  # time-pos less start, less the monotonic clock
-        self.asked = 0.0
-        self.waited_until = now() + wait
+        self.asked = -1.0
+        self.made = now()
+        self.waited_until = self.made + wait
         self.ipc = ipc
         self.synced = False
+        self.fallback = ""
+        # the wall clock from started, on the monotonic clock
+        self.from_start = None if started is None else wall() - started - self.made
 
     def _connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.connect(self.ipc)
             s.setblocking(False)
             self.sock = s
-        except OSError:
+        except OSError as e:
+            s.close()
             self.sock = None
+            self.error = e.strerror or str(e)
 
     def _poll(self, mono):
         if self.sock is None:
@@ -337,7 +367,7 @@ class Clock:
             if msg.get("request_id") != 75 or not isinstance(msg.get("data"), (int, float)):
                 continue
             off = msg["data"] - self.start - mono
-            if self.offset is None or abs(off - self.offset) > 0.05:
+            if not self.synced or abs(off - self.offset) > 0.05:
                 self.offset = off
             else:
                 self.offset += 0.2 * (off - self.offset)
@@ -345,12 +375,22 @@ class Clock:
 
     def now(self):
         mono = self.now_fn()
-        if self.ipc:
+        if self.ipc and not self.fallback:
             self._poll(mono)
+            if not self.synced:
+                if mono >= self.waited_until:
+                    why = getattr(self, "error", "no answer")
+                    self.fallback = (f"mpv's IPC socket {self.ipc!r} gave no position in "
+                                     f"{self.waited_until - self.made:g} s ({why}); following "
+                                     + ("a wall clock started with the soundtrack" if self.from_start is not None
+                                        else "the player's own clock"))
+                    self.offset = self.from_start if self.from_start is not None else -self.made
+                elif self.from_start is not None:
+                    return mono + self.from_start
+                else:
+                    return 0.0
         if self.offset is None:
-            if self.ipc and mono < self.waited_until:
-                return 0.0
-            self.offset = -mono
+            self.offset = self.from_start if self.from_start is not None else -self.made
         return mono + self.offset
 
 
@@ -467,7 +507,8 @@ def ffprobe(video):
     """(width, height, fps) of the video's first stream; the display aspect
     is width over height."""
     p = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                        "stream=width,height,r_frame_rate,sample_aspect_ratio", "-of", "json", video],
+                        "stream=width,height,r_frame_rate,sample_aspect_ratio", "-of", "json",
+                        os.path.abspath(video)],
                        capture_output=True, text=True, check=True)
     s = json.loads(p.stdout)["streams"][0]
     num, den = (int(x) for x in s.get("r_frame_rate", "30/1").split("/"))
@@ -477,12 +518,14 @@ def ffprobe(video):
 
 
 def decode(video, start, seconds, w, h, pix):
-    """ffmpeg's frames of the clip at w x h, raw, from start for seconds."""
+    """ffmpeg's frames of the clip at w x h, raw, from start for seconds;
+    closing the generator stops ffmpeg."""
     size = w * h * (1 if pix == "gray" else 3)
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", str(start)]
     if seconds > 0:
         cmd += ["-t", str(seconds)]
-    cmd += ["-i", video, "-an", "-vf", f"scale={w}:{h}:flags=area", "-f", "rawvideo", "-pix_fmt", pix, "-"]
+    cmd += ["-i", os.path.abspath(video), "-an", "-vf", f"scale={w}:{h}:flags=area", "-f", "rawvideo",
+            "-pix_fmt", pix, "-"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
     try:
         while True:
@@ -495,7 +538,16 @@ def decode(video, start, seconds, w, h, pix):
         p.wait()
 
 
+def hang_up(signum, _frame):
+    """SIGTERM and SIGHUP end the player as Ctrl-C does, through its
+    cleanup: the images deleted, the shared memory unlinked, ffmpeg
+    stopped."""
+    raise SystemExit(128 + signum)
+
+
 def cmd_kitty(a):
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, hang_up)
     vw, vh, fps = ffprobe(a.video)
     aspect = vw / vh
     transport = a.transport
@@ -503,9 +555,10 @@ def cmd_kitty(a):
         if t not in ("shm",) or probe(t, a.probe_timeout):
             transport = t
             break
+
     def layout():
         cols, rows = geom()[:2]
-        return Layout(cols, max(1, rows - a.banner_rows), a.cell_w, a.cell_h, aspect, a.gap)
+        return Layout(cols, rows - a.banner_rows, a.cell_w, a.cell_h, aspect, a.gap)
 
     # Width 0: a copy's own pixel height, so the terminal shows the frame
     # at its size and scales nothing (a resize later scales it).
@@ -515,22 +568,30 @@ def cmd_kitty(a):
     enc = Encoder(transport, w, h, a.level)
 
     chor = Choreography(a.slide_at, a.copy2_at, a.copy3_at, a.move, a.bounce, a.copies)
-    clock = Clock(a.audio_ipc, a.start) if a.audio_ipc else Clock()
+    clock = Clock(a.audio_ipc, a.start, a.audio_wait, a.audio_started) if a.audio_ipc else Clock()
     player = Player(enc, lay, chor, fps, a.seconds, clock=clock, unpaced=a.unpaced)
+    told = []
 
     def tick(p, t):
+        if clock.fallback and not told:
+            told.append(clock.fallback)
+            print(f"kitty player: {clock.fallback}", file=sys.stderr, flush=True)
         if resized():
             p.relayout(layout(), t)
-        if a.unpaced:
-            poll_keys()
+        # q is read on every pass, also while the terminal is behind and
+        # the player never sleeps
+        poll_keys()
 
     try:
-        player.run(decode(a.video, a.start, a.seconds, w, h, enc.pix), on_tick=tick)
+        with contextlib.closing(decode(a.video, a.start, a.seconds, w, h, enc.pix)) as frames:
+            try:
+                player.run(frames, on_tick=tick)
+            finally:
+                player.finish()
     finally:
-        player.finish()
         enc.close()
         if a.report:
             with open(a.report, "a") as f:
-                clock_name = "mpv" if clock.synced else "monotonic"
+                clock_name = "mpv" if clock.synced else "wall" if clock.fallback else "monotonic"
                 f.write(player.stats.line(f"kitty {transport} {w}x{h} copies={a.copies or 'moves'} clock={clock_name}")
                         + "\n")

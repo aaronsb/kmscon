@@ -33,11 +33,17 @@ class AnyKey(Exception):
 # ---------------------------------------------------------------- terminal
 
 def out(s):
-    """Write s in one call: one frame, one write()."""
+    """Write s in one call: one frame, one write(). SIGWINCH is held off
+    while it writes, so a resize cannot cut the write short and let another
+    process's frame land inside this one; the loop is for what remains."""
     b = s.encode()
-    while b:
-        n = os.write(1, b)
-        b = b[n:]
+    held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGWINCH})
+    try:
+        while b:
+            n = os.write(1, b)
+            b = b[n:]
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, held)
 
 
 def geom():

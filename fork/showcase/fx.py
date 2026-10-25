@@ -131,6 +131,9 @@ def parser():
     p.add_argument("--bounce", type=float, default=0.12, help="overshoot, a share of the distance")
     p.add_argument("--copies", type=int, default=0, help="hold this many copies still (measuring)")
     p.add_argument("--audio-ipc", default="", help="mpv's IPC socket: follow its time-pos")
+    p.add_argument("--audio-wait", type=float, default=3.0, help="seconds to wait for mpv's first answer")
+    p.add_argument("--audio-started", type=float, default=None,
+                   help="when the soundtrack started (seconds since the epoch): the clock until, or if never, mpv answers")
     p.add_argument("--unpaced", action="store_true", help="every frame, as fast as the terminal takes them")
     p.add_argument("--probe-timeout", type=float, default=1.0)
     p.add_argument("--report", default="")

@@ -238,6 +238,17 @@ video_note() {
 	fi
 }
 
+# A move cued before act 7 starts gets a negative time and never comes:
+# each one is named.
+act7_cue_warnings() {
+	local name
+	for name in act7-slide act7-copy2 act7-copy3; do
+		awk -v n="$name" '$2 == n { found = 1 } END { exit !found }' <<<"$CUES" || continue
+		[[ $(cue act7-kitty "$name") != -* ]] ||
+			echo "  warning: the cue $name comes before act7-kitty, so that move never comes"
+	done
+}
+
 dry_run() {
 	local n
 	echo "plan: acts $first to $last$( [ "$audio" = 1 ] && echo ', with the soundtrack')"
@@ -254,7 +265,8 @@ dry_run() {
 		3) echo "  video: ${ACT3_START}s for ${ACT3_SECONDS}s" ;;
 		5) echo "  video: ${ACT5_START}s for ${ACT5_SECONDS}s, then ${ACT5_GLITCH}s glitched" ;;
 		7) echo "  video: from ${ACT7_START}s $( [ "$ACT7_SECONDS" = 0 ] && echo 'to the end' || echo "for ${ACT7_SECONDS}s, then the end card")"
-		   echo "  moves: slide ${ACT7_SLIDE_AT}s, copy 2 ${ACT7_COPY2_AT}s, copy 3 ${ACT7_COPY3_AT}s into the act (-1: never); frames by $KITTY_TRANSPORT, $( [ "$KITTY_WIDTH" = 0 ] && echo "a copy's own size" || echo "${KITTY_WIDTH} px wide")" ;;
+		   echo "  moves: slide ${ACT7_SLIDE_AT}s, copy 2 ${ACT7_COPY2_AT}s, copy 3 ${ACT7_COPY3_AT}s into the act (-1: never); frames by $KITTY_TRANSPORT, $( [ "$KITTY_WIDTH" = 0 ] && echo "a copy's own size" || echo "${KITTY_WIDTH} px wide")"
+		   act7_cue_warnings ;;
 		esac
 		echo "  kmscon today: ${ACT_KMSCON[n]}"
 	done
@@ -383,6 +395,8 @@ MODES_OFF="$E[?1000l$E[?1002l$E[?1003l$E[?1005l$E[?1006l$E[?1015l$E[?1004l$E[?20
 bg_pids=()
 audio_pid=
 ipc_dir=  # act 7's directory for mpv's IPC socket
+audio_started=  # when audio_start last started the soundtrack (EPOCHREALTIME)
+notes_file=  # what the players said on stderr, printed once the screen is back
 
 # The keys read while a player runs, one byte at a time: q ends the show.
 # While mpv has mouse tracking on, the terminal sends reports as input: X10
@@ -465,6 +479,7 @@ audio_start() {
 	[ "$audio" = 1 ] || return 0
 	local length=(--length="$2")
 	[ "$2" != 0 ] || length=()
+	audio_started=$EPOCHREALTIME
 	mpv --no-config --really-quiet --no-input-terminal --no-video --start="$1" "${length[@]}" \
 		"${audio_opts[@]}" "${@:3}" -- "$BAD_APPLE" </dev/null >/dev/null 2>&1 &
 	audio_pid=$!
@@ -519,6 +534,8 @@ restore() {
 		printf '%s[0m%s[2J%s[H%s[?25h%s[?1049l%s' "$E" "$E" "$E" "$E" "$E" "$MODES_OFF"
 	fi
 	[ -z "$saved_tty" ] || stty "$saved_tty" 2>/dev/null || true
+	[ ! -s "$notes_file" ] || cat "$notes_file" >&2
+	[ -z "$notes_file" ] || rm -f "$notes_file"
 	exit "$st"
 }
 
@@ -807,26 +824,33 @@ act_7() {
 		return
 	fi
 	local ipc=()
+	[ -n "$notes_file" ] || notes_file=$(mktemp)
 	if [ "$audio" = 1 ]; then
 		local fade=()
 		# The fade, no longer than the act, ends with it.
 		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || fade=(--af="lavfi=[afade=t=out:$(awk \
 			-v s="$ACT7_START" -v l="$ACT7_SECONDS" -v f="$ACT7_FADE" \
 			'BEGIN { if (f > l) f = l; printf "st=%s:d=%s", s + l - f, f }')]")
-		ipc_dir=$(mktemp -d)
-		ipc=(--audio-ipc "$ipc_dir/mpv.sock")
+		# A socket's path must fit 108 bytes: a short directory, not a
+		# long TMPDIR. Should mpv still make none, the player follows a
+		# wall clock from the soundtrack's start, and says so.
+		local run=/tmp
+		[ ! -d "${XDG_RUNTIME_DIR:-}" ] || [ ! -w "$XDG_RUNTIME_DIR" ] || run=$XDG_RUNTIME_DIR
+		ipc_dir=$(mktemp -d -p "$run" kmscon-showcase.XXXXXX)
 		audio_start "$ACT7_START" "$ACT7_SECONDS" --input-ipc-server="$ipc_dir/mpv.sock" "${fade[@]}"
+		ipc=(--audio-ipc "$ipc_dir/mpv.sock" --audio-started "$audio_started")
 	fi
 	# The scroller draws with the cursor saved and restored around each frame,
 	# and the player around each of its own.
 	python3 -B "$fx_py" banner --text "$(banner_text)" --rows "$BANNER_ROWS" --font "$BANNER_FONT" \
 		--fps "$BANNER_FPS" </dev/null &
 	bg_pids=($!)
-	fx kitty --video "$BAD_APPLE" --start "$ACT7_START" --seconds "$ACT7_SECONDS" \
+	# What the player says on stderr waits for the screen to come back.
+	fx kitty --video="$BAD_APPLE" --start "$ACT7_START" --seconds "$ACT7_SECONDS" \
 		--transport "$KITTY_TRANSPORT" --width "$KITTY_WIDTH" --cell-w "$cell_w" --cell-h "$cell_h" \
 		--banner-rows "$BANNER_ROWS" --gap "$ACT7_GAP" --slide-at "$ACT7_SLIDE_AT" \
 		--copy2-at "$ACT7_COPY2_AT" --copy3-at "$ACT7_COPY3_AT" --move "$ACT7_MOVE" \
-		--bounce "$ACT7_BOUNCE" --report "$ACT7_REPORT" "${ipc[@]}"
+		--bounce "$ACT7_BOUNCE" --report "$ACT7_REPORT" "${ipc[@]}" 2>>"$notes_file"
 	stop_bg
 	clear_screen
 }

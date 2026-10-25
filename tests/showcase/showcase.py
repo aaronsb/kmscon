@@ -13,14 +13,19 @@ kitty graphics protocol's image store.
 
 import argparse
 import base64
+import json
 import os
 import pty
 import re
 import select
+import socket
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import zlib
 
 EFFECTS = ["plasma", "shadebobs", "fire", "copper", "stars", "braille", "banner"]
 
@@ -374,19 +379,27 @@ class KittyStore:
     player uses it, fed the player's output: a transmission (a=t) of an id
     replaces the image and deletes its placements, a put (a=p) adds or
     replaces placement p of an image, and d=I deletes an image with its
-    placements. Records what breaks the spec's rules or the player's own:
-    a command without q=2, a put without C=1 or with a placement id outside
-    1 to 3, a put of an image not stored, a chunk over 4096 bytes or, but
-    for the last, not a multiple of 4, a later chunk with keys other than m
-    and q, and more than two images stored at once."""
+    placements. Each transmission is decoded as a terminal would (base64,
+    zlib, the PNG's chunks, CRCs and rows, or the shared memory object),
+    its pixels kept in pixels. Records what breaks the spec's rules or the
+    player's own: a command without q=2; a put without C=1, with a
+    placement id outside 1 to 3, a z other than 4 - p, or c and r other
+    than layout's; a put of an image not stored; a chunk over 4096 bytes
+    or, but for the last, not a multiple of 4; a later chunk with keys
+    other than m and q; data that does not decode to s x v; and a gap: a
+    frame's copies deleted before the next frame's are placed."""
 
-    def __init__(self):
+    def __init__(self, layout=None):
+        self.layout = layout
         self.images = {}
         self.errors = []
+        self.pixels = []
         self.peak = 0
         self.transmits = 0
         self.puts = 0
         self.held = None  # the keys of a chunked command until its last chunk
+        self.data = b""
+        self.gap = False  # nothing placed since a placed image was deleted
 
     def feed(self, stream):
         for m in re.finditer(rb"\x1b_G([^;]*);(.*?)\x1b\\", stream, re.S):
@@ -399,40 +412,96 @@ class KittyStore:
                     self.errors.append(f"a later chunk with keys {sorted(keys)}")
                 if keys.get("m") == "1" and len(data) % 4:
                     self.errors.append("a chunk not a multiple of 4")
+                self.data += data
                 if keys.get("m") != "1":
                     keys, self.held = self.held, None
-                    self.apply(keys)
+                    self.apply(keys, self.data)
                 continue
             if keys.get("m") == "1":
                 if len(data) % 4:
                     self.errors.append("a first chunk not a multiple of 4")
-                self.held = keys
+                self.held, self.data = keys, data
                 continue
-            self.apply(keys)
+            self.apply(keys, data)
 
-    def apply(self, k):
+    def decode(self, k, data):
+        raw = base64.b64decode(data)
+        if k.get("t") == "s":
+            name = raw.decode()
+            with open("/dev/shm" + name, "rb") as f:
+                raw = f.read()
+        if k.get("o") == "z":
+            raw = zlib.decompress(raw)
+        if k.get("f") == "100":
+            return png_pixels(raw)
+        w, h = int(k["s"]), int(k["v"])
+        if len(raw) < w * h * 3:
+            raise ValueError(f"{len(raw)} bytes for {w}x{h} RGB")
+        return raw[:w * h * 3]
+
+    def apply(self, k, data=b""):
         if k.get("q") != "2":
             self.errors.append(f"a command without q=2: {k}")
         a, i = k.get("a"), int(k.get("i", 0))
         if a == "t":
+            try:
+                self.pixels.append(self.decode(k, data))
+            except (ValueError, OSError, zlib.error) as e:
+                self.errors.append(f"image {i} does not decode: {e}")
             self.images[i] = set()
             self.transmits += 1
         elif a == "p":
             self.puts += 1
-            if k.get("C") != "1" or k.get("p") not in ("1", "2", "3"):
-                self.errors.append(f"a put without C=1 or with p={k.get('p')}")
+            p = k.get("p")
+            if k.get("C") != "1" or p not in ("1", "2", "3"):
+                self.errors.append(f"a put without C=1 or with p={p}")
+            elif k.get("z") != str(4 - int(p)):
+                self.errors.append(f"placement {p} at z={k.get('z')}, not {4 - int(p)}")
+            lay = self.layout
+            if lay and (k.get("c"), k.get("r")) != (str(lay.c), str(lay.r)):
+                self.errors.append(f"a put of c={k.get('c')},r={k.get('r')}, not c={lay.c},r={lay.r}")
             if i not in self.images:
                 self.errors.append(f"a put of image {i}, not stored")
             else:
-                self.images[i].add(int(k["p"]))
+                if self.gap:
+                    self.errors.append("a gap: the copies were deleted before the next frame's were placed")
+                    self.gap = False
+                self.images[i].add(int(p))
         elif a == "d" and k.get("d") == "I":
-            self.images.pop(i, None)
+            had = bool(self.images.pop(i, None))
+            if had and not self.placed():
+                self.gap = True
         else:
             self.errors.append(f"an unexpected command {k}")
         self.peak = max(self.peak, len(self.images))
 
     def placed(self):
         return {i: sorted(p) for i, p in self.images.items() if p}
+
+
+def png_pixels(png):
+    """The grey bytes of an 8-bit greyscale PNG whose rows all use filter 0,
+    as the player writes it, checking the signature, each chunk's CRC and
+    the size; anything else raises ValueError."""
+    if png[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("no PNG signature")
+    pos, idat, w = 8, b"", None
+    while pos < len(png):
+        n, kind = struct.unpack(">I4s", png[pos:pos + 8])
+        body = png[pos + 8:pos + 8 + n]
+        if struct.unpack(">I", png[pos + 8 + n:pos + 12 + n])[0] != zlib.crc32(kind + body):
+            raise ValueError(f"{kind!r} fails its CRC")
+        if kind == b"IHDR":
+            w, h, depth, colour = struct.unpack(">IIBB", body[:10])
+            if (depth, colour) != (8, 0):
+                raise ValueError(f"depth {depth}, colour type {colour}")
+        elif kind == b"IDAT":
+            idat += body
+        pos += 12 + n
+    rows = zlib.decompress(idat)
+    if w is None or len(rows) != (w + 1) * h or any(rows[y * (w + 1)] for y in range(h)):
+        raise ValueError("rows not w + 1 bytes each with filter 0")
+    return b"".join(rows[y * (w + 1) + 1:(y + 1) * (w + 1)] for y in range(h))
 
 
 def kitty_checks(root):
@@ -470,9 +539,10 @@ def kitty_checks(root):
           repr(chor.positions(lay, 15)))
 
     # The player alone, on a clock that moves a tenth of a frame a read: every
-    # frame shows, each write leaves one image placed, and at the end none.
+    # frame shows and decodes to what was sent, each frame's copies are placed
+    # before the last frame's are deleted, and at the end nothing is left.
     for transport in kitty.TRANSPORTS:
-        store = KittyStore()
+        store = KittyStore(layout=lay)
         writes = []
         t = [0.0]
 
@@ -499,23 +569,94 @@ def kitty_checks(root):
         player.run(frames)
         names = [n for n in re.findall(r"t=s,S=\d+;([A-Za-z0-9+/=]+)", "".join(writes))]
         enc.close()
-        shm_ok = all(base64.b64decode(n).decode().count("/") == 1 and base64.b64decode(n).startswith(b"/")
-                     for n in names) and len(names) == player.stats.frames if transport == "shm" else True
-        check(f"{transport}: 45 frames on the soundtrack's clock, each transmitted once and placed once a copy",
+        sent = [bytes([n]) * enc.frame_bytes for n in range(45)]
+        check(f"{transport}: 45 frames on the player's clock, each transmitted once and placed once a copy",
               player.stats.frames == 45 and store.transmits == 45 and not store.errors
               and store.puts >= 45 + 2 * 15, f"{player.stats.line(transport)} {store.errors[:3]}")
+        check(f"{transport}: every frame decodes to the pixels sent",
+              store.pixels == sent, f"{len(store.pixels)} decoded, first {store.pixels[:1]!r:.60}")
         check(f"{transport}: after each frame one image holds every copy, and the store never holds more than two",
               all(len(p) == 1 for p in after) and store.peak <= 2 and after[-1] and list(after[-1].values())[0] == [1, 2, 3],
               f"peak {store.peak}, {after[:3]} ... {after[-1:]}")
         check(f"{transport}: the player stops with no image left", store.images == {}, repr(store.images))
         if transport == "shm":
-            check("shm: each frame a new object named as the spec asks, / and no other", shm_ok and len(set(names)) == len(names),
-                  repr(names[:3]))
+            shm_ok = all(base64.b64decode(n).decode().count("/") == 1 and base64.b64decode(n).startswith(b"/")
+                         for n in names) and len(names) == player.stats.frames
+            check("shm: each frame a new object named as the spec asks, / and no other",
+                  shm_ok and len(set(names)) == len(names), repr(names[:3]))
             check("shm: objects the terminal did not read are removed",
                   not any(os.path.exists("/dev/shm" + base64.b64decode(n).decode()) for n in names))
+    # Frames no terminal reads: never more than SHM_KEEP objects, none after.
+    enc = kitty.Encoder("shm", 4, 4)
+    most = 0
+    for n in range(kitty.SHM_KEEP + 40):
+        enc.transmit(kitty.IMAGE_IDS[0], b"\0" * enc.frame_bytes)
+        most = max(most, sum(os.path.exists("/dev/shm" + nm) for nm in
+                             [f"{enc.prefix}{k}" for k in range(1, enc.serial + 1)]))
+    enc.close()
+    left = sum(os.path.exists(f"/dev/shm{enc.prefix}{k}") for k in range(1, enc.serial + 1))
+    check(f"shm: unread objects past {kitty.SHM_KEEP} are unlinked, and none outlive the player",
+          most == kitty.SHM_KEEP and left == 0, f"most {most}, left {left}")
+    for k in range(1, enc.serial + 1):  # what a failing run left
+        kitty.unlink_shm(f"{enc.prefix}{k}")
+    stale = f"/dev/shm/kmscon-showcase-{os.getpid()}-1"
+    open(stale, "wb").close()
+    enc = kitty.Encoder("shm", 4, 4)
+    cmd = enc.transmit(kitty.IMAGE_IDS[0], b"\0" * enc.frame_bytes)
+    enc.close()
+    os.unlink(stale)
+    check("shm: a name a crashed run left is skipped", f"-{os.getpid()}-2".encode() in base64.b64decode(
+        cmd.rsplit(";", 1)[1][:-2]), cmd)
+    cmd, e = kitty.query("shm")
+    e.close()
+    check("shm: the probe's object has a name of its own",
+          b"kmscon-showcase-probe-" in base64.b64decode(cmd.rsplit(";", 1)[1][:-2]), cmd)
 
-    # fx.py kitty on a pty, with ffprobe and ffmpeg stood in for: 64x48 raw
-    # frames, chunked; the moves at 0.2, 0.4 and 0.6 seconds.
+    # The soundtrack's clock: mpv answering time-pos 2 s ahead on an
+    # abstract socket (no path, so no length limit); no socket, with the
+    # soundtrack started a second ago; and no socket and no start time.
+    name = f"\0kmscon-showcase-test-{os.getpid()}"
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(name)
+    srv.listen(1)
+    t0 = time.monotonic()
+
+    def fake_mpv():
+        conn, _ = srv.accept()
+        with conn:
+            for line in conn.makefile("rb"):
+                req = json.loads(line)
+                conn.sendall(json.dumps({"request_id": req["request_id"], "error": "success",
+                                         "data": 46 + time.monotonic() - t0 + 2.0}).encode() + b"\n")
+    threading.Thread(target=fake_mpv, daemon=True).start()
+    clock = kitty.Clock(name, 46)
+    end = time.monotonic() + 2
+    while not clock.synced and time.monotonic() < end:
+        clock.now()
+        time.sleep(0.01)
+    got = clock.now() - (time.monotonic() - t0)
+    srv.close()
+    check("the clock follows mpv's time-pos over its IPC socket", clock.synced and abs(got - 2.0) < 0.1,
+          f"synced {clock.synced}, ahead {got:.3f} s")
+
+    started = time.time() - 1.0
+    clock = kitty.Clock("/tmp/" + "x" * 200, 46, wait=0.2, started=started)
+    first = clock.now()
+    while not clock.fallback and time.monotonic() < end + 2:
+        clock.now()
+        time.sleep(0.01)
+    drift = clock.now() - (time.time() - started)
+    check("a socket that cannot be made: the clock runs from the soundtrack's start, and says why",
+          abs(first - 1.0) < 0.1 and abs(drift) < 0.02 and "gave no position" in clock.fallback
+          and "wall clock" in clock.fallback, f"first {first:.3f}, drift {drift:.3f}, {clock.fallback!r}")
+    clock = kitty.Clock("/nonexistent/mpv.sock", 46, wait=0.2)
+    held = clock.now()
+    time.sleep(0.25)
+    after_wait = clock.now()
+    check("with no start time, the clock holds at 0 while it waits, then counts from when it was made",
+          held == 0.0 and 0.2 < after_wait < 0.4 and clock.fallback, f"{held}, {after_wait:.3f}")
+
+    # fx.py kitty on a pty, with ffprobe and ffmpeg stood in for.
     with tempfile.TemporaryDirectory() as tmp:
         stubs = os.path.join(tmp, "bin")
         os.mkdir(stubs)
@@ -526,38 +667,55 @@ def kitty_checks(root):
             f.write("#!/usr/bin/env python3\nimport re, sys\n"
                     "w, h = map(int, re.search(r'scale=(\\d+):(\\d+)', ' '.join(sys.argv)).groups())\n"
                     "bpp = 1 if 'gray' in sys.argv else 3\n"
-                    "for n in range(60):\n    sys.stdout.buffer.write(bytes([n * 4 % 256]) * (w * h * bpp))\n")
+                    "for n in range(900):\n    sys.stdout.buffer.write(bytes([n * 4 % 256]) * (w * h * bpp))\n")
         for name in ("ffprobe", "ffmpeg"):
             os.chmod(os.path.join(stubs, name), 0o755)
         report = os.path.join(tmp, "report")
 
-        def fx_kitty(*args, **env):
+        def fx_kitty(*args, answer=None, keys=b"", pace=0.0, timeout=10, **env):
+            """Runs fx.py kitty on a pty and returns its status, its output
+            and its pid. answer is written back once the output holds an
+            a=q; keys are typed at once; with pace, the output is read 4 KB
+            at a time that many seconds apart, a terminal falling behind."""
             pid, fd = pty.fork()
             if pid == 0:
                 os.environ["PATH"] = stubs + ":" + os.environ["PATH"]
                 os.environ.update(env)
                 os.execvp("python3", ["python3", "-B", os.path.join(root, "fork/showcase/fx.py"), "kitty",
-                                      "--video", "clip.mp4", *args])
+                                      "--video=clip.mp4", *args])
+            if keys:
+                time.sleep(0.3)
+                os.write(fd, keys)
             got = b""
-            while True:
-                r, _, _ = select.select([fd], [], [], 10)
+            end = time.monotonic() + timeout
+            while time.monotonic() < end:
+                r, _, _ = select.select([fd], [], [], max(0, end - time.monotonic()))
                 try:
-                    d = os.read(fd, 65536) if r else b""
+                    d = os.read(fd, 4096 if pace else 65536) if r else b""
                 except OSError:
                     break
                 if not d:
                     break
                 got += d
+                if answer and b"a=q" in got:
+                    os.write(fd, answer)
+                    answer = None
+                if pace:
+                    time.sleep(pace)
+            else:
+                os.kill(pid, 9)
             _, st = os.waitpid(pid, 0)
-            return st, got
+            os.close(fd)
+            return st, got, pid
 
-        st, got = fx_kitty("--seconds", "1", "--transport", "raw", "--width", "64", "--banner-rows", "4",
-                           "--slide-at", "0.2", "--copy2-at", "0.4", "--copy3-at", "0.6", "--move", "0.2",
-                           "--report", report)
+        # 64x48 raw frames, chunked; the moves at 0.2, 0.4 and 0.6 seconds.
+        st, got, _ = fx_kitty("--seconds", "1", "--transport", "raw", "--width", "64", "--banner-rows", "4",
+                              "--slide-at", "0.2", "--copy2-at", "0.4", "--copy3-at", "0.6", "--move", "0.2",
+                              "--report", report)
         store = KittyStore()
         store.feed(got)
         rep = open(report).read() if os.path.exists(report) else ""
-        check("fx.py kitty on a pty: frames chunked within the spec, three copies, nothing left stored",
+        check("fx.py kitty on a pty: frames chunked within the spec, decoded, three copies, nothing left stored",
               os.waitstatus_to_exitcode(st) == 0 and not store.errors and store.transmits >= 25
               and store.images == {} and store.peak <= 2 and b"m=1" in got and "copies=moves" in rep,
               f"status {st}, {store.errors[:3]}, {store.transmits} frames, {rep}")
@@ -566,13 +724,46 @@ def kitty_checks(root):
         # Width 0: frames as tall as a copy's rows in pixels, so the terminal
         # shows them at their size. 100x40 cells of 10x20, 4 rows for the
         # scroller: three copies 23 rows tall.
-        st, got = fx_kitty("--seconds", "0.2", "--transport", "raw", "--width", "0", "--banner-rows", "4",
-                           "--cell-w", "10", "--cell-h", "20", "--copies", "3", COLUMNS="100", LINES="40")
+        st, got, _ = fx_kitty("--seconds", "0.2", "--transport", "raw", "--width", "0", "--banner-rows", "4",
+                              "--cell-w", "10", "--cell-h", "20", "--copies", "3", COLUMNS="100", LINES="40")
         lay = kitty.Layout(100, 36, 10, 20, 1444 / 1080)
         want = f"s={round(lay.r * 20 * 1444 / 1080)},v={lay.r * 20}".encode()
         check(f"fx.py kitty --width 0 sends frames of a copy's own size ({want.decode()})",
               os.waitstatus_to_exitcode(st) == 0 and want in got, repr(re.findall(rb"s=\d+,v=\d+", got)[:1]))
+        # No rows above the scroller: nothing is placed over it.
+        st, got, _ = fx_kitty("--seconds", "0.2", "--transport", "png", "--banner-rows", "12", COLUMNS="100",
+                              LINES="12")
+        check("with no rows above the scroller, fx.py kitty places nothing",
+              os.waitstatus_to_exitcode(st) == 0 and b"a=t" in got and b"a=p" not in got, repr(got[:120]))
 
+        # shm, refused and taken: the probe's answer decides.
+        st, got, pid = fx_kitty("--seconds", "0.3", "--transport", "shm", "--width", "64",
+                                answer=b"\x1b_Gi=7500;EBADF:refused\x1b\\\x1b[?62;4c")
+        check("shm refused by the probe: fx.py kitty falls back to png",
+              os.waitstatus_to_exitcode(st) == 0 and b"a=q" in got and b"t=s" not in got.split(b"\x1b[c", 1)[-1]
+              and b"f=100" in got, repr(got[:200]))
+        st, got, pid = fx_kitty("--seconds", "0.3", "--transport", "shm", "--width", "64",
+                                answer=b"\x1b_Gi=7500;OK\x1b\\\x1b[?62;4c")
+        left = [n for n in os.listdir("/dev/shm") if n.startswith(f"kmscon-showcase-{pid}-")
+                or n.startswith(f"kmscon-showcase-probe-{pid}-")]
+        check("shm taken by the probe: frames go by t=s, and no object outlives the player",
+              os.waitstatus_to_exitcode(st) == 0 and got.count(b"t=s") > 3 and not left, f"{left} {got[:200]!r}")
+
+        # q while the terminal is behind: read slowly, the player never
+        # catches up to sleep, yet q ends it at once (status 10).
+        start = time.monotonic()
+        st, got, _ = fx_kitty("--seconds", "20", "--transport", "raw", "--width", "320", keys=b"q", pace=0.02,
+                              timeout=15)
+        took = time.monotonic() - start
+        check("q ends fx.py kitty while the terminal is behind",
+              os.waitstatus_to_exitcode(st) == 10 and took < 5, f"status {st}, {took:.1f} s")
+
+        # mpv's socket cannot be made: the player says so on stderr.
+        st, got, _ = fx_kitty("--seconds", "0.6", "--transport", "png", "--audio-ipc", "/tmp/" + "x" * 200,
+                              "--audio-started", str(time.time()), "--audio-wait", "0.2", "--report", report)
+        check("fx.py kitty says on stderr when it falls back from mpv's clock",
+              os.waitstatus_to_exitcode(st) == 0 and b"kitty player: mpv's IPC socket" in got
+              and "clock=wall" in open(report).read(), repr(got[-300:]))
 
 if __name__ == "__main__":
     sys.exit(main())

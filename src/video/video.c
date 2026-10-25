@@ -251,6 +251,16 @@ unsigned int display_get_height(struct display *disp)
 	return disp->height;
 }
 
+/* the time one refresh of the display's mode takes, 0 if unknown */
+SHL_EXPORT
+uint64_t display_get_refresh_ns(struct display *disp)
+{
+	if (!disp || !disp->refresh_mhz)
+		return 0;
+
+	return 1000000000000ULL / disp->refresh_mhz;
+}
+
 SHL_EXPORT
 int display_get_state(struct display *disp)
 {

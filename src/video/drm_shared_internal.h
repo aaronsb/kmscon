@@ -103,6 +103,7 @@ int drm_prepare_commit(int fd, struct drm_display *ddrm, drmModeAtomicReq *req, 
 		       uint32_t width, uint32_t height, bool cursor_hotspot);
 int drm_display_swap(struct display *disp, uint32_t fb);
 bool drm_is_swapping(struct display *disp);
+unsigned int drm_mode_refresh_mhz(const drmModeModeInfo *mode);
 void drm_display_free_properties(struct display *disp);
 void drm_display_set_damage(struct display *disp, size_t n_rect, struct video_rect *damages);
 

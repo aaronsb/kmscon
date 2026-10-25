@@ -126,6 +126,7 @@ static int display_allocfb(struct display *disp)
 
 	disp->width = d2d->ddrm.current_mode->hdisplay;
 	disp->height = d2d->ddrm.current_mode->vdisplay;
+	disp->refresh_mhz = drm_mode_refresh_mhz(d2d->ddrm.current_mode);
 
 	d2d->current_rb = 0;
 

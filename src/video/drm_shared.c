@@ -1091,6 +1091,23 @@ bool drm_is_swapping(struct display *disp)
 	return (disp->flags & DISPLAY_VSYNC) != 0;
 }
 
+/* @mode's refresh rate in mHz from its pixel clock and totals, 0 if they are unset */
+unsigned int drm_mode_refresh_mhz(const drmModeModeInfo *mode)
+{
+	uint64_t num = (uint64_t)mode->clock * 1000 * 1000 * 1000;
+	uint64_t den = (uint64_t)mode->htotal * mode->vtotal;
+
+	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
+		num *= 2;
+	if (mode->flags & DRM_MODE_FLAG_DBLSCAN)
+		den *= 2;
+	if (mode->vscan > 1)
+		den *= mode->vscan;
+	if (!den)
+		return mode->vrefresh * 1000;
+	return num / den;
+}
+
 static void drm_display_pflip(struct display *disp)
 {
 	struct drm_video *vdrm = disp->video->data;

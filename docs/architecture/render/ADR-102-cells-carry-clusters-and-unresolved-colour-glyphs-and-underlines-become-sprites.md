@@ -324,3 +324,11 @@ Implementing colour emoji in kmscon (step 4c) settled these points the sections 
 - **A missing emoji is the text face's missing glyph, fitted** (the prototype correction above), through the same fit as a colour glyph, drawn as a mask. Under pango a missing emoji is pango's own box.
 - **gltex draws colour glyphs as masks** of their alpha, in the foreground, until it has an RGBA atlas (step 6).
 - **A COLRv1 glyph that paints with the foreground colour** is drawn with HarfBuzz's default foreground and keyed without it; the loader does not yet detect such glyphs.
+
+## Corrections from step 6 (2026-10-25)
+
+Implementing step 6 in gltex (#68) settled these points the sections above leave open or get wrong. The sections stay as decided, read with these corrections.
+
+- **gltex draws colour glyphs in colour.** The step 4c correction that gltex draws colour glyphs as masks held until step 6. A colour glyph now goes to an RGBA atlas as premultiplied RGBA, and the shader draws it untinted.
+- **The decoration sprites are one strip in an alpha atlas.** gltex uploads a blank sprite and deco.c's six as seven neighbouring cells of an alpha atlas. Each cell's quad names the cells of its underline and strike-through and their colours, and the shader draws underline, glyph and strike-through over the background in one pass, in the Draw order above.
+- **The atlases are flushed, not evicted.** The Backends section says both atlases are fixed in size and evict the least recently used glyph that is not on screen. gltex has not done that since it bounded its cache in 9e12309: once the cells it has handed out pass four screens, it empties the whole cache and refills its atlases from the first cell. Step 6 keeps that bound for the RGBA atlas and the sprites, which a flush drops and the next frame uploads again. Eviction by recent use is not built; the PR that made step 6 raises this with the operator.

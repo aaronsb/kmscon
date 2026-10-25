@@ -312,6 +312,7 @@ static int display_activate_force(struct display *disp, bool force)
 	disp->flags |= DISPLAY_DITHERING;
 	disp->width = dfb->xres;
 	disp->height = dfb->yres;
+	disp->refresh_mhz = dfb->rate;
 
 	/* The framebuffer was cleared above, so the whole frame must be redrawn. */
 	disp->flags |= DISPLAY_ONLINE | DISPLAY_NEED_REDRAW;

@@ -51,6 +51,7 @@
 
 #include <libtsm.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* the longest an expiry waits for read output to be parsed, unless sync-timeout is longer */
@@ -136,5 +137,82 @@ enum terminal_sync_draw terminal_sync_draw(const struct terminal_sync *s, bool s
  */
 enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, bool pending,
 					      bool lost);
+
+/*
+ * Coalescing without mode 2026 (ADR-201 step 6). Outside a hold, the
+ * terminal declines to draw the child's output while it is part way through
+ * a write: the loop turn parsed at least TERMINAL_SYNC_COALESCE_BYTES, or the
+ * pty still holds output an input call left. It draws at the first turn that
+ * finds neither, or once one refresh of the display has passed since its last
+ * present, whichever comes first. When the output began after an idle spell,
+ * at least a refresh in which the terminal neither parsed nor drew, the
+ * refresh is counted from when it began. The draw's own time does not count
+ * as idle: when a draw takes longer than a refresh, output that never stopped
+ * finds the refresh already passed, and draws at once. The wait adds at most
+ * one refresh interval. Every other redraw request (a key press, the blink
+ * timers, the pointer, a frame end, a lost picture) draws as before, so a
+ * keystroke's echo, a short read, draws at once.
+ *
+ * The terminal keeps one struct terminal_coalesce for the child's output and
+ * one struct terminal_coalesce_display for each display, tells them of each
+ * input call and each draw, and asks terminal_coalesce_decide at the end of
+ * each loop turn.
+ */
+
+/*
+ * The refresh assumed for a display that does not report its own, or reports
+ * one outside 20 to 1000 Hz (fbdev forces 1 Hz when the mode says 0): 60 Hz.
+ */
+#define TERMINAL_SYNC_REFRESH_NS (1000000000ULL / 60)
+
+/* the bytes one loop turn parses that count as part way through a write */
+#define TERMINAL_SYNC_COALESCE_BYTES 16384
+#define TERMINAL_SYNC_REFRESH_MIN_NS (1000000000ULL / 1000)
+#define TERMINAL_SYNC_REFRESH_MAX_NS (1000000000ULL / 20)
+
+/* the child's output in the loop turn in progress, and when the terminal was last busy */
+struct terminal_coalesce {
+	size_t mid_bytes;   /* TERMINAL_SYNC_COALESCE_BYTES, unless a test measures another */
+	size_t bytes;	    /* parsed this turn */
+	uint64_t first_ns;  /* when this turn's first input call began; 0: none yet */
+	uint64_t before_ns; /* busy_ns as that call began */
+	uint64_t busy_ns;   /* when the last input call or draw ended */
+};
+
+/* one display's wait */
+struct terminal_coalesce_display {
+	uint64_t presented_ns; /* when the draw of its last present began */
+	uint64_t due_ns;       /* when its waiting draw is due; 0: none waits */
+};
+
+void terminal_coalesce_init(struct terminal_coalesce *c);
+
+/* An input call parsed @parsed bytes of the child's output, from @start_ns to @end_ns. */
+void terminal_coalesce_input(struct terminal_coalesce *c, uint64_t start_ns, uint64_t end_ns,
+			     size_t parsed);
+
+/*
+ * A draw of @d ran from @start_ns to @end_ns; @presented: it queued a frame.
+ * It ends @d's wait.
+ */
+void terminal_coalesce_drawn(struct terminal_coalesce *c, struct terminal_coalesce_display *d,
+			     uint64_t start_ns, uint64_t end_ns, bool presented);
+
+/*
+ * The loop turn ended and the child's output changed @d's screen, at @now_ns.
+ * @unparsed: the pty still holds output an input call left. @refresh_ns: the
+ * display's refresh (0: unknown, as is one out of range). Returns 0 to draw
+ * now, which a hold turns into a redraw owed, or the time by which to draw if
+ * no turn has drawn by then; @d waits until then.
+ */
+uint64_t terminal_coalesce_decide(const struct terminal_sync *s, const struct terminal_coalesce *c,
+				  struct terminal_coalesce_display *d, bool unparsed,
+				  uint64_t now_ns, uint64_t refresh_ns);
+
+/* The loop turn ended: the next input call begins another. */
+void terminal_coalesce_turn_end(struct terminal_coalesce *c);
+
+/* @d's wait ends without a draw of its own: the timer fired, or cannot run. */
+void terminal_coalesce_end(struct terminal_coalesce_display *d);
 
 #endif /* KMSCON_TERMINAL_SYNC_H */

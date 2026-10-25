@@ -126,6 +126,15 @@ if enable_video_drm2d
         dependencies: [libdrm_deps, shl_deps, htable_deps],
     )
     test('test_blend', test_blend)
+
+    # a DRM mode's refresh rate, which bounds coalescing (ADR-201 step 6)
+    test_drm_refresh = executable(
+        'test_drm_refresh',
+        'test_drm_refresh.c',
+        include_directories: src_inc,
+        dependencies: [libdrm_deps],
+    )
+    test('test_drm_refresh', test_drm_refresh)
 endif
 
 if enable_video_fbdev
@@ -490,6 +499,32 @@ if enable_font_freetype and enable_video_drm2d
         'test_present',
         test_present,
         args: [meson.current_source_dir() / 'fonts'],
+    )
+
+    # coalescing without mode 2026 (ADR-201 step 6), on a fake clock and a real pty
+    test_coalesce = executable(
+        'test_coalesce',
+        'test_coalesce.c',
+        '../src/terminal_sync.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            libtsm_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            harfbuzz_raster_deps,
+            libdrm_deps,
+            threads_deps,
+            math_deps,
+            shl_deps,
+            htable_deps,
+        ],
+    )
+    test(
+        'test_coalesce',
+        test_coalesce,
+        args: [meson.current_source_dir() / 'fonts'],
+        timeout: 120,
     )
 
     # ADR-103's S1 to S6 drawn into memory; run by make bench-compose, not a test

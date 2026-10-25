@@ -258,6 +258,28 @@ font-name=Ubuntu Mono
       </varlistentry>
 
       <varlistentry>
+        <term><option>sync-timeout</option></term>
+        <listitem>
+          <para>The longest kmscon holds a synchronized frame, in milliseconds.
+                A program brackets a frame in <literal>CSI ? 2026 h</literal>
+                and <literal>CSI ? 2026 l</literal> (synchronized output, DEC
+                private mode 2026); while the frame is held, kmscon keeps
+                showing the last complete frame, and keeps reading and
+                answering the program, then shows the new frame whole when the
+                program ends it. A frame not ended within this time is shown
+                as the program has drawn it, and the mode reads reset. If kmscon
+                has read more of the program's output than it has parsed by
+                then, it waits for that output, up to one second after the
+                frame began or this time when it is longer. Typed keys echo
+                when the frame ends or the time runs out. Switching back to
+                the VT, a display change or a resize draws the screen as it is.
+                Set to 0 to not offer the mode: requests to hold are ignored,
+                and a program that asks (DECRQM) is told the mode is not
+                supported. (default: 200)</para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><option>xkb-model</option></term>
         <listitem>
           <para>Set XkbModel for input devices. (default: unset)</para>
@@ -736,7 +758,12 @@ font-name=Ubuntu Mono
                 <literal>damage_pct</literal> their damage, and
                 <literal>skipped</literal> and
                 <literal>skipped_cpu_ms</literal> the passes that found
-                nothing to draw and queued no flip. A renderer that reports no
+                nothing to draw and queued no flip, <literal>held</literal>
+                the redraws a synchronized frame held back (see
+                <option>sync-timeout</option>) and <literal>expired</literal>
+                the synchronized frames that reached
+                <option>sync-timeout</option>; the on-screen display adds
+                these two when either is above 0. A renderer that reports no
                 damage counts the whole display. A second with no flip and no
                 frame is logged once, after the last active one, and then no
                 more lines are written until the display draws again; skipped

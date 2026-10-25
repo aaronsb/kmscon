@@ -129,6 +129,10 @@
 ## Blinking cursor and text with blink attribute (enabled by default)
 #blink
 
+## Longest hold of a synchronized frame (mode 2026), in ms; 0 does not offer
+## the mode (default 200)
+#sync-timeout=200
+
 ## Colors palette, one of [solarized, solarized-black, solarized-white,
 ## soft-black, base16-dark, base16-light, vga, legacy, custom]
 #palette=solarized

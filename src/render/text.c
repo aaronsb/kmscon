@@ -36,6 +36,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "font/font.h"
 #include "shl/log.h"
 #include "shl/misc.h"
@@ -44,6 +45,23 @@
 #include "video/video.h"
 
 #define LOG_SUBSYSTEM "text"
+
+/* a failed kmscon_text_set() is tried again at most this often (#206) */
+#ifndef KMSCON_TEXT_SET_RETRY_NS
+#define KMSCON_TEXT_SET_RETRY_NS 1000000000ULL
+#endif
+
+/* the clock the retry reads; a test that includes text.c may stand in for it */
+#ifndef KMSCON_TEXT_NOW_NS
+static uint64_t text_now_ns(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+#define KMSCON_TEXT_NOW_NS() text_now_ns()
+#endif
 
 static struct shl_register text_reg = SHL_REGISTER_INIT(text_reg);
 
@@ -218,6 +236,23 @@ void kmscon_text_unref(struct kmscon_text *text)
 	free(text);
 }
 
+/* @txt, which has no font, takes @font: the renderer is set up for it */
+static int text_set(struct kmscon_text *txt, struct kmscon_font *font)
+{
+	int ret;
+
+	txt->font = font;
+	if (txt->ops->set) {
+		ret = txt->ops->set(txt);
+		if (ret) {
+			txt->font = NULL;
+			return ret;
+		}
+	}
+	kmscon_font_ref(txt->font);
+	return 0;
+}
+
 /**
  * kmscon_text_set:
  * @txt: Valid text-renderer object
@@ -227,8 +262,9 @@ void kmscon_text_unref(struct kmscon_text *text)
  * can drop your reference to the font after calling this.
  * This calls kmscon_text_unset() first to remove all previous associations.
  * None of the arguments can be NULL!
- * If this function fails then you must assume that no font will be set
- * and the object is invalid.
+ * If this function fails then no font is set and the text draws nothing, but
+ * it keeps @font, and kmscon_text_prepare() tries the set again with it,
+ * until a set succeeds or kmscon_text_unset() is called (#206).
  *
  * Returns: 0 on success, negative error code on failure.
  */
@@ -243,17 +279,13 @@ int kmscon_text_set(struct kmscon_text *txt, struct kmscon_font *font)
 		return 0;
 
 	kmscon_text_unset(txt);
-	txt->font = font;
-
-	if (txt->ops->set) {
-		ret = txt->ops->set(txt);
-		if (ret) {
-			txt->font = NULL;
-			return ret;
-		}
+	ret = text_set(txt, font);
+	if (ret) {
+		kmscon_font_ref(font);
+		txt->set_font = font;
+		txt->set_tried_ns = KMSCON_TEXT_NOW_NS();
 	}
-	kmscon_font_ref(txt->font);
-	return 0;
+	return ret;
 }
 
 /**
@@ -262,12 +294,21 @@ int kmscon_text_set(struct kmscon_text *txt, struct kmscon_font *font)
  *
  * This redos kmscon_text_set() by dropping the internal references to the font
  * and invalidating the object. You need to call kmscon_text_set()
- * again to make use of this text renderer.
+ * again to make use of this text renderer. A failed set's font is dropped
+ * too, and no longer tried.
  * This is automatically called when the text renderer is destroyed.
  */
 void kmscon_text_unset(struct kmscon_text *txt)
 {
-	if (!txt || !txt->font)
+	if (!txt)
+		return;
+
+	if (txt->set_font) {
+		kmscon_font_unref(txt->set_font);
+		txt->set_font = NULL;
+		txt->set_failed_logged = false;
+	}
+	if (!txt->font)
 		return;
 
 	if (txt->ops->unset)
@@ -569,6 +610,41 @@ int kmscon_text_set_osd(struct kmscon_text *txt, const char *text)
 	return 0;
 }
 
+/*
+ * @txt, whose last set failed, tries it again with the font it was given, at
+ * most once in KMSCON_TEXT_SET_RETRY_NS, and says once that it keeps trying.
+ * A set, failed or not, can give the text its largest size in cells, so the
+ * size the terminal gave it since is put back. gltex retries its own set the
+ * same way.
+ */
+static void set_again(struct kmscon_text *txt)
+{
+	struct kmscon_font *font = txt->set_font;
+	unsigned int cols = txt->cols, rows = txt->rows;
+	uint64_t now = KMSCON_TEXT_NOW_NS();
+	int ret;
+
+	if (now - txt->set_tried_ns < KMSCON_TEXT_SET_RETRY_NS)
+		return;
+	txt->set_tried_ns = now;
+	ret = text_set(txt, font);
+	if (ret) {
+		txt->cols = cols;
+		txt->rows = rows;
+		if (!txt->set_failed_logged)
+			log_warning("cannot set the text renderer's font (%d); later frames try "
+				    "again, at most once a second",
+				    ret);
+		txt->set_failed_logged = true;
+		return;
+	}
+	log_info("text renderer's font set again");
+	txt->set_font = NULL;
+	txt->set_failed_logged = false;
+	kmscon_font_unref(font);
+	kmscon_text_resize(txt, cols, rows);
+}
+
 /**
  * kmscon_text_prepare:
  * @txt: valid text renderer
@@ -580,6 +656,7 @@ int kmscon_text_set_osd(struct kmscon_text *txt, const char *text)
  * renderer during rendering or if you activate different OpenGL contexts in
  * between, you need to restart rendering by calling kmscon_text_prepare() again
  * and redoing everything from the beginning.
+ * A text whose last set failed tries it again here first (set_again()).
  *
  * Returns: 0 on success, negative error code on failure.
  */
@@ -587,7 +664,11 @@ int kmscon_text_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr, b
 {
 	int ret = 0;
 
-	if (!txt || !txt->font || !txt->disp)
+	if (!txt || !txt->disp)
+		return -EINVAL;
+	if (!txt->font && txt->set_font)
+		set_again(txt);
+	if (!txt->font)
 		return -EINVAL;
 
 	txt->rendering = true;

@@ -392,7 +392,10 @@ static void do_redraw_screen(struct screen *scr)
 	tsm_vte_get_def_attr(scr->term->vte, &attr);
 	/*
 	 * a renderer that cannot draw this frame, as gltex until its set
-	 * succeeds, draws and swaps nothing: the display keeps its picture
+	 * succeeds, or a text whose kmscon_text_set() failed until the set
+	 * kmscon_text_prepare() tries again succeeds (#206), draws and swaps
+	 * nothing: the display keeps its picture, and the frame is no draw for
+	 * coalescing (terminal_coalesce_drawn())
 	 */
 	if (kmscon_text_prepare(scr->txt, &attr, scr->term->blinking)) {
 		render_timer_frame_end(scr->timer, false, 0);

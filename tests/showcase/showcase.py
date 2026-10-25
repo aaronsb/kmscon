@@ -67,8 +67,8 @@ def main():
               f"{got!r}\n{p.stderr}")
         needs = {l[:4].strip(): l[29:60].split() for l in rows}
         check("each act lists what it needs", all(needs.get(n) for n, _ in ACTS), repr(needs))
-        check("act 7 is a placeholder on kmscon today, the rest play",
-              all(("placeholder" in l) == (l[:4].strip() == "7") for l in rows), p.stdout)
+        check("every act plays on kmscon (act 7 through kitty graphics since #169)",
+              all("placeholder" not in l for l in rows), p.stdout)
 
         effects = [l.split()[0] for l in blocks[1].splitlines()[1:] if l.strip()] if len(blocks) > 1 else []
         check("--list names the effects --fx runs", effects == EFFECTS, repr(effects))
@@ -281,10 +281,88 @@ def main():
     check("img2txt's blink is dropped and its colours folded to greys",
           s == "\x1b[0;37;47;107mX\x1b[0;37;40;100m.\x1b[0m", repr(s))
 
+    picker_checks(root)
+
     if failures:
         print(f"{len(failures)} failed")
         return 1
     return 0
+
+
+PULSE_LIST = """List of detected audio devices:
+  'auto' (Autoselect device)
+  'pulse' (Default (pulseaudio))
+  'pulse/alsa_output.pci-0000_00_1f.3.analog-stereo' (Built-in Audio Analog Stereo)
+  'alsa' (Default (alsa))
+"""
+
+
+def picker_checks(root):
+    """fork/demo/pick-audio.sh, the showcase's output picker, with stand-ins
+    for mpv (a PulseAudio desktop's list), pgrep (no PipeWire running) and
+    getent, and a sound card directory of its own."""
+    picker = os.path.join(root, "fork/demo/pick-audio.sh")
+    with tempfile.TemporaryDirectory() as tmp:
+        stubs = os.path.join(tmp, "bin")
+        os.mkdir(stubs)
+        stub = {"mpv": "#!/bin/sh\nfor a; do [ \"$a\" = --audio-device=help ] && { cat \"$LIST\"; exit 0; }; done\nexit 0\n",
+                "pgrep": "#!/bin/sh\nexit 1\n",
+                "getent": "#!/bin/sh\n[ -n \"$GROUP\" ] || exit 2\necho \"$GROUP\"\n"}
+        for name, body in stub.items():
+            with open(os.path.join(stubs, name), "w") as f:
+                f.write(body)
+            os.chmod(os.path.join(stubs, name), 0o755)
+        listing = os.path.join(tmp, "list")
+        with open(listing, "w") as f:
+            f.write(PULSE_LIST)
+        snd = os.path.join(tmp, "snd")
+        os.mkdir(snd)
+        open(os.path.join(snd, "controlC0"), "w").close()
+        # A directory holding pulse/cookie, as ~/.config does, must not turn
+        # the pattern pulse/* into a file name.
+        cwd = os.path.join(tmp, "cwd")
+        os.makedirs(os.path.join(cwd, "pulse"))
+        open(os.path.join(cwd, "pulse", "cookie"), "w").close()
+
+        def pick(stdin, *args, group="audio:x:995:", **extra):
+            env = {"PATH": stubs + ":/usr/bin:/bin", "HOME": tmp, "LIST": listing,
+                   "GROUP": group, "PICK_AUDIO_SND": snd, **extra}
+            return subprocess.run(["bash", picker, *args], input=stdin, env=env, cwd=cwd,
+                                  capture_output=True, text=True, timeout=30)
+
+        p = pick("0\n")
+        check("the picker lists a PulseAudio desktop's sinks with no PipeWire running, and 0 is no sound",
+              p.returncode == 0 and p.stdout == "none\n" and "Built-in Audio Analog Stereo" in p.stderr
+              and "Default (pulseaudio)" in p.stderr, p.stdout + p.stderr)
+        p = pick("0\n", group="")
+        check("the picker runs on a host with no audio group",
+              p.returncode == 0 and p.stdout == "none\n" and "Built-in Audio" in p.stderr, p.stdout + p.stderr)
+        p = pick("2\ny\n")
+        check("a number and y keep that output",
+              p.returncode == 0 and p.stdout == "pulse/alsa_output.pci-0000_00_1f.3.analog-stereo\n",
+              p.stdout + p.stderr)
+        p = pick("", "--no-wait")
+        check("--no-wait asks nothing and plays through mpv's default output",
+              p.returncode == 0 and p.stdout == "auto\n" and "--no-wait" in p.stderr, p.stdout + p.stderr)
+        p = pick("", AUDIO_DEVICE="pulse/x")
+        check("AUDIO_DEVICE answers without a question", p.returncode == 0 and p.stdout == "pulse/x\n",
+              p.stdout + p.stderr)
+        # Runs with no act that plays sound ask nothing.
+        script = os.path.join(root, "fork/showcase/bad-apple.sh")
+        for first, last, banner, why in (("2", "2", "", "act 2 alone"), ("7", "7", "1", "act 7 --banner-only")):
+            p = subprocess.run(["bash", "-c", 'source "$1"; first=$2 last=$3 banner_only=$4 audio=1 wait_key=1; '
+                                'pick_audio; echo "audio=$audio"', "sh", script, first, last, banner],
+                               env={"PATH": stubs + ":/usr/bin:/bin", "HOME": tmp, "LIST": listing,
+                                    "PICK_AUDIO_SND": snd},
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+            check(f"{why} asks for no output", p.returncode == 0 and p.stdout == "audio=0\n"
+                  and "Where should" not in p.stderr, p.stdout + p.stderr)
+        if os.geteuid() != 0:
+            os.chmod(os.path.join(snd, "controlC0"), 0)
+            p = pick("0\n")
+            check("unreachable sound cards are named, with the audio group's fix",
+                  p.returncode == 0 and "out of reach" in p.stderr and "usermod -aG audio" in p.stderr,
+                  p.stdout + p.stderr)
 
 
 if __name__ == "__main__":

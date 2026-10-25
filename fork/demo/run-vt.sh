@@ -14,7 +14,8 @@
 # kitty or all.
 # --showcase=VIDEO runs the Bad Apple!! showcase (fork/showcase/bad-apple.sh)
 # on VIDEO, an absolute path, in place of the demo; --showcase-from=N starts it
-# at act N and --showcase-audio plays the soundtrack.
+# at act N and --showcase-audio plays the soundtrack, through an output the
+# show asks for, or --showcase-audio=DEVICE through mpv's audio device DEVICE.
 # --dry-run prints every command and runs none; it needs no root. A dry run
 # takes the module directory from RUN_VT_MODULEDIR when set, for the tests.
 #
@@ -26,7 +27,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,19s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,20s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -42,6 +43,7 @@ extra=()
 video=
 from=
 audio=
+device=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
@@ -49,6 +51,7 @@ while [ $# -gt 0 ]; do
 	--showcase=*) video=${1#*=}; [ -n "$video" ] || die "--showcase needs the video's path: --showcase=/path/to/video" ;;
 	--showcase-from=*) from=${1#*=} ;;
 	--showcase-audio) audio=1 ;;
+	--showcase-audio=*) audio=1; device=${1#*=} ;;
 	-h | --help) usage ;;
 	--) shift; extra=("$@"); break ;;
 	[0-9]*) [ -z "$vt" ] || usage; vt=$1 ;;
@@ -123,6 +126,9 @@ esac
 if [ -n "$video" ]; then
 	[[ $video == /* ]] || die "--showcase needs an absolute path, not '$video'"
 	[ -z "$from" ] || [[ $from =~ ^[1-7]$ ]] || die "--showcase-from must be an act from 1 to 7, not '$from'"
+	# mpv's device names: pipewire/alsa_output.usb-..., alsa/hdmi:CARD=HDMI,DEV=0.
+	[[ -z $device || $device =~ ^[A-Za-z0-9_.:,=@+/-]+$ ]] ||
+		die "--showcase-audio=DEVICE takes an mpv audio device name (mpv --audio-device=help), not '$device'"
 elif [ -n "$from" ] || [ -n "$audio" ]; then
 	die "--showcase-from and --showcase-audio go with --showcase=VIDEO"
 fi
@@ -225,13 +231,14 @@ EOF
 # releasing the VT. unshare and sh exec, so $! is kmscon's own PID. kmscon
 # starts its child with execve, without a PATH search, so its path is absolute.
 # kmscon and setpriv both clear the environment, so DEMO_LABEL, which names the
-# build on the demo's title page, is set last, by env. The showcase also gets
-# its video, and the user's runtime directory, where the soundtrack finds the
-# user's audio server.
-session=(/usr/bin/env DEMO_LABEL="dev build $build" ${kit:+DEMO_KIT="$kit"} /bin/bash "$here/demo.sh")
+# build on the demo's title page, is set last, by env, with the user's runtime
+# directory, where mpv finds the user's sound server. The showcase also gets
+# its video, and the soundtrack's output when one was named.
+session=(/usr/bin/env DEMO_LABEL="dev build $build" ${kit:+DEMO_KIT="$kit"}
+	XDG_RUNTIME_DIR="/run/user/$uid" /bin/bash "$here/demo.sh")
 if [ -n "$video" ]; then
 	session=(/usr/bin/env SHOWCASE_LABEL="dev build $build" BAD_APPLE="$video"
-		XDG_RUNTIME_DIR="/run/user/$uid" /bin/bash "$showcase")
+		XDG_RUNTIME_DIR="/run/user/$uid" ${device:+AUDIO_DEVICE="$device"} /bin/bash "$showcase")
 	[ -z "$from" ] || session+=(--from "$from")
 	[ -z "$audio" ] || session+=(--audio)
 fi

@@ -212,9 +212,13 @@ void terminal_coalesce_init(struct terminal_coalesce *c)
 void terminal_coalesce_input(struct terminal_coalesce *c, uint64_t start_ns, uint64_t end_ns,
 			     size_t parsed)
 {
-	if (!c->first_ns)
+	if (!c->first_ns) {
 		c->first_ns = start_ns;
+		c->before_ns = c->busy_ns;
+	}
 	c->bytes += parsed;
+	if (end_ns > c->busy_ns)
+		c->busy_ns = end_ns;
 }
 
 void terminal_coalesce_drawn(struct terminal_coalesce *c, struct terminal_coalesce_display *d,
@@ -224,13 +228,15 @@ void terminal_coalesce_drawn(struct terminal_coalesce *c, struct terminal_coales
 	/* from the draw's start, so presents come a refresh apart, not a refresh and a draw */
 	if (presented)
 		d->presented_ns = start_ns;
+	if (end_ns > c->busy_ns)
+		c->busy_ns = end_ns;
 }
 
 uint64_t terminal_coalesce_decide(const struct terminal_sync *s, const struct terminal_coalesce *c,
 				  struct terminal_coalesce_display *d, bool unparsed,
 				  uint64_t now_ns, uint64_t refresh_ns)
 {
-	uint64_t due, began;
+	uint64_t due, began, before;
 
 	/* a hold decides for itself, and presents its frame end at once */
 	if ((c->bytes < c->mid_bytes && !unparsed) || terminal_sync_holding(s)) {
@@ -243,10 +249,16 @@ uint64_t terminal_coalesce_decide(const struct terminal_sync *s, const struct te
 	due = d->due_ns;
 	if (!due) {
 		began = c->first_ns ? c->first_ns : now_ns;
-		due = d->presented_ns + refresh_ns;
-		/* the output began after that refresh: nothing was late until it began */
-		if (due <= began)
+		before = c->first_ns ? c->before_ns : c->busy_ns;
+		/*
+		 * After an idle spell nothing was late until the output began. A
+		 * draw is not idle: counted from its start, the refresh after a
+		 * draw longer than a refresh would wait out a second one.
+		 */
+		if (began >= before + refresh_ns)
 			due = began + refresh_ns;
+		else
+			due = d->presented_ns + refresh_ns;
 	}
 	d->due_ns = now_ns < due ? due : 0;
 	return d->due_ns;

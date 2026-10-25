@@ -144,11 +144,14 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
  * a write: the loop turn parsed at least TERMINAL_SYNC_COALESCE_BYTES, or the
  * pty still holds output an input call left. It draws at the first turn that
  * finds neither, or once one refresh of the display has passed since its last
- * present, whichever comes first; when the output began after that refresh had
- * passed, as after an idle spell, the refresh is counted from when it began.
- * The wait adds at most one refresh interval. Every other redraw request (a
- * key press, the blink timers, the pointer, a frame end, a lost picture) draws
- * as before, so a keystroke's echo, a short read, draws at once.
+ * present, whichever comes first. When the output began after an idle spell,
+ * at least a refresh in which the terminal neither parsed nor drew, the
+ * refresh is counted from when it began. The draw's own time does not count
+ * as idle: when a draw takes longer than a refresh, output that never stopped
+ * finds the refresh already passed, and draws at once. The wait adds at most
+ * one refresh interval. Every other redraw request (a key press, the blink
+ * timers, the pointer, a frame end, a lost picture) draws as before, so a
+ * keystroke's echo, a short read, draws at once.
  *
  * The terminal keeps one struct terminal_coalesce for the child's output and
  * one struct terminal_coalesce_display for each display, tells them of each
@@ -167,11 +170,13 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
 #define TERMINAL_SYNC_REFRESH_MIN_NS (1000000000ULL / 1000)
 #define TERMINAL_SYNC_REFRESH_MAX_NS (1000000000ULL / 20)
 
-/* the child's output in the loop turn in progress */
+/* the child's output in the loop turn in progress, and when the terminal was last busy */
 struct terminal_coalesce {
-	size_t mid_bytes;  /* TERMINAL_SYNC_COALESCE_BYTES, unless a test measures another */
-	size_t bytes;	   /* parsed this turn */
-	uint64_t first_ns; /* when this turn's first input call began; 0: none yet */
+	size_t mid_bytes;   /* TERMINAL_SYNC_COALESCE_BYTES, unless a test measures another */
+	size_t bytes;	    /* parsed this turn */
+	uint64_t first_ns;  /* when this turn's first input call began; 0: none yet */
+	uint64_t before_ns; /* busy_ns as that call began */
+	uint64_t busy_ns;   /* when the last input call or draw ended */
 };
 
 /* one display's wait */

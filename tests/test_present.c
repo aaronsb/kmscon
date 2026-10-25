@@ -1097,7 +1097,10 @@ static void test_coalesce_bulk_at(const struct sched *sc, bool flips, bool contr
 /*
  * The bulk write at 60 Hz, and at 144 Hz with a draw of more than half a
  * refresh, where a refresh counted from the draw's end rather than its start
- * skips two refreshes in a row.
+ * skips two refreshes in a row. Then draws of 1.1 and 1.5 refreshes at 144
+ * and 60 Hz: output that never stops begins its next turn more than a refresh
+ * after the last present, and a rule that takes the draw for an idle spell
+ * waits out a second refresh.
  */
 static void test_coalesce_bulk(bool flips)
 {
@@ -1106,9 +1109,22 @@ static void test_coalesce_bulk(bool flips)
 		"bulk write, 144 Hz", 1,     300, 0, 128 * 1024, 30 * US, false,
 		1000000000ULL / 144,  6 * MS};
 
+	static const struct sched slow[] = {
+		{"bulk, 144 Hz, 1.1R draw", 1, 300, 0, 128 * 1024, 30 * US, false,
+		 1000000000ULL / 144, 7640 * US},
+		{"bulk, 144 Hz, 1.5R draw", 1, 300, 0, 128 * 1024, 30 * US, false,
+		 1000000000ULL / 144, 10420 * US},
+		{"bulk, 60 Hz, 1.1R draw", 1, 300, 0, 128 * 1024, 30 * US, false,
+		 1000000000ULL / 60, 18330 * US},
+		{"bulk, 60 Hz, 1.5R draw", 1, 300, 0, 128 * 1024, 30 * US, false,
+		 1000000000ULL / 60, 25 * MS},
+	};
+
 	test_coalesce_bulk_at(&at60, flips, true);
 	/* a draw and a turn take longer than a refresh: every turn's end is past the deadline */
 	test_coalesce_bulk_at(&at144, flips, false);
+	for (size_t i = 0; i < sizeof(slow) / sizeof(slow[0]); i++)
+		test_coalesce_bulk_at(&slow[i], flips, false);
 }
 
 /*

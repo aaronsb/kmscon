@@ -414,11 +414,45 @@ static void test_coalesce(void)
 	coalesce_turn(&c, 90 * MS + refresh - MS, mid);
 	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 90 * MS + refresh, refresh) == 0);
 
+	/*
+	 * A draw longer than a refresh, and output that never stopped: the draw
+	 * is not an idle spell, so the refresh after the present has passed.
+	 */
+	terminal_coalesce_drawn(&c, &d, 100 * MS, 100 * MS + refresh * 3 / 2, true);
+	coalesce_turn(&c, 100 * MS + refresh * 3 / 2, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 101 * MS + refresh * 3 / 2,
+					refresh) == 0);
+	/* nothing parsed or drawn for just under a refresh after the draw: not idle either */
+	terminal_coalesce_drawn(&c, &d, 120 * MS, 121 * MS, true);
+	coalesce_turn(&c, 121 * MS + refresh - 1, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 121 * MS + refresh, refresh) == 0);
+	/* a refresh: idle */
+	terminal_coalesce_drawn(&c, &d, 140 * MS, 141 * MS, true);
+	coalesce_turn(&c, 141 * MS + refresh, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 142 * MS + refresh, refresh) ==
+	       141 * MS + 2 * refresh);
+	terminal_coalesce_end(&d);
+	/* the quiet counts from the last input call too, when it ended after the draw */
+	terminal_coalesce_drawn(&c, &d, 160 * MS, 161 * MS, true);
+	terminal_coalesce_turn_end(&c);
+	terminal_coalesce_input(&c, 161 * MS, 165 * MS, 1);
+	coalesce_turn(&c, 165 * MS + refresh - 1, mid);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 165 * MS + refresh, refresh) == 0);
+	/* a turn that parsed nothing, with output left unparsed, is measured at its end */
+	terminal_coalesce_drawn(&c, &d, 180 * MS, 181 * MS, true);
+	terminal_coalesce_turn_end(&c);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, true, 181 * MS + refresh / 2, refresh) ==
+	       180 * MS + refresh);
+	terminal_coalesce_end(&d);
+	assert(terminal_coalesce_decide(&t.sync, &c, &d, true, 181 * MS + refresh, refresh) ==
+	       181 * MS + 2 * refresh);
+	terminal_coalesce_end(&d);
+
 	/* a draw ends the wait; one that presented nothing leaves the last present */
 	coalesce_turn(&c, 200 * MS, mid);
 	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 201 * MS, refresh));
 	terminal_coalesce_drawn(&c, &d, 202 * MS, 203 * MS, false);
-	assert(!d.due_ns && d.presented_ns == 4 * MS);
+	assert(!d.due_ns && d.presented_ns == 180 * MS);
 	/* as does the timer's end of it */
 	coalesce_turn(&c, 300 * MS, mid);
 	assert(terminal_coalesce_decide(&t.sync, &c, &d, false, 301 * MS, refresh));

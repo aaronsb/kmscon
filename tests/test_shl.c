@@ -196,13 +196,17 @@ static void count_free(void *value)
 
 /*
  * #40: shl_hashtable_remove frees its entry and leaves the value to the
- * caller. A million inserts each followed by its remove hold no more heap at
- * the end than one entry's worth per thousand; an entry left behind on each
- * remove is 16 MB. The table's own free_value is not called for a removed
- * value, and is called for the one left at the end. Under ASan mallinfo2()
- * measures nothing and the heap check passes whatever happens; LeakSanitizer
- * (make asan) catches the leak there.
+ * caller. HASHTABLE_CYCLES inserts each followed by its remove hold no more
+ * heap at the end than one entry's worth per thousand; an entry left behind
+ * on each remove is a thousand times that. The table's own free_value is not
+ * called for a removed value, and is called for the one left at the end.
+ * Under ASan mallinfo2() measures nothing and the heap check passes whatever
+ * happens; LeakSanitizer (make asan) catches the leak there, a single entry
+ * as surely as all of them. The count fits check's default timeout of 4
+ * seconds on a slow runner; a million did not on GitHub's.
  */
+#define HASHTABLE_CYCLES 100000
+
 START_TEST(test_hashtable_remove)
 {
 	struct shl_hashtable *tbl;
@@ -217,7 +221,7 @@ START_TEST(test_hashtable_remove)
 	ck_assert_int_eq(shl_hashtable_insert(tbl, 0, malloc(1)), 0);
 
 	before = heap_in_use();
-	for (i = 1; i <= 1000000; i++) {
+	for (i = 1; i <= HASHTABLE_CYCLES; i++) {
 		value = malloc(1);
 		ck_assert_int_eq(shl_hashtable_insert(tbl, i, value), 0);
 		ck_assert(shl_hashtable_find(tbl, &found, i));
@@ -229,7 +233,8 @@ START_TEST(test_hashtable_remove)
 	after = heap_in_use();
 	ck_assert_uint_eq(values_freed, 0);
 	if (HAVE_MALLINFO2)
-		ck_assert_uint_le(after, before + 1000000 / 1000 * sizeof(struct shl_hashentry));
+		ck_assert_uint_le(after,
+				  before + HASHTABLE_CYCLES / 1000 * sizeof(struct shl_hashentry));
 
 	shl_hashtable_free(tbl);
 	ck_assert_uint_eq(values_freed, 1);

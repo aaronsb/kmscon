@@ -1,10 +1,9 @@
 #!/bin/bash
 # kit: kitty
-# look-for: Three places across, each over three rows of text. Left, the
-# look-for: street at sunset under the text: every word drawn over it. Middle,
-# look-for: the same picture over the text, hiding the words inside it.
-# look-for: Right, the words alone and black around them: that placement was
-# look-for: deleted (a=d), and nothing of it is left.
+# look-for: The EXPECTED lines, then three places across over three rows of
+# look-for: text. UNDER: the street at sunset with every word drawn over it.
+# look-for: OVER: the same picture hiding the words inside it. DELETED: the
+# look-for: words alone on black, no picture, deleted on purpose (a=d).
 # wrong-looks-like: Words hidden on the left, words through the middle
 # wrong-looks-like: picture, any pixel of the picture at the right, or a
 # wrong-looks-like: picture over the labels under them.
@@ -17,12 +16,16 @@
 # in the middle with z=1, above text, so it hides them; and at the right with
 # z=-1 again. Then a=d with d=i, i=5, p=3 deletes the right placement only:
 # its cells must show the words on black, with no pixel of the picture left.
-# Every command carries q=2, so the terminal sends no reply.
+# The page says what to expect above the pictures and labels each place
+# UNDER, OVER or DELETED below them. Every command carries q=2, so the
+# terminal sends no reply.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/kitty-common.inc"
 kitty_offered
 top_row
-printf 'One picture, three placements: under the text, over it, and deleted.\n'
-row=$((top + 1))
+printf 'EXPECTED: two pictures.\n'
+printf 'Left: words drawn over the photo. Middle: the photo hides the words.\n'
+printf 'Right: words only, no picture; that placement is deleted on purpose.\n'
+row=$((top + 3))
 for r in 1 3 5; do
 	printf '%s[%d;1H' "$esc" $((row + r))
 	for _ in 1 2 3; do
@@ -38,5 +41,5 @@ kitty_send "a=p,i=5,p=2,c=20,r=6,z=1,C=1,q=2"
 printf '%s[%d;53H' "$esc" "$row"
 kitty_send "a=p,i=5,p=3,c=20,r=6,z=-1,C=1,q=2"
 kitty_send "a=d,d=i,i=5,p=3,q=2"
-printf '%s[%d;1H%-26s%-26s%s\n' "$esc" $((row + 7)) "z=-1: under the text" \
-	"z=1: over the text" "p=3: placed, then deleted"
+printf '%s[%d;1H%-26s%-26s%s\n' "$esc" $((row + 7)) "UNDER (z=-1)" \
+	"OVER (z=1)" "DELETED (p=3): no picture"

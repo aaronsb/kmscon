@@ -72,13 +72,3 @@ kitty_offered() {
 		exit 0
 	fi
 }
-
-# What an EBADF for a file the user can read means: kmscon refuses file,
-# temporary file and shared memory media to a session that is in no logind
-# session of its own, as before login (docs/image-helper.md), which the VT
-# demo's session is. Printed under a page whose reply is EBADF.
-kitty_refused_note() {
-	printf 'EBADF for a file you can read: kmscon reads no file for a session\n'
-	printf 'outside a logind session of its own, as before login. The VT demo\n'
-	printf 'runs so; log in on a kmscon VT and run this page there to see it.\n'
-}

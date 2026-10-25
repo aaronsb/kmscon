@@ -40,7 +40,7 @@
  * it is. Underlines and strike-through are deco.c's sprites, cells of an alpha
  * atlas, which the shader draws under and over the glyph in their own colours.
  * Upstream has alpha atlases only and no decorations; this departure is
- * recorded in the PR that made it (ADR-303).
+ * recorded in ADR-102's corrections from step 6 (ADR-303).
  */
 
 #define GL_GLEXT_PROTOTYPES
@@ -148,10 +148,13 @@ struct gltex {
 	/*
 	 * The decoration sprites, each kind at cell deco_off + its kind of
 	 * deco_atlas, KMSCON_DECO_NONE blank. They are uploaded for the first
-	 * cell drawn after a flush, which drops them with the glyphs.
+	 * cell drawn after a flush, which drops them with the glyphs. An upload
+	 * that fails is tried once a frame (deco_tried), and the frame is drawn
+	 * without decorations.
 	 */
 	struct atlas *deco_atlas;
 	unsigned int deco_off;
+	bool deco_tried;
 
 	GLfloat advance_x;
 	GLfloat advance_y;
@@ -169,6 +172,7 @@ struct gltex {
 	GLuint uni_deco;
 	GLuint uni_deco_htex;
 	GLuint uni_deco_vtex;
+	GLuint uni_decorated;
 
 	unsigned int sw;
 	unsigned int sh;
@@ -231,7 +235,7 @@ static int alloc_quads(struct gltex *gt, unsigned int n)
 	gt->cache_bgcol = malloc(sizeof(GLfloat) * n * 3 * 6);
 	gt->cache_ulcol = malloc(sizeof(GLfloat) * n * 3 * 6);
 	gt->cache_strikecol = malloc(sizeof(GLfloat) * n * 3 * 6);
-	gt->cache_deco = malloc(sizeof(GLfloat) * n * 2 * 6);
+	gt->cache_deco = malloc(sizeof(GLfloat) * n * 3 * 6);
 	if (!gt->quads || !gt->cache_pos || !gt->cache_texpos || !gt->cache_fgcol ||
 	    !gt->cache_bgcol || !gt->cache_ulcol || !gt->cache_strikecol || !gt->cache_deco) {
 		free_quads(gt);
@@ -315,6 +319,7 @@ static int gltex_set(struct kmscon_text *txt)
 	gt->uni_deco = gl_shader_get_uniform(gt->shader, "deco");
 	gt->uni_deco_htex = gl_shader_get_uniform(gt->shader, "deco_htex");
 	gt->uni_deco_vtex = gl_shader_get_uniform(gt->shader, "deco_vtex");
+	gt->uni_decorated = gl_shader_get_uniform(gt->shader, "decorated");
 
 	if (gl_has_error(gt->shader)) {
 		log_warning("cannot create shader");
@@ -520,6 +525,9 @@ static int get_deco(struct kmscon_text *txt)
 
 	if (gt->deco_atlas)
 		return 0;
+	if (gt->deco_tried)
+		return -EAGAIN;
+	gt->deco_tried = true;
 
 	strip = calloc(w, fh);
 	if (!strip)
@@ -707,6 +715,7 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 
 	if (gt->cells > gt->max_cells)
 		gltex_flush(txt);
+	gt->deco_tried = false;
 
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{
@@ -737,6 +746,7 @@ static void write_quad(struct gltex *gt, unsigned int i, const struct gltex_quad
 	GLfloat *pos = &gt->cache_pos[i * 2 * 6];
 	GLfloat *tex = &gt->cache_texpos[i * 2 * 6];
 	GLfloat t1 = q->texoff, t2 = q->texoff + q->texw;
+	static const GLfloat right[6] = {0, 0, 1, 0, 1, 1}; /* vertex at x2 */
 	int j, idx;
 
 	pos[0] = q->x1;
@@ -781,9 +791,11 @@ static void write_quad(struct gltex *gt, unsigned int i, const struct gltex_quad
 		gt->cache_strikecol[idx + 0] = q->strike.r / 255.0;
 		gt->cache_strikecol[idx + 1] = q->strike.g / 255.0;
 		gt->cache_strikecol[idx + 2] = q->strike.b / 255.0;
-		idx = i * 2 * 6 + j * 2;
-		gt->cache_deco[idx + 0] = q->ulcell;
-		gt->cache_deco[idx + 1] = q->strikecell;
+		/* the vertex's x within the quad's cells: 0 or @texw */
+		idx = i * 3 * 6 + j * 3;
+		gt->cache_deco[idx + 0] = right[j] * q->texw;
+		gt->cache_deco[idx + 1] = q->ulcell;
+		gt->cache_deco[idx + 2] = q->strikecell;
 	}
 }
 
@@ -793,6 +805,8 @@ static void write_quad(struct gltex *gt, unsigned int i, const struct gltex_quad
  * underline and strike-through in their colours, as bbulk draws them.
  * @ul_cursor: @cell's underline is an underline cursor, which is no
  * decoration and draws in the foreground.
+ * When the glyph cannot be had, the cell is drawn without it and -ENOMEM
+ * returned, as bbulk does.
  */
 static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell *cell, uint64_t key,
 			   unsigned int posx, unsigned int posy, unsigned int cwidth,
@@ -801,40 +815,57 @@ static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 	struct gltex *gt = txt->data;
 	struct gl_glyph *glglyph;
 	struct gltex_quad q = {0};
+	unsigned int i, n = 1;
 	float width;
+	int ret = 0, r;
 
 	glglyph = find_glyph(txt, key, cell->flags, cwidth);
-	if (!glglyph || get_deco(txt))
-		return -ENOMEM;
+	if (!glglyph) {
+		/* a blank in each of its cells, which fits where a wide glyph
+		 * fits no texture, keeps its background and decorations */
+		glglyph = find_glyph(txt, ' ', cell->flags, 1);
+		if (!glglyph)
+			return -ENOMEM;
+		n = cwidth;
+		ret = -ENOMEM;
+	}
 
 	width = glglyph->double_width ? 2.0 : 1.0;
 
 	q.atlas = glglyph->atlas;
-	q.x1 = gt->off_x + gt->advance_x * posx - 1.0;
-	q.x2 = q.x1 + width * gt->advance_x;
 	q.y1 = 1.0 - gt->off_y - gt->advance_y * posy;
 	q.y2 = q.y1 - gt->advance_y;
 	q.texoff = glglyph->texoff;
 	q.texw = width;
 	q.fg = cell->fg;
 	q.bg = cell->bg;
-	q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
-	if (cell->underline > TSM_UNDERLINE_NONE && cell->underline < KMSCON_DECO_STRIKE) {
-		q.ulcell = gt->deco_off + cell->underline;
-		q.ul = ul_cursor ? cell->fg : kmscon_text_ul_color(txt, cell);
-	}
-	if (cell->flags & TSM_FRAME_STRIKE) {
-		q.strikecell = gt->deco_off + KMSCON_DECO_STRIKE;
-		q.strike = kmscon_text_strike_color(txt, cell);
+	/* without the sprites this frame, the cell is drawn undecorated */
+	if (!get_deco(txt)) {
+		q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
+		if (cell->underline > TSM_UNDERLINE_NONE && cell->underline < KMSCON_DECO_STRIKE) {
+			q.ulcell = gt->deco_off + cell->underline;
+			q.ul = ul_cursor ? cell->fg : kmscon_text_ul_color(txt, cell);
+		}
+		if (cell->flags & TSM_FRAME_STRIKE) {
+			q.strikecell = gt->deco_off + KMSCON_DECO_STRIKE;
+			q.strike = kmscon_text_strike_color(txt, cell);
+		}
 	}
 
-	return queue_quad(gt, &q);
+	for (i = 0; i < n; i++) {
+		q.x1 = gt->off_x + gt->advance_x * (posx + i) - 1.0;
+		q.x2 = q.x1 + width * gt->advance_x;
+		r = queue_quad(gt, &q);
+		if (r)
+			return r;
+	}
+	return ret;
 }
 
 /*
  * The frame's image placements (ADR-103 step 3f): here gltex will compose the
  * three bands, a texture per image key, on the RGBA path ADR-102 step 6 gave
- * it (#68). Until then it draws none, and kmscon_text_gltex_ops leaves
+ * it (#68). Until step 3f it draws none, and kmscon_text_gltex_ops leaves
  * draws_images false, so no terminal gltex draws for offers sixel.
  */
 static void gltex_draw_placements(struct kmscon_text *txt, const struct tsm_frame *frame)
@@ -895,7 +926,7 @@ static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned 
 	unsigned int sw, sh;
 
 	glyph = find_glyph(txt, 'I', 0, 1);
-	if (!glyph || get_deco(txt))
+	if (!glyph)
 		return -ENOMEM;
 
 	if (txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN) {
@@ -921,14 +952,15 @@ static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned 
 	q.texw = 1.0;
 	q.fg = (struct tsm_screen_color){gt->attr.fr, gt->attr.fg, gt->attr.fb};
 	q.bg = (struct tsm_screen_color){gt->attr.br, gt->attr.bg, gt->attr.bb};
-	q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
+	if (!get_deco(txt))
+		q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
 	return queue_quad(gt, &q);
 }
 
 static int gltex_render(struct kmscon_text *txt)
 {
 	struct gltex *gt = txt->data;
-	struct atlas *atlas;
+	struct atlas *atlas, *deco;
 	struct gltex_quad *q;
 	unsigned int i, off = 0;
 	float mat[16];
@@ -960,14 +992,22 @@ static int gltex_render(struct kmscon_text *txt)
 	for (i = 0; i < GLTEX_ATTRS; i++)
 		glEnableVertexAttribArray(i);
 
-	/* every quad's decoration sprites come from the one atlas on unit 1 */
-	if (gt->deco_atlas) {
+	/*
+	 * every quad's decoration sprites come from the one atlas on unit 1.
+	 * A frame without them (see get_deco) is drawn undecorated, and unit 1
+	 * still holds an atlas: an incomplete texture samples as alpha 1.
+	 */
+	deco = gt->deco_atlas;
+	if (!deco && !dlist_empty(&gt->atlases))
+		deco = dlist_first(&gt->atlases, struct atlas, list);
+	if (deco) {
 		glActiveTexture(GL_TEXTURE1);
-		glBindTexture(GL_TEXTURE_2D, gt->deco_atlas->tex);
+		glBindTexture(GL_TEXTURE_2D, deco->tex);
 		glUniform1i(gt->uni_deco, 1);
-		glUniform1f(gt->uni_deco_htex, gt->deco_atlas->advance_htex);
-		glUniform1f(gt->uni_deco_vtex, gt->deco_atlas->advance_vtex);
+		glUniform1f(gt->uni_deco_htex, deco->advance_htex);
+		glUniform1f(gt->uni_deco_vtex, deco->advance_vtex);
 	}
+	glUniform1f(gt->uni_decorated, gt->deco_atlas ? 1.0 : 0.0);
 
 	glActiveTexture(GL_TEXTURE0);
 	glUniform1i(gt->uni_atlas, 0);
@@ -978,7 +1018,7 @@ static int gltex_render(struct kmscon_text *txt)
 	glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_bgcol);
 	glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_ulcol);
 	glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_strikecol);
-	glVertexAttribPointer(6, 2, GL_FLOAT, GL_FALSE, 0, gt->cache_deco);
+	glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_deco);
 
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{

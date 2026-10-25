@@ -40,14 +40,14 @@ attribute vec3 fgcolor;
 attribute vec3 bgcolor;
 attribute vec3 ulcolor;
 attribute vec3 strikecolor;
-attribute vec2 decoration;
+attribute vec3 decoration;
 
 varying vec2 texpos;
 varying vec3 fgcol;
 varying vec3 bgcol;
 varying vec3 ulcol;
 varying vec3 stcol;
-varying vec2 decocell;
+varying vec3 decopos;
 
 vec2 opRotate(in vec2 p)
 {
@@ -63,5 +63,5 @@ void main()
 	bgcol = bgcolor;
 	ulcol = ulcolor;
 	stcol = strikecolor;
-	decocell = decoration;
+	decopos = decoration;
 }

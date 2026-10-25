@@ -45,20 +45,30 @@ static GLuint bound[2];		/* the texture glBindTexture last bound on each unit */
 
 /* the uniforms gltex asks for, each at its index here, and their values */
 static const char *const uniform_names[] = {
-	"cos",		"sin",	  "projection", "atlas",     "advance_htex",
-	"advance_vtex", "colour", "deco",	"deco_htex", "deco_vtex",
+	"cos",	  "sin",  "projection", "atlas",     "advance_htex", "advance_vtex",
+	"colour", "deco", "deco_htex",	"deco_vtex", "decorated",
 };
 #define N_UNIFORMS (sizeof(uniform_names) / sizeof(*uniform_names))
 static GLint uniform_i[N_UNIFORMS];
 static GLfloat uniform_f[N_UNIFORMS];
-enum { U_ATLAS = 3, U_COLOUR = 6, U_DECO = 7 };
+enum {
+	U_ATLAS = 3,
+	U_ADVANCE_H = 4,
+	U_ADVANCE_V = 5,
+	U_COLOUR = 6,
+	U_DECO = 7,
+	U_DECO_H = 8,
+	U_DECO_V = 9,
+	U_DECORATED = 10,
+};
 
-/* a draw: the textures on units 0 and 1, and the colour and sampler uniforms */
+/* a draw: the textures on units 0 and 1, and the uniforms it was drawn with */
 static struct draw_call {
 	GLuint tex, deco_tex;
 	GLint first;
 	GLsizei count;
 	GLint colour, atlas_unit, deco_unit;
+	GLfloat advance_h, advance_v, deco_h, deco_v, decorated;
 } draws[4096];
 static unsigned int n_draws;	/* glDrawArrays calls since the last reset */
 static unsigned int n_rendered; /* glyphs rasterised */
@@ -104,6 +114,11 @@ static struct upload {
 } uploads[64];
 static unsigned int n_uploads;
 
+/* the decoration sprites' strip: its uploads, and whether they fail */
+#define STRIP_W (KMSCON_DECO_COUNT * FAKE_CELL_W)
+static unsigned int strip_uploads;
+static bool fail_strip;
+
 static unsigned int bytes_per_pixel(GLenum format)
 {
 	assert(format == GL_ALPHA || format == GL_RGBA);
@@ -129,17 +144,35 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
 	assert(n_draws < sizeof(draws) / sizeof(*draws));
 	draws[n_draws++] = (struct draw_call){
-		bound[0],	    bound[1],	      first, count, uniform_i[U_COLOUR],
-		uniform_i[U_ATLAS], uniform_i[U_DECO]};
+		.tex = bound[0],
+		.deco_tex = bound[1],
+		.first = first,
+		.count = count,
+		.colour = uniform_i[U_COLOUR],
+		.atlas_unit = uniform_i[U_ATLAS],
+		.deco_unit = uniform_i[U_DECO],
+		.advance_h = uniform_f[U_ADVANCE_H],
+		.advance_v = uniform_f[U_ADVANCE_V],
+		.deco_h = uniform_f[U_DECO_H],
+		.deco_v = uniform_f[U_DECO_V],
+		.decorated = uniform_f[U_DECORATED],
+	};
 }
 void glEnableVertexAttribArray(GLuint index) {}
+/* the error the last failed call raised, until glGetError reads it */
+static GLenum gl_error = GL_NO_ERROR;
 GLenum glGetError(void)
 {
-	return GL_NO_ERROR;
+	GLenum err = gl_error;
+
+	gl_error = GL_NO_ERROR;
+	return err;
 }
+/* GL_MAX_TEXTURE_SIZE, which a test may lower */
+static GLint max_texture_size = 2048;
 void glGetIntegerv(GLenum pname, GLint *data)
 {
-	*data = 2048;
+	*data = max_texture_size;
 }
 void glPixelStorei(GLenum pname, GLint param) {}
 void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height,
@@ -166,6 +199,13 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, G
 	assert(t->live && t->w && level == 0 && format == t->format && type == GL_UNSIGNED_BYTE);
 	assert(xoffset >= 0 && yoffset >= 0 && width > 0 && height > 0);
 	assert(xoffset + width <= t->w && yoffset + height <= t->h);
+	if (width == STRIP_W) {
+		strip_uploads++;
+		if (fail_strip) {
+			gl_error = GL_INVALID_OPERATION; /* as under #17's driver */
+			return;
+		}
+	}
 	if (!keep_uploads)
 		return;
 	assert(yoffset == 0);
@@ -267,6 +307,8 @@ unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_hei
  * and its red, green and blue differ so that a swap of any two shows.
  */
 #define COLOUR_CP 0x1f600
+/* a wide codepoint the font cannot draw */
+#define FAIL_CP 0x4e00
 #define COLOUR_PX(x, y) ((uint32_t)((x) * 16 + (y)) << 24 | 0x804000)
 
 /*
@@ -280,6 +322,8 @@ struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_
 	struct kmscon_glyph *g;
 
 	n_rendered++;
+	if (len == 1 && cps[0] == FAIL_CP)
+		return NULL;
 	if (len == 1 && cps[0] == COLOUR_CP) {
 		uint32_t *px;
 
@@ -450,8 +494,19 @@ static void check_render(struct gltex *gt)
 		assert(draws[n].first == (GLint)(6 * atlas->cache_off));
 		assert(draws[n].count == (GLsizei)(6 * atlas->cache_num));
 		assert(draws[n].colour == (atlas->format == GL_RGBA));
-		assert(draws[n].deco_tex == gt->deco_atlas->tex);
+		assert(draws[n].advance_h == atlas->advance_htex);
+		assert(draws[n].advance_v == atlas->advance_vtex);
 		assert(draws[n].atlas_unit == 0 && draws[n].deco_unit == 1);
+		/* unit 1 holds a texture with storage, sprites or not */
+		assert(texs[draws[n].deco_tex].live && texs[draws[n].deco_tex].w);
+		if (gt->deco_atlas) {
+			assert(draws[n].deco_tex == gt->deco_atlas->tex);
+			assert(draws[n].deco_h == gt->deco_atlas->advance_htex);
+			assert(draws[n].deco_v == gt->deco_atlas->advance_vtex);
+			assert(draws[n].decorated == 1.0);
+		} else {
+			assert(draws[n].decorated == 0.0);
+		}
 		total += atlas->cache_num;
 		atlas->cache_num = 0; /* counted again below */
 		n++;
@@ -470,8 +525,12 @@ static void check_render(struct gltex *gt)
 		assert(gt->cache_bgcol[slot * 18 + 17] == (GLfloat)(q->bg.b / 255.0));
 		assert(gt->cache_ulcol[slot * 18 + 1] == (GLfloat)(q->ul.g / 255.0));
 		assert(gt->cache_strikecol[slot * 18 + 15] == (GLfloat)(q->strike.r / 255.0));
-		assert(gt->cache_deco[slot * 12] == q->ulcell);
-		assert(gt->cache_deco[slot * 12 + 11] == q->strikecell);
+		/* each vertex's x within the quad's cells: 0 on the left, texw on the right */
+		assert(gt->cache_deco[slot * 18] == 0.0 && gt->cache_deco[slot * 18 + 3] == 0.0);
+		assert(gt->cache_deco[slot * 18 + 6] == q->texw);
+		assert(gt->cache_deco[slot * 18 + 15] == q->texw);
+		assert(gt->cache_deco[slot * 18 + 1] == q->ulcell);
+		assert(gt->cache_deco[slot * 18 + 17] == q->strikecell);
 	}
 }
 
@@ -986,6 +1045,121 @@ static void test_colour_glyph(void)
 	gltex_destroy(&txt);
 }
 
+/*
+ * A strip upload that fails, as uploads failed under #17's driver, costs the
+ * frame its decorations and nothing else: every cell is still drawn with its
+ * glyph and background, the strip is tried once that frame, not once a cell,
+ * and the shader is told to draw no sprites. The next frame tries again.
+ */
+static void test_strip_failure(void)
+{
+	static const char bytes[] = "\x1b[?25l\x1b[48;2;1;2;3;4;9mA";
+	const struct gltex_quad *q;
+	struct kmscon_text txt = {0};
+	struct gltex *gt;
+	struct gl_glyph *a;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+
+	fail_strip = true;
+	strip_uploads = 0;
+	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
+	assert(strip_uploads == 1);
+	assert(!gt->deco_atlas);
+	assert(gt->quads_num == FAKE_COLS * FAKE_ROWS);
+	q = quad_at(gt, 0);
+	a = find_glyph(&txt, 'A', 0, 1);
+	assert(q->atlas == a->atlas && q->texoff == a->texoff);
+	assert(colour_eq(q->bg, (struct tsm_screen_color){1, 2, 3}));
+	n_draws = 0;
+	assert(gltex_render(&txt) == 0);
+	assert(n_draws);
+	check_render(gt);
+
+	fail_strip = false;
+	draw_bytes(&txt, bytes, sizeof(bytes) - 1, false);
+	assert(strip_uploads == 2 && gt->deco_atlas);
+	q = quad_at(gt, 0);
+	assert(q->ulcell == gt->deco_off + KMSCON_DECO_SINGLE);
+	assert(q->strikecell == gt->deco_off + KMSCON_DECO_STRIKE);
+	n_draws = 0;
+	assert(gltex_render(&txt) == 0);
+	check_render(gt);
+
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+}
+
+/*
+ * A glyph that cannot be had leaves its cells their background and
+ * decorations, as bbulk does: a blank in each cell of a wide glyph. The font
+ * fails one, and a texture one cell wide holds no wide glyph (nor the
+ * decoration strip, so that frame is undecorated).
+ */
+static void test_glyph_fallback(void)
+{
+	static const char fails[] = "\x1b[?25l\x1b[48;2;1;2;3;4m\xe4\xb8\x80"
+				    "A";
+	static const char wide[] = "\x1b[?25l\x1b[48;2;1;2;3m\xe6\x97\xa5"
+				   "A";
+	const struct gltex_quad *q;
+	struct kmscon_text txt = {0};
+	struct gl_glyph *blank, *a;
+	struct gltex *gt;
+	unsigned int col;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	txt.deco = (struct kmscon_text_deco){.ul = {0, 255, 0}, .strike = {0, 0, 255}};
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+
+	draw_bytes(&txt, fails, sizeof(fails) - 1, false);
+	blank = find_glyph(&txt, ' ', 0, 1);
+	for (col = 0; col < 2; col++) {
+		q = quad_at(gt, col);
+		assert(q->atlas == blank->atlas && q->texoff == blank->texoff && q->texw == 1.0);
+		assert(colour_eq(q->bg, (struct tsm_screen_color){1, 2, 3}));
+		assert(q->ulcell == gt->deco_off + KMSCON_DECO_SINGLE);
+		assert(colour_eq(q->ul, txt.deco.ul));
+	}
+	a = find_glyph(&txt, 'A', 0, 1);
+	assert(quad_at(gt, 2)->atlas == a->atlas && quad_at(gt, 2)->texoff == a->texoff);
+	n_draws = 0;
+	assert(gltex_render(&txt) == 0);
+	check_render(gt);
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+
+	max_texture_size = FAKE_CELL_W;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+	draw_bytes(&txt, wide, sizeof(wide) - 1, false);
+	assert(!gt->deco_atlas);
+	blank = find_glyph(&txt, ' ', 0, 1);
+	for (col = 0; col < 2; col++) {
+		q = quad_at(gt, col);
+		assert(q->atlas == blank->atlas && q->texoff == blank->texoff && q->texw == 1.0);
+		assert(colour_eq(q->bg, (struct tsm_screen_color){1, 2, 3}));
+	}
+	a = find_glyph(&txt, 'A', 0, 1);
+	assert(quad_at(gt, 2)->atlas == a->atlas && quad_at(gt, 2)->texoff == a->texoff);
+	n_draws = 0;
+	assert(gltex_render(&txt) == 0);
+	check_render(gt);
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+	max_texture_size = 2048;
+}
+
 int main(void)
 {
 	/* gltex draws no image placements until ADR-103 step 3f, and says so */
@@ -998,5 +1172,7 @@ int main(void)
 	test_underline_cursor();
 	test_deco_flush();
 	test_colour_glyph();
+	test_strip_failure();
+	test_glyph_fallback();
 	return 0;
 }

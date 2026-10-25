@@ -69,9 +69,9 @@ modify-other-keys             missing libtsm#25  CSI > 4 ; n m is parsed (not ta
 # mouse and paste
 mouse-1000                    works   -          normal tracking, X10 encoding
 mouse-1006                    works   -          SGR encoding after 1000
-mouse-1006-first              missing libtsm#30  1006 set before 1000 is overwritten: one variable holds both
+mouse-1006-first              works   -          1006 set before 1000 still encodes the reports in SGR
 mouse-1003-sgr                works   -          any-event motion in SGR
-mouse-1003-x10                missing libtsm#30  any-event motion is reported only in SGR or pixel encoding
+mouse-1003-x10                works   -          any-event motion with no button in the X10 encoding (32 + 35)
 mouse-1016                    works   -          SGR pixel coordinates
 bracketed-paste               works   -          mode 2004 wraps a paste in CSI 200~ / 201~
 focus-1004                    missing libtsm#29  placeholder probe: mode 1004 is not recognised

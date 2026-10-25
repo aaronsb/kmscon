@@ -47,7 +47,7 @@ device=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
-	--kit=*) kit=${1#*=}; [ -n "$kit" ] || die "--kit takes text, sixel, kitty or all, not ''" ;;
+	--kit=*) kit=${1#*=}; [ -n "$kit" ] || die "--kit takes text, sixel, kitty, glyphs or all, not ''" ;;
 	--showcase=*) video=${1#*=}; [ -n "$video" ] || die "--showcase needs the video's path: --showcase=/path/to/video" ;;
 	--showcase-from=*) from=${1#*=} ;;
 	--showcase-audio) audio=1 ;;
@@ -128,8 +128,8 @@ done
 # The showcase's video is a path the session opens as the user; it reaches the
 # session as one word in its environment, never through a shell.
 case $kit in
-'' | text | sixel | kitty | all) ;;
-*) die "--kit takes text, sixel, kitty or all, not '$kit'" ;;
+'' | text | sixel | kitty | glyphs | all) ;;
+*) die "--kit takes text, sixel, kitty, glyphs or all, not '$kit'" ;;
 esac
 [ -z "$kit" ] || [ -z "$video" ] || die "--kit goes with the demo, not with --showcase"
 if [ -n "$video" ]; then

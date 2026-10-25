@@ -390,13 +390,21 @@ static void do_redraw_screen(struct screen *scr)
 	kmscon_conf_resolve_deco(scr->term->conf, scr->term->vte, &deco);
 	kmscon_text_set_decorations(scr->txt, &deco);
 	tsm_vte_get_def_attr(scr->term->vte, &attr);
-	kmscon_text_prepare(scr->txt, &attr, scr->term->blinking);
+	/*
+	 * a renderer that cannot draw this frame, as gltex until its set
+	 * succeeds, draws and swaps nothing: the display keeps its picture
+	 */
+	if (kmscon_text_prepare(scr->txt, &attr, scr->term->blinking)) {
+		render_timer_frame_end(scr->timer, false, 0);
+		return;
+	}
 	kmscon_text_draw(scr->txt, scr->term->console, scr->term->cursor_blinking);
 	draw_pointer(scr);
 
 	ret = kmscon_text_present(scr->txt);
 	if (ret && ret != -EBUSY)
 		log_warning("cannot swap display [%s] %d", display_name(scr->disp), ret);
+	render_timer_misses(scr->timer, scr->txt->frame_misses);
 	presented = !ret && scr->txt->frame_queued;
 	terminal_coalesce_drawn(&scr->term->coalesce, &scr->coalesce, start,
 				clock_ns(CLOCK_MONOTONIC), presented);

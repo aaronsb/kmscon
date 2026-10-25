@@ -48,6 +48,8 @@ struct render_timer {
 	uint64_t damage_px_sum;
 	unsigned int held;
 	unsigned int expired;
+	unsigned int misses;
+	unsigned int misses_max;
 	uint64_t samples[RENDER_TIMER_SAMPLES];
 };
 
@@ -101,6 +103,15 @@ void render_timer_frame_end(struct render_timer *rt, bool queued, uint64_t damag
 	if (cpu > rt->cpu_ns_max)
 		rt->cpu_ns_max = cpu;
 	rt->damage_px_sum += damage_px;
+}
+
+void render_timer_misses(struct render_timer *rt, unsigned int n)
+{
+	if (!rt)
+		return;
+	rt->misses += n;
+	if (n > rt->misses_max)
+		rt->misses_max = n;
 }
 
 void render_timer_flip(struct render_timer *rt)
@@ -161,6 +172,8 @@ bool render_timer_report(struct render_timer *rt, uint64_t screen_px,
 		out->screen_px = screen_px;
 		out->held = rt->held;
 		out->expired = rt->expired;
+		out->misses = rt->misses;
+		out->misses_max = rt->misses_max;
 		if (rt->frames) {
 			n = rt->frames < RENDER_TIMER_SAMPLES ? rt->frames : RENDER_TIMER_SAMPLES;
 			qsort(rt->samples, n, sizeof(*rt->samples), cmp_u64);
@@ -183,6 +196,8 @@ bool render_timer_report(struct render_timer *rt, uint64_t screen_px,
 	rt->damage_px_sum = 0;
 	rt->held = 0;
 	rt->expired = 0;
+	rt->misses = 0;
+	rt->misses_max = 0;
 	return line;
 }
 
@@ -217,10 +232,11 @@ int render_timer_format(const struct render_timer_stats *st, const char *name, c
 		 "render-timer: display=%s interval_ms=%s presented_per_s=%" PRIu64 ".%02" PRIu64
 		 " flips=%u frames=%u cpu_ms_mean=%s cpu_ms_median=%s cpu_ms_p95=%s"
 		 " cpu_ms_max=%s damage_px_mean=%" PRIu64 " damage_pct=%" PRIu64 ".%02" PRIu64
-		 " skipped=%u skipped_cpu_ms=%s held=%u expired=%u",
+		 " skipped=%u skipped_cpu_ms=%s held=%u expired=%u glyph_misses=%u"
+		 " glyph_misses_max=%u",
 		 name ? name : "?", interval, rate / 100, rate % 100, st->flips, st->frames, mean,
 		 median, p95, max, st->damage_px_mean, pct / 100, pct % 100, st->skipped, skipped,
-		 st->held, st->expired);
+		 st->held, st->expired, st->misses, st->misses_max);
 	return 0;
 }
 
@@ -241,6 +257,8 @@ int render_timer_format_osd(const struct render_timer_stats *st, char *buf, size
 	ms(median, sizeof(median), st->cpu_ns_median);
 	n = snprintf(buf, size, "%" PRIu64 ".%" PRIu64 " fps %s ms %" PRIu64 ".%" PRIu64 "%%",
 		     rate / 10, rate % 10, median, pct / 10, pct % 10);
+	if (st->misses && n > 0 && (size_t)n < size)
+		n += snprintf(buf + n, size - n, " %u misses %u max", st->misses, st->misses_max);
 	if ((st->held || st->expired) && n > 0 && (size_t)n < size)
 		snprintf(buf + n, size - n, " %u held %u expired", st->held, st->expired);
 	return 0;

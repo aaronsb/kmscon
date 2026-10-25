@@ -14,7 +14,7 @@
 # it; run-vt.sh refuses the same VTs again before it stops anything.
 #
 # VT_DEMO_KIT picks the demo's review kit (#123): text (run-vt.sh's default),
-# sixel, kitty or all.
+# sixel, kitty, glyphs or all.
 #
 # VT_DEMO_SHOWCASE names a video and runs the Bad Apple!! showcase
 # (fork/showcase/bad-apple.sh) in place of the demo, as make showcase does;
@@ -44,8 +44,8 @@ vt=${VT_DEMO_VT:-}
 extra=()
 session=()
 case ${VT_DEMO_KIT:-} in
-'' | text | sixel | kitty | all) ;;
-*) die "KIT=$VT_DEMO_KIT: text, sixel, kitty or all" ;;
+'' | text | sixel | kitty | glyphs | all) ;;
+*) die "KIT=$VT_DEMO_KIT: text, sixel, kitty, glyphs or all" ;;
 esac
 [ -z "${VT_DEMO_KIT:-}" ] || [ -z "${VT_DEMO_SHOWCASE:-}" ] ||
 	die "KIT goes with the demo, not with the showcase"

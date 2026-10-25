@@ -657,11 +657,67 @@ def main():
                   and int(read(count)) == len(seq.split()), p.stdout + p.stderr)
         p = run_vt_seq("-", "--login", "8", RUN_VT_CHILD="sleep 3")
         check("run-vt.sh --login keeps going while nobody has logged in",
-              p.returncode == 0 and "session ended" not in p.stdout
-              and "kmscon exited with status 0" in p.stderr and int(read(count)) >= 3, p.stdout + p.stderr)
+              "session ended" not in p.stdout and int(read(count)) >= 3, p.stdout + p.stderr)
+        # kmscon ending on its own is a failure in a login run, status 0
+        # included: that is its limit on logins failing in a row.
+        check("run-vt.sh --login fails when kmscon ends on its own with status 0",
+              p.returncode == 1 and "kmscon exited with status 0" in p.stderr, p.stdout + p.stderr)
+        # A kmscon crash after the login is no logout, even when the poll
+        # after it finds the session gone.
+        p = run_vt_seq("- 8 -", "--login", "8", RUN_VT_CHILD="sleep 1.5; exit 3")
+        check("run-vt.sh --login takes a kmscon crash after a login for a crash",
+              p.returncode == 3 and "kmscon exited with status 3" in p.stderr
+              and "session ended" not in p.stdout, p.stdout + p.stderr)
         p = run_vt_seq("-", "8", RUN_VT_CHILD="exit 0")
         check("run-vt.sh without --login does not watch the sessions",
               p.returncode == 0 and int(read(count)) == 1, p.stdout + p.stderr)
+
+        # restore() stops kmscon only while it is this script's running job:
+        # a PID that kmscon left and another process took is not killed. A
+        # private PID namespace makes the reuse happen: once the stand-in
+        # kmscon has exited, the stand-in loginctl starts a process on its PID
+        # (ns_last_pid) and stops the script, whose PID there is 1.
+        reuse = os.path.join(tmp, "reuse-loginctl")
+        with open(reuse, "w") as f:
+            f.write("""#!/bin/bash
+[ "$1" = list-sessions ] || exit 0
+[ -s "$PIDFILE" ] && [ ! -e "$TAKEN" ] && ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null || exit 0
+echo $(( $(cat "$PIDFILE") - 1 )) >/proc/sys/kernel/ns_last_pid
+setsid sleep 30 </dev/null >/dev/null 2>&1 &
+echo "$!" >"$TAKEN"
+kill -TERM 1
+""")
+        os.chmod(reuse, 0o755)
+        pidfile, taken = os.path.join(tmp, "child-pid"), os.path.join(tmp, "taken-pid")
+        ns = ["unshare", "--user", f"--map-user={os.getuid()}", f"--map-group={os.getgid()}", "--keep-caps",
+              "--pid", "--fork", "--mount-proc", "--"]
+        if subprocess.run([*ns, "true"], capture_output=True).returncode != 0:
+            print("skip  run-vt.sh leaves a PID kmscon left to its new owner: no user and PID namespace here")
+        else:
+            p = subprocess.run([*ns, "bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run", "--login", "8"],
+                               capture_output=True, text=True, timeout=30,
+                               env=dict(os.environ, SUDO_USER="nobody", RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir"),
+                                        RUN_VT_LOGINCTL=reuse, PIDFILE=pidfile, TAKEN=taken,
+                                        RUN_VT_CHILD='echo $$ >"$PIDFILE"'))
+            same = os.path.exists(taken) and read(taken).strip() == read(pidfile).strip()
+            check("run-vt.sh leaves a PID kmscon left to its new owner",
+                  p.returncode == 143 and same and "+ kill -TERM" not in p.stdout,
+                  p.stdout + p.stderr + f"\nchild {read(pidfile) if os.path.exists(pidfile) else '?'}"
+                  f" taken {read(taken) if os.path.exists(taken) else '?'}")
+
+        for opts, why in ((["--login", "--kit=sixel"], "--login runs no demo"),
+                          (["--login", "--showcase=/v.mkv"], "--login runs no demo"),
+                          (["--login", "--showcase-audio"], "go with --showcase=VIDEO")):
+            p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "8"], capture_output=True, text=True, timeout=30)
+            check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
+        for bad in ("--login=/bin/sh", "--lo", "Nerd"):
+            p = run_vt_copy("--login", "8", "--", bad)
+            check(f"run-vt.sh --login refuses the kmscon option {bad}",
+                  p.returncode != 0 and f"kmscon option '{bad}' is refused" in p.stderr, p.stderr)
+
+        p = subprocess.run(["bash", run_vt, "--dry-run", "05"], capture_output=True, text=True, timeout=30)
+        check("run-vt.sh refuses VT 05", p.returncode != 0 and "not '05'" in p.stderr, p.stderr)
+
 
         for opts, why in ((["--login", "--kit=sixel"], "--login runs no demo"),
                           (["--login", "--showcase=/v.mkv"], "--login runs no demo"),

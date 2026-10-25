@@ -19,7 +19,8 @@
 # --login runs kmscon's own login prompt (/bin/login, through PAM) in place
 # of the demo, so the session is a logind session, given the sound cards
 # while its VT is on screen. The first logout ends the run; so do Ctrl-C, a
-# kmscon crash and kmscon's limit on logins failing in a row.
+# kmscon crash and kmscon's limit on logins failing in a row, the last two as
+# failures.
 # --dry-run prints every command and runs none; it needs no root. For the
 # tests, a dry run takes the module directory from RUN_VT_MODULEDIR, calls
 # RUN_VT_LOGINCTL for the session checks, takes the units in RUN_VT_ACTIVE as
@@ -33,7 +34,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,26s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,27s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -228,6 +229,13 @@ if [ -n "$dry" ]; then
 fi
 
 child=
+# Whether kmscon (or a dry run's stand-in) still runs, asked of this shell's
+# job table rather than of its PID: once bash has reaped it, the PID may be
+# another process's. grep reads all of jobs' output, so pipefail sees no
+# SIGPIPE.
+running() {
+	[ -n "$child" ] && jobs -rp | grep -x -- "$child" >/dev/null
+}
 # shellcheck disable=SC2329 # invoked by the EXIT trap
 # A second signal, or a closed terminal or pipe, must not cut it short before
 # the unit is started again, so it ignores them while it runs. A child, kmscon
@@ -235,14 +243,14 @@ child=
 restore() {
 	trap - EXIT
 	trap '' INT TERM HUP PIPE
-	if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+	if running; then
 		show kill -TERM "$child"
 		kill -TERM "$child" 2>/dev/null || true
 		for _ in $(seq 50); do
-			kill -0 "$child" 2>/dev/null || break
+			running || break
 			sleep 0.1
 		done
-		if kill -0 "$child" 2>/dev/null; then
+		if running; then
 			show kill -KILL "$child"
 			kill -KILL "$child" 2>/dev/null || true
 		fi
@@ -337,22 +345,27 @@ if [ -n "$dry" ]; then
 	[ -n "${RUN_VT_CHILD:-}" ] || exit 0
 	cmd=(/bin/sh -c "$RUN_VT_CHILD")
 fi
+# A signal in the moment between these two lines finds child still empty, so
+# restore() starts the units again without stopping kmscon. The window is a
+# few microseconds and is left open.
 "${cmd[@]}" &
 child=$!
 # With --login, the first logout ends the run, so a login left behind does
 # not keep a root dev build on the VT: once a session on VT $vt has been open,
 # no open one there (none, or only one closing) means its user logged out.
+# kmscon gone by then is no logout: the loop leaves, and its status decides.
 # Before anyone logs in, kmscon puts up a new prompt each time login gives up.
 # A poll whose list fails tells nothing, and the next one asks again.
 if [ -n "$login" ] && [ -n "$loginctl" ]; then
 	seen=
-	while kill -0 "$child" 2>/dev/null; do
+	while running; do
 		sleep 1 &
 		wait $! || true
 		now=$(vt_sessions) || continue
 		if awk 'NF && $2 != "closing" { open = 1 } END { exit !open }' <<<"$now"; then
 			seen=1
 		elif [ -n "$seen" ]; then
+			running || break
 			echo "vt-login: session ended"
 			exit 0
 		fi
@@ -365,4 +378,8 @@ child=
 if [ "$status" -ne 0 ] || [ -n "$login" ]; then
 	echo "run-vt: kmscon exited with status $status" >&2
 fi
+# Nor is it a success, status 0 included: that is kmscon's limit on logins
+# failing in a row (src/misc/pty.c), a broken PAM stack for one. The logout and
+# Ctrl-C, the expected ends, exit above and in the INT trap.
+[ -z "$login" ] || [ "$status" -ne 0 ] || status=1
 exit "$status"

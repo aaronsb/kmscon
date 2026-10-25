@@ -227,6 +227,9 @@ struct gltex_pic {
 /* the hard stop is logged at most once in this many frames */
 #define GLTEX_HARD_STOP_LOG_FRAMES 600
 
+/* the glyphs that could not be had the cache remembers, at most (#185) */
+#define GLTEX_FAILED_GLYPHS 1024
+
 /* the shader's vertex attributes, gltex_set()'s attr */
 #define GLTEX_ATTRS 7
 
@@ -243,6 +246,8 @@ struct gltex {
 	size_t pool_max_bytes;	      /* GLTEX_CACHE_MAX_BYTES / GLTEX_POOLS */
 	size_t cache_hard_bytes;      /* GLTEX_CACHE_HARD_BYTES */
 	uint64_t hard_stop_logged;    /* the frame it was last logged, plus one */
+	/* glyphs that could not be had, each at its hash modulo the size */
+	struct kmscon_glyph_key failed[GLTEX_FAILED_GLYPHS];
 
 	struct dlist atlases;
 
@@ -898,6 +903,17 @@ static void argb_to_rgba(struct kmscon_glyph *glyph)
  * plain LRU; glyphs are found by their key's hash and their whole key, so two
  * keys with one hash are both cached.
  *
+ * A glyph that cannot be had, because the font draws none or no slot or
+ * upload can be had for it, is drawn blank, and its key is put in gt->failed
+ * at its hash modulo GLTEX_FAILED_GLYPHS: while it is there, the glyph is
+ * drawn blank without asking the font again (#185). The table is emptied
+ * whenever the answer could change: when the cache is (gltex_set(), so a font
+ * change, gltex_unset(), gltex_release()), and when the cache gives up a
+ * strip, which makes room under the hard stop (strip_free()). A failure at an
+ * entry another holds takes it over, so the table never grows, and the glyph
+ * it held is tried once more. Key 0 is never looked up (find_glyph() makes it
+ * a space), so an empty entry matches no glyph.
+ *
  * The decoration sprites have a strip of their own (get_deco()), in no pool.
  *
  * Upstream's LRU for bbulk's glyphs, shl_lru, is not used: it would evict a
@@ -927,6 +943,12 @@ static void glyphs_init(struct gltex *gt)
 	gt->cache_hard_bytes = GLTEX_CACHE_HARD_BYTES;
 }
 
+/* every glyph that could not be had may be had now: they are tried again */
+static void failed_forget(struct gltex *gt)
+{
+	memset(gt->failed, 0, sizeof(gt->failed));
+}
+
 /*
  * Every glyph and every atlas, the sprites' included, and the pools empty;
  * @gl: the GL context is ours
@@ -938,6 +960,7 @@ static void glyphs_free(struct gltex *gt, bool gl)
 	unsigned int i;
 
 	htable_clear(&gt->glyphs);
+	failed_forget(gt);
 	dlist_for_each_entry_safe(atlas, tmp, &gt->atlases, list)
 	{
 		atlas_free(atlas, gl);
@@ -1043,6 +1066,7 @@ static void strip_free(struct gltex *gt, struct pool *pool, struct atlas *atlas)
 	pool->slots -= n;
 	pool->bytes -= atlas_bytes(atlas);
 	atlas_free(atlas, true);
+	failed_forget(gt);
 }
 
 /*
@@ -1163,12 +1187,14 @@ static int upload_slot(struct kmscon_text *txt, struct gl_glyph *slot,
 
 /*
  * The cached glyph for @key with @flags, @width cells wide, drawn from the
- * font into a slot when it is not cached; NULL when it cannot be had.
+ * font into a slot when it is not cached; NULL when it cannot be had, and
+ * then, until the failure is forgotten, without asking the font again.
  */
 static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16_t flags,
 				   unsigned int width)
 {
 	struct gltex *gt = txt->data;
+	struct kmscon_glyph_key *failed;
 	struct gl_glyph *slot;
 	GLenum format;
 	struct kmscon_glyph *glyph;
@@ -1196,12 +1222,17 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 		mark_drawn(gt, slot);
 		return slot;
 	}
+	failed = &gt->failed[id % GLTEX_FAILED_GLYPHS];
+	if (kmscon_glyph_key_equal(failed, &k))
+		return NULL;
 
 	cps = kmscon_text_get_cluster(txt, k.key, &one, &len);
 	glyph = kmscon_font_render(txt->font, &attr, cps, len, width);
 	txt->frame_misses++;
-	if (!glyph)
+	if (!glyph) {
+		*failed = k;
 		return NULL;
+	}
 	/* a colour glyph goes to an RGBA atlas, drawn untinted */
 	format = GL_ALPHA;
 	if (glyph->buf.format == VIDEO_FORMAT_ARGB32) {
@@ -1220,8 +1251,10 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 	}
 	free(glyph);
 	/* a slot that holds no glyph stays empty at the back of its list */
-	if (ret)
+	if (ret) {
+		*failed = k;
 		return NULL;
+	}
 
 	slot->held = true;
 	mark_drawn(gt, slot);

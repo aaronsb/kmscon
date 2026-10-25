@@ -3621,7 +3621,11 @@ static void test_cache_release(void)
  * pool's bound, a frame of 30 distinct glyphs draws the 24 that fit, each its
  * own, and the other 6 blank, the sprites' blank cell, whose texels are
  * clear, with the cell's background and decorations; the cache never passes
- * the stop, which is logged in the first frame, and again 600 frames on.
+ * the stop, which is logged in the first frame. The 6 are asked of the font
+ * in that frame only (#185), so the stop is not met again until a glyph not
+ * yet refused meets it, and logged again when that is 600 frames on. Once
+ * frames draw none of the strip past the bound, the strip is given up, and
+ * the 6 are drawn from the font again, into slots of glyphs not drawn.
  */
 static void test_cache_hard_stop(void)
 {
@@ -3643,10 +3647,13 @@ static void test_cache_hard_stop(void)
 
 	for (f = 0; f <= GLTEX_HARD_STOP_LOG_FRAMES; f++) {
 		assert(gltex_prepare(&txt, &attr) == 0);
+		txt.frame_misses = 0;
 		for (i = 0; i < 30; i++) {
 			r = gltex_draw_cell(&txt, &fc, cells[i].key, i, 0, 1, false);
 			assert(r == (i < 24 ? 0 : -ENOMEM));
 		}
+		/* the 30, and the space the 6 fall back to, which the stop refuses too */
+		assert(txt.frame_misses == (f ? 0 : 31));
 		assert(gltex_render(&txt) == 0);
 		assert(gt->quads_num == 30);
 		for (i = 0; i < 24; i++)
@@ -3659,12 +3666,26 @@ static void test_cache_hard_stop(void)
 		}
 		assert(pools_bytes(gt, NULL) <= gt->cache_hard_bytes);
 		/* frame_count, plus one, of the frame that last logged it */
-		assert(gt->hard_stop_logged == (f < GLTEX_HARD_STOP_LOG_FRAMES ? 2 : 602));
+		assert(gt->hard_stop_logged == 2);
 	}
 	t = &texs[gt->deco_atlas->tex];
 	for (y = 0; y < FAKE_CELL_H; y++)
 		for (x = 0; x < FAKE_CELL_W; x++)
 			assert(!t->data[y * t->w + KMSCON_DECO_NONE * FAKE_CELL_W + x]);
+
+	/* frame_count 602: a glyph not yet refused meets the stop, beside the 24 */
+	assert(gltex_prepare(&txt, &attr) == 0);
+	for (i = 0; i < 24; i++)
+		assert(gltex_draw_cell(&txt, &fc, cells[i].key, i, 0, 1, false) == 0);
+	assert(gltex_draw_cell(&txt, &fc, NARROW_CP + 30, 24, 0, 1, false) == -ENOMEM);
+	assert(gltex_render(&txt) == 0);
+	assert(gt->hard_stop_logged == 603);
+
+	/* frames that draw none of the strip past the bound: it goes, and the 6 are tried */
+	cache_frame(&txt, cells, NARROW_CAP);
+	cache_frame(&txt, &cells[24], 6);
+	assert(txt.frame_misses == 6 && pools_bytes(gt, NULL) == CACHE_BOUND);
+	assert_resident(gt, &cells[24], 6);
 	close_cache(&txt);
 }
 
@@ -3696,6 +3717,66 @@ static void test_cache_hard_stop_first(void)
 	assert(gt->hard_stop_logged);
 	assert(gltex_render(&txt) == 0);
 	close_cache(&txt);
+}
+
+/*
+ * A glyph that cannot be had is asked of the font once (#185): the font draws
+ * no FAIL_CP, and a texture one cell wide holds no wide glyph. The first frame
+ * asks for both, and for the space their cells fall back to, and tries a
+ * strip for the second; the frames after it draw the same blank cells without
+ * asking the font or making a texture but the sprites' strip, which is tried
+ * once a frame (test_strip_failure). A release, and a set again as a font
+ * change makes, each have both asked for once more.
+ */
+static void test_cache_failed_once(void)
+{
+	static const uint64_t keys[] = {FAIL_CP, 0x65e5};
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 2};
+	struct kmscon_text txt = {0};
+	const struct gltex_quad *q;
+	struct gl_glyph *blank;
+	struct gltex *gt;
+	unsigned int f, i, textures;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	max_texture_size = FAKE_CELL_W;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+
+	for (f = 0; f < 6; f++) {
+		if (f == 2)
+			gltex_release(&txt);
+		if (f == 4) {
+			gltex_unset(&txt);
+			assert(gltex_set(&txt) == 0);
+		}
+		textures = n_textures;
+		assert(gltex_prepare(&txt, &attr) == 0);
+		txt.frame_misses = 0;
+		for (i = 0; i < 2; i++)
+			assert(gltex_draw_cell(&txt, &fc, keys[i], 2 * i, 0, 2, false) == -ENOMEM);
+		if (f % 2) {
+			assert(txt.frame_misses == 0);
+			assert(n_textures == textures + 1);
+		} else {
+			assert(txt.frame_misses == 3);
+		}
+		blank = find_glyph(&txt, ' ', 0, 1);
+		assert(gt->quads_num == 4);
+		for (i = 0; i < 4; i++) {
+			q = &gt->quads[i];
+			assert(q->atlas == blank->atlas && q->texoff == blank->texoff);
+			assert(q->texw == 1.0 && colour_eq(q->bg, fc.bg));
+		}
+		assert(gltex_render(&txt) == 0);
+	}
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+	max_texture_size = 2048;
 }
 
 /*
@@ -3829,6 +3910,7 @@ static const struct {
 	{"release", test_cache_release},
 	{"hard_stop", test_cache_hard_stop},
 	{"hard_stop_first", test_cache_hard_stop_first},
+	{"failed_once", test_cache_failed_once},
 	{"upload_failure", test_cache_upload_failure},
 	{"failed_rotate", test_cache_failed_rotate},
 	{"unset_release", test_cache_unset_release},

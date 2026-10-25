@@ -329,14 +329,17 @@ def main():
                   p.returncode != 0 and f"kmscon option '{bad}' is refused" in p.stderr
                   and '--font-name="Monoid Nerd Font Mono"' in p.stderr, p.stderr)
         # the image budget is capped for a root kmscon: auto or up to 4G
-        for size in ("5G", "1024G", "4097M", "4294967297", "99999999999", "-1"):
+        for size in ("5G", "1024G", "4097M", "4294967297", "99999999999", "-1", ""):
             p = run_vt_with([f"--image-storage-limit={size}"])
             check(f"run-vt.sh refuses --image-storage-limit={size}",
                   p.returncode != 0 and "up to 4G here" in p.stderr, p.stderr)
-        for size in ("auto", "4G", "4096M", "1G"):
+        # 09M: a leading zero is decimal, not an octal error
+        for size in ("auto", "4G", "4096M", "1G", "09M"):
             p = run_vt_with([f"--image-storage-limit={size}"])
             check(f"run-vt.sh accepts --image-storage-limit={size}",
-                  "is refused" not in p.stderr and "up to 4G" not in p.stderr, p.stderr)
+                  "is refused" not in p.stderr and "up to 4G" not in p.stderr
+                  and (p.returncode == 0 or "nothing staged" in p.stderr
+                       or "does not exist" in p.stderr), p.stderr)
         operator = ["--font-name=Monoid Nerd Font Mono", "--font-size=30", "--mode=7680x2160",
                     "--no-use-original-mode"]
         p = run_vt_with(operator + ["--no-blink", "--palette-red=255,0,0", "--hwaccel",

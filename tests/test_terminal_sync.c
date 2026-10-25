@@ -6,8 +6,8 @@
  * a frame end, the timeout and its wait for unparsed output, the resets that
  * end a hold, a stale timer, a flip in flight, a display that lost its
  * picture, the timer's arm time, a hold whose timer cannot be armed, and the
- * limit on sync-timeout. The last runs a schedule the way terminal.c does,
- * through the same calls (terminal_sync_draw for a redraw request,
+ * limit on sync-timeout, and the coalescing of output outside a hold. The last runs a schedule the
+ * way terminal.c does, through the same calls (terminal_sync_draw for a redraw request,
  * terminal_sync_flipped at a flip, terminal_sync_arm_ns to arm): a program's
  * output bracketed in mode 2026, fed through tsm_vte_input_bounded in reads
  * of random sizes, a redraw at the end of every loop turn, flips that take a
@@ -355,6 +355,49 @@ static void test_cancel(void)
 	term_free(&t);
 }
 
+/*
+ * Coalescing without mode 2026 (ADR-201 step 6): part way through a write,
+ * the draw waits until one refresh after the last present, or, when the
+ * write began after that, one refresh after the first turn that waited; a
+ * short read, a refresh already past, and a hold, which decides for itself,
+ * draw now.
+ */
+static void test_coalesce(void)
+{
+	const uint64_t refresh = 1000000000ULL / 144;
+	struct term t;
+
+	term_init(&t, 20, 4, TIMEOUT_MS);
+	assert(terminal_sync_coalesce(&t.sync, false, 5 * MS, 4 * MS, 0, refresh) == 0);
+	/* output owed since the present: one refresh after it */
+	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, refresh) ==
+	       4 * MS + refresh);
+	assert(terminal_sync_coalesce(&t.sync, true, 6 * MS, 4 * MS, 5 * MS, refresh) ==
+	       4 * MS + refresh);
+	assert(terminal_sync_coalesce(&t.sync, true, 4 * MS + refresh, 4 * MS, 5 * MS, refresh) ==
+	       0);
+	/* a write begun after an idle spell: one refresh after the first wait */
+	assert(terminal_sync_coalesce(&t.sync, true, 90 * MS, 4 * MS, 0, refresh) ==
+	       90 * MS + refresh);
+	assert(terminal_sync_coalesce(&t.sync, true, 91 * MS, 4 * MS, 90 * MS, refresh) ==
+	       90 * MS + refresh);
+	assert(terminal_sync_coalesce(&t.sync, true, 90 * MS + refresh, 4 * MS, 90 * MS, refresh) ==
+	       0);
+	/* a display that does not report its refresh is taken as 60 Hz */
+	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, 0) ==
+	       4 * MS + TERMINAL_SYNC_REFRESH_NS);
+
+	feed(&t, "\e[?2026habc");
+	assert(terminal_sync_input(&t.sync, 5 * MS, true) == TERMINAL_SYNC_ARM);
+	assert(terminal_sync_coalesce(&t.sync, true, 5 * MS, 4 * MS, 0, refresh) == 0);
+	assert(terminal_sync_draw(&t.sync, false, false) == TERMINAL_SYNC_OWED);
+	feed(&t, "\e[?2026l");
+	assert(terminal_sync_input(&t.sync, 6 * MS, true) == TERMINAL_SYNC_PRESENT);
+	assert(terminal_sync_coalesce(&t.sync, true, 6 * MS, 4 * MS, 0, refresh) ==
+	       4 * MS + refresh);
+	term_free(&t);
+}
+
 /* sync-timeout is cut to TERMINAL_SYNC_MAX_MS; 0 and values under it stand */
 static void test_timeout_limit(void)
 {
@@ -609,6 +652,7 @@ int main(void)
 	test_arm_ns();
 	test_cancel();
 	test_timeout_limit();
+	test_coalesce();
 	test_schedule();
 	printf("test_terminal_sync: ok\n");
 	return 0;

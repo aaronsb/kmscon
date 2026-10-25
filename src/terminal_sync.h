@@ -137,4 +137,31 @@ enum terminal_sync_draw terminal_sync_draw(const struct terminal_sync *s, bool s
 enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, bool pending,
 					      bool lost);
 
+/*
+ * Coalescing without mode 2026 (ADR-201 step 6). Outside a hold, the
+ * terminal declines to draw the child's output while it is part way through
+ * a write: the last read filled the pty's buffer, or the pty still holds
+ * output an input call left. It draws at the first turn that finds neither,
+ * or once one refresh of the display has passed since its last present,
+ * whichever comes first; when the write began after that refresh had passed,
+ * as after an idle spell, the refresh is counted from the first turn that
+ * waited. Output is never shown more than one refresh late. Every other redraw request (a key
+ * press, the blink timers, the pointer, a frame end, a lost picture) draws as before, so a
+ * keystroke's echo, a short read, draws at once.
+ */
+
+/* the refresh assumed for a display that does not report its own, 60 Hz */
+#define TERMINAL_SYNC_REFRESH_NS (1000000000ULL / 60)
+
+/*
+ * The child's output changed a display's screen at @now_ns. @mid_write: the
+ * terminal is part way through the child's write, as above. @presented_ns:
+ * the display's last present; @waited_ns: the first turn since then whose
+ * draw waited (0: none, this one is); @refresh_ns: the display's refresh
+ * (0: unknown). Returns 0 to draw now, which a hold turns into a redraw
+ * owed, or the time by which to draw if no turn has drawn by then.
+ */
+uint64_t terminal_sync_coalesce(const struct terminal_sync *s, bool mid_write, uint64_t now_ns,
+				uint64_t presented_ns, uint64_t waited_ns, uint64_t refresh_ns);
+
 #endif /* KMSCON_TERMINAL_SYNC_H */

@@ -202,3 +202,22 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
 		return TERMINAL_SYNC_IDLE;
 	return terminal_sync_draw(s, false, lost);
 }
+
+uint64_t terminal_sync_coalesce(const struct terminal_sync *s, bool mid_write, uint64_t now_ns,
+				uint64_t presented_ns, uint64_t waited_ns, uint64_t refresh_ns)
+{
+	uint64_t due;
+
+	/* a hold decides for itself, and presents its frame end at once */
+	if (!mid_write || terminal_sync_holding(s))
+		return 0;
+	if (!refresh_ns)
+		refresh_ns = TERMINAL_SYNC_REFRESH_NS;
+	if (!waited_ns)
+		waited_ns = now_ns;
+	due = presented_ns + refresh_ns;
+	/* the write began after that refresh: nothing was late until it began */
+	if (due <= waited_ns)
+		due = waited_ns + refresh_ns;
+	return now_ns < due ? due : 0;
+}

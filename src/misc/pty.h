@@ -49,6 +49,9 @@
 
 struct kmscon_pty;
 
+/* the most one read takes from the pty */
+#define KMSCON_NREAD 16384
+
 /*
  * The child's output: returns how many bytes of it were taken. The rest is
  * held, and no more is read, until it is all taken: the pty hands it over

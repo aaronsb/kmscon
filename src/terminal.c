@@ -73,6 +73,12 @@ struct screen {
 	bool pending;
 	/* the pending draw is for a display that lost its picture (terminal_sync.h) */
 	bool lost;
+	/*
+	 * when a draw of the child's output first waited for its write to end
+	 * (terminal_sync.h), 0: none waits; and the last present
+	 */
+	uint64_t waited_ns;
+	uint64_t presented_ns;
 	bool hw_cursor;
 	bool enabled;
 	bool scaled;
@@ -115,6 +121,11 @@ struct kmscon_terminal {
 	struct ev_timer *sync_timer;
 	/* the pty holds output the last input call left */
 	bool unparsed;
+	/* the last read filled the pty's buffer: the child may be part way through a write */
+	bool read_full;
+	/* draws the child's output a write held back, one refresh after the last present */
+	struct ev_timer *coalesce_timer;
+	uint64_t coalesce_due;
 	/* the screen in the image budget, and sixel while every display draws images */
 	struct image_budget_terminal images;
 	/* the cell size libtsm and TIOCSWINSZ were last given */
@@ -349,6 +360,14 @@ static void disable_screen(struct screen *scr)
 	scr->enabled = false;
 }
 
+static uint64_t clock_ns(clockid_t id)
+{
+	struct timespec ts;
+
+	clock_gettime(id, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
 static void do_redraw_screen(struct screen *scr)
 {
 	struct tsm_screen_attr attr;
@@ -367,6 +386,7 @@ static void do_redraw_screen(struct screen *scr)
 
 	scr->pending = false;
 	scr->lost = false;
+	scr->waited_ns = 0;
 
 	render_timer_frame_begin(scr->timer);
 	kmscon_conf_resolve_deco(scr->term->conf, scr->term->vte, &deco);
@@ -379,6 +399,8 @@ static void do_redraw_screen(struct screen *scr)
 	ret = kmscon_text_present(scr->txt);
 	if (ret && ret != -EBUSY)
 		log_warning("cannot swap display [%s] %d", display_name(scr->disp), ret);
+	if (!ret && scr->txt->frame_queued)
+		scr->presented_ns = clock_ns(CLOCK_MONOTONIC);
 	render_timer_frame_end(scr->timer, !ret && scr->txt->frame_queued,
 			       scr->txt->frame_damage_px);
 }
@@ -426,6 +448,39 @@ static void redraw_all(struct kmscon_terminal *term)
 	redraw_screens(term, false);
 }
 
+/* the draw of @scr waits for the child's write to end, or until @due_ns */
+static void coalesce(struct screen *scr, uint64_t now_ns, uint64_t due_ns)
+{
+	struct kmscon_terminal *term = scr->term;
+	struct itimerspec spec = {0};
+
+	if (!scr->waited_ns)
+		scr->waited_ns = now_ns;
+	if (term->coalesce_due && term->coalesce_due <= due_ns)
+		return;
+	spec.it_value.tv_sec = (due_ns - now_ns) / 1000000000ULL;
+	spec.it_value.tv_nsec = (due_ns - now_ns) % 1000000000ULL;
+	if (!ev_timer_update(term->coalesce_timer, &spec)) {
+		term->coalesce_due = due_ns;
+		return;
+	}
+	/* nothing waits without the timer that ends the wait */
+	redraw_screen(scr, false);
+}
+
+static void coalesce_timer_event(struct ev_timer *timer, uint64_t count, void *data)
+{
+	struct kmscon_terminal *term = data;
+	struct screen *scr;
+
+	term->coalesce_due = 0;
+	dlist_for_each_entry(scr, &term->screens, list)
+	{
+		if (scr->waited_ns)
+			redraw_screen(scr, false);
+	}
+}
+
 /*
  * After each turn of the event loop: draws the child's output parsed in the
  * turn once, however many input calls it took, on each display whose screen
@@ -433,12 +488,14 @@ static void redraw_all(struct kmscon_terminal *term)
  * about 4 KB at a time, up to 50 reads a turn, so drawing after each one
  * walked a 7680x2160 screen hundreds of times a second while a sixel picture
  * streamed in and nothing on it changed (#139). A keystroke's echo is read and
- * drawn in the same turn.
+ * drawn in the same turn. Part way through a write, the draw waits for the
+ * write's end, at most one refresh of the display (terminal_sync.h).
  */
 static void terminal_turn_end(struct ev_eloop *eloop, void *unused, void *data)
 {
 	struct kmscon_terminal *term = data;
 	struct screen *scr;
+	uint64_t now, due;
 
 	if (!term->redraw_owed)
 		return;
@@ -446,9 +503,17 @@ static void terminal_turn_end(struct ev_eloop *eloop, void *unused, void *data)
 	if (!term->awake)
 		return;
 
+	now = clock_ns(CLOCK_MONOTONIC);
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		if (kmscon_text_changed(scr->txt, term->console))
+		if (!kmscon_text_changed(scr->txt, term->console))
+			continue;
+		due = terminal_sync_coalesce(&term->sync, term->read_full || term->unparsed, now,
+					     scr->presented_ns, scr->waited_ns,
+					     display_get_refresh_ns(scr->disp));
+		if (due)
+			coalesce(scr, now, due);
+		else
 			redraw_screen(scr, false);
 	}
 }
@@ -561,14 +626,6 @@ static void blink_event(struct ev_timer *timer, uint64_t count, void *data)
 
 	term->blinking = !term->blinking;
 	redraw_all(term);
-}
-
-static uint64_t clock_ns(clockid_t id)
-{
-	struct timespec ts;
-
-	clock_gettime(id, &ts);
-	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
 static uint64_t render_timer_now(void *data)
@@ -1578,6 +1635,7 @@ static void terminal_close(struct kmscon_terminal *term)
 	kmscon_pty_close(term->pty);
 	term->opened = false;
 	term->unparsed = false;
+	term->read_full = false;
 	sync_check(term);
 }
 
@@ -1635,6 +1693,7 @@ void terminal_destroy(struct kmscon_terminal *term)
 	ev_eloop_rm_timer(term->blink_cursor);
 	ev_eloop_rm_timer(term->render_timer);
 	ev_eloop_rm_timer(term->sync_timer);
+	ev_eloop_rm_timer(term->coalesce_timer);
 	kmscon_asciinema_free(term->asciinema);
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 	input_unregister_key_cb(term->input, input_event, term);
@@ -1666,6 +1725,9 @@ static size_t pty_input(struct kmscon_pty *pty, const char *u8, size_t len, void
 	if (!len)
 		return 0;
 	term->redraw_owed = true;
+	/* a new read, or the rest of one an earlier call left */
+	if (!term->unparsed)
+		term->read_full = len >= KMSCON_NREAD;
 	n = tsm_vte_input_bounded(term->vte, u8, len);
 	term->unparsed = n < len;
 	sync_check(term);
@@ -1786,9 +1848,15 @@ struct kmscon_terminal *terminal_new(struct kmscon_session *session, unsigned in
 			    "%u ms at most",
 			    term->conf->sync_timeout, TERMINAL_SYNC_MAX_MS);
 
-	ret = input_register_key_cb(term->input, input_event, term);
+	/* armed while a draw waits for the end of the child's write */
+	ret = ev_eloop_new_timer(term->eloop, &term->coalesce_timer, NULL, coalesce_timer_event,
+				 term);
 	if (ret)
 		goto err_sync;
+
+	ret = input_register_key_cb(term->input, input_event, term);
+	if (ret)
+		goto err_coalesce;
 
 	if (term->conf->mouse) {
 		ret = input_register_pointer_cb(term->input, pointer_event, term);
@@ -1832,6 +1900,8 @@ err_pointer:
 	input_unregister_pointer_cb(term->input, pointer_event, term);
 err_input:
 	input_unregister_key_cb(term->input, input_event, term);
+err_coalesce:
+	ev_eloop_rm_timer(term->coalesce_timer);
 err_sync:
 	ev_eloop_rm_timer(term->sync_timer);
 err_turn:

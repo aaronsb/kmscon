@@ -15,6 +15,8 @@ related: []
 
 ADR-108's decision 6: the same image and video workloads run with `hwaccel` off (drm2d with bbulk, the CPU path) and on (drm3d with gltex, the GPU path), once gltex draws image placements (aaronsb/kmscon#188, ADR-103 steps 3f and 4e). ADR-108's observable expects kmscon's CPU time per frame to be lower with `hwaccel` on and the presented rate no lower, and asks for the comparison to be recorded whichever way it comes out. Measured on 2026-10-25 in tier 3's VMs; the operator's run on the same machine's GPU without a VM is still to come (Real hardware, pending).
 
+> Corrected 2026-10-25: on the GL variants libtsm refused every image over 16 MiB, so the GL cells at 7680x2160 for the player at its own size and for `mpv --vo=kitty` measured frames without the picture. They are marked [superseded] where they stand, and the appended section "Correction, 2026-10-25: GL images above 16 MiB were refused" gives the defect, its fix, a third run and the revised verdicts.
+
 - **Build.** kmscon package `10.0.4.r658.g49996fc`, built with `make pkg` from a clean tree at `49996fc` (#188's branch `feat/gltex-images`; its two later commits, `f298aa2` and `b5ee3ba`, change only ADR-103's text), with libtsm `7aae406`, the pin on main. The harness reports the kmscon revision as `49996fc+dirty` because the measuring screens below were installed into the worktree after the package was built.
 - **Host** "north": AMD Ryzen 9 9950X3D; GPU PCI ID 1002:744c on `/dev/dri/renderD128`, a Navi 31 part (the Radeon RX 7900 family); Arch Linux, linux 7.2.11-arch1-1, qemu-full 11.1.2-1, virglrenderer 1.3.0-2, mesa 26.2.5-1.
 - **Guest**: Arch cloud image 20261015.611680, archive 2026/10/20, base image `base-a801c98304d282ae.qcow2`. Every variant has 4 vCPUs and 4096 MB, and draws DejaVu Sans Mono 16 through pango, a 10x19 cell: 128x42 cells at 1280x800, 768x113 at 7680x2160. Both configs set `render-timer=log`; the GL config also sets `hwaccel`. The log line of every run names `backend [drm2d] text renderer [bbulk]` on the 2D variants and `backend [drm3d] text renderer [gltex]` on the GL ones.
@@ -68,12 +70,14 @@ kmscon's CPU time per drawn frame, median, in milliseconds, run 1 / run 2. Off i
 |---|---|---|---|---|
 | Player, PNG, 1 copy, 480x360 frames scaled | 1.56 / 1.23 | 0.66 / 0.64 | 29.77 / 30.50 | 8.60 / 8.61 |
 | Player, PNG, 3 copies, 480x360 frames scaled | 1.35 / 1.41 | 0.66 / 0.70 | 35.03 / 34.88 | 8.66 / 8.89 |
-| Player, PNG, 1 copy at its own size | 0.19 / 0.20 | 0.65 / 0.64 | 4.48 / 4.44 | 6.53 / 6.43 |
-| Player, PNG, 3 copies at their own size | 0.36 / 0.34 | 0.65 / 0.66 | 9.80 / 9.92 | 6.40 / 6.46 |
-| Player, shared memory, 3 copies at their own size | 0.37 / 0.34 | 0.65 / 0.65 | 9.71 / 9.80 | 6.45 / 6.48 |
-| `mpv --vo=kitty` inline | 0.54 / 0.50 | 0.75 / 0.73 | 5.36 / 5.34 | 6.86 / 7.42, two frames at the window's edges, not comparable (below) |
+| Player, PNG, 1 copy at its own size | 0.19 / 0.20 | 0.65 / 0.64 | 4.48 / 4.44 | 6.53 / 6.43 [superseded] |
+| Player, PNG, 3 copies at their own size | 0.36 / 0.34 | 0.65 / 0.66 | 9.80 / 9.92 | 6.40 / 6.46 [superseded] |
+| Player, shared memory, 3 copies at their own size | 0.37 / 0.34 | 0.65 / 0.65 | 9.71 / 9.80 | 6.45 / 6.48 [superseded] |
+| `mpv --vo=kitty` inline | 0.54 / 0.50 | 0.75 / 0.73 | 5.36 / 5.34 | 6.86 / 7.42, two frames at the window's edges, not comparable (below) [superseded] |
 | Photograph, text scrolling in a region under it | 0.66 / 0.78 | 0.43 / 0.42 | 14.67 / 14.86 | 8.77 / 7.66 |
 | Tier 3's `mpv-sixel` | 0.57 / 0.75 | 0.69 / 0.72 | 2.57 / 2.56 | 9.29 / 9.06 |
+
+Cells marked [superseded] measured gltex at 7680x2160 drawing frames without the picture, whose image libtsm had refused; run 3 replaces them (Correction, 2026-10-25).
 
 Frames presented per second of frames sent per second, run 2. Run 1 is within 0.5 of every figure here except `mpv --vo=kitty` off at 7680x2160, 28.7 of 14.7.
 
@@ -81,12 +85,14 @@ Frames presented per second of frames sent per second, run 2. Run 1 is within 0.
 |---|---|---|---|---|
 | Player, PNG, 1 copy, scaled | 30.0 of 29.4 | 29.9 of 29.4 | 24.4 of 29.3 | 29.4 of 29.3 |
 | Player, PNG, 3 copies, scaled | 30.8 of 29.7 | 30.5 of 29.7 | 24.7 of 29.6 | 30.8 of 29.7 |
-| Player, PNG, 1 copy at its own size | 30.5 of 29.7 | 29.9 of 29.7 | 30.3 of 29.7 | 29.9 of 29.7 |
-| Player, PNG, 3 copies at their own size | 31.0 of 29.7 | 30.2 of 29.7 | 30.8 of 29.7 | 30.5 of 29.7 |
-| Player, shared memory, 3 copies at their own size | 29.8 of 29.7 | 29.8 of 29.7 | 29.8 of 29.7 | 29.7 of 29.7 |
-| `mpv --vo=kitty` inline | 58.5 of 29.7 | 58.4 of 29.6 | 30.9 of 16.0 | 0.2 of 17.6 |
+| Player, PNG, 1 copy at its own size | 30.5 of 29.7 | 29.9 of 29.7 | 30.3 of 29.7 | 29.9 of 29.7 [superseded] |
+| Player, PNG, 3 copies at their own size | 31.0 of 29.7 | 30.2 of 29.7 | 30.8 of 29.7 | 30.5 of 29.7 [superseded] |
+| Player, shared memory, 3 copies at their own size | 29.8 of 29.7 | 29.8 of 29.7 | 29.8 of 29.7 | 29.7 of 29.7 [superseded] |
+| `mpv --vo=kitty` inline | 58.5 of 29.7 | 58.4 of 29.6 | 30.9 of 16.0 | 0.2 of 17.6 [superseded] |
 | Photograph, text scrolling (presented only) | 75.2 | 75.2 | 37.7 | 37.6 |
 | Tier 3's `mpv-sixel` | 29.9 of 29.3 | 30.1 of 29.5 | 28.5 of 27.9 | 27.3 of 26.7 |
+
+Cells marked [superseded] measured gltex at 7680x2160 drawing frames without the picture, whose image libtsm had refused; run 3 replaces them (Correction, 2026-10-25).
 
 mpv dropped no frames at 1280x800. At 7680x2160 it dropped 119 and 109 frames of `mpv --vo=kitty` off and 100 and 96 on, and 6 and 7 frames of `mpv-sixel` off and 13 and 12 on (run 1 and run 2). The player dropped one frame in one case (1 copy at its own size, on, 7680x2160, run 1).
 
@@ -96,11 +102,13 @@ kmscon's CPU time per frame sent, in milliseconds, run 1 / run 2. For the player
 |---|---|---|---|---|
 | Player, PNG, 1 copy, scaled | 2.0 / 1.8 | 1.2 / 1.1 | 25.6 / 26.4 | 9.4 / 9.4 |
 | Player, PNG, 3 copies, scaled | 1.8 / 2.0 | 1.2 / 1.2 | 30.1 / 29.9 | 10.2 / 10.5 |
-| Player, PNG, 1 copy at its own size | 0.5 / 0.6 | 1.1 / 1.1 | 11.2 / 11.0 | 10.4 / 7.7 |
-| Player, PNG, 3 copies at their own size | 0.8 / 0.8 | 1.1 / 1.0 | 16.6 / 16.8 | 7.8 / 7.9 |
-| Player, shared memory, 3 copies at their own size | 0.7 / 0.7 | 1.0 / 1.0 | 14.0 / 14.5 | 7.5 / 7.5 |
-| `mpv --vo=kitty` inline | 5.5 / 4.7 | 6.0 / 5.7 | 52.3 / 48.2 | 33.3 / 32.4 |
+| Player, PNG, 1 copy at its own size | 0.5 / 0.6 | 1.1 / 1.1 | 11.2 / 11.0 | 10.4 / 7.7 [superseded] |
+| Player, PNG, 3 copies at their own size | 0.8 / 0.8 | 1.1 / 1.0 | 16.6 / 16.8 | 7.8 / 7.9 [superseded] |
+| Player, shared memory, 3 copies at their own size | 0.7 / 0.7 | 1.0 / 1.0 | 14.0 / 14.5 | 7.5 / 7.5 [superseded] |
+| `mpv --vo=kitty` inline | 5.5 / 4.7 | 6.0 / 5.7 | 52.3 / 48.2 | 33.3 / 32.4 [superseded] |
 | Tier 3's `mpv-sixel` | 2.3 / 2.5 | 2.3 / 2.3 | 6.1 / 6.2 | 14.4 / 13.6 |
+
+Cells marked [superseded] measured gltex at 7680x2160 drawing frames without the picture, whose image libtsm had refused; run 3 replaces them (Correction, 2026-10-25).
 
 gltex reports 100% damage on every frame because it redraws every cell and every placement. bbulk's damage share, the same in both runs to the percent:
 
@@ -127,15 +135,15 @@ Experiment A ran `kp-mpv` alone on `gl-7680x2160` once more, with `image-storage
 | On, run 2 | auto (192 MiB) | 0.2 of 17.6 (edge seconds only) | 96 | not comparable | 32.4 ms | 57.0% |
 | On, experiment A | `image-storage-limit=1G`, unverified | 22.2 of 14.1 | 123 | 10.10 ms | 57.2 ms | 80.7% |
 
-The cause of the stall is not known beyond its dependence on the budget: frames were presented in experiment A and not at the default. If gltex were leaving mpv's placement out for want of budget, as #188 describes its starved path, it would still draw and present the rest of the screen as mpv's frames arrived; no frame was drawn at all. A trace is pending on #188.
+(Superseded 2026-10-25: the cause is traced; see Correction. libtsm refused every frame mpv sent, so nothing changed to draw.) The cause of the stall is not known beyond its dependence on the budget: frames were presented in experiment A and not at the default. If gltex were leaving mpv's placement out for want of budget, as #188 describes its starved path, it would still draw and present the rest of the screen as mpv's frames arrived; no frame was drawn at all. A trace is pending on #188.
 
 ## What the figures show
 
 - **Scaled pictures are where gltex pays.** At 7680x2160 bbulk spends 29.8 to 35.0 ms a frame enlarging the player's frames and presents 24.4 to 24.7 of the 29.3 to 29.7 frames sent. gltex draws the same in 8.6 to 8.9 ms and presents every frame sent. At 1280x800, where the frames are shrunk, gltex takes about half bbulk's time (0.64 to 0.70 against 1.23 to 1.56 ms), and both keep up.
-- **gltex's cost has a floor.** With a picture replaced every frame, gltex's median is 0.64 to 0.75 ms at 1280x800 and at least 6.40 ms at 7680x2160, whatever the number of copies or the transport. It redraws the whole screen each frame; bbulk draws only its damage. The photograph screen, which replaces no picture, costs gltex 0.42 to 0.43 ms at 1280x800, below that floor, and 7.66 to 8.77 ms at 7680x2160, above it.
-- **Where bbulk's damage is small, bbulk is cheaper.** Pictures at their own size at 1280x800 cost bbulk 0.19 to 0.37 ms against gltex's 0.64 to 0.66. At 7680x2160 one copy at its own size (29% damage) costs bbulk 4.4 to 4.5 ms against 6.4 to 6.5; three copies (88% damage) cost bbulk 9.7 to 9.9 ms, and gltex is cheaper again at 6.4 to 6.5.
+- (Superseded 2026-10-25 at 7680x2160: the 6.40 ms frames carried no picture; with it, gltex takes 9.63 to 11.10 ms. See Correction.) **gltex's cost has a floor.** With a picture replaced every frame, gltex's median is 0.64 to 0.75 ms at 1280x800 and at least 6.40 ms at 7680x2160, whatever the number of copies or the transport. It redraws the whole screen each frame; bbulk draws only its damage. The photograph screen, which replaces no picture, costs gltex 0.42 to 0.43 ms at 1280x800, below that floor, and 7.66 to 8.77 ms at 7680x2160, above it.
+- (Superseded 2026-10-25 at 7680x2160: gltex takes 10.94 ms for one PNG copy at its own size and 11.10 ms for three, so bbulk is cheaper for both. See Correction.) **Where bbulk's damage is small, bbulk is cheaper.** Pictures at their own size at 1280x800 cost bbulk 0.19 to 0.37 ms against gltex's 0.64 to 0.66. At 7680x2160 one copy at its own size (29% damage) costs bbulk 4.4 to 4.5 ms against 6.4 to 6.5; three copies (88% damage) cost bbulk 9.7 to 9.9 ms, and gltex is cheaper again at 6.4 to 6.5.
 - **`mpv-sixel` at 7680x2160 is gltex's worst case here.** mpv's 1920x1080 window is 15% of the screen in bbulk's damage, and bbulk draws it in 2.6 ms. gltex redraws the whole screen and uploads each new sixel picture as a texture, 9.1 to 9.3 ms. Its CPU per frame sent is 13.6 to 14.4 ms against 6.1 to 6.2, mpv drops 12 to 13 frames against 6 to 7, and kmscon presents 27.2 to 27.3 frames a second against 28.5, all of the 26.7 that mpv sent. The split of gltex's time between the redraw and the upload is not in the logs.
-- **gltex's scaled pictures cost more than its unscaled ones at 7680x2160**, 8.6 to 8.9 ms against 6.4 to 6.5, though the scaled screens upload a 480x360 texture where the others upload 2540x1900. The logs do not show why.
+- (Superseded 2026-10-25: the unscaled frames carried no picture. With it, the unscaled screens cost gltex more, 9.63 to 11.10 ms. See Correction.) **gltex's scaled pictures cost more than its unscaled ones at 7680x2160**, 8.6 to 8.9 ms against 6.4 to 6.5, though the scaled screens upload a 480x360 texture where the others upload 2540x1900. The logs do not show why.
 - **The photograph with text scrolling under it** costs gltex a half to two thirds of bbulk's time at both sizes, at the same presented rate.
 - **`mpv --vo=kitty` presents about two frames per frame mpv sends** at 1280x800 with either renderer, and with bbulk at 7680x2160, so its presented rate is not a count of mpv's frames. At 1280x800 gltex takes 0.73 to 0.75 ms against bbulk's 0.50 to 0.54.
 - **Run-to-run spread of CPU time.** Below 1.6 ms the two runs differ by up to a third (bbulk at 1280x800: 1.56 against 1.23 ms for the scaled single copy, 0.57 against 0.75 for `mpv-sixel`, 0.66 against 0.78 for the photograph). Above 2 ms they agree within 3%, except gltex's photograph at 7680x2160 (8.77 against 7.66 ms).
@@ -144,15 +152,15 @@ The cause of the stall is not known beyond its dependence on the budget: frames 
 
 ADR-108 expects, for the same workload at the same size, lower CPU time per frame with `hwaccel` on and a presented rate no lower. Here a presented rate counts as lower only when it is below the rate with `hwaccel` off by more than 1.0 frame a second in both runs. An off-against-on difference can move by up to 1.0 between runs (Measurement); the largest movement observed is 0.62 (1 copy at its own size, 1280x800: 0.05 above off in run 1, 0.57 below in run 2). A smaller drop is within the runs' spread and counts as no lower; the largest such is 0.82 (3 copies at their own size, 1280x800, run 2).
 
-- **Holds on both counts:** scaled pictures at both sizes; three copies at their own size at 7680x2160, over PNG and shared memory; the photograph with scrolling text at both sizes.
-- **Lower presented rate, by the rule above:** `mpv --vo=kitty` at 7680x2160 at the default budget, with no frame presented inside the window against 28.7 and 30.9 with `hwaccel` off; and `mpv-sixel` at 7680x2160, 1.31 and 1.13 below off (27.2 and 27.3 against 28.5), where mpv also sent fewer frames (26.7 against 27.9 and 28.0).
+- (Superseded 2026-10-25: three copies at their own size at 7680x2160 no longer hold; see Correction for the revised verdicts.) **Holds on both counts:** scaled pictures at both sizes; three copies at their own size at 7680x2160, over PNG and shared memory; the photograph with scrolling text at both sizes.
+- (Superseded 2026-10-25 for `mpv --vo=kitty`: see Correction.) **Lower presented rate, by the rule above:** `mpv --vo=kitty` at 7680x2160 at the default budget, with no frame presented inside the window against 28.7 and 30.9 with `hwaccel` off; and `mpv-sixel` at 7680x2160, 1.31 and 1.13 below off (27.2 and 27.3 against 28.5), where mpv also sent fewer frames (26.7 against 27.9 and 28.0).
 - **Higher CPU time:** pictures at their own size at 1280x800 (one or three copies); one copy at its own size at 7680x2160; `mpv --vo=kitty` at 1280x800; `mpv-sixel` at 7680x2160. In each, bbulk's damage is a fraction of the screen and gltex redraws all of it. `mpv-sixel` at 1280x800 is within the runs' spread (off 0.57 and 0.75 ms, on 0.69 and 0.72).
-- **Experiment A** (`image-storage-limit=1G`, unverified, one run) fails both halves against `hwaccel` off at the default budget: 10.10 ms per drawn frame against 5.34 and 5.36, and 22.2 frames a second presented against 28.7 and 30.9, with mpv sending 14.1 against 14.7 and 16.0.
+- (Explained 2026-10-25: at 1G libtsm's own budget held mpv's frames; run 3 measures the same case at the default budget after the fix. See Correction.) **Experiment A** (`image-storage-limit=1G`, unverified, one run) fails both halves against `hwaccel` off at the default budget: 10.10 ms per drawn frame against 5.34 and 5.36, and 22.2 frames a second presented against 28.7 and 30.9, with mpv sending 14.1 against 14.7 and 16.0.
 
 ## Against ADR-103's targets
 
-- **7680x2160, kmscon not the bottleneck,** judged as tier 3 judges it: kmscon's CPU time per frame sent within the clip's 33.3 ms frame interval, and the frames sent presented. Off, the scaled player misses it on the presented rate (24.4 to 24.7 of 29.3 to 29.7). On, it is met. `mpv --vo=kitty` misses it with either renderer: off, kmscon's CPU per frame sent is 48.2 to 52.3 ms; on, nothing is presented at the default budget, and in experiment A (`image-storage-limit=1G`, unverified) kmscon's CPU per frame sent is 57.2 ms. The other video workloads meet it both ways, the player's figures without the image helper's work.
-- **7680x2160, 16.7 ms per frame** (ADR-103's adopted number for S4 and S5, a full-screen picture replaced every frame): these workloads are not S4 or S5. For reference, every median with `hwaccel` on is under it (at most 10.10 ms, experiment A), and bbulk's scaled player is over it (29.8 to 35.0 ms).
+- (Superseded 2026-10-25 for `mpv --vo=kitty` with `hwaccel` on: run 3 presents, and misses on CPU per frame sent, 60.0 ms. See Correction.) **7680x2160, kmscon not the bottleneck,** judged as tier 3 judges it: kmscon's CPU time per frame sent within the clip's 33.3 ms frame interval, and the frames sent presented. Off, the scaled player misses it on the presented rate (24.4 to 24.7 of 29.3 to 29.7). On, it is met. `mpv --vo=kitty` misses it with either renderer: off, kmscon's CPU per frame sent is 48.2 to 52.3 ms; on, nothing is presented at the default budget, and in experiment A (`image-storage-limit=1G`, unverified) kmscon's CPU per frame sent is 57.2 ms. The other video workloads meet it both ways, the player's figures without the image helper's work.
+- (Superseded 2026-10-25: with pictures, the highest median with `hwaccel` on is 11.10 ms. See Correction.) **7680x2160, 16.7 ms per frame** (ADR-103's adopted number for S4 and S5, a full-screen picture replaced every frame): these workloads are not S4 or S5. For reference, every median with `hwaccel` on is under it (at most 10.10 ms, experiment A), and bbulk's scaled player is over it (29.8 to 35.0 ms).
 - **The common sizes:** ADR-103 sets them for S1 to S6 at 1366x768 and 1920x1080 on one vCPU; none of these workloads ran there. Every median at 1280x800 is under 1.6 ms, off and on.
 
 ## What this does not show
@@ -173,7 +181,7 @@ Every figure in #188's performance table matches run 2 at the precision shown, a
 - **Picture sizes.** #188 gives the scaled copy as 2229x1672 at 7680x2160 and about 760x570 at 1280x800, and the copy at its own size as 2236x1672. The player's reports in these logs give 2540x1900 at 7680x2160 and 380x284 at 1280x800 for the copies at their own size, and the player's layout, run with these screens' geometry, gives boxes of 2540x1900 and 380x285; bbulk's damage shares agree. The sizes in #188 are those of the earlier measurement it cites.
 - **mpv's frames.** #188 gives them as 7680x1919, about 59 MB each. bbulk's damage shows pictures of about 2566x1919, about 18.8 MiB in ARGB (`mpv --vo=kitty` at 7680x2160 with hwaccel on).
 - **"2 frames in 8 s"** are two frames in seconds that straddle the window's edges; no frame was presented inside it.
-- **The stall's mechanism,** a texture held for the frame on screen leaving no room for the next frame's reservation, is not supported by the logs (same section).
+- (Superseded 2026-10-25: traced; neither #188's account nor this record's held. See Correction.) **The stall's mechanism,** a texture held for the frame on screen leaving no room for the next frame's reservation, is not supported by the logs (same section).
 - **The 22.5 ms baseline** #188 cites for one 480x360 frame scaled to 2229x1672 is from that earlier measurement, which split composition from the rest of the frame. It is not in these logs and is not used here.
 - **"Run 1 within a few percent"** holds above 2 ms; below it the runs differ by up to a third (What the figures show, run-to-run spread).
 - **The gltex floor of about 0.65 ms at 1280x800** holds for the screens that replace a picture each frame; the photograph screen costs gltex 0.42 to 0.43 ms.
@@ -181,7 +189,7 @@ Every figure in #188's performance table matches run 2 at the precision shown, a
 
 ## Real hardware (pending)
 
-The operator's run on north's RX 7900 without a VM, on a VT at 7680x2160, is to be appended here as a dated section. It runs the same pages with `hwaccel` off and on, from a checkout that holds #188 (its head, `b5ee3ba`, or main once it merges):
+The operator's run on north's RX 7900 without a VM, on a VT at 7680x2160, is to be appended here as a dated section. It runs the same pages with `hwaccel` off and on, from a checkout that holds #188 (its head, `b5ee3ba`, or main once it merges): (Superseded 2026-10-25: the checkout must hold #188 at `e0e53ffa` or later, the budget fix; at `b5ee3ba` images over 16 MiB are refused on gltex. See Correction.)
 
 ```sh
 make vt-demo KIT=all DEMO_ARGS='--mode=7680x2160 --no-use-original-mode --render-timer=both'
@@ -192,4 +200,89 @@ make showcase BAD_APPLE=/path/to/video FROM=7 DEMO_ARGS='--hwaccel --mode=7680x2
 
 The first two run the demo's pages, the sixel acceptance pages (photographs, `mpv-sixel`, the tmux grids) among them; the last two run the showcase's act 7, the kitty player. Font options, if any are added, are the same in both runs of a pair. The figures come from the render timer's lines in each run's log, `/tmp/kmscon-demo/vt-demo-<time>-ttyN-<random>.log`, which also shows `backend [drm3d] text renderer [gltex]` when `hwaccel` took. The demo's cell differs from tier 3's 10x19, so the VT figures compare off with on, not with the tables above.
 
-`run-vt.sh` at `b5ee3ba` refuses `--image-storage-limit`, which is not among the options it passes to kmscon, so the raised budget #188 suggests for the video pages at 7680x2160 (`DEMO_ARGS='--hwaccel --image-storage-limit=512M'`) cannot be passed this way until that list gains it. At the default budget, a page that plays `mpv --vo=kitty` over the whole screen with `hwaccel` on may stall as in tier 3.
+(Superseded 2026-10-25: #191 lets `run-vt.sh` pass `--image-storage-limit`, up to 4G, and after `e0e53ffa` the default budget holds mpv's frames at 7680x2160; see Correction.) `run-vt.sh` at `b5ee3ba` refuses `--image-storage-limit`, which is not among the options it passes to kmscon, so the raised budget #188 suggests for the video pages at 7680x2160 (`DEMO_ARGS='--hwaccel --image-storage-limit=512M'`) cannot be passed this way until that list gains it. At the default budget, a page that plays `mpv --vo=kitty` over the whole screen with `hwaccel` on may stall as in tier 3.
+
+## Correction, 2026-10-25: GL images above 16 MiB were refused
+
+### The defect and its fix
+
+mod-gltex, the module gltex is built into, links the render static library, so it carried its own copy of `image_budget.c`, with hidden visibility. gltex counted its display, its textures and its cache in that private copy. kmscon's own budget, the one libtsm reserves from, saw no display on a GL variant and stayed at the 16 MiB floor (16,777,216 bytes) whatever the screen size, so libtsm refused any image that did not fit in 16 MiB by itself. bbulk is part of kmscon and counts in kmscon's budget, so the 2D variants were unaffected. Fixed in #188 by `e0e53ffa`, which exports the eleven budget calls a renderer makes so that the module's calls reach kmscon's budget. A meson test, `gltex_budget_symbols`, fails unless each call gltex makes is in the dynamic symbol table of both kmscon and mod-gltex.
+
+Traced in tier 3 with a reservation logged in `screen_reserve` (`trace-logging.diff`), on builds of `b5ee3ba` with that logging, `kp-mpv` alone at 7680x2160 (`traceA` to `traceD` in the evidence directory):
+
+| Trace | Variant and build | Reservations | Limit | Presented of sent |
+|---|---|---|---|---|
+| traceA | GL, without the fix | 142 of 19,689,452 bytes, every one ENOSPC with no image held | 16,777,216 | 0.2 of 17.0 |
+| traceB | GL, with the export applied | every one fits | 201,326,592 | 24.9 of 12.6 |
+| traceC | 2D | 120, every one fits | 201,326,592 | 28.2 of 14.7 |
+| traceD | GL, with the export applied, `kp-png-1-w0` | 1,823, every one fits, with a 2540x1900 frame held (19.3 MB of images) | 201,326,592 | 26.2 of 27.1 |
+
+The trace builds name themselves `b5ee3ba4+dirty`; which of them carried the export shows in the limit they reserved against. Their rates carry the cost of the logging and are not used below.
+
+### The stall, explained
+
+At 7680x2160 with `hwaccel` on, libtsm refused every frame mpv sent, stored no new picture, and nothing changed on screen to draw. The two frames in the windows' edge seconds were the screen's own. Neither this record's earlier account (unknown beyond the budget) nor #188's (a texture held for the frame on screen) was the mechanism. Experiment A's `image-storage-limit=1G` replaced kmscon's floor with a budget that held mpv's frames, which is why it presented; its setting is still recorded in no artifact.
+
+### Which cells the defect touched
+
+Every GL cell, checked against the images it stores. The limit was 16 MiB at both sizes: at 1280x800, `auto` gives four frames (15.6 MiB) raised to the same 16 MiB floor, so kmscon's limit there was what it should have been, and textures, counted in the private copy, only had room of their own.
+
+| Screen | 1280x800: image, ARGB | 7680x2160: image, ARGB | 1280x800 cells | 7680x2160 cells |
+|---|---|---|---|---|
+| Player, scaled | 480x360, 0.69 MB | 480x360, 0.69 MB | stand | stand |
+| Player at its own size, PNG and shared memory | 380x284, 0.43 MB | 2540x1900, 19.3 MB, over 16 MiB | stand | superseded: every frame refused (traceD shows the frames held once fixed) |
+| `mpv --vo=kitty` | about 762x570, 1.7 MB | 19,689,452 bytes reserved, over 16 MiB | stands | superseded: every frame refused (traceA) |
+| Photograph | at most 530x399 (53x21 cells), 0.85 MB | at most 1410x1064 (141x56 cells), 6.0 MB | stands | stands |
+| `mpv-sixel` | 1280x720, 3.7 MB | 1920x1080, 8.3 MB; two held at once, 16,588,800 bytes, under 16,777,216 only if nothing else is held | stands | stands, not traced; run 3 agrees with runs 1 and 2 |
+
+The photograph's sizes are the box chafa was given; its picture is at most that. The 2D cells all stand.
+
+### Run 3
+
+- **Build.** kmscon package `10.0.4.r664.g398cd6c5`, built at `398cd6c5` on #188's branch, with libtsm `7aae406`. Against `49996fc`, runs 1 and 2's build, it carries two source changes: `e0e53ffa`, the fix, and `b6280e54`, #188's review round 1. That change makes gltex draw an image over half the budget at its drawn size, makes "exact" sampling mean one texel a pixel from a texel's edge, clips a scaled placement's sampling to its source rectangle in the image shader, and remembers an upload GL refused. A run 3 figure therefore differs from runs 1 and 2 by both changes.
+- **What ran.** The GL variants only, `gl-1280x800` and the temporary `gl-7680x2160`, once, with the same installer, measuring screens, host and guest (`run3.log`, `run3/`). The figures with `hwaccel` off stay those of runs 1 and 2: traceC shows the 2D budget held mpv's frames, and neither change touches bbulk.
+- **Figures.** Recomputed from `run3/*/serial.log` and `events.log` with the same separate parser; they match `run3-figures.md` to the last digit printed. Each log names `backend [drm3d] text renderer [gltex]`.
+- **Where the defect did not reach,** run 3 agrees with runs 1 and 2. At 7680x2160: the scaled player 8.64 ms against 8.60 to 8.89, the photograph 8.57 against 7.66 to 8.77, `mpv-sixel` 9.18 against 9.06 to 9.29. At 1280x800 every cell is within 0.10 ms of runs 1 and 2, mostly above. So `b6280e54` moved little where the two can be compared.
+
+Run 3, every GL cell: CPU per drawn frame (median), presented of sent, and kmscon's CPU per frame sent.
+
+| Workload | On, 1280x800 | On, 7680x2160 |
+|---|---|---|
+| Player, PNG, 1 copy, scaled | 0.71 ms; 29.7 of 29.4; 1.3 ms | 8.64 ms; 29.5 of 29.3; 9.4 ms |
+| Player, PNG, 3 copies, scaled | 0.70 ms; 30.4 of 29.7; 1.2 ms | 8.64 ms; 30.5 of 29.7; 9.8 ms |
+| Player, PNG, 1 copy at its own size | 0.72 ms; 29.8 of 29.7; 1.2 ms | 10.94 ms; 29.8 of 29.5; 17.4 ms |
+| Player, PNG, 3 copies at their own size | 0.75 ms; 30.7 of 29.7; 1.3 ms | 11.10 ms; 30.0 of 29.5; 17.7 ms |
+| Player, shared memory, 3 copies at their own size | 0.69 ms; 29.9 of 29.7; 1.1 ms | 9.63 ms; 29.4 of 29.7; 14.0 ms |
+| `mpv --vo=kitty` inline | 0.69 ms; 59.0 of 29.7; 5.1 ms | 9.82 ms; 27.1 of 13.6; 60.0 ms |
+| Photograph, text scrolling (presented only) | 0.42 ms; 75.2 | 8.57 ms; 37.6 |
+| Tier 3's `mpv-sixel` | 0.78 ms; 30.2 of 29.6; 2.5 ms | 9.18 ms; 27.6 of 27.0; 13.9 ms |
+
+### The superseded cells, replaced
+
+At 7680x2160, `hwaccel` off from runs 1 and 2 (run 1 / run 2) against on from run 3:
+
+| Workload | CPU per drawn frame, off / on | Presented of sent, off / on | kmscon's CPU per frame sent, off / on | Sender dropped, off / on |
+|---|---|---|---|---|
+| Player, PNG, 1 copy at its own size | 4.48 / 4.44 against 10.94 ms | 30.6 / 30.3 of 29.7 against 29.8 of 29.5 | 11.2 / 11.0 against 17.4 ms | 0 / 0 against 1 |
+| Player, PNG, 3 copies at their own size | 9.80 / 9.92 against 11.10 ms | 31.2 / 30.8 of 29.7 against 30.0 of 29.5 | 16.6 / 16.8 against 17.7 ms | 0 / 0 against 1 |
+| Player, shared memory, 3 copies at their own size | 9.71 / 9.80 against 9.63 ms | 29.8 / 29.8 of 29.7 against 29.4 of 29.7 | 14.0 / 14.5 against 14.0 ms | 0 / 0 against 0 |
+| `mpv --vo=kitty` inline | 5.36 / 5.34 against 9.82 ms | 28.7 of 14.7 / 30.9 of 16.0 against 27.1 of 13.6 | 52.3 / 48.2 against 60.0 ms | 119 / 109 against 128 |
+
+The player's CPU per frame sent leaves out the image helper's decoding, as in the Measurement section. The PNG screens cost gltex more than the shared memory one (10.94 to 11.10 against 9.63 ms) while both reach kmscon through the helper; the logs do not show why.
+
+### Revised verdicts against ADR-108's expectation
+
+Run 3 is one run, so the presented-rate rule reads: lower when on is more than 1.0 frame a second below off in each of off's two runs. The GL flips in the pause still favour on (Measurement).
+
+- **Player at its own size, one PNG copy, 7680x2160: higher CPU time,** 10.94 ms against 4.44 to 4.48, now by more than twice. Presented rate no lower (0.8 and 0.5 below).
+- **Three PNG copies, 7680x2160: higher CPU time,** 11.10 ms against 9.80 to 9.92; this cell held before the correction and does not now. The presented rate is 1.2 below run 1 and 0.8 below run 2, so it is not lower by the rule, which the pause's flips weaken here.
+- **Three shared memory copies, 7680x2160: CPU time not lower beyond the runs' spread,** 9.63 ms against 9.71 to 9.80, under 1% apart. Presented rate no lower (0.4 below). The expectation of lower CPU time is not met.
+- **`mpv --vo=kitty`, 7680x2160: fails both halves.** 9.82 ms against 5.34 to 5.36; presented 27.1 against 28.7 and 30.9 (1.6 and 3.8 below), with mpv sending 13.6 frames a second against 14.7 and 16.0. kmscon's CPU per frame sent, 60.0 ms, is over the clip's 33.3 ms interval, so it misses ADR-103's "not the bottleneck" with `hwaccel` on, as it does off.
+- **Unchanged:** every cell at 1280x800; at 7680x2160 the scaled player and the photograph (hold on both counts) and `mpv-sixel` (higher CPU time, lower presented rate in runs 1 and 2). Run 3's `mpv-sixel` presents 27.6 against off's 28.5, 0.9 below, inside the rule; it agrees on CPU time (9.18 ms) and does not by itself confirm the lower rate.
+
+With the correction, the expectation holds at 7680x2160 for scaled pictures and the photograph beside scrolling text, and fails for pictures at their own size and for both mpv outputs. At 1280x800 it holds where it held before.
+
+### Against ADR-103's targets, revised
+
+- **7680x2160, kmscon not the bottleneck,** with `hwaccel` on: met for the player at its own size (14.0 to 17.7 ms per frame sent, the frames sent presented, the helper's work left out); missed for `mpv --vo=kitty` (60.0 ms per frame sent).
+- **7680x2160, 16.7 ms per frame:** every median with `hwaccel` on is under it, at most 11.10 ms.

@@ -435,10 +435,12 @@ bool display_has_opengl(struct display *disp)
 	return true;
 }
 void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y) {}
-/* while set, display_use() fails, as with no GL context */
+/* while set, display_use() fails, as with no GL context; display_uses counts its calls */
 static bool fail_display_use;
+static unsigned int display_uses;
 int display_use(struct display *disp)
 {
+	display_uses++;
 	return fail_display_use ? -EFAULT : 0;
 }
 
@@ -3357,6 +3359,48 @@ static void test_cache_failed_rotate(void)
 	close_cache(&txt);
 }
 
+/*
+ * A gltex whose first set fails, as with no GL context, holds nothing:
+ * gltex_init() leaves its atlases and pools empty, and a release, which a
+ * switch away runs on every screen, leaves it alone without making a context
+ * current. Its next set draws as from an empty cache.
+ */
+static void test_cache_unset_release(void)
+{
+	struct gcell cells[40];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int k, n, uses;
+
+	memset(&txt, 0, sizeof(txt));
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	max_texture_size = CACHE_TEX;
+	patterned = true;
+	assert(gltex_init(&txt) == 0);
+	gt = txt.data;
+	assert(dlist_empty(&gt->atlases));
+	for (k = 0; k < GLTEX_POOLS; k++)
+		assert(dlist_empty(&gt->pools[k].lru));
+
+	fail_display_use = true;
+	assert(gltex_set(&txt) == -EFAULT);
+	fail_display_use = false;
+	uses = display_uses;
+	gltex_release(&txt);
+	assert(display_uses == uses);
+
+	assert(gltex_set(&txt) == 0);
+	gt->pool_max_glyphs = UINT_MAX;
+	gt->pool_max_bytes = CACHE_BOUND;
+	rnd_state = 7;
+	n = random_frame(cells, 40);
+	cache_frame(&txt, cells, n);
+	assert_as_cold(&txt, cells, n);
+	close_cache(&txt);
+}
+
 /* the four pools' textures, and whether any is past @max[] */
 static size_t pools_bytes(struct gltex *gt, const size_t *max)
 {
@@ -3675,6 +3719,7 @@ static const struct {
 	{"hard_stop", test_cache_hard_stop},
 	{"upload_failure", test_cache_upload_failure},
 	{"failed_rotate", test_cache_failed_rotate},
+	{"unset_release", test_cache_unset_release},
 	{"measure", test_cache_measure},
 };
 

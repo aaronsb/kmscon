@@ -339,6 +339,9 @@ struct gltex {
 	struct tsm_screen_attr attr;
 };
 
+static void glyphs_init(struct gltex *gt);
+
+/* a gltex not yet set: no atlases, empty pools, as gltex_unset() leaves one */
 static int gltex_init(struct kmscon_text *txt)
 {
 	struct gltex *gt;
@@ -346,6 +349,8 @@ static int gltex_init(struct kmscon_text *txt)
 	gt = calloc(1, sizeof(*gt));
 	if (!gt)
 		return -ENOMEM;
+	dlist_init(&gt->atlases);
+	glyphs_init(gt);
 
 	txt->data = gt;
 	return 0;
@@ -476,7 +481,6 @@ static int image_shader_new(struct gltex *gt)
 
 static void gltex_trim(struct image_budget_cache *cache, size_t want);
 static size_t gltex_trimmable(struct image_budget_cache *cache);
-static void glyphs_init(struct gltex *gt);
 static void glyphs_free(struct gltex *gt, bool gl);
 
 static int gltex_set(struct kmscon_text *txt)
@@ -1507,13 +1511,17 @@ static void gltex_release(struct kmscon_text *txt)
 {
 	struct gltex *gt = txt->data;
 
+	/* a gltex not set holds nothing */
+	if (!gt->shader)
+		return;
 	while (gt->images)
 		image_free(gt, &gt->images);
 	gt->starved = false;
 	/*
 	 * and the glyph cache, sprites and all, so a session in the background
 	 * holds none: its next frame draws its glyphs again. Its textures go
-	 * only with the GL context ours; without it the cache stays.
+	 * only with the GL context ours; without it the cache stays, until the
+	 * next release or unset.
 	 */
 	if (!display_use(txt->disp)) {
 		glyphs_free(gt, true);

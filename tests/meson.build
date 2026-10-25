@@ -581,10 +581,13 @@ test(
 
 # make vt-demo's script (fork/demo/vt-demo.sh): the VT it picks, its refusals,
 # and the summary of the run it started, against a stand-in run-vt.sh.
+# run-vt.sh's login watch polls once a second, and its checks wait through
+# about 25 polls (10 failing in a row for the warning alone).
 test(
     'demo_vt_select',
     python,
     args: [files('demo/vt_demo.py'), '--root', meson.project_source_root()],
+    timeout: 120,
 )
 
 # The Bad Apple!! showcase (fork/showcase/bad-apple.sh, #75): its act table,

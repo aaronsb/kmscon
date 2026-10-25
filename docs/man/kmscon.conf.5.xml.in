@@ -679,7 +679,10 @@ font-name=Ubuntu Mono
                 string draws at the cursor, scrolls with the text and goes
                 where text is written or erased over it. When off, sixel
                 strings are skipped and the device attributes reply (DA1)
-                does not offer sixel. (default: on)</para>
+                does not offer sixel. A build without images (meson
+                <option>-Dimages=disabled</option>, the minimal build) turns
+                it off at start, whatever is set, and says so in the log.
+                (default: on)</para>
         </listitem>
       </varlistentry>
 
@@ -701,7 +704,9 @@ font-name=Ubuntu Mono
                 <literal>kmscon-image</literal> user is created and checked
                 and which sessions count as logged in. When off, kitty commands
                 are skipped without a reply, so a program's query finds no
-                support. (default: on)</para>
+                support. A build without images turns it off at start, as it
+                does <option>sixel</option>; the other image settings are read
+                and do nothing there. (default: on)</para>
         </listitem>
       </varlistentry>
 

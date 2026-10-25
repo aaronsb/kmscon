@@ -2,7 +2,7 @@
 """Capability probes: what kmscon's terminal does and what it is missing.
 
   run.py --list FILE --probe EXE [--font-probe EXE --fonts DIR]
-         [--terminfo SRC --tic PATH --infocmp PATH]
+         [--terminfo SRC --tic PATH --infocmp PATH [--tput PATH]]
 
 Every probe named in FILE (capabilities.list) is run and judged against the
 status recorded there:
@@ -17,7 +17,8 @@ does not name, or a name in the list no program knows, fails the run.
 Probes come from three places: test_capabilities (libtsm, through its public
 API), test_capabilities_font (the freetype backend) and the terminfo entry,
 compiled with tic and read back with infocmp, for the capabilities listed in
-TERMINFO below. A source that was not built or has no tool is reported as
+TERMINFO below, and expanded with tput, for the strings listed in
+TERMINFO_STRINGS. A source that was not built or has no tool is reported as
 skipped, probe by probe.
 """
 
@@ -42,6 +43,15 @@ TERMINFO = {
     "terminfo-sync": [{"Sync"}],
     "terminfo-focus": [{"fe", "fd"}],
     "terminfo-clipboard": [{"Ms"}],
+}
+
+# probe -> [(capability, parameters, the bytes tput must print)]
+TERMINFO_STRINGS = {
+    # no empty final parameter before 'm': xterm reads one as SGR 0
+    "terminfo-setrgb": [
+        ("setrgbf", ("17", "34", "51"), "\033[38;2;17;34;51m"),
+        ("setrgbb", ("68", "85", "102"), "\033[48;2;68;85;102m"),
+    ],
 }
 
 # test_capabilities_font's probes, named here so that a build without the
@@ -93,19 +103,28 @@ def run_program(cmd, name):
     return res.returncode == 0, res.stdout.strip()
 
 
-def terminfo_caps(src, tic, infocmp):
-    """The capability names of the entry compiled from @src."""
+def read_terminfo(src, tic, infocmp, tput):
+    """(capability names, {(capability, parameters): tput's output}) of the
+    entry compiled from @src; the second is empty without @tput."""
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([tic, "-x", "-o", tmp, src], check=True, capture_output=True)
         out = subprocess.run([infocmp, "-x", "-1", "-A", tmp, "kmscon"], check=True,
                              capture_output=True, text=True).stdout
+        strings = {}
+        if tput:
+            env = dict(os.environ, TERMINFO=tmp)
+            for checks in TERMINFO_STRINGS.values():
+                for cap, params, _ in checks:
+                    res = subprocess.run([tput, "-T", "kmscon", cap, *params], env=env,
+                                         capture_output=True, text=True)
+                    strings[cap, params] = res.stdout if res.returncode == 0 else None
     caps = set()
     for line in out.splitlines():
         if not line.startswith("\t"):
             continue
         cap = line.strip().rstrip(",")
         caps.add(cap.split("=", 1)[0].split("#", 1)[0].split("@", 1)[0])
-    return caps
+    return caps, strings
 
 
 def run_terminfo(caps, name):
@@ -114,6 +133,17 @@ def run_terminfo(caps, name):
             return True, ""
     want = " or ".join(",".join(sorted(alt)) for alt in TERMINFO[name])
     return False, f"the kmscon entry lacks {want}"
+
+
+def run_terminfo_strings(strings, name):
+    for cap, params, want in TERMINFO_STRINGS[name]:
+        got = strings[cap, params]
+        call = f"tput {cap} {' '.join(params)}"
+        if got is None:
+            return False, f"{call} fails: the kmscon entry lacks {cap}"
+        if got != want:
+            return False, f"{call} prints {got!r}, want {want!r}"
+    return True, ""
 
 
 def main():
@@ -125,6 +155,7 @@ def main():
     ap.add_argument("--terminfo")
     ap.add_argument("--tic")
     ap.add_argument("--infocmp")
+    ap.add_argument("--tput")
     args = ap.parse_args()
     args.list = os.path.normpath(args.list)
 
@@ -148,11 +179,16 @@ def main():
             skipped[name] = "the freetype font backend is not built"
 
     if args.terminfo and args.tic and args.infocmp:
-        caps = terminfo_caps(args.terminfo, args.tic, args.infocmp)
+        caps, strings = read_terminfo(args.terminfo, args.tic, args.infocmp, args.tput)
         for name in TERMINFO:
             runners[name] = lambda name=name: run_terminfo(caps, name)
+        for name in TERMINFO_STRINGS:
+            if args.tput:
+                runners[name] = lambda name=name: run_terminfo_strings(strings, name)
+            else:
+                skipped[name] = "tput not found"
     else:
-        for name in TERMINFO:
+        for name in list(TERMINFO) + list(TERMINFO_STRINGS):
             skipped[name] = "tic or infocmp not found"
 
     entries = read_list(args.list)

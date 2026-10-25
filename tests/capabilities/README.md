@@ -12,7 +12,7 @@ One small check per terminal feature, so `make test` says what kmscon does and w
 | `../test_capabilities.c` | Probes through libtsm's public API: feed the bytes a program sends, check the reply or the screen state. |
 | `../test_capabilities_font.c` | Probes of the freetype backend: one glyph drawn with and without an attribute, with fonts pinned from `tests/fonts`. |
 
-Terminfo probes are defined in `run.py`: the entry in `scripts/terminfo/kmscon.ti` is compiled with `tic` and read back with `infocmp`, and each probe names the capabilities it needs.
+Terminfo probes are defined in `run.py`: the entry in `scripts/terminfo/kmscon.ti` is compiled with `tic` and read back with `infocmp`, and each probe names the capabilities it needs (`TERMINFO`) or the bytes `tput` must print for a string capability with given parameters (`TERMINFO_STRINGS`).
 
 ## Verdicts
 
@@ -22,7 +22,7 @@ The `capabilities` test fails when:
 - a probe listed as `missing` passes, so the change that adds a feature also sets its line to `works` and closes its issue;
 - a probe exists that the list does not name, or the list names a probe nothing defines.
 
-A probe whose source is not built (the freetype backend) or whose tool is not installed (`tic`, `infocmp`) is printed as `skip` and does not fail the run.
+A probe whose source is not built (the freetype backend) or whose tool is not installed (`tic`, `infocmp`, `tput`) is printed as `skip` and does not fail the run.
 
 ## Placeholders
 
@@ -30,4 +30,4 @@ Some features have no interface to observe them through yet (focus reporting, OS
 
 ## Adding a probe
 
-Add a function and a table entry in `test_capabilities.c` (or `test_capabilities_font.c`, or a `TERMINFO` entry in `run.py`), and a line in `capabilities.list`. Plant the defect it exists to catch and see it red before trusting it, as for any check (`docs/fork/development.md`, A planted defect).
+Add a function and a table entry in `test_capabilities.c` (or `test_capabilities_font.c`, or a `TERMINFO` or `TERMINFO_STRINGS` entry in `run.py`), and a line in `capabilities.list`. Plant the defect it exists to catch and see it red before trusting it, as for any check (`docs/fork/development.md`, A planted defect).

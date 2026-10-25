@@ -63,9 +63,11 @@ kmscon|KMS Console,
   op=\E[39;49m,
 
 # 24-bit Direct Color ("user defined" capabilities)
+# Upstream 114d109 ends setrgbb/setrgbf in ';m', an empty final parameter that
+# xterm reads as SGR 0; the fork drops the ';'.
   Tc,
-  setrgbb=\E[48;2;%p1%d;%p2%d;%p3%d;m,
-  setrgbf=\E[38;2;%p1%d;%p2%d;%p3%d;m,
+  setrgbb=\E[48;2;%p1%d;%p2%d;%p3%dm,
+  setrgbf=\E[38;2;%p1%d;%p2%d;%p3%dm,
 
 # Scrolling and Margins
   csr=\E[%i%p1%d;%p2%dr,

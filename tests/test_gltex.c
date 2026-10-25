@@ -3739,11 +3739,13 @@ static void test_cache_failed_once(void)
 		txt.frame_misses = 0;
 		for (i = 0; i < 2; i++)
 			assert(gltex_draw_cell(&txt, &fc, keys[i], 2 * i, 0, 2, false) == -ENOMEM);
+		/* the sprites' strip, tried each frame; the space's strip after a set or release */
 		if (f % 2) {
 			assert(txt.frame_misses == 0);
 			assert(n_textures == textures + 1);
 		} else {
 			assert(txt.frame_misses == 3);
+			assert(n_textures == textures + 2);
 		}
 		blank = find_glyph(&txt, ' ', 0, 1);
 		assert(gt->quads_num == 4);

@@ -318,6 +318,7 @@ struct gltex {
 	bool starved;		     /* a placement was left out for the budget */
 	uint64_t starved_gen;	     /* image_budget_gen() when it was */
 	bool upload_warned;
+	bool narrow_warned;	/* a glyph wider than any texture was met, and said so */
 	bool set_failed_logged; /* gltex_prepare() could not set it, and said so */
 
 	struct gl_shader *img_shader;
@@ -918,11 +919,13 @@ static void argb_to_rgba(struct kmscon_glyph *glyph)
  * no texture is wide enough for its pool (pool_fits()), its key is put in
  * gt->failed at its hash modulo GLTEX_FAILED_GLYPHS, with the frame, and for
  * GLTEX_FAILED_FRAMES frames the glyph is drawn blank without asking the font
- * again (#185); then it is asked once more, in case the font draws it now.
- * The table is emptied with the cache (gltex_set(), so a font change,
- * gltex_unset(), gltex_release()). A glyph refused for room or by GL (the
- * hard stop, step 4's strip, an upload, memory) is not put there: it is tried
- * again in the next frame, which may have the room. The table is
+ * again (#185); then it is asked once more. A font refusal is held whatever
+ * its cause, a font backend out of memory included, which is why entries
+ * expire. The table is emptied with the cache (gltex_set(), so a font change,
+ * gltex_unset(), gltex_release()). A glyph refused for room, by GL or for
+ * gltex's own memory (the hard stop, step 4's strip, an upload, calloc,
+ * htable_add) is not put there: it is tried again in the next frame, which
+ * may have the room. The table is
  * direct-mapped: a failure at an entry another holds takes it over, so the
  * table never grows, and two such glyphs on one screen whose keys share an
  * entry each take it over in turn, so both are asked for every frame, as
@@ -1267,6 +1270,11 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 	}
 	pool = pool_of(gt, format, kmscon_glyph_cwidth(glyph));
 	if (!pool_fits(txt, pool)) {
+		if (!gt->narrow_warned)
+			log_warning("OpenGL textures too small for %u glyph cells: glyphs that "
+				    "wide are drawn blank",
+				    pool->cells);
+		gt->narrow_warned = true;
 		free(glyph);
 		*failed = (struct failed_glyph){k, gt->frame_count};
 		return NULL;

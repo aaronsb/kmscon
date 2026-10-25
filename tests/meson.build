@@ -102,6 +102,20 @@ if enable_renderer_gltex
         ],
     )
     test('test_gltex', test_gltex)
+
+    # mod-gltex links the render library, so it holds its own copy of
+    # image_budget.c; each budget call gltex makes must bind to kmscon's
+    test(
+        'gltex_budget_symbols',
+        python,
+        args: [
+            files('check_module_symbols.py'),
+            kmscon,
+            mod_gltex,
+            files('../src/render/gltex.c'),
+            'image_budget_',
+        ],
+    )
 endif
 
 if enable_video_drm2d

@@ -27,7 +27,10 @@
  * ADR-103's image budget, image-storage-limit: one per kmscon process. It
  * covers the images in every libtsm screen's stores, main and alternate, of
  * every terminal, and the renderers' scaled pictures. kmscon is one thread, so
- * this is plain process state.
+ * this is plain process state. A renderer module (mod-gltex) links its own copy
+ * of image_budget.c through the render library; the calls a renderer makes are
+ * exported (SHL_EXPORT in image_budget.c), so the module's bind to kmscon's
+ * state rather than to its copy's (tests/check_module_symbols.py).
  *
  * The limit is set, or `auto`: four frames of the process's displays in ARGB,
  * at least IMAGE_BUDGET_MIN and at most IMAGE_BUDGET_MAX, recomputed when a

@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include "image_budget.h"
+#include "shl/misc.h"
 
 static struct {
 	size_t setting;	      /* image-storage-limit: IMAGE_BUDGET_AUTO or bytes */
@@ -52,6 +53,7 @@ static struct {
 	struct image_budget_cache *caches;
 } budget = {.setting = IMAGE_BUDGET_AUTO};
 
+SHL_EXPORT
 size_t image_budget_limit(void)
 {
 	uint64_t b = budget.displays_px * 4 * 4;
@@ -63,11 +65,13 @@ size_t image_budget_limit(void)
 				      : b;
 }
 
+SHL_EXPORT
 size_t image_budget_used(void)
 {
 	return budget.images + budget.pictures;
 }
 
+SHL_EXPORT
 uint64_t image_budget_gen(void)
 {
 	return budget.gen;
@@ -89,6 +93,7 @@ uint64_t image_budget_display_share(uint64_t px)
 	return limit / all * px + limit % all * px / all;
 }
 
+SHL_EXPORT
 size_t image_budget_cache_limit(uint64_t px)
 {
 	uint64_t screens = px * 4 * 2, share = image_budget_display_share(px);
@@ -183,6 +188,7 @@ static bool give_victim(const struct tsm_image_victim *v, void *data)
  * order up to the first its frame draws or the first placed on its own lines;
  * eviction takes no more of each.
  */
+SHL_EXPORT
 int image_budget_picture_room(size_t bytes, image_budget_drawn_cb drawn, void *data)
 {
 	size_t limit = image_budget_limit(), room = 0;
@@ -235,6 +241,7 @@ void image_budget_set_limit(size_t limit)
 		make_room(0, NULL);
 }
 
+SHL_EXPORT
 int image_budget_count_display(const void *disp, uint64_t px)
 {
 	unsigned int i;
@@ -259,6 +266,7 @@ int image_budget_count_display(const void *disp, uint64_t px)
 	return 0;
 }
 
+SHL_EXPORT
 void image_budget_uncount_display(const void *disp)
 {
 	unsigned int i;
@@ -276,12 +284,14 @@ void image_budget_uncount_display(const void *disp)
 	}
 }
 
+SHL_EXPORT
 void image_budget_add_cache(struct image_budget_cache *cache)
 {
 	cache->next = budget.caches;
 	budget.caches = cache;
 }
 
+SHL_EXPORT
 void image_budget_remove_cache(struct image_budget_cache *cache)
 {
 	struct image_budget_cache **cp;
@@ -294,6 +304,7 @@ void image_budget_remove_cache(struct image_budget_cache *cache)
 	}
 }
 
+SHL_EXPORT
 void image_budget_add_picture(size_t bytes)
 {
 	budget.pictures += bytes;
@@ -301,6 +312,7 @@ void image_budget_add_picture(size_t bytes)
 		budget.pictures_peak = budget.pictures;
 }
 
+SHL_EXPORT
 void image_budget_remove_picture(size_t bytes)
 {
 	budget.pictures -= bytes;

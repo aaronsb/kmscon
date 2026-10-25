@@ -246,6 +246,22 @@ considered:
   - operator: aaronsb
     said: "I'd go with auto. zlib is pretty universal I suppose. but someone might want to deliberately build a dependency reduced output for reducing security concerns"
     via: session 2026-10-25
+  - operator: aaronsb
+    said: "I like your minbuild example. I think that's what I'm actually thinking of"
+    via: session 2026-10-25; the example was -Dimages=disabled -Dfont_unifont=disabled -Dvideo_drm3d=disabled -Drenderer_gltex=disabled -Dfont_pango=disabled, leaving drm2d and fbdev, libdrm and psf
+  - operator: aaronsb
+    said: "the point is, an absolute minbuild basically ends up a lot like fbcon in use"
+    via: session 2026-10-25
+  - operator: aaronsb
+    said: "agree. way 1. with option 2."
+    via: "session 2026-10-25; the options as offered: way 1, \"Keep zlib in the minimal build. zlib is tiny and audited to death, and the build reads the same fonts setfont uses. It drops libpng, GL, pango and the image helper, so nearly all of the security gain remains.\"; option 2, \"Strictly no zlib. Users have to decompress a font themselves and point kmscon at the .psf file.\", kept as a documented variant"
+    covers: [zlib-free-fonts]
+  - operator: aaronsb
+    said: "let's make sure the documentation for minbuild describes the tradeoff. great for potatos, or running a kmscon on a pregnancy test"
+    via: session 2026-10-25
+  - operator: aaronsb
+    said: "let's not really say pregnancy test. we can reference our 'potato computer standard' though"
+    via: session 2026-10-25; corrects the entry above for the documentation's wording
 observable:
   - "img2sixel picture.png on a kmscon VT shows the picture under the command; Shift+PageUp scrolls it away and back with the text; clear removes it and leaves no pixels behind"
   - "viu picture.png shows the picture through the kitty graphics protocol, inline and from a temporary file"
@@ -268,7 +284,7 @@ observable:
   - **Drawing:** bbulk composes the three placement bands per covered cell, sends cells nothing draws over an opaque picture as row strips, and damages placement rectangles on both buffers. gltex follows with a texture per image, after ADR-102 step 6.
   - **Acceptance:** full-motion video through mpv (`--vo=sixel`, and `--vo=kitty` inline), through the spec-written client inline and over shared memory, and through kitten icat over shared memory, on drm2d with bbulk; mpv over shared memory is measured for compatibility only (changed 2026-10-24: under the operator's principle that the spec is the target, "a poor player implementation isn't a spec we write against", mpv's shared memory mode, whose names the spec forbids, became a compatibility measurement, and the operator chose to keep `mpv --vo=kitty` inline as an A5 gate, an option they picked; this began: "full-motion video through mpv (`--vo=sixel`, and `--vo=kitty` inline and over shared memory) on drm2d with bbulk,"), the showcase's text banner over a full-screen video, and tmux grids of sixel videos. 1366x768 and 1920x1080 are the common case and carry targets, judged on a small tier 3 machine (1 vCPU, 512 MB); 7680x2160 is the stress case, with no target until the first measurement, an early step. A `render-timer` overlay (foot's option) shows frames presented, CPU time and damaged area per frame, drawn as a top-band placement.
   - **Settings:** `image-storage-limit` (Ghostty), `max-graphic-size`, `num-color-registers` and `private-color-registers` (xterm), and `render-timer` (foot).
-  - **Build:** a meson feature option, `images`, default `auto`. A build without images installs no helper, links no libpng and no sd-login, and answers every image query as `--no-sixel --no-kitty-graphics` does. A `zlib` option, default `auto`, makes a build with no zlib possible, at the cost of gzip PSF fonts and unifont. (Added 2026-10-25, Notes "a build without images".)
+  - **Build:** a minimal build, selected with one machine file (`scripts/profiles/minimal.ini`), is kmscon as a replacement for the kernel console: drm2d and fbdev, PSF fonts and unifont, xkbcommon, and zlib, with no images, GL, FreeType, Pango or D-Bus. It is made from a meson feature option, `images`, default `auto`: a build without images installs no helper, links no libpng and no sd-login, and answers every image query as `--no-sixel --no-kitty-graphics` does. A `zlib` option, default `auto`, allows a documented zlib-free variant, at the cost of gzip PSF fonts and unifont. (Added 2026-10-25, Notes "the minimal build".)
 - **Trades away:**
   - A program run under `sudo` cannot show root-only files through the file media, because the helper reads as the session's user, as a desktop terminal does under `sudo mpv`.
   - An optional dependency on sd-login (systemd's or elogind's) to find the session's user.
@@ -276,14 +292,14 @@ observable:
   - Animation, relative placements and Unicode placeholders wait for step 5. Clients that use them get EINVAL.
   - Ghostty's meaning of `image-storage-limit`, which is per screen with a 320 MB default; here it is one budget per kmscon process, sized from its displays.
   - Byte-for-byte agreement with upstream on every tier 1 golden that records the DA1 reply, which gains attribute 4.
-  - Under `images=auto`, a build host without libpng's development files builds kmscon without images, where before the configure failed. (Added 2026-10-25, Notes "a build without images".)
+  - Under `images=auto`, a build host without libpng's development files builds kmscon without images, where before the configure failed. (Added 2026-10-25, Notes "the minimal build".)
 - **One-way?** No. `image-storage-limit=0` turns both protocols off. Reversing becomes expensive once programs rely on the replies, and once the helper protocol and the frame's placement list are interfaces both kmscon and libtsm build on.
 - **Probes:**
   1. *Not confident (sudo-identity):* answered. The helper reads files as the session's user. Under `sudo`, a program running as root that asks to show `/root/picture.png` is refused with the protocol's generic error, though it could read the file itself. The alternative was to read as whichever program is in the foreground. The operator chose the session's user, deferring to what other systems do, and desktop terminals and sudoedit read as the session's user. The image helper section says how that user is found.
   2. *Confident (helper-decoding):* answered yes. A PNG or compressed image from any program, remote ones included, is decoded by the helper running as you, so a fault in the PNG library cannot become a root fault. The cost is that every PNG image, even one sent inline, passes through that helper.
   3. *Not confident (memory-default):* answered. The draft gave each screen 320 MB, kitty's and Ghostty's default, so one VT could hold 640 MB. The operator asked for a setting, and for kmscon to run on very small machines, so the default now scales with the displays and is capped well below that.
-  4. *Not confident (decoders-in-libtsm):* A build without images leaves out the helper, libpng and sd-login, but libtsm's sixel and kitty decoders stay in the binary, switched off so that no program's output reaches them. For a build made to reduce security concerns, is "present but unreachable" enough, or must that code be absent too, at the cost of a libtsm build option and conditionals in its parser? (Added 2026-10-25, Notes "a build without images".)
-  5. *Confident (zlib-free-fonts):* The minimal build keeps zlib, so it reads the console fonts distributions ship. The strictly zlib-free variant cannot: every PSF font Arch ships is gzipped, so its user unpacks one or draws with the built-in Latin-1 font. Is that the right price for the zlib-free variant? (Added 2026-10-25, Notes "a build without images".)
+  4. *Not confident (decoders-in-libtsm):* A build without images leaves out the helper, libpng and sd-login, but libtsm's sixel and kitty decoders stay in the binary, switched off so that no program's output reaches them. For a build made to reduce security concerns, is "present but unreachable" enough, or must that code be absent too, at the cost of a libtsm build option and conditionals in its parser? (Added 2026-10-25, Notes "the minimal build".)
+  5. *Confident (zlib-free-fonts):* The minimal build keeps zlib, so it reads the console fonts distributions ship. The strictly zlib-free variant cannot: every PSF font Arch ships is gzipped, so its user unpacks one or draws with the built-in Latin-1 font. Is that the right price for the zlib-free variant? (Added 2026-10-25, Notes "the minimal build".) Answered: the operator chose way 1, zlib kept in the minimal build, with the zlib-free build kept as a documented variant: "agree. way 1. with option 2."
 - **Inversion:** Between "images are cell content" (sixel's own model; mlterm and WezTerm store tiles in cells) and "images are a free layer text never touches" (the kitty spec's model). The answer keeps ADR-101's one layer and gives each protocol the erase rules its own specification describes.
 
 ## Context
@@ -432,7 +448,7 @@ This replaces ADR-101's Parsing bullet on DCS and APC: payloads are decoded as t
   - **Deleting** removes the resolved path, never the path as given, and only the file that was checked. The helper opens the resolved path's parent with `openat2` and `RESOLVE_NO_SYMLINKS` (`O_PATH | O_DIRECTORY`), checks with `fstatat(dirfd, base, AT_SYMLINK_NOFOLLOW)` that the entry has the device and inode of the descriptor it read, checks that the helper's own uid owns it, and only then calls `unlinkat(dirfd, base, 0)`. A root helper ignores the sticky bit of `/tmp` and `/dev/shm`, so without the owner check a hostile file root reads could have it delete another user's file; with it, every helper is held to the sticky bit's rule. (Changed 2026-10-24, from the security review of aaronsb/kmscon#162: the owner check is added; this said "checks with `fstatat(dirfd, base, AT_SYMLINK_NOFOLLOW)` that the entry has the device and inode of the descriptor it read, and only then calls `unlinkat(dirfd, base, 0)`".) Deleting by path would let another local user swap a directory component for a symlink after the check and have the helper, running as the session's user, delete one of that user's files elsewhere. A failure leaves the file and is logged; the client's reply is unchanged. (Added 2026-10-24, from the code review of this record's Notes.)
 - **Shared memory** (`t=s`): the name must start with `/`, contain no other `/`, and be at most 255 bytes. It is opened as the user, as `shm_open` would under `/dev/shm` but through the Files bullets' regular-file open, with `openat2` under `/dev/shm` and `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`, so a FIFO or a symlink there is never opened. It is read under the same bounds as a file, and unlinked once opened, whether the read succeeds or not, by `unlinkat` under `/dev/shm` after `fstatat` shows the entry still has the device and inode opened and is owned by the helper's own uid, as Deleting requires. (Changed 2026-10-24, from the security review of aaronsb/kmscon#162: the owner is added; this said "after `fstatat` shows the entry still has the device and inode opened".) (Changed 2026-10-24, from the code review of aaronsb/kmscon#164, matching #162: it was opened "read-only as the user", by `shm_open`, and unlinked by name.) (Changed 2026-10-24, Notes "S and data length; a mechanical helper": this said "must be at least `O` + `S` bytes".)
 - **One failure reply.** Every failure to read (missing, unreadable, not a regular file, a refused location, an offset at or past the end, a read too short for the image) answers the same bytes, `EBADF:Failed to read image file`, the reply the spec gives as kitty's. Inflated data too short for the image is not a read failure and answers EINVAL (What libtsm answers). The reason goes to kmscon's log. (Changed 2026-10-24, from the code review of aaronsb/kmscon#164: this listed "too short" without saying it is the read, and named no offset.)
-- **Decoding.** PNG through libpng, and zlib through zlib, in the helper, which declares both as its own build dependencies. The helper is built only with the `images` build option, which requires libpng and zlib, and zlib only where the `zlib` option allows it (Notes "a build without images"). (Changed 2026-10-25, with the `images` and `zlib` options: this said "zlib is already a direct dependency of kmscon (meson.build); libpng reaches kmscon today only through FreeType's private requirements, and FreeType is an optional backend, so the helper adds libpng to kmscon's build." That sentence had been corrected on 2026-10-24 from "FreeType already links both, so kmscon gains no dependency".) A PNG's header is read and its size checked against `max-graphic-size` before any pixels are allocated.
+- **Decoding.** PNG through libpng, and zlib through zlib, in the helper, which declares both as its own build dependencies. The helper is built only with the `images` build option, which requires libpng and zlib, and zlib only where the `zlib` option allows it (Notes "the minimal build"). (Changed 2026-10-25, with the `images` and `zlib` options: this said "zlib is already a direct dependency of kmscon (meson.build); libpng reaches kmscon today only through FreeType's private requirements, and FreeType is an optional backend, so the helper adds libpng to kmscon's build." That sentence had been corrected on 2026-10-24 from "FreeType already links both, so kmscon gains no dependency".) A PNG's header is read and its size checked against `max-graphic-size` before any pixels are allocated.
 - **Result.** A decoded PNG's pixels, or exactly the bytes the request asked for, come back in a sealed memfd over the helper's socket. kmscon maps it read-only, checks its size (width x height x 4 within the limits for a PNG, the bytes asked for otherwise), and hands it to libtsm, which converts and stores it. (Changed 2026-10-24, Notes "S and data length; a mechanical helper": this said "The pixels come back in a sealed memfd over the helper's socket. kmscon maps it read-only, checks that its size is exactly width x height x 4 and the size within the limits, and stores it.") One request per session is out at a time.
 
 ### Sixel (libtsm)
@@ -657,7 +673,7 @@ Step 5 has its own record. Its final scenario is A4 again with `mpv --vo=kitty` 
 - Animation, relative placements and Unicode placeholders answer EINVAL until step 5, so clients can tell they are missing.
 - The image goldens come from the fork alone; upstream libtsm cannot judge them.
 - Pictures scale with the cell size, so a zoomed console shows them larger, and a second display with another font size draws them at its own scale.
-- A build may leave images out (`-Dimages=disabled`), and a build that does answers every image query as `--no-sixel --no-kitty-graphics` does; libtsm's DECRQM answers for modes 80, 1070 and 8452 change to 0 whenever sixel is off, in every build. (Added 2026-10-25, Notes "a build without images".)
+- A build may leave images out (`-Dimages=disabled`), and a build that does answers every image query as `--no-sixel --no-kitty-graphics` does; libtsm's DECRQM answers for modes 80, 1070 and 8452 change to 0 whenever sixel is off, in every build. (Added 2026-10-25, Notes "the minimal build".)
 
 ## Alternatives Considered
 
@@ -962,7 +978,7 @@ option('sd_login', type: 'feature', value: 'auto',
 - `auto` and `enabled` look for `libsystemd`, then `libelogind`; both provide `<systemd/sd-login.h>`, libelogind's pkg-config file adding its include directory. `enabled` with neither fails the configure, `auto` builds without, and `disabled` looks for neither. The result is `BUILD_ENABLE_SD_LOGIN` in `config.h` and a line in the build summary, as the other features have.
 - Only kmscon links it, for `sd_get_seats` (whether logind is running, failing closed), `sd_pid_get_session` on the pty's child and on kmscon itself, `sd_session_get_class` and `sd_session_get_uid`; the helper never does. (Changed 2026-10-24, from the code review of aaronsb/kmscon#164: `sd_get_seats` is added; this said "for `sd_pid_get_session` on the pty's child and `sd_session_get_uid`".) (Changed 2026-10-24, from the security review of aaronsb/kmscon#162, with The image helper, Identity: kmscon's own session and the session's class are added; this said "`sd_pid_get_session` on the pty's child and `sd_session_get_uid`".) Built without it, or with no logind running, the identity is the pty's owner, except that a root owner reads no file and decodes as `kmscon-image` or `nobody`; with logind running and the child in no logind session, file media are refused (The image helper, Identity). (Changed 2026-10-24 with the refusal before login and the operator's "Never read as root by fallback": this said "Built without it, or with the child in no logind session, the identity is the pty's owner, as this record says.")
 - The name follows `meson.options`, where every option is snake case (`video_drm2d`, `font_freetype`).
-- sd-login is looked for only in a build with images, since only the helper's identity uses it. With `images` disabled, `sd_login` at `auto` finds nothing and `enabled` fails the configure, naming `images`. (Added 2026-10-25, Notes "a build without images".)
+- sd-login is looked for only in a build with images, since only the helper's identity uses it. With `images` disabled, `sd_login` at `auto` finds nothing and `enabled` fails the configure, naming `images`. (Added 2026-10-25, Notes "the minimal build".)
 
 ### tsm-replay's fixture host
 
@@ -1052,11 +1068,74 @@ Two decisions of the operator's, recorded as considered entries above, and edite
 - **Never root by fallback:** wherever the identity comes from the pty's owner and is uid 0, file media are refused and inline PNG and zlib decode as `kmscon-image` or `nobody`, as before login; only a uid 0 logind authenticated runs the helper as root (The image helper, Identity). 4b implements it with the refusal before login.
 - **What changes for 4a and 4b:** the request struct and the result call in libtsm: the protocol at version 2, the request losing `format`, `width`, `height` and `size` for `read_max` and `min_bytes`, and the flags gaining `PNG` and `EXACT`; the reply's status becoming an outcome; the helper's steps; and the fixture host. libtsm now converts `f=24` and `f=32` bytes from files and shared memory, as it converts inline data, so the helper holds no knowledge of kitty's pixel formats.
 
-## Notes (2026-10-25, a build without images)
+## Notes (2026-10-25, the minimal build)
 
-The operator asked for a build that leaves out what images need: "I was thinking about a compiler or feature option that can optionally build a 'libdrm only' approach as an alternate to zlib and libpng. A server that just needs the basics and will never display graphics seems still valuable". On the default they said: "I'd go with auto. zlib is pretty universal I suppose. but someone might want to deliberately build a dependency reduced output for reducing security concerns". Both are recorded as basis and considered entries above. This section decides the build options, what a build without images leaves out, how its replies stay truthful, the zlib-free build, the tests and the order of work. Passages above that it changes carry a dated note naming it.
+The operator asked for a build that leaves out what images need: "I was thinking about a compiler or feature option that can optionally build a 'libdrm only' approach as an alternate to zlib and libpng. A server that just needs the basics and will never display graphics seems still valuable". On the default: "I'd go with auto. zlib is pretty universal I suppose. but someone might want to deliberately build a dependency reduced output for reducing security concerns". Shown an example set of options, they said "I like your minbuild example. I think that's what I'm actually thinking of", and "the point is, an absolute minbuild basically ends up a lot like fbcon in use". Offered two ways to treat zlib, they chose "agree. way 1. with option 2.": way 1 keeps zlib in the minimal build, and option 2, no zlib at all, stays a documented variant. On the documentation: "let's make sure the documentation for minbuild describes the tradeoff", then "we can reference our 'potato computer standard' though". All are considered entries above.
+
+This section decides the minimal build, the zlib-free variant, the `images` option they are built from, how a build without images keeps its replies truthful, the tests and the order of work. Passages above that it changes carry a dated note naming it.
+
+### The minimal build
+
+kmscon's original purpose is a userspace replacement for the kernel's console. The minimal build is that console with nothing it does not need: text on the screen through DRM or fbdev, read and written through a pty, with keyboard input through xkbcommon.
+
+**Selecting it** takes one line, a meson machine file holding the build's options:
+
+```sh
+meson setup builddir --native-file scripts/profiles/minimal.ini
+```
+
+`scripts/profiles/minimal.ini` sets, under `[project options]`: `images`, `video_drm3d`, `renderer_gltex`, `font_freetype`, `font_pango` and `dbus` to `'disabled'`; `zlib`, `font_psf` and `font_unifont` to `'enabled'`, so that a host without zlib fails the configure rather than building a different console; and leaves `video_drm2d` and `video_fbdev` at `auto` and `libseat` at its default, `disabled`. A `-D` given after it overrides any of them. The file is the profile's one definition: the README's line, `make test PROFILE=minimal` in the dev container (`fork/profiles.mk`, building into `fork/build-minimal`) and the CI job all read it. A machine file's `[project options]` is meson's own way of carrying a set of options; upstream has no build profiles, so this is no departure under ADR-303.
+
+**unifont stays.** kmscon tries the font backends in the order freetype, pango, unifont, psf, 8x16 (`default_backend` in `font.c`), and the default `font-name` is `monospace`, which mod-psf cannot open as a file. With freetype and pango out, unifont is what draws when no PSF font is configured, and it covers the Basic Multilingual Plane; without it, that console falls to the built-in 8x16 font, U+0000 to U+00FF. Its cost is zlib, which way 1 keeps, and a 1.9 MB module.
+
+**What it links,** read with `readelf -d` from a current build of `main` and confirmed in the meson files:
+
+| Installed file | Libraries it names (`NEEDED`) |
+|---|---|
+| `kmscon` | libxkbcommon, libudev, libdrm, libm (libmvec), libc |
+| `mod-psf.so` | libz, libc |
+| `mod-unifont.so` | libz, libc |
+
+- A default build's `kmscon` names libsystemd and libdbus-1 as well: sd-login for the image helper's identity, and D-Bus for reading the keyboard layout from systemd-localed (`src/misc/dbus.c`, `org.freedesktop.locale1`). The minimal build leaves both out, through `images` and `dbus`.
+- libtsm is built in as a static subproject, its only optional dependency xkbcommon; libxkbcommon, libudev, libdrm and libz name only libc (and libgcc_s for libudev) on the session's Arch host. Nothing in the closure is image-, GL- or font-shaping-related, and zlib appears in the two font modules only.
+- Not installed: `kmscon-image-helper`, `kmscon-image.conf`, `mod-drm3d.so`, `mod-gltex.so`, `mod-freetype.so`, `mod-pango.so`.
+
+**The trade, for the user-facing documentation.** The README's install section gains "Minimal build", after the options table, with the selecting line and this trade, written by the step that adds the profile (Order of work), in the README's plain register:
+
+| | |
+|---|---|
+| **You keep** | text with 16, 256 and 24-bit colours; Unicode through a PSF font, with unifont as the fallback; xkb keyboard layouts set with `--xkb-layout` or kmscon.conf; scrollback; drm2d and fbdev on every display; multiseat |
+| **You give up** | inline images, sixel and the kitty graphics protocol; GPU drawing, so `hwaccel` has nothing to turn on; FreeType and Pango text: outline fonts, ligatures and other shaping, complex scripts, colour emoji, and fontconfig's font fallback; the keyboard layout from `localectl` |
+| **You gain** | fewer libraries and less code reading untrusted data: no PNG decoder, no image helper, no GL stack, no font shaper, no D-Bus; a smaller install; a console that starts with libdrm, libudev, libxkbcommon and zlib alone |
+| **Who it is for** | consoles on servers and appliances that show only text, rescue and recovery systems, and old or small hardware |
+
+The documentation's one line of tone, as the operator asked, cites the fork's potato computer standard: the minimal build is made for that class of machine, and tier 3's `2d-1366x768-potato` variant (1 vCPU, 512 MB, 1366x768, drm2d and bbulk; ADR-104, ADR-108, ADR-109) is its baseline.
+
+**Beside the kernel's console.** The minimal build is used much as fbcon is, and the documentation says how they compare:
+
+- *Matches fbcon:* it needs no session manager, display server, D-Bus or logind, only a DRM or fbdev device, udev and its own files; it reads the PSF fonts `setfont` reads (`/usr/share/kbd/consolefonts/*.psfu.gz` on Arch). Running it from an initramfs that has udev is in reach, and untested.
+- *Adds to it:* Unicode beyond a PSF font's 512 glyphs, 24-bit colour, xkb layouts, scrollback (fbcon's was removed in Linux 5.9), more than one seat, and DRM modesetting per display.
+- *Stays in the kernel:* messages before userspace starts, and panic output, which the kernel draws itself through drm_panic.
+
+### The zlib-free variant
+
+Option 2, for a build with no zlib at all. It adds a second machine file:
+
+```sh
+meson setup builddir --native-file scripts/profiles/minimal.ini --native-file scripts/profiles/no-zlib.ini
+```
+
+`no-zlib.ini` sets `zlib = 'disabled'` and `font_unifont = 'disabled'`; meson reads the files in order. Its extra cost: mod-psf reads uncompressed fonts only, and every PSF font Arch's kbd ships is gzipped (374 of 374 in `/usr/share/kbd/consolefonts`). The user decompresses one, `gunzip -c /usr/share/kbd/consolefonts/ter-v16n.psf.gz > /etc/kmscon/ter-v16n.psf`, and names it with `font-name=/etc/kmscon/ter-v16n.psf`; without one, text outside U+0000 to U+00FF draws only where kmscon's box-drawing and block-element sprites cover it. The documentation says this beside the trade table.
+
+How zlib becomes optional:
+
+- **A build fix: genunifont only with unifont.** `genunifont`, its `unifont-bin` target and the build machine's zlib lookup move inside `if enable_font_unifont`. Today `-Dfont_unifont=disabled` still needs the build machine's zlib at configure time and still builds genunifont, a tool for a module that is not built. That is a defect in upstream's build, not a convention; it lands first, and is offered upstream as a PR when the operator asks for it.
+- **A `zlib` feature option,** default `auto`, named after its library as `libseat` and `dbus` are. `images` and `font_unifont` require it in the feature loop. mod-psf reads gzip fonts when zlib is found, through a declared dependency carrying `-DKMSCON_PSF_GZ=1`, as `harfbuzz_raster_deps` carries `-DKMSCON_HB_RASTER=1`; without it, a gzip font fails with a line naming the build ("compressed PSF fonts need zlib, which this build leaves out"), and font selection moves to the next backend as for any font mod-psf cannot load. It is an option rather than whatever the build host has, because zlib is on nearly every build host, and a build meant to leave it out must be able to say so.
+- **The departure (ADR-303 point 3).** Convention: upstream requires zlib for every build (`dependency('zlib')` and `dependency('zlib', native: true)` in `meson.build`), and mod-psf always reads gzip fonts. What fails under it: a build with no zlib cannot be made. On a host without zlib's development files the configure stops at that line, and on one with them `readelf -d mod-psf.so` lists `libz.so.1` whatever options are given. Scope: the `zlib` option in `meson.options`, the two zlib lookups in `meson.build`, the dependencies of mod-psf and mod-unifont in `src/font/meson.build`, and the gzip branch of `font_psf.c`. With zlib found, as under `auto` on nearly every host and in the minimal build, every build reads what it reads today. End condition: upstream making zlib optional in its own way, decided at that sync (point 6), or the zlib-free variant being retired. It adds an option users see, so under point 4 it goes to the operator before merge, as the PR's question.
 
 ### The `images` option
+
+The minimal build is made from it, and it stands alone for a build that drops images and keeps the rest.
 
 ```meson
 option('images', type: 'feature', value: 'auto',
@@ -1067,12 +1146,12 @@ option('images', type: 'feature', value: 'auto',
 - Under `auto`, a build host without libpng's development files now builds kmscon without images, where today the configure fails. The summary line shows it, and `fork/pkg/PKGBUILD` passes `-D images=enabled`, so the fork's package cannot lose images to a missing package.
 - The option is not a departure under ADR-303: upstream has no images, so there is no convention to leave (point 1), and the option takes the form upstream's feature options have.
 
-### What a build without images leaves out
+What a build without images leaves out:
 
 | Part | With images | Without |
 |---|---|---|
 | libpng | linked by `kmscon-image-helper` | not looked for |
-| zlib, for the helper | linked by the helper | not needed by images; the fonts may still use it (The zlib-free build) |
+| zlib, for the helper | linked by the helper | not needed by images; the fonts may still use it |
 | `kmscon-image-helper` | built, installed in the module directory | not built or installed |
 | `kmscon-image.conf` (sysusers.d) | installed | not installed |
 | sd-login and the `sd_login` option | the helper's identity | not looked for; `-Dsd_login=enabled` fails the configure (The `sd_login` build option) |
@@ -1081,8 +1160,8 @@ option('images', type: 'feature', value: 'auto',
 | libtsm's sixel decoder and kitty parser | turned on by kmscon | compiled into the static libtsm, never turned on |
 | the image budget, bbulk's and gltex's placement bands, the render timer | built | built, unchanged |
 
-- **One seam, `terminal_image.h`.** terminal.c reaches the host side only through it. A build without images compiles `terminal_image_none.c` in place of `terminal_image.c`, `image_host.c` and `image_identity.c`: `terminal_image_init` installs no hook and succeeds, `terminal_image_input` feeds `tsm_vte_input` and returns true, `terminal_image_busy` answers false, and the rest do nothing. `src/meson.build` picks the sources, so terminal.c, terminal_vte.c and the renderers carry no conditional. The C conditionals the two options add are three: the aftercheck and the version line in config.c, and the gzip branch in font_psf.c.
-- **`--sixel` and `--kitty-graphics`.** Each gets an aftercheck, the convention upstream's `aftercheck_drm` sets for `--drm` in a build without DRM: in a build without images it logs at info level, "no image support built; disabling --sixel" (and `--kitty-graphics`), and turns the option off. As with `--drm`, the defaults and `--help` are the same in both builds. The other image settings (`image-storage-limit`, `max-graphic-size`, `num-color-registers`, `private-color-registers`) are parsed and do nothing, so one kmscon.conf serves both builds; `render-timer` works in both. `kmscon --version --verbose` lists "Images (sixel, kitty graphics): enabled" or "disabled" beside the other build options, and the man page's images section says a build may leave them out.
+- **One seam, `terminal_image.h`.** terminal.c reaches the host side only through it. A build without images compiles `terminal_image_none.c` in place of `terminal_image.c`, `image_host.c` and `image_identity.c`: `terminal_image_init` installs no hook and succeeds, `terminal_image_input` feeds `tsm_vte_input` and returns true, `terminal_image_busy` answers false, and the rest do nothing. `src/meson.build` picks the sources, so terminal.c, terminal_vte.c and the renderers carry no conditional. The C conditionals the `images` and `zlib` options add are three: the aftercheck and the version line in config.c, and the gzip branch in font_psf.c.
+- **`--sixel` and `--kitty-graphics`.** Each gets an aftercheck, the convention upstream's `aftercheck_drm` sets for `--drm` in a build without DRM: in a build without images it logs at info level, "no image support built; disabling --sixel" (and `--kitty-graphics`), and turns the option off. As with `--drm`, the defaults and `--help` are the same in every build. The other image settings (`image-storage-limit`, `max-graphic-size`, `num-color-registers`, `private-color-registers`) are parsed and do nothing, so one kmscon.conf serves every build; `render-timer` works in all. `kmscon --version --verbose` lists "Images (sixel, kitty graphics): enabled" or "disabled" beside the other build options, and the man page's images section says a build may leave them out.
 - **The renderers' image code stays.** bbulk's and gltex's placement bands, the scaled-picture cache and `image_budget.c` need no library and read nothing a program sends: they draw the placements libtsm's frame lists, and with both protocols off it lists none. The render timer's `osd` is itself a top-band placement (Render timer, above), so leaving the bands out would remove it, and would put conditionals into bbulk.c, gltex.c, the text interface, seat.c and terminal.c. The cost is that code in the binary, idle.
 - **libtsm needs no build option.** Sixel and the kitty protocol are off in libtsm until the host turns them on and gives the screen a budget (libtsm.h), and a build without images never turns them on. With them off, a sixel DCS is ignored and a kitty APC is scanned only for its end, so the decoders are compiled in and unreachable from a program's output. Leaving them out would need a libtsm option and conditionals in `tsm-vte.c`'s dispatch; this record does not add one, and the Summary's probe 4 asks whether that is enough.
 - **The helper and font paths.** OSC 50 font paths (#77) are to be opened by the same helper (The image helper, Font paths). If #77 lands, the helper is built when either needs it, and a build with neither refuses font paths.
@@ -1096,38 +1175,21 @@ ADR-201 asks every reply to describe what the terminal does. A build without ima
 - A kitty command gets no reply, so a client's detection, a query followed by DA1, sees DA1 alone and reports no support.
 - XTWINOPS 14 and 16 still answer, as with sixel off (Notes of 2026-10-23): the text area and cell sizes are true without images.
 - **DECRQM 80, 1070 and 8452** answer 1 or 2 today whatever sixel's state, though with sixel off those modes change nothing a program can see, while DA1 and XTSMGRAPHICS already say sixel is absent. libtsm changes that for every way sixel is off: a build without images, `--no-sixel`, `image-storage-limit=0`, a display whose renderer draws no placements. While sixel is off, DECRQM answers 0, not recognised, for the three, under ADR-201's "Truthful, else unknown"; SM and RM still store them, so their state holds when a display change turns sixel back on. The three rows gain a host value, `HOST_SIXEL`, in ADR-201's host column, which names "whether the embedding program must act for the mode to have its effect". ADR-201's modes-sweep checks "DECRQM replies 0 exactly when the table has no row" with sixel on, and checks with it off that those three rows answer 0. The libtsm PR edits ADR-201's host column with a dated note, and moves, in a commit of its own, any tier 1 golden that records DECRQM for these modes with sixel off.
-- **terminfo.** `kmscon.ti` advertises no image capability, and stays so: programs find images through DA1 and the kitty query, and one terminfo entry, packaged apart from kmscon on Arch, serves builds with and without images.
+- **terminfo.** `kmscon.ti` advertises no image capability, and stays so: programs find images through DA1 and the kitty query, and one terminfo entry, packaged apart from kmscon on Arch, serves every build.
 
 ### The capability probes
 
 - Five probes go through kmscon's own path, `terminal_vte_new` with kmscon's default configuration parsed by its own option table, so they answer for the build: `sixel` (DA1 carries attribute 4, and XTSMGRAPHICS reads the register count), `kitty-graphics` (an `a=q` with `i` gets OK), and `mode-80`, `mode-1070` and `mode-8452` (DECRQM answers 1 or 2), the probes ADR-201 asks of a supported row whose host value is not `HOST_NONE`. They live in a new `tests/test_capabilities_images.c`.
 - `capabilities.list` names a build feature in the issue column, `-Dimages`, for each: in a build with images the probe is `works`; in a build without, it must fail, and a pass is red, as for a `missing` probe. `run.py` learns the build's features from the arguments the meson test passes. These probes never `skip`: every build can judge them.
-- `test_terminal_image`'s `test_cursor_blink_setting`, which tests no image code, moves to a test built in both, since `test_terminal_image`, `test_image_host` and `test_image_helper` are built only with images.
+- `test_terminal_image`'s `test_cursor_blink_setting`, which tests no image code, moves to a test built in every build, since `test_terminal_image`, `test_image_host` and `test_image_helper` are built only with images.
 - COVERAGE.md gains a row for the build without images.
-
-### The zlib-free build
-
-zlib has four users today: the helper (zlib data), mod-psf (gzip PSF fonts, through `gzdopen`, from upstream), mod-unifont (its glyphs, compressed into the module and inflated at load) and genunifont (a build tool, run on the build machine, that compresses them). `meson.build` requires zlib for the host and the build machine in every build, as upstream's does.
-
-- **A build fix: genunifont only with unifont.** `genunifont`, its `unifont-bin` target and the native zlib lookup move inside `if enable_font_unifont`. Today `-Dfont_unifont=disabled` still needs the build machine's zlib at configure time and still builds genunifont, a tool for a module that is not built. That is a defect in upstream's build, not a convention; the fix lands first, and is offered upstream as a PR when the operator asks for it.
-- **A `zlib` feature option,** default `auto`, named after its library as `libseat` and `dbus` are. `images` and `font_unifont` require it in the feature loop. mod-psf reads gzip fonts when zlib is found, through a declared dependency carrying `-DKMSCON_PSF_GZ=1`, as `harfbuzz_raster_deps` carries `-DKMSCON_HB_RASTER=1`; without it, mod-psf reads uncompressed fonts only, and a gzip font fails with a line naming the build ("compressed PSF fonts need zlib, which this build leaves out"), so font selection moves to the next backend as for any font mod-psf cannot load. It is an option, not left to whatever the build host has, because zlib is on nearly every build host, and a build meant to leave it out must be able to say so.
-- **The departure (ADR-303 point 3).** Convention: upstream requires zlib for every build (`dependency('zlib')` and `dependency('zlib', native: true)` in `meson.build`), and mod-psf always reads gzip fonts. What fails under it: a build with no zlib cannot be made. On a host without zlib's development files the configure stops at that line, and on one with them `readelf -d mod-psf.so` lists `libz.so.1` whatever options are given. Scope: the `zlib` option in `meson.options`, the two zlib lookups in `meson.build`, the dependencies of mod-psf and mod-unifont in `src/font/meson.build`, and the gzip branch of `font_psf.c`. With zlib found, as under `auto` on nearly every host, every build reads what it reads today. End condition: upstream making zlib optional in its own way, decided at that sync (point 6), or the zlib-free build being retired. It adds an option users see, so under point 4 it goes to the operator before merge, as the Summary's probe 5 and the PR's question.
-
-### Two reduced builds
-
-Each is a set of options, written in `docs/fork/development.md` and built by a CI job (Tests, below).
-
-- **The minimal build** keeps zlib and drops what draws graphics or needs a GPU: `-Dimages=disabled -Dvideo_drm3d=disabled -Drenderer_gltex=disabled -Dfont_pango=disabled`. It keeps drm2d, fbdev, bbulk, mod-psf with gzip fonts, mod-unifont, mod-freetype and the built-in 8x16 font. No installed file links libpng, sd-login, EGL, GLESv2, gbm or Pango directly. mod-freetype links FreeType, which links libpng and zlib on common distributions (Arch's freetype2 depends on both) to read font files, never a program's output; `-Dfont_freetype=disabled` takes libpng out of every library the build loads.
-- **The zlib-free build** adds `-Dzlib=disabled -Dfont_freetype=disabled` to the minimal build, with `images` and `font_unifont` at `auto` or `disabled` (either at `enabled` fails the configure). No library any installed file loads is zlib or libpng. What it costs the user:
-  - no images;
-  - no unifont, so glyphs outside the PSF font's table fall to the built-in 8x16 font, which holds U+0000 to U+00FF, and the box drawing and block elements kmscon draws as sprites;
-  - no gzip PSF fonts: every PSF font Arch's kbd ships is gzipped (374 of 374 in `/usr/share/kbd/consolefonts`), so the user unpacks one and names it with `font-name`, or uses the 8x16 font;
-  - no FreeType or Pango: no outline fonts, colour emoji or shaped clusters.
 
 ### Tests
 
-- **CI.** `.github/workflows/meson.yml` gains a job per reduced build beside the Ubuntu job: configure, build, `meson test`, and `meson install --destdir` into a staging tree. The minimal job checks with `readelf -d` that no installed binary or module names libpng, libsystemd or libelogind, EGL, GLESv2, gbm or Pango among its `NEEDED` entries, and that neither `kmscon-image-helper` nor `kmscon-image.conf` is installed. The zlib-free job checks with `ldd` that no installed binary or module loads `libz` or `libpng`, so a library that brings zlib back indirectly is named. Both check the build summary: `images` false, and in the zlib-free job `zlib` and `font_unifont` false.
-- **Locally,** a make variable adds setup options and a build directory of its own, so `make test` runs either profile in the dev container, as the tier targets live in `fork/*.mk`.
+- **CI.** `.github/workflows/meson.yml` gains two jobs beside the Ubuntu job, each configuring with the profile's machine files, building, running `meson test`, and installing with `meson install --destdir` into a staging tree whose every executable and module it then checks:
+  - *minimal:* `ldd` finds no libpng, no GL library (libEGL, libGLESv2, libGL, libgbm), no libpango, libharfbuzz, libfreetype or libfontconfig, and no libsystemd or libdbus-1, in the closure of any installed file; `readelf -d` finds `libz.so.1` named by `mod-psf.so` and `mod-unifont.so` and by nothing else; `kmscon-image-helper` and `kmscon-image.conf` are not installed; the build summary shows `images`, `video_drm3d`, `renderer_gltex`, `font_freetype`, `font_pango` and `dbus` false.
+  - *zlib-free:* the minimal job's checks, and `ldd` finds no libz in the closure of any installed file; `mod-unifont.so` is not installed; the summary shows `zlib` and `font_unifont` false.
+- **Locally,** `make test PROFILE=minimal` and `make test PROFILE=zlib-free` run the same builds in the dev container, each in a build directory of its own.
 - **What each build proves.** The probes above answer "no images" in both reduced builds and "images" in the default build, and `make test` passes in all three. The tier 2 and tier 3 runs stay on the default build: the reduced builds change no drawing path.
 - **mod-psf** gains a unit test loading an uncompressed PSF fixture in every build, and a gzip one that loads with zlib and fails with the logged line without it.
 
@@ -1135,8 +1197,12 @@ Each is a set of options, written in `docs/fork/development.md` and built by a C
 
 1. **The genunifont fix.** A small kmscon PR: about 20 lines of `src/font/meson.build` moved inside the unifont condition.
 2. **libtsm, `HOST_SIXEL`.** DECRQM 80, 1070 and 8452 answer 0 while sixel is off; the modes-sweep runs with sixel on and checks the three with it off; `fork/modes.md` and `fork/modes.tsv` regenerated; ADR-201's host column note. Then the kmscon pin bump. About 60 lines and their tests.
-3. **kmscon, `images`.** The option, `terminal_image_none.c`, the aftercheck and the version line, the helper, sysusers and sd-login gating, the tests built only with images, the blink test moved, `-D images=enabled` in the PKGBUILD, the man page and kmscon.conf.example, and the five probes with `run.py`'s build features and the COVERAGE.md row, in one PR so that the probes prove the option. About 400 lines.
+3. **kmscon, `images`.** The option, `terminal_image_none.c`, the aftercheck and the version line, the helper, sysusers and sd-login gating, the tests built only with images, the blink test moved, `-D images=enabled` in the PKGBUILD, the man page and kmscon.conf.example, the README's options table and its required-dependencies list, and the five probes with `run.py`'s build features and the COVERAGE.md row, in one PR so that the probes prove the option. About 400 lines.
 4. **kmscon, `zlib`.** The option, mod-psf without gzip, its unit test and fixture. About 80 lines.
-5. **CI and the profiles.** The two jobs, the make variable and the profiles in `docs/fork/development.md`. About 100 lines.
+5. **The profiles.** `scripts/profiles/minimal.ini` and `no-zlib.ini`, `fork/profiles.mk`, the two CI jobs, and the README's "Minimal build" section with the trade table, the fbcon comparison and the zlib-free variant's extra step. About 150 lines.
 
-Five PRs, one of them libtsm's with its pin bump, about 650 lines with tests, and no tier 2 or tier 3 golden moves. Steps 1 and 2 can run in parallel; 3 follows the pin bump; 4 and 5 follow 3.
+Five PRs, one of them libtsm's with its pin bump, about 700 lines with tests, and no tier 2 or tier 3 golden moves. Steps 1 and 2 can run in parallel; 3 follows the pin bump; 4 and 5 follow 3.
+
+### Later: the potato variant boots the minimal build
+
+Proposed, not decided here. The documentation says the minimal build is made for the potato class of machine, and nothing tests that on such a machine. A tier 3 variant `2d-1366x768-potato-minimal` would boot a package built with `minimal.ini` on the potato machine (1 vCPU, 512 MB), run the text screens with a PSF font and with unifont, run the image screens to show nothing is drawn and no reply claims images, and record kmscon's resident memory beside the potato variant's. Its text goldens are its own, since freetype draws the default variant's text. It needs the tier 3 build to make a second package and its goldens blessed in their own commit; about a day, after step 5.

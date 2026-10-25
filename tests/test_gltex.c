@@ -2318,7 +2318,8 @@ static void test_atlas_sampling(void)
 
 /*
  * The cache tests draw with patterned glyphs on strips of eight cells (a
- * 64-texel GL_MAX_TEXTURE_SIZE) under a bound of 2 KiB a pool: an alpha pool
+ * 64-texel GL_MAX_TEXTURE_SIZE) under a bound of 2 KiB a pool, with no bound
+ * on its glyph count but where a test sets one: an alpha pool
  * takes two strips of 1 KiB, sixteen narrow slots or eight wide ones, and an
  * RGBA pool one strip of 4 KiB, eight narrow slots or four wide ones. A few
  * frames then reach every step of take_slot().
@@ -2353,6 +2354,7 @@ static void open_cache(struct kmscon_text *txt, struct kmscon_font *font,
 	patterned = true;
 	assert(gltex_init(txt) == 0);
 	assert(gltex_set(txt) == 0);
+	((struct gltex *)txt->data)->pool_max_glyphs = UINT_MAX;
 	((struct gltex *)txt->data)->pool_max_bytes = CACHE_BOUND;
 }
 
@@ -2594,6 +2596,15 @@ struct ref_pool {
 	bool overshot; /* it took a strip past the bound */
 };
 
+/* the reference's bound: a pool is full at this many slots or bytes */
+static unsigned int ref_glyphs;
+static size_t ref_bytes;
+
+static bool ref_full(const struct ref_pool *rp)
+{
+	return rp->slots >= ref_glyphs || rp->strips * rp->strip_bytes >= ref_bytes;
+}
+
 static void ref_draw(struct ref_pool *rp, uint64_t key, uint64_t frame)
 {
 	unsigned int i;
@@ -2603,9 +2614,8 @@ static void ref_draw(struct ref_pool *rp, uint64_t key, uint64_t frame)
 	if (i == rp->n) {
 		/* a miss: an empty slot, else a strip, else the back's slot */
 		if (rp->n == rp->slots) {
-			if (rp->strips * rp->strip_bytes < CACHE_BOUND ||
-			    rp->last[rp->n - 1] == frame) {
-				rp->overshot |= rp->strips * rp->strip_bytes >= CACHE_BOUND;
+			if (!ref_full(rp) || rp->last[rp->n - 1] == frame) {
+				rp->overshot |= ref_full(rp);
 				rp->strips++;
 				rp->slots += rp->strip_slots;
 			} else {
@@ -2637,17 +2647,20 @@ static void assert_as_ref(const struct pool *pool, const struct ref_pool *rp)
 		i++;
 	}
 	assert(i == rp->n);
-	assert(pool->bytes == rp->strips * rp->strip_bytes);
-	/* past the bound only by a strip a frame of all its glyphs needed */
-	assert(pool->bytes < CACHE_BOUND + rp->strip_bytes || rp->overshot);
+	assert(pool->slots == rp->slots && pool->bytes == rp->strips * rp->strip_bytes);
+	/* not full before its last strip, unless a frame of all its glyphs needed it */
+	assert(rp->overshot || rp->strips <= 1 ||
+	       (pool->slots - rp->strip_slots < ref_glyphs &&
+		pool->bytes - rp->strip_bytes < ref_bytes));
 }
 
 /*
  * #2: seeded random frames of narrow, wide and colour glyphs. After every
  * frame each pool holds the glyphs the reference LRU holds, in its order and
- * in as many bytes, and every cell drew from a slot that held its glyph.
+ * in as many slots and bytes, and every cell drew from a slot that held its
+ * glyph. Run with the pools bounded in bytes, then in glyphs.
  */
-static void test_cache_model(void)
+static void cache_model(unsigned int glyphs, size_t max_bytes)
 {
 	static const size_t bytes[] = {1024, 1024, 4096, 4096};
 	struct ref_pool ref[GLTEX_POOLS];
@@ -2659,6 +2672,8 @@ static void test_cache_model(void)
 	rnd_state = 42;
 	open_cache(&txt, &fake_font, OR_NORMAL);
 	gt = txt.data;
+	gt->pool_max_glyphs = ref_glyphs = glyphs;
+	gt->pool_max_bytes = ref_bytes = max_bytes;
 	memset(ref, 0, sizeof(ref));
 	for (k = 0; k < GLTEX_POOLS; k++) {
 		ref[k].strip_bytes = bytes[k];
@@ -2680,6 +2695,76 @@ static void test_cache_model(void)
 	fprintf(stderr, "cache model: 3000 frames, strips %u %u %u %u, %u pools past the bound\n",
 		ref[0].strips, ref[1].strips, ref[2].strips, ref[3].strips, overshoots);
 	close_cache(&txt);
+}
+
+static void test_cache_model(void)
+{
+	cache_model(UINT_MAX, CACHE_BOUND);
+	cache_model(12, SIZE_MAX);
+}
+
+/* @n distinct glyphs from @cp, @width cells wide, as many a frame as fit */
+static void draw_distinct(struct kmscon_text *txt, uint64_t cp, unsigned int width, unsigned int n)
+{
+	static struct gcell cells[FAKE_COLS * FAKE_ROWS];
+	unsigned int per = txt->cols / width * txt->rows, i, k;
+
+	for (i = 0; i < n; i += k) {
+		for (k = 0; k < per && i + k < n; k++)
+			cells[k] = (struct gcell){cp + i + k, width};
+		cache_frame(txt, cells, k);
+	}
+}
+
+/*
+ * The defaults: a pool holds GLTEX_POOL_GLYPHS glyphs, so it grows with the
+ * font, up to a fourth of GLTEX_CACHE_MAX_BYTES, whichever is less. In 8x16
+ * cells, 1920x1080 with a small font, the count governs: the alpha pool one
+ * cell wide stops at 8192 slots, 32 strips of 256 in 1 MiB, far under its
+ * 64 MiB.
+ */
+static void test_cache_count_governs(void)
+{
+	struct kmscon_text txt;
+	struct gltex *gt;
+
+	open_txt(&txt, OR_NORMAL);
+	gt = txt.data;
+	assert(gt->pool_max_glyphs == 8192 && gt->pool_max_bytes == 64 << 20);
+	draw_distinct(&txt, 0x100, 1, 8192 + 100);
+	assert(gt->pools[0].slots == 8192 && gt->pools[0].bytes == 32 * 2048 * 16);
+	close_txt(&txt);
+}
+
+/*
+ * In 19x41 cells, 7680x2160 with font size 30, an RGBA strip is 2048x64 and
+ * holds 53 colour glyphs two cells wide in 512 KiB: 8192 of them would take
+ * 155 strips, 77.5 MiB, so the ceiling clamps the pool at 128 strips, 64 MiB,
+ * 6784 glyphs. The alpha pool one cell wide in the same cells stops at its
+ * count, 77 strips of 107, 9.6 MiB.
+ */
+static void test_cache_ceiling_clamps(void)
+{
+	struct kmscon_font big = {.width = 19, .height = 41};
+	struct kmscon_text txt;
+	struct gltex *gt;
+
+	disp_w = 1280;
+	disp_h = 800;
+	open_txt(&txt, OR_NORMAL);
+	txt.font = &big;
+	gltex_unset(&txt);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+	patterned = true;
+	draw_distinct(&txt, EMOJI_CP, 2, 7000);
+	assert(gt->pools[3].slots == 128 * 53 && gt->pools[3].bytes == (size_t)64 << 20);
+	draw_distinct(&txt, 0x100, 1, 8300);
+	assert(gt->pools[0].slots == 77 * 107 && gt->pools[0].bytes == (size_t)77 * 2048 * 64);
+	patterned = false;
+	close_txt(&txt);
+	disp_w = 640;
+	disp_h = 480;
 }
 
 /*
@@ -3085,27 +3170,29 @@ static void test_cache_reset(void)
 
 /*
  * Not run by default: GLTEX_MEASURE=1, or GLTEX_CACHE_TEST=measure, prints
- * what a schedule of frames at 7680x2160 in 15x30 cells (512x72) costs the
- * cache, under a pool bound of 4 and of 16 MiB. A seeded text of 6000 CJK ideographs, or of 1400
- * colour emoji, the first commoner by Zipf's law, is scrolled a line a frame for 600 frames, paged
- * down 72 lines a frame for 100 and back up for 100. Misses are glyphs drawn from the font, each 21
- * to 33 us with FreeType.
+ * what a schedule of frames at 7680x2160 in 19x41 cells (font size 30; 404x52
+ * cells, 202 wide glyphs a line) costs the cache: under 4 MiB a pool and no
+ * glyph count, the first bound tried, and under the defaults. A seeded text
+ * of 6000 CJK ideographs, or of 1400 colour emoji, the first commoner by
+ * Zipf's law, is scrolled a line a frame for 600 frames, paged down a screen
+ * a frame for 100 and back up for 100. Misses are glyphs drawn from the font,
+ * each 21 to 33 us with FreeType.
  */
-#define MEASURE_COLS 256 /* wide glyphs a line */
-#define MEASURE_ROWS 72
 #define MEASURE_LINES 8000
+#define MEASURE_MAX_COLS 256
 
-static void measure(bool emoji, size_t bound)
+static void measure(bool emoji, unsigned int glyphs, size_t max_bytes, const char *what)
 {
-	struct kmscon_font font = {.width = 15, .height = 30};
-	static uint32_t text[MEASURE_LINES][MEASURE_COLS];
+	struct kmscon_font font = {.width = 19, .height = 41};
+	static uint32_t text[MEASURE_LINES][MEASURE_MAX_COLS];
 	static double cdf[6000];
-	static struct gcell cells[MEASURE_COLS * MEASURE_ROWS];
-	unsigned int distinct = emoji ? 1400 : 6000, i, j, f, top = 0, frames = 0, worst = 0;
+	static struct gcell cells[MEASURE_MAX_COLS * 64];
+	unsigned int distinct = emoji ? 1400 : 6000, i, j, f, top = 0, worst = 0, cols, rows;
 	uint32_t base = emoji ? EMOJI_CP : WIDE_CP;
 	uint64_t misses = 0, first = 0;
 	struct kmscon_text txt;
 	struct timespec t0, t1;
+	struct gltex *gt;
 	double sum = 0, u;
 
 	for (i = 0; i < distinct; i++)
@@ -3114,7 +3201,7 @@ static void measure(bool emoji, size_t bound)
 		cdf[i] = (u += 1.0 / (i + 1) / sum);
 	rnd_state = 2026;
 	for (i = 0; i < MEASURE_LINES; i++)
-		for (j = 0; j < MEASURE_COLS; j++) {
+		for (j = 0; j < MEASURE_MAX_COLS; j++) {
 			unsigned int lo = 0, hi = distinct - 1;
 
 			u = rnd(1u << 24) / (double)(1u << 24);
@@ -3138,35 +3225,39 @@ static void measure(bool emoji, size_t bound)
 	patterned = true;
 	assert(gltex_init(&txt) == 0);
 	assert(gltex_set(&txt) == 0);
-	((struct gltex *)txt.data)->pool_max_bytes = bound;
+	gt = txt.data;
+	gt->pool_max_glyphs = glyphs;
+	gt->pool_max_bytes = max_bytes;
+	cols = txt.cols / 2;
+	rows = txt.rows;
+	assert(cols <= MEASURE_MAX_COLS && cols * rows <= sizeof(cells) / sizeof(*cells));
 
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	for (f = 0; f < 800; f++) {
 		if (f < 600)
 			top = f;
 		else if (f < 700)
-			top += MEASURE_ROWS;
+			top += rows;
 		else
-			top -= MEASURE_ROWS;
-		for (i = 0; i < MEASURE_ROWS; i++)
-			for (j = 0; j < MEASURE_COLS; j++)
-				cells[i * MEASURE_COLS + j] = (struct gcell){text[top + i][j], 2};
-		cache_frame(&txt, cells, MEASURE_COLS * MEASURE_ROWS);
+			top -= rows;
+		for (i = 0; i < rows; i++)
+			for (j = 0; j < cols; j++)
+				cells[i * cols + j] = (struct gcell){text[top + i][j], 2};
+		cache_frame(&txt, cells, cols * rows);
 		misses += txt.frame_misses;
 		first = f ? first : misses;
-		if (txt.frame_misses > worst)
+		if (f && txt.frame_misses > worst)
 			worst = txt.frame_misses;
-		frames++;
 	}
 	clock_gettime(CLOCK_MONOTONIC, &t1);
 	fprintf(stderr,
-		"measure %s, pool bound %zu MiB: %u frames, %" PRIu64 " misses (%" PRIu64
-		" in the first), at most %u a frame, %zu KiB of strips, %.2f ms a frame here; at "
-		"21-33 us a miss, %.1f-%.1f ms of glyph drawing a frame\n",
-		emoji ? "emoji" : "CJK", bound >> 20, frames, misses, first, worst,
-		((struct gltex *)txt.data)->pools[emoji ? 3 : 1].bytes >> 10,
-		((t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6) / frames,
-		misses * 0.021 / frames, misses * 0.033 / frames);
+		"measure %s, %s: 800 frames, %" PRIu64 " misses (%" PRIu64
+		" in the first, at most %u in a later one), %u slots in %zu KiB of strips; "
+		"%.2f ms a frame here; at 21-33 us a miss, %.1f-%.1f ms of glyph drawing a frame\n",
+		emoji ? "emoji" : "CJK", what, misses, first, worst, gt->pools[emoji ? 3 : 1].slots,
+		gt->pools[emoji ? 3 : 1].bytes >> 10,
+		((t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6) / 800,
+		misses * 0.021 / 800, misses * 0.033 / 800);
 	gltex_unset(&txt);
 	gltex_destroy(&txt);
 	patterned = false;
@@ -3178,10 +3269,10 @@ static void test_cache_measure(void)
 {
 	if (!getenv("GLTEX_MEASURE") && !getenv("GLTEX_CACHE_TEST"))
 		return;
-	measure(false, 4 << 20);
-	measure(false, 16 << 20);
-	measure(true, 4 << 20);
-	measure(true, 16 << 20);
+	measure(false, UINT_MAX, 4 << 20, "4 MiB a pool");
+	measure(false, GLTEX_POOL_GLYPHS, GLTEX_CACHE_MAX_BYTES / GLTEX_POOLS, "the defaults");
+	measure(true, UINT_MAX, 4 << 20, "4 MiB a pool");
+	measure(true, GLTEX_POOL_GLYPHS, GLTEX_CACHE_MAX_BYTES / GLTEX_POOLS, "the defaults");
 }
 
 /* the glyph cache's tests, by name; GLTEX_CACHE_TEST=name runs that one alone */
@@ -3191,6 +3282,8 @@ static const struct {
 } cache_tests[] = {
 	{"cold_oracle", test_cache_cold_oracle},
 	{"model", test_cache_model},
+	{"count_governs", test_cache_count_governs},
+	{"ceiling_clamps", test_cache_ceiling_clamps},
 	{"exact_capacity", test_cache_exact_capacity},
 	{"capacity_plus_one", test_cache_capacity_plus_one},
 	{"frame_overshoot", test_cache_frame_overshoot},

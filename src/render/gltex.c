@@ -135,8 +135,9 @@ struct gl_glyph {
 struct pool {
 	GLenum format;
 	unsigned int cells;
-	struct dlist lru; /* its slots, the most recently drawn first, the empty ones last */
-	size_t bytes;	  /* its strips' textures */
+	struct dlist lru;   /* its slots, the most recently drawn first, the empty ones last */
+	unsigned int slots; /* in its strips */
+	size_t bytes;	    /* its strips' textures */
 };
 
 /*
@@ -195,11 +196,18 @@ struct gltex_pic {
 #define GLYPH_HEIGHT(gly) ((gly)->buf.height)
 #define GLYPH_DATA(gly) ((gly)->buf.data)
 
-/* a pool's strips take new ones until their textures hold this many bytes */
-#define GLTEX_POOL_BYTES (4 << 20)
-
 /* alpha one cell wide, alpha two, RGBA one, RGBA two: see pool_of() */
 #define GLTEX_POOLS 4
+
+/*
+ * A pool holds this many glyphs (pool_full()), so its bytes grow with the
+ * font, up to its share of GLTEX_CACHE_MAX_BYTES, which caps what big cells
+ * cost. Build with -DGLTEX_CACHE_MAX_BYTES=... to change the ceiling.
+ */
+#define GLTEX_POOL_GLYPHS 8192
+#ifndef GLTEX_CACHE_MAX_BYTES
+#define GLTEX_CACHE_MAX_BYTES ((size_t)256 << 20)
+#endif
 
 /* the shader's vertex attributes, gltex_set()'s attr */
 #define GLTEX_ATTRS 7
@@ -212,7 +220,8 @@ struct gltex {
 	/* the glyph cache: the slots holding a glyph, by id, and the pools */
 	struct htable glyphs;
 	struct pool pools[GLTEX_POOLS];
-	size_t pool_max_bytes; /* GLTEX_POOL_BYTES */
+	unsigned int pool_max_glyphs; /* GLTEX_POOL_GLYPHS */
+	size_t pool_max_bytes;	      /* GLTEX_CACHE_MAX_BYTES / GLTEX_POOLS */
 
 	struct dlist atlases;
 
@@ -794,13 +803,13 @@ static void argb_to_rgba(struct kmscon_glyph *glyph)
  * (take_slot()):
  *
  *   1. an empty slot;
- *   2. else, while the pool's strips hold less than pool_max_bytes, an empty
- *      slot of a new strip;
+ *   2. else, while the pool is not full (pool_full()), an empty slot of a
+ *      new strip;
  *   3. else the least recently drawn glyph's slot, which that glyph gives up,
  *      unless this frame draws that glyph: the frame's quads name its cells
  *      until gltex_render();
  *   4. else, every glyph of the pool being on this frame, an empty slot of a
- *      new strip past pool_max_bytes. The pool keeps it.
+ *      new strip past full. The pool keeps it until gltex is set again.
  *
  * As the list is in the order the glyphs were last drawn, a glyph this frame
  * draws at the back means the whole pool is on this frame. A cluster's key
@@ -829,7 +838,8 @@ static void glyphs_init(struct gltex *gt)
 		gt->pools[i].cells = i % 2 + 1;
 		dlist_init(&gt->pools[i].lru);
 	}
-	gt->pool_max_bytes = GLTEX_POOL_BYTES;
+	gt->pool_max_glyphs = GLTEX_POOL_GLYPHS;
+	gt->pool_max_bytes = GLTEX_CACHE_MAX_BYTES / GLTEX_POOLS;
 }
 
 /* every glyph and every atlas; @gl: the GL context is ours */
@@ -876,8 +886,20 @@ static int pool_grow(struct kmscon_text *txt, struct pool *pool)
 		atlas->slots[i].texoff = i * pool->cells;
 		dlist_link_tail(&pool->lru, &atlas->slots[i].lru);
 	}
+	pool->slots += n;
 	pool->bytes += atlas_bytes(atlas);
 	return 0;
+}
+
+/*
+ * @pool is full, and reuses its least recently drawn glyph's slot (step 3),
+ * once it has pool_max_glyphs slots or its strips hold pool_max_bytes,
+ * whichever comes first: the count bounds it in glyphs, whatever their size,
+ * and the bytes cap what big cells cost.
+ */
+static bool pool_full(const struct gltex *gt, const struct pool *pool)
+{
+	return pool->slots >= gt->pool_max_glyphs || pool->bytes >= gt->pool_max_bytes;
 }
 
 /* @glyph was drawn on this frame */
@@ -926,7 +948,7 @@ static struct gl_glyph *take_slot(struct kmscon_text *txt, struct pool *pool)
 		return back;
 
 	/* 2 and 4 */
-	if (!back || pool->bytes < gt->pool_max_bytes || drawn_this_frame(gt, back)) {
+	if (!back || !pool_full(gt, pool) || drawn_this_frame(gt, back)) {
 		if (pool_grow(txt, pool))
 			return NULL;
 		return dlist_last(&pool->lru, struct gl_glyph, lru);

@@ -25,6 +25,7 @@
 # tests, a dry run takes the module directory from RUN_VT_MODULEDIR, calls
 # RUN_VT_LOGINCTL for the session checks, takes the units in RUN_VT_ACTIVE as
 # the active ones, and starts RUN_VT_CHILD in kmscon's place and waits on it.
+# As root, any of the four set is refused.
 #
 # kmscon loads its backend modules from a path compiled in (/usr/lib/kmscon)
 # with no option to change it, and would otherwise load the stock package's
@@ -34,7 +35,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,27s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,28s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -70,6 +71,13 @@ while [ $# -gt 0 ]; do
 done
 vt=${vt:-3}
 fg=
+# The dry run's stand-ins are for the tests, which run without root. As root
+# they are refused, so a dry run there runs nothing its caller chose.
+if [ "$(id -u)" -eq 0 ]; then
+	for v in RUN_VT_MODULEDIR RUN_VT_LOGINCTL RUN_VT_ACTIVE RUN_VT_CHILD; do
+		[ -z "${!v+set}" ] || die "$v is for the tests, which run without root; unset it"
+	done
+fi
 
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 stage=$(readlink -m "$here/../build/demo-root")
@@ -362,13 +370,21 @@ child=$!
 # no open one there (none, or only one closing) means its user logged out.
 # kmscon gone by then is no logout: the loop leaves, and its status decides.
 # Before anyone logs in, kmscon puts up a new prompt each time login gives up.
-# A poll whose list fails tells nothing, and the next one asks again.
+# A poll that fails tells nothing, and the next one asks again; ten in a row
+# get a warning, since the logout cannot end the run while they fail.
 if [ -n "$login" ] && [ -n "$loginctl" ]; then
 	seen=
+	failed=0
 	while running; do
 		sleep 1 &
 		wait $! || true
-		now=$(vt_sessions) || continue
+		if ! now=$(vt_sessions); then
+			failed=$((failed + 1))
+			[ "$failed" -ne 10 ] ||
+				echo "run-vt: loginctl failed 10 polls in a row; until it answers, a logout does not end the run (Ctrl-C here does)" >&2
+			continue
+		fi
+		failed=0
 		if awk 'NF && $2 != "closing" { open = 1 } END { exit !open }' <<<"$now"; then
 			seen=1
 		elif [ -n "$seen" ]; then

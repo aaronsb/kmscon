@@ -683,9 +683,38 @@ def main():
         check("run-vt.sh --login takes a kmscon crash after a login for a crash",
               p.returncode == 3 and "kmscon exited with status 3" in p.stderr
               and "session ended" not in p.stdout, p.stdout + p.stderr)
+        # A watch whose polls keep failing says so, once, and keeps going.
+        p = run_vt_seq("- F", "--login", "8", RUN_VT_CHILD="sleep 12.5")
+        check("run-vt.sh --login warns once after 10 failed polls in a row",
+              p.stderr.count("loginctl failed 10 polls in a row") == 1 and "session ended" not in p.stdout
+              and int(read(count)) >= 12, p.stdout + p.stderr)
         p = run_vt_seq("-", "8", RUN_VT_CHILD="exit 0")
         check("run-vt.sh without --login does not watch the sessions",
               p.returncode == 0 and int(read(count)) == 1, p.stdout + p.stderr)
+
+        # The dry run's stand-ins are for the tests: as root, each is refused,
+        # so a root dry run runs nothing its caller chose. id -u is the check.
+        rootbin = os.path.join(tmp, "rootbin")
+        os.makedirs(rootbin, exist_ok=True)
+        with open(os.path.join(rootbin, "id"), "w") as f:
+            f.write(f'#!/bin/sh\n[ "$*" = -u ] && echo 0 || exec {shutil.which("id")} "$@"\n')
+        os.chmod(os.path.join(rootbin, "id"), 0o755)
+        planted = os.path.join(tmp, "planted-by-child")
+        for var, value in (("RUN_VT_CHILD", f"touch {planted}"), ("RUN_VT_LOGINCTL", fake),
+                           ("RUN_VT_ACTIVE", ""), ("RUN_VT_MODULEDIR", os.path.join(tmp, "moduledir"))):
+            env = dict(os.environ, SUDO_USER="nobody", PATH=rootbin + ":" + os.environ["PATH"],
+                       SEQ="-", COUNT=count, **{var: value})
+            p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run", "--login", "8"],
+                               capture_output=True, text=True, timeout=30, env=env)
+            check(f"run-vt.sh as root refuses {var}",
+                  p.returncode != 0 and f"{var} is for the tests" in p.stderr
+                  and "+ unshare" not in p.stdout and not os.path.exists(planted), p.stdout + p.stderr)
+        p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run", "--login", "8"],
+                           capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, SUDO_USER="nobody", PATH=rootbin + ":" + os.environ["PATH"]))
+        check("run-vt.sh as root takes a dry run without the stand-ins",
+              "is for the tests" not in p.stderr
+              and (p.returncode == 0 or "does not exist" in p.stderr), p.stdout + p.stderr)
 
         # restore() stops kmscon only while it is this script's running job:
         # a PID that kmscon left and another process took is not killed. A
@@ -719,20 +748,6 @@ kill -TERM 1
                   p.returncode == 143 and same and "+ kill -TERM" not in p.stdout,
                   p.stdout + p.stderr + f"\nchild {read(pidfile) if os.path.exists(pidfile) else '?'}"
                   f" taken {read(taken) if os.path.exists(taken) else '?'}")
-
-        for opts, why in ((["--login", "--kit=sixel"], "--login runs no demo"),
-                          (["--login", "--showcase=/v.mkv"], "--login runs no demo"),
-                          (["--login", "--showcase-audio"], "go with --showcase=VIDEO")):
-            p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "8"], capture_output=True, text=True, timeout=30)
-            check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
-        for bad in ("--login=/bin/sh", "--lo", "Nerd"):
-            p = run_vt_copy("--login", "8", "--", bad)
-            check(f"run-vt.sh --login refuses the kmscon option {bad}",
-                  p.returncode != 0 and f"kmscon option '{bad}' is refused" in p.stderr, p.stderr)
-
-        p = subprocess.run(["bash", run_vt, "--dry-run", "05"], capture_output=True, text=True, timeout=30)
-        check("run-vt.sh refuses VT 05", p.returncode != 0 and "not '05'" in p.stderr, p.stderr)
-
 
         for opts, why in ((["--login", "--kit=sixel"], "--login runs no demo"),
                           (["--login", "--showcase=/v.mkv"], "--login runs no demo"),

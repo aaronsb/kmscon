@@ -2807,6 +2807,8 @@ static void cache_model(unsigned int glyphs, size_t max_bytes)
 		overshoots += ref[k].overshot;
 	fprintf(stderr, "cache model: 3000 frames, strips %u %u %u %u, %u pools past full\n",
 		ref[0].live, ref[1].live, ref[2].live, ref[3].live, overshoots);
+	/* the run reached step 4 and give-back, not only steps 1 to 3 */
+	assert(overshoots > 0);
 	close_cache(&txt);
 }
 
@@ -3554,9 +3556,9 @@ static void test_cache_release(void)
 /*
  * The hard stop: with the whole cache allowed one strip past the alpha
  * pool's bound, a frame of 30 distinct glyphs draws the 24 that fit, each its
- * own, and the other 6 blank, the sprites' blank cell with the cell's
- * background and decorations; the cache never passes the stop, which is
- * logged once and not again for the next frame.
+ * own, and the other 6 blank, the sprites' blank cell, whose texels are
+ * clear, with the cell's background and decorations; the cache never passes
+ * the stop, which is logged in the first frame, and again 600 frames on.
  */
 static void test_cache_hard_stop(void)
 {
@@ -3565,8 +3567,8 @@ static void test_cache_hard_stop(void)
 	struct kmscon_text txt;
 	struct gltex *gt;
 	struct gcell cells[30];
-	uint64_t logged;
-	unsigned int f, i;
+	const struct fake_tex *t;
+	unsigned int f, i, x, y;
 	int r;
 
 	open_cache(&txt, &fake_font, OR_NORMAL);
@@ -3576,7 +3578,7 @@ static void test_cache_hard_stop(void)
 	for (i = 0; i < 30; i++)
 		cells[i] = (struct gcell){NARROW_CP + i, 1};
 
-	for (f = 0; f < 2; f++) {
+	for (f = 0; f <= GLTEX_HARD_STOP_LOG_FRAMES; f++) {
 		assert(gltex_prepare(&txt, &attr) == 0);
 		for (i = 0; i < 30; i++) {
 			r = gltex_draw_cell(&txt, &fc, cells[i].key, i, 0, 1, false);
@@ -3593,10 +3595,13 @@ static void test_cache_hard_stop(void)
 			assert(colour_eq(q->bg, fc.bg) && q->ulcell == KMSCON_DECO_SINGLE);
 		}
 		assert(pools_bytes(gt, NULL) <= gt->cache_hard_bytes);
-		if (!f)
-			logged = gt->hard_stop_logged;
-		assert(logged == 2 && gt->hard_stop_logged == logged);
+		/* frame_count, plus one, of the frame that last logged it */
+		assert(gt->hard_stop_logged == (f < GLTEX_HARD_STOP_LOG_FRAMES ? 2 : 602));
 	}
+	t = &texs[gt->deco_atlas->tex];
+	for (y = 0; y < FAKE_CELL_H; y++)
+		for (x = 0; x < FAKE_CELL_W; x++)
+			assert(!t->data[y * t->w + KMSCON_DECO_NONE * FAKE_CELL_W + x]);
 	close_cache(&txt);
 }
 

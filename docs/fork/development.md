@@ -198,7 +198,7 @@ Every changed golden is read: a tier 1 golden line by line in the diff, a tier 2
 
 ### Tier 3
 
-Tier 3 runs the installed package in a KVM guest and needs KVM and QEMU on the host; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements. `make tier3-image` provisions the guest once per set of inputs, into `fork/vm/images` (link it from the main checkout in a new worktree, so every checkout shares the build). `make tier3 JOBS=2` builds the package and runs the 2D variants two at a time. It runs locally only, and the GL variant is outside the default run until #17 is fixed.
+Tier 3 runs the installed package in a KVM guest and needs KVM and QEMU on the host; [fork/tier3/README.md](../../fork/tier3/README.md) has the requirements. `make tier3-image` provisions the guest once per set of inputs, into `fork/vm/images` (link it from the main checkout in a new worktree, so every checkout shares the build). `make tier3 JOBS=2` builds the package and runs the 2D variants two at a time. It runs locally only. The GL variant is outside the default run until its goldens are blessed; its black screen (#17) was a gltex defect, fixed since 9e12309 ([fork/tier3/README.md](../../fork/tier3/README.md)).
 
 ## Goldens are the judge
 
@@ -329,6 +329,6 @@ The rules on this page apply to agents unchanged.
 
 - [#38](https://github.com/aaronsb/kmscon/issues/38): `make test` can build against a stale or mixed libtsm; the manual reset above stands in for it.
 - [#11](https://github.com/aaronsb/kmscon/issues/11): no CI runs the tiers. Every gate on this page runs locally, and the repository's GitHub workflow is upstream's plain build and format checks.
-- [#17](https://github.com/aaronsb/kmscon/issues/17): tier 3's GL variant is outside the default run.
+- [#17](https://github.com/aaronsb/kmscon/issues/17): tier 3's GL variant is outside the default run until its goldens are blessed, and draws no image screens until gltex draws placements (ADR-103 steps 3f and 4e).
 - The ledger's change to one page per run is in progress, so its format is not described here.
 - The rules for reviews and fresh authors are applied by the people and sessions involved; nothing in the repositories enforces them.

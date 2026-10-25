@@ -5,7 +5,7 @@
 #   make pkg            build the package from this checkout -> fork/build/pkg
 #   make tier3-image    fetch, verify and provision the guest base image
 #   make tier3          install the package in a guest and run the 2D variants
-#   make tier3-gl       the same for the GL (virgl) variant, see #17
+#   make tier3-gl       the same for the GL (virgl) variant, outside the default run
 #   make tier3-bless    rewrite the goldens from the last run's captures
 #
 # JOBS=N runs up to N variants at once, each in its own VM (the vCPUs and
@@ -77,7 +77,7 @@ tier3: tier3-image ## Tier 3: the 2D variants, or VARIANTS="2d-1280x800 gl-1280x
 	$(T3_RUN) --pkg-target pkg $(VARIANTS)
 
 .PHONY: tier3-gl
-tier3-gl: tier3-image ## Tier 3 on the GL variant (virgl), outside the default run: #17
+tier3-gl: tier3-image ## Tier 3 on the GL variant (virgl), outside the default run until its goldens are blessed
 	$(T3_RUN) --pkg-target pkg gl-1280x800
 
 .PHONY: tier3-run

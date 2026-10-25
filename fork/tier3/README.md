@@ -8,7 +8,7 @@ Tier 3 of the conformance harness (ADR-301). The fork is packaged the way a user
 make pkg            # build kmscon-aaronsb from this checkout -> fork/build/pkg
 make tier3-image    # fetch, verify and provision the base image, or reuse one built from the same inputs
 make tier3          # pkg, then the 2D variants; report in fork/build/tier3-report.json
-make tier3-gl       # pkg, then the GL variant, which is outside the default run (#17)
+make tier3-gl       # pkg, then the GL variant, which is outside the default run until its goldens are blessed
 make tier3 VARIANTS="2d-1280x800 2d-1366x768-potato gl-1280x800"   # any set of variants
 make tier3-run VARIANTS=2d-1280x800     # without rebuilding the package
 make tier3 JOBS=2   # up to two variants at once, each in its own VM
@@ -170,9 +170,11 @@ The figures are measured on a guest: a vCPU preempted by the host still counts a
 - A2's verdict with a known bottleneck: `mpv-sixel` reporting no frame at a variant with a known bottleneck fails, since only slowness is known (`BottleneckTest.test_known`; the check removed, the test went red). With the known-bottleneck branch of `judge_rate` disabled, the same test failed on its own test-local entry.
 - Tolerance: a golden altered by one channel level at one pixel, with a sidecar `max_delta=1`, `max_pixels=1`, gave `near` and exit 0; without the sidecar the same run gave `fail` and exit 2. The golden was then restored.
 
-## Known failure: the GL renderer under virgl, intermittently
+## The GL variant's black screen (#17), and why it is still outside the default run
 
-In 6 of 16 runs of `gl-1280x800` on this host, one kmscon instance drew nothing: every glyph upload failed with `text_gltex: cannot load glyph data into OpenGL texture (1282: <INVALID_OPERATION>)` (21 504 times per failing run, on the serial log), and the screen stayed black. Four times it was the second instance (tty3, so `vt-switch` failed), twice the first (tty2, so every case failed). The 2D variants have not failed in any run. Whether the fault is in kmscon's gltex atlas code, guest Mesa's virgl driver or the host's virglrenderer is not established; it is tracked in aaronsb/kmscon#17, with versions and a reproduction. Until it is resolved the variant is outside the default `make tier3` and runs with `make tier3-gl`.
+In 6 of 16 runs of `gl-1280x800` measured for #17, one kmscon instance drew nothing: every glyph upload failed with `text_gltex: cannot load glyph data into OpenGL texture (1282: <INVALID_OPERATION>)`, about 21 500 times a run, and the screen stayed black. The cause was in kmscon's gltex, not in virgl. Its atlas lookup took the first entry of its atlas list without checking that the list was empty; on an empty list that is the list head inside gltex's own state, read as an atlas. The fields it read were two floats and the low half of a heap pointer, so whenever address randomisation put that pointer low enough, the first glyph went to a texture name gltex never created, and every upload after it failed. PR #14's build (kmscon at c5b2fa5) reproduced it on this host in 8 of 13 runs, and a diagnostic build of it showed no atlas ever created in each failing run. 9e12309 (2026-10-22) had already replaced the lookup with a walk of the list, which an empty list ends at once. Since then the variant has drawn every glyph: 0 upload failures in 16 consecutive runs at 040f3a9 on 2026-10-25, with both instances drawing in each run, and none in 12 diagnostic runs before them. `test_gltex` holds gltex to the GL texture rules the defect broke.
+
+The variant stays outside the default `make tier3` until its goldens are blessed: `sgr` and `boxdraw` predate #59, and the other text screens have none. Its captures are read before they are committed (ADR-301).
 
 ## Compare tool
 

@@ -481,7 +481,6 @@ if enable_font_freetype and enable_video_drm2d
     test_present = executable(
         'test_present',
         'test_present.c',
-        '../src/terminal_sync.c',
         include_directories: [src_inc, misc_inc],
         dependencies: [
             libtsm_deps,
@@ -499,6 +498,31 @@ if enable_font_freetype and enable_video_drm2d
     test(
         'test_present',
         test_present,
+        args: [meson.current_source_dir() / 'fonts'],
+    )
+
+    # coalescing without mode 2026 (ADR-201 step 6), on a fake clock and a real pty
+    test_coalesce = executable(
+        'test_coalesce',
+        'test_coalesce.c',
+        '../src/terminal_sync.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            libtsm_deps,
+            freetype_deps,
+            fontconfig_deps,
+            harfbuzz_deps,
+            harfbuzz_raster_deps,
+            libdrm_deps,
+            threads_deps,
+            math_deps,
+            shl_deps,
+            htable_deps,
+        ],
+    )
+    test(
+        'test_coalesce',
+        test_coalesce,
         args: [meson.current_source_dir() / 'fonts'],
         timeout: 120,
     )

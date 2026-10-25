@@ -412,6 +412,10 @@ if tic.found() and infocmp.found()
         '--infocmp',
         infocmp.full_path(),
     ]
+    tput = find_program('tput', required: false)
+    if tput.found()
+        caps_args += ['--tput', tput.full_path()]
+    endif
 endif
 test('capabilities', python, args: caps_args)
 

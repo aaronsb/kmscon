@@ -75,6 +75,8 @@ struct screen {
 	bool lost;
 	/* a draw of the child's output waiting for its write to end (terminal_sync.h) */
 	struct terminal_coalesce_display coalesce;
+	/* set_retry_event() asked for a frame that has not reached its prepare yet */
+	bool retry_asked;
 	bool hw_cursor;
 	bool enabled;
 	bool scaled;
@@ -366,16 +368,21 @@ static uint64_t clock_ns(clockid_t id)
 	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 }
 
+/* the soonest the timer asks for a frame whose set is already due */
+#define SET_RETRY_MIN_NS 1000000ULL
+
 /*
  * Arms the timer for the earliest time a screen whose kmscon_text_set()
  * failed may try it again (kmscon_text_retry_due()), or disarms it. The set
  * is tried again in a frame's kmscon_text_prepare(), and a screen with no
  * output and no blink draws no frame, so without the timer it stayed frozen
- * until something else redrew it (#206). A time already past is not armed
- * for: the frame asked for at it either tried the set, and a failure arms
- * again, or is still to come (a flip, a hold of mode 2026), or will not come
- * (a disabled screen, a session in the background) until a redraw that tries
- * the set anyway.
+ * until something else redrew it (#206). A time already past is armed for
+ * SET_RETRY_MIN_NS from now. A screen whose frame the timer has asked for is
+ * left out until that frame reaches its prepare (retry_asked): a flip in
+ * flight or a hold of mode 2026 defers it, and a disabled screen or a session
+ * in the background drops it until the redraw that comes when it can draw,
+ * so the timer never asks again for a time that is still past. In the
+ * background the timer is disarmed.
  */
 static void set_retry_arm(struct kmscon_terminal *term)
 {
@@ -386,7 +393,11 @@ static void set_retry_arm(struct kmscon_terminal *term)
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
 		d = kmscon_text_retry_due(scr->txt);
-		if (d > now && (!due || d < due))
+		if (!d || scr->retry_asked || !term->awake)
+			continue;
+		if (d < now + SET_RETRY_MIN_NS)
+			d = now + SET_RETRY_MIN_NS;
+		if (!due || d < due)
 			due = d;
 	}
 	/* 0 disarms a timer */
@@ -404,7 +415,7 @@ static void do_redraw_screen(struct screen *scr)
 	struct tsm_screen_attr attr;
 	struct kmscon_text_deco deco;
 	uint64_t start;
-	bool presented;
+	bool presented, retrying;
 	int ret;
 
 	if (!scr->term->awake || !kmscon_session_get_foreground(scr->term->session))
@@ -419,6 +430,8 @@ static void do_redraw_screen(struct screen *scr)
 
 	scr->pending = false;
 	scr->lost = false;
+	scr->retry_asked = false;
+	retrying = kmscon_text_retry_due(scr->txt);
 
 	start = clock_ns(CLOCK_MONOTONIC);
 	render_timer_frame_begin(scr->timer);
@@ -437,6 +450,9 @@ static void do_redraw_screen(struct screen *scr)
 		set_retry_arm(scr->term);
 		return;
 	}
+	/* the set succeeded again: the timer no longer waits for this screen */
+	if (retrying)
+		set_retry_arm(scr->term);
 	kmscon_text_draw(scr->txt, scr->term->console, scr->term->cursor_blinking);
 	draw_pointer(scr);
 
@@ -686,10 +702,11 @@ static void display_pageflip(void *unused, void *unused2, void *data)
 }
 
 /*
- * A screen whose font set failed may try it again: it is redrawn, through the
- * same requests as a blink's, so a flip in flight or a hold of mode 2026
+ * Each screen whose failed font set may be tried again is redrawn, through
+ * the same requests as a blink's, so a flip in flight or a hold of mode 2026
  * defers the frame, and a frame whose set still fails is no draw for
- * coalescing (do_redraw_screen())
+ * coalescing (do_redraw_screen()). A screen whose set succeeded has nothing
+ * due and is not redrawn.
  */
 static void set_retry_event(struct ev_timer *timer, uint64_t count, void *data)
 {
@@ -700,8 +717,10 @@ static void set_retry_event(struct ev_timer *timer, uint64_t count, void *data)
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
 		due = kmscon_text_retry_due(scr->txt);
-		if (due && due <= now)
-			redraw_screen(scr, false);
+		if (!due || due > now || scr->retry_asked)
+			continue;
+		scr->retry_asked = true;
+		redraw_screen(scr, false);
 	}
 	set_retry_arm(term);
 }
@@ -1759,6 +1778,8 @@ void terminal_activate(struct kmscon_terminal *term)
 	terminal_image_play(&term->image, true);
 
 	terminal_refresh_displays(term);
+	/* a failed set waiting in the background is tried again now, or on time */
+	set_retry_arm(term);
 }
 
 void terminal_deactivate(struct kmscon_terminal *term)
@@ -1774,6 +1795,8 @@ void terminal_deactivate(struct kmscon_terminal *term)
 		ev_timer_disable(term->blink_cursor);
 	}
 	terminal_image_play(&term->image, false);
+	/* not awake: disarms the timer of a failed font set */
+	set_retry_arm(term);
 }
 
 void terminal_destroy(struct kmscon_terminal *term)

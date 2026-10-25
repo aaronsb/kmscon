@@ -357,16 +357,26 @@ def picker_checks(root):
         p = pick("", AUDIO_DEVICE="pulse/x")
         check("AUDIO_DEVICE answers without a question", p.returncode == 0 and p.stdout == "pulse/x\n",
               p.stdout + p.stderr)
-        # Runs with no act that plays sound ask nothing.
+        # A run whose acts play no sound asks nothing; act 2 has a music cue.
         script = os.path.join(root, "fork/showcase/bad-apple.sh")
-        for first, last, banner, why in (("2", "2", "", "act 2 alone"), ("7", "7", "1", "act 7 --banner-only")):
-            p = subprocess.run(["bash", "-c", 'source "$1"; first=$2 last=$3 banner_only=$4 audio=1 wait_key=1; '
-                                'pick_audio; echo "audio=$audio"', "sh", script, first, last, banner],
+        for first, last, banner, wait_key, want, why in (
+                ("7", "7", "1", "1", "audio=0 \n", "act 7 --banner-only asks for no output"),
+                ("2", "2", "", "0", "audio=1 --audio-device=auto\n", "act 2 alone plays its cue")):
+            p = subprocess.run(["bash", "-c", 'source "$1"; first=$2 last=$3 banner_only=$4 audio=1 wait_key=$5; '
+                                'pick_audio; echo "audio=$audio ${audio_opts[*]}"',
+                                "sh", script, first, last, banner, wait_key],
                                env={"PATH": stubs + ":/usr/bin:/bin", "HOME": tmp, "LIST": listing,
                                     "PICK_AUDIO_SND": snd},
                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
-            check(f"{why} asks for no output", p.returncode == 0 and p.stdout == "audio=0\n"
-                  and "Where should" not in p.stderr, p.stdout + p.stderr)
+            check(why, p.returncode == 0 and p.stdout == want and "Where should" not in p.stderr,
+                  p.stdout + p.stderr)
+        # Every cue the show starts is rendered beside its Strudel source.
+        music = os.path.join(root, "fork/showcase/music")
+        with open(script) as f:
+            started = set(re.findall(r"^\s+cue_start ([\w-]+)", f.read(), re.M))
+        check("every cue the show starts has its .ogg and its Strudel source",
+              started and all(os.path.isfile(os.path.join(music, n + ext)) for n in started for ext in (".ogg", ".js")),
+              " ".join(sorted(started)))
         if os.geteuid() != 0:
             os.chmod(os.path.join(snd, "controlC0"), 0)
             p = pick("0\n")

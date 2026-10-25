@@ -86,6 +86,7 @@ def parser():
     p = cmd("big", scenes.cmd_big, "act 2: big letters, then plasma and shadebobs")
     p.add_argument("text")
     p.add_argument("--font", default="mono12")
+    p.add_argument("--pause", type=float, default=0)
     p.add_argument("--letter", type=float, default=0.14)
     p.add_argument("--hold", type=float, default=1.5)
     p.add_argument("--plasma", type=float, default=6)

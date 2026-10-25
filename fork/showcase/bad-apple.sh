@@ -24,9 +24,10 @@ set -euo pipefail
 # soundtrack, as m:ss. Each plays until the next cue: act 1's outlines, its
 # Braille pass, act 3, act 5 (its last ACT5_GLITCH seconds glitched), then
 # act 7 until the end card's cue (delete that line to play act 7 to the end
-# of the video). Acts 2, 4 and 6 play between them, silent, for the lengths
-# set below, and the soundtrack picks up again at the next cue, so the times
-# are the video's, not the show's. Act 7's three moves are cues too: its one
+# of the video). Acts 2, 4 and 6 play between them for the lengths set
+# below, to music cues of their own (fork/showcase/music), and the
+# soundtrack picks up again at the next cue, so the times are the video's,
+# not the show's. Act 7's three moves are cues too: its one
 # copy slides left (act7-slide), a second copy slides out from behind it
 # (act7-copy2), then a third (act7-copy3); delete a move's line and it never
 # comes. Seconds may carry a fraction (0:54.5). Edit the times here.
@@ -64,13 +65,16 @@ cue() {
 : "${ACT1_DOTS_FPS:=24}"
 : "${ACT1_DOTS_ROWS:=52}"        #   this many rows tall, at most
 
-: "${ACT2_PAUSE:=2.5}"           # the dramatic pause on a black screen
+# Act 2's times fall on its music cue's beats (music/act2-better.js, 138
+# BPM, a sixteenth 0.1087 s, a bar 1.739 s): the "!" on bar 2, the plasma
+# on bar 3, the shadebobs on bar 7, the end on bar 10.
+: "${ACT2_PAUSE:=2.065}"         # the dramatic pause on a black screen (19 sixteenths)
 : "${ACT2_TEXT:=we can do better!}"
-: "${ACT2_LETTER:=0.14}"         #   each letter slams in after this long
-: "${ACT2_HOLD:=1.5}"            #   then holds on black
-: "${ACT2_PLASMA:=6}"            #   then a plasma behind it, this long
-: "${ACT2_FADE:=2}"              #   fading in over this long
-: "${ACT2_BOBS:=5}"              #   then shadebobs, this long
+: "${ACT2_LETTER:=0.1087}"       #   each letter slams in after this long (a sixteenth)
+: "${ACT2_HOLD:=1.630}"          #   then holds on black, until bar 3
+: "${ACT2_PLASMA:=6.957}"        #   then a plasma behind it, this long (4 bars)
+: "${ACT2_FADE:=1.739}"          #   fading in over this long (a bar)
+: "${ACT2_BOBS:=5.217}"          #   then shadebobs, this long (3 bars)
 : "${ACT2_FPS:=60}"              #   frames a second at most
 
 : "${ACT3_START:=$(cue act3-aalib)}"   # aalib (libcaca) in 80x25
@@ -92,9 +96,9 @@ cue() {
 : "${ACT5_DITHER:=none}"         #   mpv's --vo-sixel-dither (none keeps the frames small)
 : "${ACT5_HOLD:=2.5}"            #   the halted frame stays this long
 
-: "${ACT6_FIRE:=5}"              # the fire wipe
+: "${ACT6_FIRE:=5.217}"          # the fire wipe (3 bars of music/act6-fire.js)
 : "${ACT6_CPS:=16}"
-: "${ACT6_CATS:=9}"              #   the cats
+: "${ACT6_CATS:=8.696}"          #   the cats (5 bars of music/act6-cats.js)
 : "${ACT6_DENSITY:=0.55}"        #   share of the screen's cat spots filled
 
 : "${ACT7_START:=$(cue act7-kitty)}"   # kitty graphics, full size
@@ -113,6 +117,7 @@ cue() {
 : "${KITTY_WIDTH:=0}"            #   frames are decoded this many pixels wide (0: a copy's own size, at most 2160 tall); a number limits the player's work on a slow machine
 : "${ACT7_REPORT:=}"             #   a file to append the player's frame rate to
 : "${PLACEHOLDER_SECONDS:=6}"    # a placeholder (act 5 or 7) stays this long
+: "${CUE_LATENCY:=0.1}"          # a music cue's sound starts this long after mpv does (0.10 to 0.13 s through PipeWire here); the act waits for it
 
 : "${BIG_FONT:=mono12}"          # toilet fonts drawn with ▀ ▄ █
 : "${BANNER_FONT:=mono9}"
@@ -394,6 +399,7 @@ MODES_OFF="$E[?1000l$E[?1002l$E[?1003l$E[?1005l$E[?1006l$E[?1015l$E[?1004l$E[?20
 
 bg_pids=()
 audio_pid=
+cue_pid=  # the music cue playing (cue_start)
 ipc_dir=  # act 7's directory for mpv's IPC socket
 audio_started=  # when audio_start last started the soundtrack (EPOCHREALTIME)
 notes_file=  # what the players said on stderr, printed once the screen is back
@@ -461,22 +467,49 @@ player_done() {
 
 stop_bg() {
 	local p
-	for p in "${bg_pids[@]}" $audio_pid; do
+	for p in "${bg_pids[@]}" $audio_pid $cue_pid; do
 		kill "$p" 2>/dev/null || true
 	done
-	for p in "${bg_pids[@]}" $audio_pid; do
+	for p in "${bg_pids[@]}" $audio_pid $cue_pid; do
 		wait "$p" 2>/dev/null || true
 	done
 	bg_pids=()
 	audio_pid=
+	cue_pid=
 	[ -z "$ipc_dir" ] || rm -rf "$ipc_dir"
 	ipc_dir=
 }
 
+# The music cues: original music for the stretches the video's soundtrack
+# does not cover (acts 2, 4 and 6, the end card), rendered from the Strudel
+# files beside them (music/render.mjs) in the soundtrack's key and tempo.
+music=$here/music
+
+# cue_start NAME [mpv option...]: plays music/NAME.ogg, after stopping the
+# cue before it, until it ends, cue_stop, or the soundtrack starts. It
+# returns once the sound has started (CUE_LATENCY), so what the act draws
+# next is in time with it.
+cue_start() {
+	[ "$audio" = 1 ] || return 0
+	cue_stop
+	mpv --no-config --really-quiet --no-input-terminal --no-video \
+		"${audio_opts[@]}" "${@:2}" -- "$music/$1.ogg" </dev/null >/dev/null 2>&1 &
+	cue_pid=$!
+	sleep "$CUE_LATENCY"
+}
+
+cue_stop() {
+	[ -n "$cue_pid" ] || return 0
+	kill "$cue_pid" 2>/dev/null || true
+	wait "$cue_pid" 2>/dev/null || true
+	cue_pid=
+}
+
 # audio_start START LENGTH [mpv option...]: the soundtrack from START for
-# LENGTH seconds (0: to the end).
+# LENGTH seconds (0: to the end), cutting off the cue still ringing.
 audio_start() {
 	[ "$audio" = 1 ] || return 0
+	cue_stop
 	local length=(--length="$2")
 	[ "$2" != 0 ] || length=()
 	# EPOCHREALTIME takes the locale's decimal mark (1792895934,861204 under
@@ -498,12 +531,12 @@ audio_stop() {
 # the screen (--audio) by fork/demo/pick-audio.sh, which AUDIO_DEVICE
 # answers in advance: mpv's name for it, or none for no sound. With
 # --no-wait nothing is asked. Nothing is asked either when no act in the run
-# plays sound (acts 2, 4 and 6, or act 7 with --banner-only).
+# plays sound: act 7 with --banner-only alone.
 audio_opts=()
 pick_audio() {
 	local dev n heard= no_wait=()
 	for ((n = first; n <= last; n++)); do
-		case $n in 1 | 3 | 5) heard=1 ;; 7) [ -n "$banner_only" ] || heard=1 ;; esac
+		[ "$n" = 7 ] && [ -n "$banner_only" ] || heard=1
 	done
 	if [ -z "$heard" ]; then
 		audio=0
@@ -683,10 +716,12 @@ act_1() {
 	clear_screen
 }
 
+# Act 2's pause runs in fx big, which counts it from its own start and draws
+# the letters during it, so they land on the cue's sixteenths.
 act_2() {
 	clear_screen
-	pause "$ACT2_PAUSE"
-	fx big "$ACT2_TEXT" --font "$BIG_FONT" --letter "$ACT2_LETTER" --hold "$ACT2_HOLD" \
+	cue_start act2-better
+	fx big "$ACT2_TEXT" --font "$BIG_FONT" --pause "$ACT2_PAUSE" --letter "$ACT2_LETTER" --hold "$ACT2_HOLD" \
 		--plasma "$ACT2_PLASMA" --fade "$ACT2_FADE" --bobs "$ACT2_BOBS" --fps "$ACT2_FPS"
 	clear_screen
 	pause "$ACT_GAP"
@@ -733,6 +768,7 @@ act_3() {
 }
 
 act_4() {
+	cue_start act4-minute
 	fx type --bar --cps "$ACT4_CPS" --dots "$ACT4_DOTS" --hold "$ACT4_HOLD" \
 		"wait a minute..." "don't we have ... LIBSIXEL?"
 }
@@ -794,11 +830,13 @@ act_6() {
 	# Sixel pixels are cleared before the fire, so none outlive the act;
 	# a placeholder is text, and burns.
 	[ -z "$have_sixel" ] || clear_screen
+	cue_start act6-fire
 	fx effect fire --seconds "$ACT6_FIRE"
 	clear_screen
 	pause "$ACT_GAP"
 	fx type --row 3 --cps "$ACT6_CPS" --dots 0.4 --hold 0.4 \
 		"hold on, we also have kitty." "hold on, feeding the cats"
+	cue_start act6-cats
 	fx cats --top 8 --seconds "$ACT6_CATS" --density "$ACT6_DENSITY"
 	clear_screen
 	pause "$ACT_GAP"
@@ -857,9 +895,12 @@ act_7() {
 	clear_screen
 }
 
+# The end card's epilogue loops until the key that ends it.
 end_card() {
 	[ -t 0 ] || return 0
+	cue_start endcard --loop-file=inf
 	fx endcard --title "kmscon · github.com/aaronsb/kmscon" --text "$END_TEXT"
+	cue_stop
 }
 
 # ------------------------------------------------------------------- main

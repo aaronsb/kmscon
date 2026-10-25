@@ -140,12 +140,12 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
 /*
  * Coalescing without mode 2026 (ADR-201 step 6). Outside a hold, the
  * terminal declines to draw the child's output while it is part way through
- * a write: the last read filled the pty's buffer, or the pty still holds
- * output an input call left. It draws at the first turn that finds neither,
+ * a write: the loop turn parsed at least TERMINAL_SYNC_COALESCE_BYTES, or the
+ * pty still holds output an input call left. It draws at the first turn that finds neither,
  * or once one refresh of the display has passed since its last present,
- * whichever comes first; when the write began after that refresh had passed,
- * as after an idle spell, the refresh is counted from the first turn that
- * waited. The wait adds at most one refresh interval. Every other redraw
+ * whichever comes first; when the output began after that refresh had passed,
+ * as after an idle spell, the refresh is counted from when it began. The
+ * wait adds at most one refresh interval. Every other redraw
  * request (a key press, the blink timers, the pointer, a frame end, a lost
  * picture) draws as before, so a keystroke's echo, a short read, draws at
  * once.
@@ -156,18 +156,21 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
  * one outside 20 to 1000 Hz (fbdev forces 1 Hz when the mode says 0): 60 Hz.
  */
 #define TERMINAL_SYNC_REFRESH_NS (1000000000ULL / 60)
+
+/* the bytes one loop turn parses that count as part way through a write */
+#define TERMINAL_SYNC_COALESCE_BYTES 16384
 #define TERMINAL_SYNC_REFRESH_MIN_NS (1000000000ULL / 1000)
 #define TERMINAL_SYNC_REFRESH_MAX_NS (1000000000ULL / 20)
 
 /*
  * The child's output changed a display's screen at @now_ns. @mid_write: the
  * terminal is part way through the child's write, as above. @presented_ns:
- * the display's last present; @waited_ns: the first turn since then whose
- * draw waited (0: none, this one is); @refresh_ns: the display's refresh
+ * when the display's last present began to be drawn; @owed_ns: when the
+ * output the draw would show began to be parsed (0: now); @refresh_ns: the display's refresh
  * (0: unknown, as is one out of range). Returns 0 to draw now, which a hold turns into a redraw
  * owed, or the time by which to draw if no turn has drawn by then.
  */
 uint64_t terminal_sync_coalesce(const struct terminal_sync *s, bool mid_write, uint64_t now_ns,
-				uint64_t presented_ns, uint64_t waited_ns, uint64_t refresh_ns);
+				uint64_t presented_ns, uint64_t owed_ns, uint64_t refresh_ns);
 
 #endif /* KMSCON_TERMINAL_SYNC_H */

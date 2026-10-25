@@ -359,9 +359,9 @@ static void test_cancel(void)
 /*
  * Coalescing without mode 2026 (ADR-201 step 6): part way through a write,
  * the draw waits until one refresh after the last present, or, when the
- * write began after that, one refresh after the first turn that waited; a
- * short read, a refresh already past, and a hold, which decides for itself,
- * draw now.
+ * output began after that, one refresh after it began; output that is not
+ * part way through a write, a refresh already past, and a hold, which
+ * decides for itself, draw now.
  */
 static void test_coalesce(void)
 {

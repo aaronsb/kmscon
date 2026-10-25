@@ -74,11 +74,11 @@ struct screen {
 	/* the pending draw is for a display that lost its picture (terminal_sync.h) */
 	bool lost;
 	/*
-	 * when a draw of the child's output first waited for its write to end
-	 * (terminal_sync.h), 0: none waits; when the wait ends; and when the
-	 * draw of the last present began
+	 * while a draw of the child's output waits for its write to end
+	 * (terminal_sync.h): when that output began to be parsed, 0: none
+	 * waits; when the wait ends; and when the draw of the last present began
 	 */
-	uint64_t waited_ns;
+	uint64_t owed_ns;
 	uint64_t due_ns;
 	uint64_t presented_ns;
 	bool hw_cursor;
@@ -123,8 +123,9 @@ struct kmscon_terminal {
 	struct ev_timer *sync_timer;
 	/* the pty holds output the last input call left */
 	bool unparsed;
-	/* the last read filled the pty's buffer: the child may be part way through a write */
-	bool read_full;
+	/* the child's output parsed this loop turn, and when its first input call began */
+	size_t turn_bytes;
+	uint64_t turn_first_ns;
 	/* ends the earliest wait for a write's end; armed for coalesce_due, 0: disarmed */
 	struct ev_timer *coalesce_timer;
 	uint64_t coalesce_due;
@@ -389,7 +390,7 @@ static void do_redraw_screen(struct screen *scr)
 
 	scr->pending = false;
 	scr->lost = false;
-	scr->waited_ns = 0;
+	scr->owed_ns = 0;
 	scr->due_ns = 0;
 
 	start = clock_ns(CLOCK_MONOTONIC);
@@ -457,7 +458,7 @@ static void redraw_all(struct kmscon_terminal *term)
 /* a display's wait ends: its draw is asked for, and a flip or a hold may defer it */
 static void coalesce_end(struct screen *scr)
 {
-	scr->waited_ns = 0;
+	scr->owed_ns = 0;
 	scr->due_ns = 0;
 	redraw_screen(scr, false);
 }
@@ -471,7 +472,7 @@ static void coalesce_arm(struct kmscon_terminal *term)
 
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		if (scr->waited_ns && (!due || scr->due_ns < due))
+		if (scr->owed_ns && (!due || scr->due_ns < due))
 			due = scr->due_ns;
 	}
 	now = clock_ns(CLOCK_MONOTONIC);
@@ -496,7 +497,7 @@ static void coalesce_arm(struct kmscon_terminal *term)
 	term->coalesce_due = 0;
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		if (scr->waited_ns)
+		if (scr->owed_ns)
 			coalesce_end(scr);
 	}
 }
@@ -510,7 +511,7 @@ static void coalesce_timer_event(struct ev_timer *timer, uint64_t count, void *d
 	term->coalesce_due = 0;
 	dlist_for_each_entry(scr, &term->screens, list)
 	{
-		if (scr->waited_ns && scr->due_ns <= now)
+		if (scr->owed_ns && scr->due_ns <= now)
 			coalesce_end(scr);
 	}
 	coalesce_arm(term);
@@ -529,9 +530,12 @@ static void coalesce_timer_event(struct ev_timer *timer, uint64_t count, void *d
 static void terminal_turn_end(struct ev_eloop *eloop, void *unused, void *data)
 {
 	struct kmscon_terminal *term = data;
+	bool mid_write = term->turn_bytes >= TERMINAL_SYNC_COALESCE_BYTES || term->unparsed;
 	struct screen *scr;
 	uint64_t now, due;
 
+	term->turn_bytes = 0;
+	term->turn_first_ns = 0;
 	if (!term->redraw_owed)
 		return;
 	term->redraw_owed = false;
@@ -544,15 +548,15 @@ static void terminal_turn_end(struct ev_eloop *eloop, void *unused, void *data)
 			continue;
 		/* read for each display, after the draws of those before it */
 		now = clock_ns(CLOCK_MONOTONIC);
-		due = terminal_sync_coalesce(&term->sync, term->read_full || term->unparsed, now,
-					     scr->presented_ns, scr->waited_ns,
+		due = terminal_sync_coalesce(&term->sync, mid_write, now, scr->presented_ns,
+					     scr->owed_ns ? scr->owed_ns : term->turn_first_ns,
 					     display_get_refresh_ns(scr->disp));
 		if (!due) {
 			coalesce_end(scr);
 			continue;
 		}
-		if (!scr->waited_ns)
-			scr->waited_ns = now;
+		if (!scr->owed_ns)
+			scr->owed_ns = term->turn_first_ns ? term->turn_first_ns : now;
 		scr->due_ns = due;
 	}
 	coalesce_arm(term);
@@ -1675,7 +1679,7 @@ static void terminal_close(struct kmscon_terminal *term)
 	kmscon_pty_close(term->pty);
 	term->opened = false;
 	term->unparsed = false;
-	term->read_full = false;
+	term->turn_bytes = 0;
 	sync_check(term);
 }
 
@@ -1765,10 +1769,10 @@ static size_t pty_input(struct kmscon_pty *pty, const char *u8, size_t len, void
 	if (!len)
 		return 0;
 	term->redraw_owed = true;
-	/* a new read, or the rest of one an earlier call left */
-	if (!term->unparsed)
-		term->read_full = len >= KMSCON_NREAD;
+	if (!term->turn_bytes)
+		term->turn_first_ns = clock_ns(CLOCK_MONOTONIC);
 	n = tsm_vte_input_bounded(term->vte, u8, len);
+	term->turn_bytes += n;
 	term->unparsed = n < len;
 	sync_check(term);
 	return n;

@@ -204,7 +204,7 @@ enum terminal_sync_draw terminal_sync_flipped(const struct terminal_sync *s, boo
 }
 
 uint64_t terminal_sync_coalesce(const struct terminal_sync *s, bool mid_write, uint64_t now_ns,
-				uint64_t presented_ns, uint64_t waited_ns, uint64_t refresh_ns)
+				uint64_t presented_ns, uint64_t owed_ns, uint64_t refresh_ns)
 {
 	uint64_t due;
 
@@ -213,11 +213,11 @@ uint64_t terminal_sync_coalesce(const struct terminal_sync *s, bool mid_write, u
 		return 0;
 	if (refresh_ns < TERMINAL_SYNC_REFRESH_MIN_NS || refresh_ns > TERMINAL_SYNC_REFRESH_MAX_NS)
 		refresh_ns = TERMINAL_SYNC_REFRESH_NS;
-	if (!waited_ns)
-		waited_ns = now_ns;
+	if (!owed_ns)
+		owed_ns = now_ns;
 	due = presented_ns + refresh_ns;
-	/* the write began after that refresh: nothing was late until it began */
-	if (due <= waited_ns)
-		due = waited_ns + refresh_ns;
+	/* the output began after that refresh: nothing was late until it began */
+	if (due <= owed_ns)
+		due = owed_ns + refresh_ns;
 	return now_ns < due ? due : 0;
 }

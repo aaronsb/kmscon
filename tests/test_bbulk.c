@@ -1332,11 +1332,11 @@ static void test_budget_huge(void)
 	image_budget_set_limit((size_t)1 << 40);
 	assert(image_budget_limit() == (size_t)1 << 40);
 	/* the main test display counts too: limit x px / all, exactly */
-	assert(picture_share(ba) ==
+	assert(image_budget_display_share(px) ==
 	       (uint64_t)(((unsigned __int128)1 << 40) * px / image_budget_displays_px()));
-	assert(picture_share(ba) > ((uint64_t)1 << 40) - ((uint64_t)1 << 34));
+	assert(image_budget_display_share(px) > ((uint64_t)1 << 40) - ((uint64_t)1 << 34));
 	open_txt(&b, 0x45, 7680, 4320);
-	assert(picture_share(ba) ==
+	assert(image_budget_display_share(px) ==
 	       (uint64_t)(((unsigned __int128)1 << 40) * px / image_budget_displays_px()));
 	assert(picture_limit(ba) == (size_t)7680 * 4320 * 4 * 2);
 	close_txt(&b);

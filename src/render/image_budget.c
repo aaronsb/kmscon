@@ -27,12 +27,14 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include "image_budget.h"
+#include "shl/misc.h"
 
 static struct {
 	size_t setting;	      /* image-storage-limit: IMAGE_BUDGET_AUTO or bytes */
 	size_t images;	      /* libtsm's, reserved through the screens */
 	size_t pictures;      /* the renderers' */
 	size_t pictures_peak; /* the most pictures has held */
+	size_t textures;      /* the renderers', in video memory: apart, under the same limit */
 	uint64_t gen;
 	uint64_t displays_px;
 
@@ -50,8 +52,10 @@ static struct {
 	struct tsm_screen **screens;
 	unsigned int n_screens;
 	struct image_budget_cache *caches;
+	struct image_budget_cache *texture_caches;
 } budget = {.setting = IMAGE_BUDGET_AUTO};
 
+SHL_EXPORT
 size_t image_budget_limit(void)
 {
 	uint64_t b = budget.displays_px * 4 * 4;
@@ -63,11 +67,19 @@ size_t image_budget_limit(void)
 				      : b;
 }
 
+SHL_EXPORT
 size_t image_budget_used(void)
 {
 	return budget.images + budget.pictures;
 }
 
+SHL_EXPORT
+size_t image_budget_textures(void)
+{
+	return budget.textures;
+}
+
+SHL_EXPORT
 uint64_t image_budget_gen(void)
 {
 	return budget.gen;
@@ -76,6 +88,25 @@ uint64_t image_budget_gen(void)
 uint64_t image_budget_displays_px(void)
 {
 	return budget.displays_px;
+}
+
+uint64_t image_budget_display_share(uint64_t px)
+{
+	uint64_t all = budget.displays_px, limit = image_budget_limit();
+
+	/* divided before it is multiplied, so a set limit of up to
+	 * IMAGE_BUDGET_LIMIT_MAX on the largest displays does not wrap */
+	if (!all)
+		return limit;
+	return limit / all * px + limit % all * px / all;
+}
+
+SHL_EXPORT
+size_t image_budget_cache_limit(uint64_t px)
+{
+	uint64_t screens = px * 4 * 2, share = image_budget_display_share(px);
+
+	return screens < share ? screens : share;
 }
 
 /*
@@ -165,6 +196,7 @@ static bool give_victim(const struct tsm_image_victim *v, void *data)
  * order up to the first its frame draws or the first placed on its own lines;
  * eviction takes no more of each.
  */
+SHL_EXPORT
 int image_budget_picture_room(size_t bytes, image_budget_drawn_cb drawn, void *data)
 {
 	size_t limit = image_budget_limit(), room = 0;
@@ -197,7 +229,42 @@ out:
 }
 
 /*
- * A set limit smaller than the one before evicts down to it at once. The auto
+ * Frees the textures the renderers' last frames did not draw until @bytes
+ * more fit under the limit. Returns 0, or -ENOSPC when they still do not fit.
+ */
+static int texture_trim(size_t bytes)
+{
+	size_t limit = image_budget_limit();
+	struct image_budget_cache *c;
+
+	if (bytes > limit)
+		return -ENOSPC;
+	for (c = budget.texture_caches; c && budget.textures > limit - bytes; c = c->next)
+		c->trim(c, budget.textures - (limit - bytes));
+	return budget.textures > limit - bytes ? -ENOSPC : 0;
+}
+
+/* counts what the texture caches can give first, and frees only when that is enough */
+SHL_EXPORT
+int image_budget_texture_room(size_t bytes)
+{
+	size_t limit = image_budget_limit(), room = 0;
+	struct image_budget_cache *c;
+
+	if (bytes > limit)
+		return -ENOSPC;
+	if (budget.textures <= limit - bytes)
+		return 0;
+	for (c = budget.texture_caches; c; c = c->next)
+		room += c->trimmable(c);
+	if (room < budget.textures - (limit - bytes))
+		return -ENOSPC;
+	return texture_trim(bytes);
+}
+
+/*
+ * A set limit smaller than the one before evicts down to it at once, images
+ * and textures each. The auto
  * limit follows the displays without evicting: a renderer re-set on a font
  * change uncounts its display and counts it back at once, and the dip between
  * must cost no image. A display that really went is enforced by the next
@@ -213,10 +280,13 @@ void image_budget_set_limit(size_t limit)
 	if (image_budget_limit() == old)
 		return;
 	budget.gen++;
-	if (image_budget_limit() < old)
+	if (image_budget_limit() < old) {
 		make_room(0, NULL);
+		texture_trim(0);
+	}
 }
 
+SHL_EXPORT
 int image_budget_count_display(const void *disp, uint64_t px)
 {
 	unsigned int i;
@@ -241,6 +311,7 @@ int image_budget_count_display(const void *disp, uint64_t px)
 	return 0;
 }
 
+SHL_EXPORT
 void image_budget_uncount_display(const void *disp)
 {
 	unsigned int i;
@@ -258,17 +329,11 @@ void image_budget_uncount_display(const void *disp)
 	}
 }
 
-void image_budget_add_cache(struct image_budget_cache *cache)
-{
-	cache->next = budget.caches;
-	budget.caches = cache;
-}
-
-void image_budget_remove_cache(struct image_budget_cache *cache)
+static void cache_remove(struct image_budget_cache **list, struct image_budget_cache *cache)
 {
 	struct image_budget_cache **cp;
 
-	for (cp = &budget.caches; *cp; cp = &(*cp)->next) {
+	for (cp = list; *cp; cp = &(*cp)->next) {
 		if (*cp == cache) {
 			*cp = cache->next;
 			return;
@@ -276,6 +341,33 @@ void image_budget_remove_cache(struct image_budget_cache *cache)
 	}
 }
 
+SHL_EXPORT
+void image_budget_add_cache(struct image_budget_cache *cache)
+{
+	cache->next = budget.caches;
+	budget.caches = cache;
+}
+
+SHL_EXPORT
+void image_budget_remove_cache(struct image_budget_cache *cache)
+{
+	cache_remove(&budget.caches, cache);
+}
+
+SHL_EXPORT
+void image_budget_add_texture_cache(struct image_budget_cache *cache)
+{
+	cache->next = budget.texture_caches;
+	budget.texture_caches = cache;
+}
+
+SHL_EXPORT
+void image_budget_remove_texture_cache(struct image_budget_cache *cache)
+{
+	cache_remove(&budget.texture_caches, cache);
+}
+
+SHL_EXPORT
 void image_budget_add_picture(size_t bytes)
 {
 	budget.pictures += bytes;
@@ -283,9 +375,23 @@ void image_budget_add_picture(size_t bytes)
 		budget.pictures_peak = budget.pictures;
 }
 
+SHL_EXPORT
 void image_budget_remove_picture(size_t bytes)
 {
 	budget.pictures -= bytes;
+	budget.gen++;
+}
+
+SHL_EXPORT
+void image_budget_add_texture(size_t bytes)
+{
+	budget.textures += bytes;
+}
+
+SHL_EXPORT
+void image_budget_remove_texture(size_t bytes)
+{
+	budget.textures -= bytes;
 	budget.gen++;
 }
 

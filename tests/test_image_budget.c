@@ -7,7 +7,8 @@
  * first, but never for a renderer's picture; a shrinking limit evicting down, a removed
  * screen giving its bytes back, and a sixel drawn through the vte reserving
  * from the budget, and a terminal's vte made into the budget and unwound from
- * it. Images are made through libtsm's test calls.
+ * it; the renderers' textures in a budget of their own under the same limit,
+ * freeing only one another. Images are made through libtsm's test calls.
  */
 
 #include <assert.h>
@@ -281,6 +282,86 @@ static void test_display_recount(void)
 	free_screen(a);
 }
 
+/* a renderer's cache whose textures the last frame did not draw */
+static struct {
+	struct image_budget_cache cache;
+	size_t undrawn;
+	unsigned int trims;
+} fake_tex;
+
+static void fake_tex_trim(struct image_budget_cache *cache, size_t want)
+{
+	size_t n = want < fake_tex.undrawn ? want : fake_tex.undrawn;
+
+	(void)cache;
+	fake_tex.trims++;
+	fake_tex.undrawn -= n;
+	image_budget_remove_texture(n);
+}
+
+static size_t fake_tex_trimmable(struct image_budget_cache *cache)
+{
+	(void)cache;
+	return fake_tex.undrawn;
+}
+
+/*
+ * The textures count apart from the images, under the same limit (ADR-103's
+ * Memory section): a full image budget leaves the textures their whole
+ * limit, an image's reservation frees no texture, and a texture frees no
+ * image or picture, only textures no frame drew, and those only when that
+ * makes it fit. A smaller limit trims the textures down too.
+ */
+static void test_textures(void)
+{
+	struct tsm_screen *a = new_screen();
+	uint64_t six, old, k, gen;
+
+	fake_tex.cache.trim = fake_tex_trim;
+	fake_tex.cache.trimmable = fake_tex_trimmable;
+	image_budget_add_texture_cache(&fake_tex.cache);
+	image_budget_set_limit(3 * IMG);
+	six = placed(a, 0, TSM_IMAGE_SIXEL);
+	assert(unplaced(a, 1, false, &old) == 0);
+	fake.undrawn = IMG;
+	image_budget_add_picture(IMG);
+	assert(image_budget_used() == 3 * IMG && image_budget_textures() == 0);
+
+	/* the images' budget full: the textures still have the whole limit */
+	assert(image_budget_texture_room(3 * IMG) == 0);
+	image_budget_add_texture(2 * IMG);
+	fake_tex.undrawn = 2 * IMG;
+	assert(image_budget_used() == 3 * IMG && holds(a, old) && fake.undrawn == IMG);
+
+	/* a new image frees pictures and images, no texture */
+	assert(unplaced(a, 2, false, &k) == 0);
+	assert(image_budget_textures() == 2 * IMG && !fake_tex.trims && holds(a, old));
+
+	/* a texture frees undrawn textures, nothing else; only when that is enough */
+	fake_tex.undrawn = IMG;
+	assert(image_budget_texture_room(2 * IMG + 1) == -ENOSPC);
+	assert(!fake_tex.trims && image_budget_textures() == 2 * IMG);
+	assert(image_budget_texture_room(2 * IMG) == 0);
+	assert(fake_tex.trims && image_budget_textures() == IMG && !fake_tex.undrawn);
+	assert(image_budget_used() == 3 * IMG && holds(a, old) && holds(a, k) && holds(a, six));
+
+	/* a texture freed moves the generation; a smaller limit trims them down */
+	gen = image_budget_gen();
+	image_budget_remove_texture(IMG);
+	assert(image_budget_gen() != gen);
+	image_budget_add_texture(3 * IMG);
+	fake_tex.undrawn = 3 * IMG;
+	image_budget_set_limit(IMG);
+	assert(image_budget_textures() == IMG && holds(a, six));
+
+	image_budget_remove_texture(IMG);
+	fake_tex.undrawn = fake_tex.trims = 0;
+	image_budget_remove_texture_cache(&fake_tex.cache);
+	assert(!budget.texture_caches && image_budget_textures() == 0);
+	free_screen(a);
+	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+}
+
 /* limit 0 holds nothing: every image is refused */
 static void test_zero(void)
 {
@@ -543,6 +624,7 @@ int main(void)
 #endif
 	test_display_recount();
 	test_zero();
+	test_textures();
 	test_sixel();
 	test_terminal();
 	test_terminal_teardown();

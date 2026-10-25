@@ -329,6 +329,6 @@ The rules on this page apply to agents unchanged.
 
 - [#38](https://github.com/aaronsb/kmscon/issues/38): `make test` can build against a stale or mixed libtsm; the manual reset above stands in for it.
 - [#11](https://github.com/aaronsb/kmscon/issues/11): no CI runs the tiers. Every gate on this page runs locally, and the repository's GitHub workflow is upstream's plain build and format checks.
-- [#17](https://github.com/aaronsb/kmscon/issues/17): tier 3's GL variant is outside the default run until its goldens are blessed, and draws no image screens until gltex draws placements (ADR-103 steps 3f and 4e).
+- [#17](https://github.com/aaronsb/kmscon/issues/17): tier 3's GL variant is outside the default run until its goldens are blessed; it draws every screen, the image screens included, since gltex draws placements (ADR-103 steps 3f and 4e).
 - The ledger's change to one page per run is in progress, so its format is not described here.
 - The rules for reviews and fresh authors are applied by the people and sessions involved; nothing in the repositories enforces them.

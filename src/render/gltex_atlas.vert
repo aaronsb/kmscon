@@ -37,14 +37,14 @@ uniform float sin;
 attribute vec2 position;
 attribute vec2 texture_position;
 attribute vec3 fgcolor;
-attribute vec3 bgcolor;
+attribute vec4 bgcolor;
 attribute vec3 ulcolor;
 attribute vec3 strikecolor;
 attribute vec3 decoration;
 
 varying vec2 texpos;
 varying vec3 fgcol;
-varying vec3 bgcol;
+varying vec4 bgcol;
 varying vec3 ulcol;
 varying vec3 stcol;
 varying vec3 decopos;

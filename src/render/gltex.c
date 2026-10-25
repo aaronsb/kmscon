@@ -41,6 +41,27 @@
  * atlas, which the shader draws under and over the glyph in their own colours.
  * Upstream has alpha atlases only and no decorations; this departure is
  * recorded in ADR-102's corrections from step 6 (ADR-303).
+ *
+ * Images (ADR-103 steps 3f and 4e) are the frame's placements, in three bands,
+ * drawn in layers: the clear to the default background, the lowest band, the
+ * cell backgrounds that are not the default, the middle band, the text (the
+ * glyphs and decorations, premultiplied and blended over what is under them),
+ * the top band, and the mouse pointer last (#181). A frame without placements
+ * draws each cell's background and text in one opaque pass, then the pointer.
+ * Each image is a texture of its own, uploaded when a placement of it is first
+ * drawn and scaled down to fit GL_MAX_TEXTURE_SIZE when it is larger, or, when
+ * the whole image does not fit the textures' budget, at the size the placement draws
+ * it; a placement draws its source rectangle, clipped at its box and the
+ * screen, as one quad, scaled and rotated on the GPU. An upload GL refuses is
+ * not tried again while the image is shown. The textures count in ADR-103's
+ * image budget (image_budget.c) apart from libtsm's images and bbulk's
+ * pictures, in a budget of their own under the same limit, so they never take
+ * room from an image: one that does not fit is left out until the room grows,
+ * and those no frame has drawn since go, least recently used first, once the
+ * textures pass image_budget_cache_limit, or when another texture or a smaller
+ * limit asks for room. Upstream draws
+ * each cell opaque in one pass per atlas; this departure is recorded in
+ * ADR-103's gltex section (ADR-303).
  */
 
 #define GL_GLEXT_PROTOTYPES
@@ -56,6 +77,10 @@
 #include "font/font.h"
 #include "gltex_atlas.frag.bin.h"
 #include "gltex_atlas.vert.bin.h"
+#include "gltex_image.frag.bin.h"
+#include "gltex_image.vert.bin.h"
+#include "image_budget.h"
+#include "picture.h"
 #include "shl/dlist.h"
 #include "shl/gl.h"
 #include "shl/hashtable.h"
@@ -104,6 +129,44 @@ struct gltex_quad {
 	struct tsm_screen_color fg, bg, ul, strike;
 };
 
+/* an image's texture (ADR-103), kept between frames */
+struct gltex_image {
+	struct gltex_image *next;
+	bool overlay; /* the key is the overlay's, not the screen's */
+	uint64_t key;
+	GLuint tex;
+	unsigned int iw, ih; /* the image's size */
+	unsigned int w, h;   /* the texture's: the image's, unless scaled */
+	bool scaled;	     /* smaller than the image */
+	/*
+	 * the image at the size a placement draws it, made where the whole
+	 * image does not fit the textures' budget; made again when a placement draws it
+	 * larger
+	 */
+	bool drawn_size;
+	bool grow_failed;  /* GL refused it larger: not tried again while shown */
+	bool failed;	   /* GL refused it: not tried again, no texture */
+	GLint filter;	   /* its GL_TEXTURE_MIN_FILTER and MAG_FILTER */
+	uint64_t last_use; /* the frame that last drew it */
+	size_t bytes;
+};
+
+/*
+ * A placement queued for the frame: @image's texture coordinates @u1, @v1 to
+ * @u2, @v2 drawn over @x1, @y1 to @x2, @y2, in @band, sampled within @clip
+ * (its source rectangle, half a texel in from each edge, so bilinear
+ * filtering takes nothing from beside it); @exact when it draws one texel a
+ * pixel, so it is sampled as it is.
+ */
+struct gltex_pic {
+	struct gltex_image *image;
+	GLfloat x1, y1, x2, y2;
+	GLfloat u1, v1, u2, v2;
+	GLfloat clip[4];
+	uint8_t band;
+	bool exact;
+};
+
 #define GLYPH_WIDTH(gly) ((gly)->buf.width)
 #define GLYPH_HEIGHT(gly) ((gly)->buf.height)
 #define GLYPH_STRIDE(gly) ((gly)->buf.stride)
@@ -119,6 +182,8 @@ struct gltex_quad {
 #define GLTEX_ATTRS 7
 
 struct gltex {
+	/* first, so gltex_trim finds gltex by it; in the budget while counted is set */
+	struct image_budget_cache cache;
 	struct shl_hashtable *glyphs;
 	unsigned int max_tex_size;
 	unsigned int cells;	/* atlas cells handed out since the last flush */
@@ -127,12 +192,12 @@ struct gltex {
 	struct dlist atlases;
 
 	/*
-	 * The frame's quads in the order they were queued, at most one a cell
-	 * and one for the pointer, and the vertex arrays gltex_render() fills
-	 * from them, each atlas's quads together. All atlases share them, so
-	 * their size follows the cell count, not the number of atlases (#43).
-	 * Upstream gives each atlas its own arrays: an ADR-303 departure users
-	 * cannot see, recorded in PR #180.
+	 * The frame's cell quads in the order they were queued, at most one a
+	 * cell, and the vertex arrays gltex_render() fills from them, each
+	 * atlas's quads together, the pointer's in the slot after them. All
+	 * atlases share them, so their size follows the cell count, not the
+	 * number of atlases (#43). Upstream gives each atlas its own arrays: an
+	 * ADR-303 departure users cannot see, recorded in PR #180.
 	 */
 	struct gltex_quad *quads;
 	unsigned int quads_num;
@@ -156,6 +221,42 @@ struct gltex {
 	unsigned int deco_off;
 	bool deco_tried;
 
+	/* the mouse pointer's quad, drawn after everything else (#181) */
+	struct gltex_quad pointer;
+	bool has_pointer;
+
+	/*
+	 * The image layer (ADR-103): the frame's placements in draw order and
+	 * their vertex arrays; the textures, most recently made first, and
+	 * their bytes; the names of textures given up between frames, deleted
+	 * once the GL context is ours again (room for one per texture, so
+	 * giving one up never fails).
+	 */
+	struct gltex_pic *pics;
+	unsigned int pics_num;
+	unsigned int pics_size;
+	GLfloat *pic_pos;
+	GLfloat *pic_texpos;
+	struct gltex_image *images;
+	unsigned int images_num;
+	size_t image_bytes;
+	GLuint *doomed;
+	unsigned int doomed_num;
+	unsigned int doomed_size;
+	uint64_t frame_count;
+	unsigned int max_image_size; /* GL_MAX_TEXTURE_SIZE */
+	struct display *counted;     /* the display counted in the image budget, while set */
+	bool starved;		     /* a placement was left out for the budget */
+	uint64_t starved_gen;	     /* image_budget_gen() when it was */
+	bool upload_warned;
+
+	struct gl_shader *img_shader;
+	GLuint uni_img_cos;
+	GLuint uni_img_sin;
+	GLuint uni_img_proj;
+	GLuint uni_img_picture;
+	GLuint uni_img_clip;
+
 	GLfloat advance_x;
 	GLfloat advance_y;
 	GLfloat off_x;
@@ -173,6 +274,7 @@ struct gltex {
 	GLuint uni_deco_htex;
 	GLuint uni_deco_vtex;
 	GLuint uni_decorated;
+	GLuint uni_layer;
 
 	unsigned int sw;
 	unsigned int sh;
@@ -187,7 +289,7 @@ static int gltex_init(struct kmscon_text *txt)
 {
 	struct gltex *gt;
 
-	gt = malloc(sizeof(*gt));
+	gt = calloc(1, sizeof(*gt));
 	if (!gt)
 		return -ENOMEM;
 
@@ -225,14 +327,14 @@ static void free_quads(struct gltex *gt)
 	gt->quads_num = gt->quads_size = 0;
 }
 
-/* room for @n quads, in the queue and in the vertex arrays */
+/* room for @n cell quads in the queue, and for them and the pointer in the vertex arrays */
 static int alloc_quads(struct gltex *gt, unsigned int n)
 {
-	gt->quads = malloc(sizeof(*gt->quads) * n);
+	gt->quads = malloc(sizeof(*gt->quads) * n++);
 	gt->cache_pos = malloc(sizeof(GLfloat) * n * 2 * 6);
 	gt->cache_texpos = malloc(sizeof(GLfloat) * n * 2 * 6);
 	gt->cache_fgcol = malloc(sizeof(GLfloat) * n * 3 * 6);
-	gt->cache_bgcol = malloc(sizeof(GLfloat) * n * 3 * 6);
+	gt->cache_bgcol = malloc(sizeof(GLfloat) * n * 4 * 6);
 	gt->cache_ulcol = malloc(sizeof(GLfloat) * n * 3 * 6);
 	gt->cache_strikecol = malloc(sizeof(GLfloat) * n * 3 * 6);
 	gt->cache_deco = malloc(sizeof(GLfloat) * n * 3 * 6);
@@ -241,7 +343,7 @@ static int alloc_quads(struct gltex *gt, unsigned int n)
 		free_quads(gt);
 		return -ENOMEM;
 	}
-	gt->quads_size = n;
+	gt->quads_size = n - 1;
 	return 0;
 }
 
@@ -276,11 +378,63 @@ static void compute_advance_and_offset(struct kmscon_text *txt)
 	display_set_cursor_offset(txt->disp, off_x, off_y);
 }
 
+/*
+ * Fragment source @src of @len bytes, asking for highp where the GPU has it:
+ * a texture coordinate in a picture thousands of texels wide, or far along a
+ * 2048-texel atlas, needs more than mediump's 10 bits (#197). The precision
+ * line is put before the embedded source here, as the source keeps no
+ * preprocessor line of its own. NULL when out of memory; *@out_len its length.
+ */
+static char *frag_source(const char *src, int len, int *out_len)
+{
+	static const char head[] = "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+				   "precision highp float;\n"
+				   "#else\n"
+				   "precision mediump float;\n"
+				   "#endif\n";
+	char *frag;
+
+	*out_len = sizeof(head) - 1 + len;
+	frag = malloc(*out_len);
+	if (!frag)
+		return NULL;
+	memcpy(frag, head, sizeof(head) - 1);
+	memcpy(frag + sizeof(head) - 1, src, len);
+	return frag;
+}
+
+/* the image shader */
+static int image_shader_new(struct gltex *gt)
+{
+	static char *attr[] = {"position", "texture_position"};
+	char *frag;
+	int ret, flen;
+
+	frag = frag_source(_binary_gltex_image_frag_start, _binary_gltex_image_frag_size, &flen);
+	if (!frag)
+		return -ENOMEM;
+	ret = gl_shader_new(&gt->img_shader, _binary_gltex_image_vert_start,
+			    _binary_gltex_image_vert_size, frag, flen, attr, 2);
+	free(frag);
+	if (ret)
+		return ret;
+
+	gt->uni_img_cos = gl_shader_get_uniform(gt->img_shader, "cos");
+	gt->uni_img_sin = gl_shader_get_uniform(gt->img_shader, "sin");
+	gt->uni_img_proj = gl_shader_get_uniform(gt->img_shader, "projection");
+	gt->uni_img_picture = gl_shader_get_uniform(gt->img_shader, "picture");
+	gt->uni_img_clip = gl_shader_get_uniform(gt->img_shader, "clip");
+	return 0;
+}
+
+static void gltex_trim(struct image_budget_cache *cache, size_t want);
+static size_t gltex_trimmable(struct image_budget_cache *cache);
+
 static int gltex_set(struct kmscon_text *txt)
 {
 	struct gltex *gt = txt->data;
-	int ret, vlen, flen;
-	const char *vert, *frag;
+	int ret, flen;
+	char *frag;
 	static char *attr[] = {"position", "texture_position", "fgcolor",   "bgcolor",
 			       "ulcolor",  "strikecolor",      "decoration"};
 	GLint s;
@@ -299,13 +453,16 @@ static int gltex_set(struct kmscon_text *txt)
 	if (ret)
 		return ret;
 
-	vert = _binary_gltex_atlas_vert_start;
-	vlen = _binary_gltex_atlas_vert_size;
-	frag = _binary_gltex_atlas_frag_start;
-	flen = _binary_gltex_atlas_frag_size;
+	frag = frag_source(_binary_gltex_atlas_frag_start, _binary_gltex_atlas_frag_size, &flen);
+	if (!frag) {
+		ret = -ENOMEM;
+		goto err_htable;
+	}
 	gl_clear_error();
 
-	ret = gl_shader_new(&gt->shader, vert, vlen, frag, flen, attr, GLTEX_ATTRS);
+	ret = gl_shader_new(&gt->shader, _binary_gltex_atlas_vert_start,
+			    _binary_gltex_atlas_vert_size, frag, flen, attr, GLTEX_ATTRS);
+	free(frag);
 	if (ret)
 		goto err_htable;
 
@@ -320,10 +477,20 @@ static int gltex_set(struct kmscon_text *txt)
 	gt->uni_deco_htex = gl_shader_get_uniform(gt->shader, "deco_htex");
 	gt->uni_deco_vtex = gl_shader_get_uniform(gt->shader, "deco_vtex");
 	gt->uni_decorated = gl_shader_get_uniform(gt->shader, "decorated");
+	gt->uni_layer = gl_shader_get_uniform(gt->shader, "layer");
 
 	if (gl_has_error(gt->shader)) {
 		log_warning("cannot create shader");
 		goto err_shader;
+	}
+
+	ret = image_shader_new(gt);
+	if (ret)
+		goto err_shader;
+	if (gl_has_error(gt->img_shader)) {
+		log_warning("cannot create image shader");
+		ret = -EFAULT;
+		goto err_img_shader;
 	}
 
 	gt->sw = display_get_width(txt->disp);
@@ -334,28 +501,43 @@ static int gltex_set(struct kmscon_text *txt)
 	txt->cols = txt->max_cols;
 	txt->rows = txt->max_rows;
 	gt->max_cells = GLTEX_CACHE_SCREENS * (txt->max_cols * txt->max_rows + 1);
-	ret = alloc_quads(gt, txt->max_cols * txt->max_rows + 1); // +1 for the mouse pointer
+	ret = alloc_quads(gt, txt->max_cols * txt->max_rows);
 	if (ret)
-		goto err_shader;
+		goto err_img_shader;
 	compute_advance_and_offset(txt);
 	gltex_set_cos(gt, txt->orientation);
 
+	/* an image's texture may take the GPU's largest; an atlas, 2048 */
 	glGetIntegerv(GL_MAX_TEXTURE_SIZE, &s);
 	if (s <= 0)
 		s = 64;
-	else if (s > 2048)
-		s = 2048;
-	gt->max_tex_size = s;
+	gt->max_image_size = s;
+	gt->max_tex_size = s > 2048 ? 2048 : s;
+
+	ret = image_budget_count_display(txt->disp, (uint64_t)gt->sw * gt->sh);
+	if (ret)
+		goto err_quads;
+	gt->counted = txt->disp;
+	gt->cache.trim = gltex_trim;
+	gt->cache.trimmable = gltex_trimmable;
+	image_budget_add_texture_cache(&gt->cache);
 
 	gl_clear_error();
 	return 0;
 
+err_quads:
+	free_quads(gt);
+err_img_shader:
+	gl_shader_unref(gt->img_shader);
 err_shader:
 	gl_shader_unref(gt->shader);
 err_htable:
 	shl_hashtable_free(gt->glyphs);
 	return ret;
 }
+
+static void images_free(struct gltex *gt, bool gl);
+static void doomed_flush(struct gltex *gt);
 
 static void gltex_unset(struct kmscon_text *txt)
 {
@@ -372,6 +554,12 @@ static void gltex_unset(struct kmscon_text *txt)
 	}
 
 	shl_hashtable_free(gt->glyphs);
+	images_free(gt, gl);
+	if (gt->counted) {
+		image_budget_remove_texture_cache(&gt->cache);
+		image_budget_uncount_display(gt->counted);
+		gt->counted = NULL;
+	}
 
 	dlist_for_each_entry_safe(atlas, tmp, &gt->atlases, list)
 	{
@@ -384,6 +572,7 @@ static void gltex_unset(struct kmscon_text *txt)
 	free_quads(gt);
 
 	if (gl) {
+		gl_shader_unref(gt->img_shader);
 		gl_shader_unref(gt->shader);
 
 		gl_clear_error();
@@ -420,6 +609,9 @@ static struct atlas *get_atlas(struct kmscon_text *txt, unsigned int num, GLenum
 		log_warning("cannot create new OpenGL texture: %d", err);
 		goto err_free;
 	}
+	/* glyphs and sprites are drawn a texel a pixel: sampled as they are (#197) */
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
 	newsize = gt->max_tex_size / FONT_WIDTH(txt);
 	if (newsize < 1)
@@ -716,12 +908,16 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	if (gt->cells > gt->max_cells)
 		gltex_flush(txt);
 	gt->deco_tried = false;
+	doomed_flush(gt);
 
 	dlist_for_each_entry(atlas, &gt->atlases, list)
 	{
 		atlas->cache_num = 0;
 	}
 	gt->quads_num = 0;
+	gt->has_pointer = false;
+	gt->pics_num = 0;
+	gt->frame_count++;
 	gt->attr = *attr;
 
 	glClearColor(gt->attr.br / 255.0, gt->attr.bg / 255.0, gt->attr.bb / 255.0, 1);
@@ -747,6 +943,8 @@ static void write_quad(struct gltex *gt, unsigned int i, const struct gltex_quad
 	GLfloat *tex = &gt->cache_texpos[i * 2 * 6];
 	GLfloat t1 = q->texoff, t2 = q->texoff + q->texw;
 	static const GLfloat right[6] = {0, 0, 1, 0, 1, 1}; /* vertex at x2 */
+	/* the background's alpha: 1 unless it is the default */
+	GLfloat bga = q->bg.r != gt->attr.br || q->bg.g != gt->attr.bg || q->bg.b != gt->attr.bb;
 	int j, idx;
 
 	pos[0] = q->x1;
@@ -782,9 +980,10 @@ static void write_quad(struct gltex *gt, unsigned int i, const struct gltex_quad
 		gt->cache_fgcol[idx + 0] = q->fg.r / 255.0;
 		gt->cache_fgcol[idx + 1] = q->fg.g / 255.0;
 		gt->cache_fgcol[idx + 2] = q->fg.b / 255.0;
-		gt->cache_bgcol[idx + 0] = q->bg.r / 255.0;
-		gt->cache_bgcol[idx + 1] = q->bg.g / 255.0;
-		gt->cache_bgcol[idx + 2] = q->bg.b / 255.0;
+		gt->cache_bgcol[i * 4 * 6 + j * 4 + 0] = q->bg.r / 255.0;
+		gt->cache_bgcol[i * 4 * 6 + j * 4 + 1] = q->bg.g / 255.0;
+		gt->cache_bgcol[i * 4 * 6 + j * 4 + 2] = q->bg.b / 255.0;
+		gt->cache_bgcol[i * 4 * 6 + j * 4 + 3] = bga;
 		gt->cache_ulcol[idx + 0] = q->ul.r / 255.0;
 		gt->cache_ulcol[idx + 1] = q->ul.g / 255.0;
 		gt->cache_ulcol[idx + 2] = q->ul.b / 255.0;
@@ -862,20 +1061,564 @@ static int gltex_draw_cell(struct kmscon_text *txt, const struct tsm_frame_cell 
 	return ret;
 }
 
+/* ---- the image layer (ADR-103) ---- */
+
 /*
- * The frame's image placements (ADR-103 step 3f): here gltex will compose the
- * three bands, a texture per image key, on the RGBA path ADR-102 step 6 gave
- * it (#68). Until step 3f it draws none, and kmscon_text_gltex_ops leaves
- * draws_images false, so no terminal gltex draws for offers sixel.
+ * @pp's texture goes: out of the budget now, and out of GL once the context
+ * is this display's again (doomed_flush), since the budget may ask for room
+ * while another display's frame is being drawn
  */
-static void gltex_draw_placements(struct kmscon_text *txt, const struct tsm_frame *frame)
+static void image_free(struct gltex *gt, struct gltex_image **pp)
 {
-	(void)txt;
-	(void)frame;
+	struct gltex_image *gi = *pp;
+
+	*pp = gi->next;
+	if (gi->tex)
+		gt->doomed[gt->doomed_num++] = gi->tex;
+	gt->image_bytes -= gi->bytes;
+	gt->images_num--;
+	image_budget_remove_texture(gi->bytes);
+	free(gi);
+}
+
+/* delete the textures given up; the GL context is this display's */
+static void doomed_flush(struct gltex *gt)
+{
+	if (gt->doomed_num)
+		gl_tex_free(gt->doomed, gt->doomed_num);
+	gt->doomed_num = 0;
+}
+
+/* every texture and the image layer's arrays; @gl: the GL context is ours */
+static void images_free(struct gltex *gt, bool gl)
+{
+	while (gt->images)
+		image_free(gt, &gt->images);
+	if (gl)
+		doomed_flush(gt);
+	free(gt->doomed);
+	free(gt->pics);
+	free(gt->pic_pos);
+	free(gt->pic_texpos);
+	gt->doomed = NULL;
+	gt->pics = NULL;
+	gt->pic_pos = gt->pic_texpos = NULL;
+	gt->doomed_num = gt->doomed_size = gt->pics_num = gt->pics_size = 0;
+	gt->starved = false;
+}
+
+/* @gi was drawn on this frame */
+static bool image_in_use(struct gltex *gt, const struct gltex_image *gi)
+{
+	return gi->last_use == gt->frame_count;
+}
+
+/*
+ * Free the least recently drawn textures this frame does not draw until @want
+ * more bytes fit in @limit, or none such is left.
+ */
+static void images_trim(struct gltex *gt, size_t want, size_t limit)
+{
+	struct gltex_image **pp, **lru;
+
+	while (gt->image_bytes + want > limit) {
+		lru = NULL;
+		for (pp = &gt->images; *pp; pp = &(*pp)->next) {
+			if (image_in_use(gt, *pp) || (*pp)->failed)
+				continue;
+			if (!lru || (*pp)->last_use < (*lru)->last_use)
+				lru = pp;
+		}
+		if (!lru)
+			return;
+		image_free(gt, lru);
+	}
+}
+
+/* forget the uploads GL refused, whole or larger, that this frame no longer shows */
+static void failed_free(struct gltex *gt)
+{
+	struct gltex_image **pp = &gt->images;
+
+	while (*pp) {
+		if (!image_in_use(gt, *pp))
+			(*pp)->grow_failed = false;
+		if ((*pp)->failed && !image_in_use(gt, *pp))
+			image_free(gt, pp);
+		else
+			pp = &(*pp)->next;
+	}
+}
+
+/*
+ * The textures' budget asks for @want bytes, between frames or within another
+ * renderer's: the textures the last frame did not draw go, least recently
+ * used first.
+ */
+static void gltex_trim(struct image_budget_cache *cache, size_t want)
+{
+	struct gltex *gt = (struct gltex *)cache;
+
+	images_trim(gt, 0, want < gt->image_bytes ? gt->image_bytes - want : 0);
+}
+
+/* what gltex_trim frees at most */
+static size_t gltex_trimmable(struct image_budget_cache *cache)
+{
+	struct gltex *gt = (struct gltex *)cache;
+	struct gltex_image *gi;
+	size_t bytes = 0;
+
+	for (gi = gt->images; gi; gi = gi->next)
+		if (!image_in_use(gt, gi))
+			bytes += gi->bytes;
+	return bytes;
+}
+
+/* a placement left out here may fit now: the budget has grown since */
+static bool gltex_starved(struct kmscon_text *txt)
+{
+	struct gltex *gt = txt->data;
+
+	return gt && gt->starved && gt->starved_gen != image_budget_gen();
+}
+
+/* a session left the foreground: its textures give their room back */
+static void gltex_release(struct kmscon_text *txt)
+{
+	struct gltex *gt = txt->data;
+
+	while (gt->images)
+		image_free(gt, &gt->images);
+	gt->starved = false;
+	if (!display_use(txt->disp))
+		doomed_flush(gt);
+}
+
+static struct gltex_image *image_find(struct gltex *gt, bool overlay, uint64_t key)
+{
+	struct gltex_image *gi;
+
+	for (gi = gt->images; gi; gi = gi->next)
+		if (gi->overlay == overlay && gi->key == key)
+			return gi;
+	return NULL;
+}
+
+/* the texture's size for a @w x @h image: as it is, or scaled to fit max_image_size */
+static void image_fit(struct gltex *gt, unsigned int w, unsigned int h, unsigned int *tw,
+		      unsigned int *th)
+{
+	unsigned int m = gt->max_image_size;
+
+	*tw = w;
+	*th = h;
+	if (w <= m && h <= m)
+		return;
+	if (w >= h) {
+		*tw = m;
+		*th = (uint64_t)h * m / w;
+	} else {
+		*th = m;
+		*tw = (uint64_t)w * m / h;
+	}
+	*tw = *tw ? *tw : 1;
+	*th = *th ? *th : 1;
+}
+
+/*
+ * Upload @img's pixels to @gi's texture, @gi->w x @gi->h, scaled with
+ * picture_scale() when that is smaller than the image. The bytes go as they
+ * are in memory, read as GL_RGBA: B, G, R, A on a little-endian machine, which
+ * the shader swizzles; on a big-endian one each pixel is swapped to that order
+ * first. Returns 0, -ENOMEM or -EFAULT.
+ */
+static int image_upload(struct gltex *gt, struct gltex_image *gi, const struct tsm_frame_image *img)
+{
+	const uint32_t *src = img->pixels;
+	size_t stride = img->stride / 4;
+	uint32_t *tmp = NULL;
+	unsigned int y;
+	GLenum err;
+
+	if (gi->scaled) {
+		tmp = malloc((size_t)gi->w * gi->h * 4);
+		if (!tmp)
+			return -ENOMEM;
+		if (picture_scale(src, stride, img->width, img->height, gi->w, gi->h, 0, 0, gi->w,
+				  gi->h, tmp)) {
+			free(tmp);
+			return -ENOMEM;
+		}
+		src = tmp;
+		stride = gi->w;
+	}
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	{
+		uint32_t *sw = tmp ? tmp : malloc((size_t)gi->w * gi->h * 4);
+		unsigned int x;
+
+		if (!sw)
+			return -ENOMEM;
+		for (y = 0; y < gi->h; y++)
+			for (x = 0; x < gi->w; x++)
+				sw[(size_t)y * gi->w + x] =
+					__builtin_bswap32(src[(size_t)y * stride + x]);
+		src = tmp = sw;
+		stride = gi->w;
+	}
+#endif
+
+	gl_clear_error();
+	gl_tex_new(&gi->tex, 1);
+	glBindTexture(GL_TEXTURE_2D, gi->tex);
+	if (stride == gi->w) {
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, gi->w, gi->h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+			     src);
+	} else {
+		/* GLES 2 has no row length: a row at a time */
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, gi->w, gi->h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+			     NULL);
+		for (y = 0; y < gi->h; y++)
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, gi->w, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+					&src[(size_t)y * stride]);
+	}
+	free(tmp);
+	gi->filter = GL_LINEAR;
+
+	err = glGetError();
+	if (err != GL_NO_ERROR || !gi->tex) {
+		gl_clear_error();
+		if (gi->tex)
+			gl_tex_free(&gi->tex, 1);
+		gi->tex = 0;
+		if (!gt->upload_warned)
+			log_warning("cannot load a %ux%u image into an OpenGL texture (%d: %s); "
+				    "it is not drawn",
+				    gi->w, gi->h, err, gl_err_to_str(err));
+		gt->upload_warned = true;
+		return -EFAULT;
+	}
+	return 0;
+}
+
+/*
+ * A texture of @tw x @th for @img, the overlay's when @overlay, made within
+ * the frame: room from this display's textures the frame does not draw, then
+ * from the other displays' (image_budget_texture_room), never from libtsm's
+ * images or bbulk's pictures. Returns 0, -ENOSPC when it does not fit, -ENOMEM,
+ * or -EFAULT when GL refused it, which is remembered for the image's key, so
+ * it is not tried, and room not made for it, again on every frame.
+ */
+static int image_new(struct kmscon_text *txt, bool overlay, uint64_t key,
+		     const struct tsm_frame_image *img, unsigned int tw, unsigned int th,
+		     struct gltex_image **out)
+{
+	struct gltex *gt = txt->data;
+	struct gltex_image *gi;
+	size_t bytes = (size_t)tw * th * 4;
+	unsigned int n;
+	GLuint *doomed;
+	int ret;
+
+	/*
+	 * room for its name, and one more, among the textures given up, so
+	 * giving one up never fails, even a texture replaced by a larger one
+	 */
+	n = gt->images_num + gt->doomed_num + 2;
+	if (n > gt->doomed_size) {
+		doomed = realloc(gt->doomed, (n + 16) * sizeof(*doomed));
+		if (!doomed)
+			return -ENOMEM;
+		gt->doomed = doomed;
+		gt->doomed_size = n + 16;
+	}
+
+	images_trim(gt, bytes, image_budget_cache_limit((uint64_t)gt->sw * gt->sh));
+	images_trim(gt, bytes + image_budget_textures() - gt->image_bytes, image_budget_limit());
+	if (image_budget_texture_room(bytes))
+		return -ENOSPC;
+
+	gi = calloc(1, sizeof(*gi));
+	if (!gi)
+		return -ENOMEM;
+	gi->overlay = overlay;
+	gi->key = key;
+	gi->iw = img->width;
+	gi->ih = img->height;
+	gi->w = tw;
+	gi->h = th;
+	gi->scaled = tw != img->width || th != img->height;
+	gi->bytes = bytes;
+	ret = image_upload(gt, gi, img);
+	if (ret == -EFAULT) {
+		gi->failed = true;
+		gi->bytes = bytes = 0;
+	} else if (ret) {
+		free(gi);
+		return ret;
+	}
+
+	gi->next = gt->images;
+	gt->images = gi;
+	gt->images_num++;
+	gt->image_bytes += bytes;
+	image_budget_add_texture(bytes);
+	*out = gi;
+	return ret;
+}
+
+/* room for @n placements this frame */
+static int pics_reserve(struct gltex *gt, unsigned int n)
+{
+	struct gltex_pic *pics;
+	GLfloat *pos, *texpos;
+
+	if (n <= gt->pics_size)
+		return 0;
+	pics = realloc(gt->pics, n * sizeof(*pics));
+	if (!pics)
+		return -ENOMEM;
+	gt->pics = pics;
+	pos = realloc(gt->pic_pos, n * sizeof(*pos) * 2 * 6);
+	if (!pos)
+		return -ENOMEM;
+	gt->pic_pos = pos;
+	texpos = realloc(gt->pic_texpos, n * sizeof(*texpos) * 2 * 6);
+	if (!texpos)
+		return -ENOMEM;
+	gt->pic_texpos = texpos;
+	gt->pics_size = n;
+	return 0;
+}
+
+/* free the textures of overlays before the one with key @key: there is one at a time */
+static void overlays_free(struct gltex *gt, uint64_t key)
+{
+	struct gltex_image **pp = &gt->images;
+
+	while (*pp) {
+		if ((*pp)->overlay && (*pp)->key != key)
+			image_free(gt, pp);
+		else
+			pp = &(*pp)->next;
+	}
+}
+
+/*
+ * The texture placement @fp draws from, the overlay's when @overlay, where @fp
+ * draws its source rectangle @dw x @dh pixels: the image's existing texture,
+ * or a new one of the whole image, scaled down only to fit
+ * GL_MAX_TEXTURE_SIZE. Where that does not fit the textures' budget and @fp draws the
+ * image smaller, the texture is the image at the size @fp draws it (ADR-108:
+ * hwaccel on draws the images hwaccel off draws, and bbulk draws such a
+ * picture at its drawn size); one such is made again, larger, when a
+ * placement draws it larger. NULL when there is none: no image, GL refused
+ * it, or it does not fit, which marks the frame starved.
+ */
+static struct gltex_image *place_texture(struct kmscon_text *txt,
+					 const struct tsm_frame_placement *fp, bool overlay,
+					 unsigned int dw, unsigned int dh)
+{
+	struct gltex *gt = txt->data;
+	struct gltex_image *gi, *old, **pp;
+	struct tsm_frame_image img;
+	unsigned int fw, fh, tw, th;
+	int ret;
+
+	gi = image_find(gt, overlay, fp->image_key);
+	if (gi && gi->failed)
+		return NULL;
+	if (gi && gi->iw && gi->ih) {
+		/* the image at the size this placement draws it */
+		tw = ((uint64_t)gi->iw * dw + fp->src_width / 2) / fp->src_width;
+		th = ((uint64_t)gi->ih * dh + fp->src_height / 2) / fp->src_height;
+		if (!gi->drawn_size || (tw <= gi->w && th <= gi->h) || gi->grow_failed)
+			return gi;
+	}
+
+	if (kmscon_text_get_image(txt, overlay, fp->image_key, &img))
+		return gi;
+	if (img.stride % 4 || img.stride / 4 < img.width || !img.width || !img.height)
+		return gi;
+	if (overlay)
+		overlays_free(gt, fp->image_key);
+	image_fit(gt, img.width, img.height, &fw, &fh);
+	tw = ((uint64_t)img.width * dw + fp->src_width / 2) / fp->src_width;
+	th = ((uint64_t)img.height * dh + fp->src_height / 2) / fp->src_height;
+	image_fit(gt, tw ? tw : 1, th ? th : 1, &tw, &th);
+
+	/* a drawn-size texture drawn larger: its room is the new one's to try */
+	old = gi;
+	if (old) {
+		for (pp = &gt->images; *pp != old; pp = &(*pp)->next)
+			;
+		*pp = old->next;
+		gt->images_num--;
+		gt->image_bytes -= old->bytes;
+		image_budget_remove_texture(old->bytes);
+	}
+
+	ret = image_new(txt, overlay, fp->image_key, &img, fw, fh, &gi);
+	if (ret == -ENOSPC && (uint64_t)tw * th < (uint64_t)fw * fh) {
+		ret = image_new(txt, overlay, fp->image_key, &img, tw, th, &gi);
+		if (!ret)
+			gi->drawn_size = true;
+	}
+	if (ret == -ENOSPC)
+		gt->starved = true;
+	else if (ret == -EFAULT)
+		gi->last_use = gt->frame_count; /* remembered while shown */
+
+	if (old) {
+		/* put back: as it was, or among those given up */
+		old->next = gt->images;
+		gt->images = old;
+		gt->images_num++;
+		gt->image_bytes += old->bytes;
+		image_budget_add_texture(old->bytes);
+		if (!ret) {
+			image_free(gt, &gt->images);
+		} else {
+			if (ret == -EFAULT && old->next == gi) {
+				/* the refusal is old's to remember, not a key of its own */
+				image_free(gt, &old->next);
+				old->grow_failed = true;
+			}
+			return old;
+		}
+	}
+	return ret ? NULL : gi;
+}
+
+/*
+ * Queue placement @fp, the overlay's when @overlay, @cols x @rows cells of the
+ * frame drawn: its picture's part inside its box and the grid, as bbulk
+ * clips it, from its image's texture (place_texture). One that draws nothing,
+ * or whose texture cannot be had, is left out.
+ */
+static void place_queue(struct kmscon_text *txt, const struct tsm_frame_placement *fp, bool overlay,
+			unsigned int cols, unsigned int rows)
+{
+	struct gltex *gt = txt->data;
+	long long fw = FONT_WIDTH(txt), fh = FONT_HEIGHT(txt), gx, gy, px0, px1, py0, py1;
+	long long x0, x1, y0, y1, gw = cols * fw, gh = rows * fh;
+	double sx = gt->advance_x / fw, sy = gt->advance_y / fh, lo, hi;
+	struct gltex_image *gi;
+	struct gltex_pic *p;
+	unsigned int dw, dh, i;
+
+	if (!fp->cell_width || !fp->cell_height || !fp->width || !fp->height || !fp->src_width ||
+	    !fp->src_height || gt->pics_num >= gt->pics_size)
+		return;
+
+	/* the picture in grid pixels, scaled from the cells it was made in */
+	gx = (long long)fp->col * fw;
+	gy = (long long)fp->row * fh;
+	px0 = gx + (long long)fp->x * fw / fp->cell_width;
+	px1 = gx + ((long long)fp->x + fp->width) * fw / fp->cell_width;
+	py0 = gy + (long long)fp->y * fh / fp->cell_height;
+	py1 = gy + ((long long)fp->y + fp->height) * fh / fp->cell_height;
+
+	/* its part inside its box and the grid */
+	x0 = px0 > gx ? px0 : gx;
+	y0 = py0 > gy ? py0 : gy;
+	x0 = x0 > 0 ? x0 : 0;
+	y0 = y0 > 0 ? y0 : 0;
+	x1 = px1 < gx + (long long)fp->cols * fw ? px1 : gx + (long long)fp->cols * fw;
+	y1 = py1 < gy + (long long)fp->rows * fh ? py1 : gy + (long long)fp->rows * fh;
+	x1 = x1 < gw ? x1 : gw;
+	y1 = y1 < gh ? y1 : gh;
+	if (x0 >= x1 || y0 >= y1)
+		return;
+	dw = px1 - px0;
+	dh = py1 - py0;
+
+	gi = place_texture(txt, fp, overlay, dw, dh);
+	if (!gi || fp->src_x >= gi->iw || fp->src_y >= gi->ih ||
+	    fp->src_width > gi->iw - fp->src_x || fp->src_height > gi->ih - fp->src_y)
+		return;
+	gi->last_use = gt->frame_count;
+
+	/* the visible part's texture coordinates, of the image's whole */
+	p = &gt->pics[gt->pics_num++];
+	p->image = gi;
+	p->band = fp->band;
+	/* one texel a pixel, from a texel's edge */
+	p->exact = (uint64_t)gi->w * fp->src_width == (uint64_t)dw * gi->iw &&
+		   (uint64_t)gi->h * fp->src_height == (uint64_t)dh * gi->ih &&
+		   (uint64_t)fp->src_x * gi->w % gi->iw == 0 &&
+		   (uint64_t)fp->src_y * gi->h % gi->ih == 0;
+	p->x1 = gt->off_x + x0 * sx - 1.0;
+	p->x2 = gt->off_x + x1 * sx - 1.0;
+	p->y1 = 1.0 - gt->off_y - y0 * sy;
+	p->y2 = 1.0 - gt->off_y - y1 * sy;
+	p->u1 = (fp->src_x + (x0 - px0) * (double)fp->src_width / dw) / gi->iw;
+	p->u2 = (fp->src_x + (x1 - px0) * (double)fp->src_width / dw) / gi->iw;
+	p->v1 = (fp->src_y + (y0 - py0) * (double)fp->src_height / dh) / gi->ih;
+	p->v2 = (fp->src_y + (y1 - py0) * (double)fp->src_height / dh) / gi->ih;
+
+	/* the source rectangle in the texture's texels, half a texel in */
+	for (i = 0; i < 2; i++) {
+		unsigned int n = i ? gi->h : gi->w, size = i ? gi->ih : gi->iw;
+		unsigned int s0 = i ? fp->src_y : fp->src_x;
+		unsigned int s1 = s0 + (i ? fp->src_height : fp->src_width);
+
+		lo = (double)s0 * n / size + 0.5;
+		hi = (double)s1 * n / size - 0.5;
+		if (lo > hi)
+			lo = hi = (lo + hi) / 2;
+		p->clip[i] = lo / n;
+		p->clip[2 + i] = hi / n;
+	}
+}
+
+/*
+ * The frame's image placements, and the overlay after them, in draw order
+ * (ADR-103), @cols x @rows cells of the frame drawn. The textures they name
+ * are marked drawn first, so making one for a later placement never frees one
+ * an earlier placement drew.
+ */
+static void gltex_draw_placements(struct kmscon_text *txt, const struct tsm_frame *frame,
+				  unsigned int cols, unsigned int rows)
+{
+	struct gltex *gt = txt->data;
+	unsigned int nf = frame->placements ? frame->placement_count : 0, i;
+	size_t size = min(sizeof(struct tsm_frame_placement), frame->placement_size);
+	struct tsm_frame_placement fp;
+	struct gltex_image *gi;
+
+	if (pics_reserve(gt, nf + 1))
+		return;
+	for (i = 0; i < nf; i++) {
+		gi = image_find(gt, false, tsm_frame_placement_at(frame, i)->image_key);
+		if (gi)
+			gi->last_use = gt->frame_count;
+	}
+	if (txt->overlay) {
+		gi = image_find(gt, true, txt->overlay->placement.image_key);
+		if (gi)
+			gi->last_use = gt->frame_count;
+	}
+
+	for (i = 0; i < nf; i++) {
+		/* an older libtsm's entry is smaller: the rest stays 0 */
+		memset(&fp, 0, sizeof(fp));
+		memcpy(&fp, tsm_frame_placement_at(frame, i), size);
+		place_queue(txt, &fp, false, cols, rows);
+	}
+	if (txt->overlay) {
+		/* the overlay, at the right end of the top row */
+		struct tsm_frame_placement ov = txt->overlay->placement;
+
+		ov.col = cols > ov.cols ? cols - ov.cols : 0;
+		place_queue(txt, &ov, true, cols, rows);
+	}
 }
 
 static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bool cursor_on)
 {
+	struct gltex *gt = txt->data;
 	unsigned int posx, posy, cols, rows, width;
 	const struct tsm_frame_cell *fc, *cell;
 	bool is_cursor, ul_cursor;
@@ -914,7 +1657,10 @@ static int gltex_draw(struct kmscon_text *txt, const struct tsm_frame *frame, bo
 			gltex_draw_cell(txt, cell, key, posx, posy, width, ul_cursor);
 		}
 	}
-	gltex_draw_placements(txt, frame);
+
+	gt->starved = false;
+	gltex_draw_placements(txt, frame, cols, rows);
+	gt->starved_gen = image_budget_gen();
 	return 0;
 }
 
@@ -954,40 +1700,29 @@ static int gltex_draw_pointer(struct kmscon_text *txt, unsigned int x, unsigned 
 	q.bg = (struct tsm_screen_color){gt->attr.br, gt->attr.bg, gt->attr.bb};
 	if (!get_deco(txt))
 		q.ulcell = q.strikecell = gt->deco_off + KMSCON_DECO_NONE;
-	return queue_quad(gt, &q);
+	gt->pointer = q;
+	gt->has_pointer = true;
+	return 0;
 }
 
-static int gltex_render(struct kmscon_text *txt)
+/* the cell shader's layers: a cell whole and opaque, its background, its text */
+enum gltex_layer {
+	LAYER_CELL = 0,
+	LAYER_BACKGROUND = 1,
+	LAYER_TEXT = 2,
+};
+
+/* the cell shader and its vertex arrays, for a pass drawing @layer */
+static void cells_begin(struct gltex *gt, const float *mat, enum gltex_layer layer)
 {
-	struct gltex *gt = txt->data;
-	struct atlas *atlas, *deco;
-	struct gltex_quad *q;
-	unsigned int i, off = 0;
-	float mat[16];
-
-	/* each atlas's quads together, in the order they were queued */
-	dlist_for_each_entry(atlas, &gt->atlases, list)
-	{
-		atlas->cache_off = off;
-		off += atlas->cache_num;
-		atlas->cache_num = 0;
-	}
-	for (i = 0; i < gt->quads_num; i++) {
-		q = &gt->quads[i];
-		write_quad(gt, q->atlas->cache_off + q->atlas->cache_num++, q);
-	}
-
-	gl_clear_error();
+	struct atlas *deco;
+	unsigned int i;
 
 	gl_shader_use(gt->shader);
-
-	glViewport(0, 0, gt->sw, gt->sh);
-	glDisable(GL_BLEND);
-
-	gl_m4_identity(mat);
 	glUniformMatrix4fv(gt->uni_proj, 1, GL_FALSE, mat);
 	glUniform1f(gt->uni_cos, gt->cos);
 	glUniform1f(gt->uni_sin, gt->sin);
+	glUniform1i(gt->uni_layer, layer);
 
 	for (i = 0; i < GLTEX_ATTRS; i++)
 		glEnableVertexAttribArray(i);
@@ -1015,32 +1750,177 @@ static int gltex_render(struct kmscon_text *txt)
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, gt->cache_pos);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, gt->cache_texpos);
 	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_fgcol);
-	glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_bgcol);
+	glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 0, gt->cache_bgcol);
 	glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_ulcol);
 	glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_strikecol);
 	glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, 0, gt->cache_deco);
+}
 
-	dlist_for_each_entry(atlas, &gt->atlases, list)
-	{
-		if (!atlas->cache_num)
-			continue;
-
-		glBindTexture(GL_TEXTURE_2D, atlas->tex);
-		glUniform1i(gt->uni_colour, atlas->format == GL_RGBA);
-		glUniform1f(gt->uni_advance_htex, atlas->advance_htex);
-		glUniform1f(gt->uni_advance_vtex, atlas->advance_vtex);
-		glDrawArrays(GL_TRIANGLES, 6 * atlas->cache_off, 6 * atlas->cache_num);
-	}
+static void cells_end(void)
+{
+	unsigned int i;
 
 	for (i = 0; i < GLTEX_ATTRS; i++)
 		glDisableVertexAttribArray(i);
+}
+
+/* @atlas's @n quads from slot @off of the vertex arrays */
+static void cells_draw(struct gltex *gt, struct atlas *atlas, unsigned int off, unsigned int n)
+{
+	glBindTexture(GL_TEXTURE_2D, atlas->tex);
+	glUniform1i(gt->uni_colour, atlas->format == GL_RGBA);
+	glUniform1f(gt->uni_advance_htex, atlas->advance_htex);
+	glUniform1f(gt->uni_advance_vtex, atlas->advance_vtex);
+	glDrawArrays(GL_TRIANGLES, 6 * off, 6 * n);
+}
+
+/* a pass over the cell quads, each atlas's in one draw: they never overlap */
+static void cells_pass(struct gltex *gt, const float *mat, enum gltex_layer layer)
+{
+	struct atlas *atlas;
+
+	cells_begin(gt, mat, layer);
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		if (atlas->cache_num)
+			cells_draw(gt, atlas, atlas->cache_off, atlas->cache_num);
+	}
+	cells_end();
+}
+
+/*
+ * The placements of @band, in the frame's order, each from its texture,
+ * blended premultiplied over what is drawn: sampled as they are where they
+ * draw a texel a pixel, bilinear where they are scaled.
+ */
+static void pics_pass(struct gltex *gt, const float *mat, uint8_t band)
+{
+	struct gltex_pic *p;
+	unsigned int i;
+	bool begun = false;
+	GLint filter;
+
+	for (i = 0; i < gt->pics_num; i++) {
+		p = &gt->pics[i];
+		if (p->band != band)
+			continue;
+		if (!begun) {
+			gl_shader_use(gt->img_shader);
+			glUniformMatrix4fv(gt->uni_img_proj, 1, GL_FALSE, mat);
+			glUniform1f(gt->uni_img_cos, gt->cos);
+			glUniform1f(gt->uni_img_sin, gt->sin);
+			glUniform1i(gt->uni_img_picture, 0);
+			glActiveTexture(GL_TEXTURE0);
+			glEnableVertexAttribArray(0);
+			glEnableVertexAttribArray(1);
+			glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, gt->pic_pos);
+			glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, gt->pic_texpos);
+			begun = true;
+		}
+		glBindTexture(GL_TEXTURE_2D, p->image->tex);
+		glUniform4f(gt->uni_img_clip, p->clip[0], p->clip[1], p->clip[2], p->clip[3]);
+		filter = p->exact ? GL_NEAREST : GL_LINEAR;
+		if (p->image->filter != filter) {
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+			p->image->filter = filter;
+		}
+		glDrawArrays(GL_TRIANGLES, 6 * i, 6);
+	}
+	if (begun) {
+		glDisableVertexAttribArray(0);
+		glDisableVertexAttribArray(1);
+	}
+}
+
+/* the six vertices of placement @p, two triangles, at slot @i of its arrays */
+static void write_pic(struct gltex *gt, unsigned int i, const struct gltex_pic *p)
+{
+	GLfloat *pos = &gt->pic_pos[i * 2 * 6], *tex = &gt->pic_texpos[i * 2 * 6];
+	const GLfloat v[6][4] = {
+		{p->x1, p->y1, p->u1, p->v1}, {p->x1, p->y2, p->u1, p->v2},
+		{p->x2, p->y2, p->u2, p->v2}, {p->x1, p->y1, p->u1, p->v1},
+		{p->x2, p->y2, p->u2, p->v2}, {p->x2, p->y1, p->u2, p->v1},
+	};
+	unsigned int j;
+
+	for (j = 0; j < 6; j++) {
+		pos[j * 2] = v[j][0];
+		pos[j * 2 + 1] = v[j][1];
+		tex[j * 2] = v[j][2];
+		tex[j * 2 + 1] = v[j][3];
+	}
+}
+
+/*
+ * The frame in ADR-103's layers. Without placements, each cell is drawn
+ * whole in one opaque pass. With them: the lowest band over the default
+ * background the frame was cleared to, the cell backgrounds that are not the
+ * default, the middle band, the cells' text blended over it, the top band.
+ * The pointer is drawn last, whole, in a draw of its own (#181). Then the
+ * textures this frame did not draw go while they pass the cache's bound.
+ */
+static int gltex_render(struct kmscon_text *txt)
+{
+	struct gltex *gt = txt->data;
+	struct atlas *atlas;
+	struct gltex_quad *q;
+	unsigned int i, off = 0;
+	float mat[16];
+	int ret = 0;
+
+	/* each atlas's quads together, in the order they were queued */
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		atlas->cache_off = off;
+		off += atlas->cache_num;
+		atlas->cache_num = 0;
+	}
+	for (i = 0; i < gt->quads_num; i++) {
+		q = &gt->quads[i];
+		write_quad(gt, q->atlas->cache_off + q->atlas->cache_num++, q);
+	}
+	if (gt->has_pointer)
+		write_quad(gt, gt->quads_size, &gt->pointer);
+	for (i = 0; i < gt->pics_num; i++)
+		write_pic(gt, i, &gt->pics[i]);
+
+	gl_clear_error();
+
+	glViewport(0, 0, gt->sw, gt->sh);
+	gl_m4_identity(mat);
+
+	if (!gt->pics_num) {
+		glDisable(GL_BLEND);
+		cells_pass(gt, mat, LAYER_CELL);
+	} else {
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+		pics_pass(gt, mat, TSM_FRAME_BAND_BELOW_BG);
+		glDisable(GL_BLEND);
+		cells_pass(gt, mat, LAYER_BACKGROUND);
+		glEnable(GL_BLEND);
+		pics_pass(gt, mat, TSM_FRAME_BAND_BELOW_TEXT);
+		cells_pass(gt, mat, LAYER_TEXT);
+		pics_pass(gt, mat, TSM_FRAME_BAND_ABOVE_TEXT);
+		glDisable(GL_BLEND);
+	}
+
+	if (gt->has_pointer) {
+		cells_begin(gt, mat, LAYER_CELL);
+		cells_draw(gt, gt->pointer.atlas, gt->quads_size, 1);
+		cells_end();
+	}
 
 	if (gl_has_error(gt->shader)) {
 		log_warning("rendering console caused OpenGL errors");
-		return -EFAULT;
+		ret = -EFAULT;
 	}
 
-	return 0;
+	images_trim(gt, 0, image_budget_cache_limit((uint64_t)gt->sw * gt->sh));
+	failed_free(gt);
+	doomed_flush(gt);
+	return ret;
 }
 
 struct kmscon_text_ops kmscon_text_gltex_ops = {
@@ -1057,5 +1937,7 @@ struct kmscon_text_ops kmscon_text_gltex_ops = {
 	.draw_pointer = gltex_draw_pointer,
 	.render = gltex_render,
 	.abort = NULL,
-	.draws_images = false, /* until ADR-103 step 3f: gltex_draw_placements */
+	.release = gltex_release,
+	.starved = gltex_starved,
+	.draws_images = true,
 };

@@ -73,6 +73,8 @@ if enable_renderer_gltex
         [
             'test_gltex.c',
             '../src/render/deco.c',
+            '../src/render/image_budget.c',
+            '../src/render/picture.c',
             embed_gen.process(
                 '../src/render/gltex_atlas.vert',
                 extra_args: shader_regex,
@@ -81,10 +83,18 @@ if enable_renderer_gltex
                 '../src/render/gltex_atlas.frag',
                 extra_args: shader_regex,
             ),
+            embed_gen.process(
+                '../src/render/gltex_image.vert',
+                extra_args: shader_regex,
+            ),
+            embed_gen.process(
+                '../src/render/gltex_image.frag',
+                extra_args: shader_regex,
+            ),
         ],
         include_directories: src_inc,
         dependencies: [
-            libtsm_deps,
+            subproject('libtsm').get_variable('libtsm_test_dep'),
             shl_deps,
             htable_deps,
             math_deps,
@@ -92,6 +102,20 @@ if enable_renderer_gltex
         ],
     )
     test('test_gltex', test_gltex)
+
+    # mod-gltex links the render library, so it holds its own copy of
+    # image_budget.c; each budget call gltex makes must bind to kmscon's
+    test(
+        'gltex_budget_symbols',
+        python,
+        args: [
+            files('check_module_symbols.py'),
+            kmscon,
+            mod_gltex,
+            files('../src/render/gltex.c'),
+            'image_budget_',
+        ],
+    )
 endif
 
 if enable_video_drm2d

@@ -35,13 +35,20 @@
  * (colour set), premultiplied and untinted. The decoration sprites are cells
  * of the alpha atlas bound to deco, at the cells decopos.y and decopos.z name
  * (a blank one for none), each tinted with its own colour and repeated in
- * every cell of a wide glyph; decopos.x is the x within the quad's cells,
- * small enough to stay exact under a 16-bit mediump. A frame without the
- * sprites has decorated 0. Upstream samples one alpha atlas and tints it; this
+ * every cell of a wide glyph; decopos.x is the x within the quad's cells. A
+ * frame without the sprites has decorated 0. Upstream samples one alpha atlas and tints it; this
  * departure is recorded in ADR-102's corrections from step 6 (ADR-303).
+ *
+ * layer (ADR-103): 0 draws the cell whole and opaque. A frame with image
+ * placements draws its cells twice, with pictures between: 1 draws only a
+ * background that is not the default (bgcol.a 1), 2 only the text layer,
+ * premultiplied, for blending over what is under it.
+ *
+ * The atlases are drawn a texel a pixel and sampled GL_NEAREST, so each pixel
+ * must land on its own texel's centre, as far along as the 2048th texel of an
+ * atlas: highp where the GPU has it, as mediump may hold only 11 bits (#197).
+ * The precision line comes before this source (gltex.c, frag_source).
  */
-
-precision mediump float;
 
 uniform sampler2D atlas;
 uniform sampler2D deco;
@@ -51,16 +58,24 @@ uniform float advance_vtex;
 uniform float deco_htex;
 uniform float deco_vtex;
 uniform float decorated;
+uniform int layer;
 
 varying vec2 texpos;
 varying vec3 fgcol;
-varying vec3 bgcol;
+varying vec4 bgcol;
 varying vec3 ulcol;
 varying vec3 stcol;
 varying vec3 decopos;
 
 void main()
 {
+	if (layer == 1) {
+		if (bgcol.a < 0.5)
+			discard;
+		gl_FragColor = vec4(bgcol.rgb, 1.0);
+		return;
+	}
+
 	vec2 pos = vec2(texpos.x * advance_htex, texpos.y * advance_vtex);
 	vec4 tex = texture2D(atlas, pos);
 	vec4 glyph = colour ? tex : vec4(tex.a * fgcol, tex.a);
@@ -73,5 +88,8 @@ void main()
 	vec4 text = vec4(u * ulcol, u);
 	text = glyph + (1.0 - glyph.a) * text;
 	text = vec4(s * stcol, s) + (1.0 - s) * text;
-	gl_FragColor = vec4(text.rgb + (1.0 - text.a) * bgcol, 1.0);
+	if (layer == 2)
+		gl_FragColor = text;
+	else
+		gl_FragColor = vec4(text.rgb + (1.0 - text.a) * bgcol.rgb, 1.0);
 }

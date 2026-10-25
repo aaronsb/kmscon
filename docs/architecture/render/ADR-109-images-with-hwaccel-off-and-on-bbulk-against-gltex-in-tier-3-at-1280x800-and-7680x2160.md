@@ -346,7 +346,7 @@ From the feedback file, verbatim:
 From #197, filed from the operator's VT review on 2026-10-25 and fixed in `7ee63c9d` before run 5:
 
 - On run 1 (kitty kit, gltex, `g1a319907`), whose pages were rated right, quoted verbatim in the issue's body: "the text itself looked slightly poorer than before, as if it was just a hair too thin and even a few characters had some single pixel artifacts on the edge of the cell (just a few, out of all the characters)".
-- On run 2 (sixel kit, the same build), the issue's follow-up comment records the same artifacts again, with the operator's example of an inverse-video lowercase 'q'. That is the comment's description, not the operator's words.
+- On run 2 (sixel kit, the same build), relayed verbatim by the team lead, written by the operator after the run on 2026-10-25 and spelled as typed: "that test had the same visual artificats [sic] on occasional character cells. the inverse video lowercase 'q' had it for example". The issue's follow-up comment records the same example.
 
 Relayed by the team lead from the operator's session on 2026-10-25, verbatim. These are not in the feedback file:
 

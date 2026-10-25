@@ -65,7 +65,7 @@ considered:
     said: "We really want to hit our perf targets. If we can only get 28 fps because of an existing architecture decision, and we see something that gives us 30+ then that still warrants a possible change. We have to consider the scope of external changes - if we optimize with some sort of memory parallelism pipeline or vectors or something, then fine by all means, it doesn't change the contract between the system and the other interations."
     via: Claude Code session, 2026-10-25, typed in answer to "Does that hold however large the slowdown is, e.g. if kmscon's way made video so slow it was effectively unwatchable?", relayed verbatim by the team lead; revises the earlier "No", in particular for the case that question named, a missed frame-time target from an accepted ADR or the operator's ask
     covers: [performance]
-status: proposed
+status: accepted
 date: 2026-10-24
 deciders:
   - aaronsb

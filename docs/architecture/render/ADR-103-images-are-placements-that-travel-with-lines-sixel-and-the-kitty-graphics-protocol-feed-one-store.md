@@ -457,6 +457,7 @@ A frame is drawn in ADR-101's order, shown in figure A: the default background; 
 - Each image key gets a texture, uploaded when a placement of it is first drawn. An image larger than `GL_MAX_TEXTURE_SIZE` is uploaded scaled down to fit. Textures of images not drawn recently are freed once the total passes the bound bbulk's cache uses.
 - One draw per layer: clear to the default background, lowest-band quads, non-default cell backgrounds, middle-band quads, glyphs and decorations, top-band quads.
 - Image uploads take the same path that fails under virgl in #17, so the GL variant's image screens stay outside the default tier 3 run until #17 is resolved.
+- (Added 2026-10-24: ADR-108 amends this section. gltex draws images only where kmscon's `hwaccel` setting selects it, on drm3d with OpenGL, and `hwaccel` keeps upstream's default, off. drm2d and bbulk stay the path images are judged on, and gltex is an optional acceleration on top of it. The operator said: "I want hw accel to follow the same behavior as kmscon does, which is conservative and off. and when on, image rendering takes the same hardware available path. this way we're not changing expected behaviors". Nothing above is replaced.)
 
 ### Memory
 

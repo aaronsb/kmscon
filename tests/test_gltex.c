@@ -365,9 +365,11 @@ const char *gl_err_to_str(GLenum err)
 {
 	return "stub";
 }
+/* while set, GL reports an error after making a shader, as a driver can */
+static bool fail_shader;
 bool gl_has_error(struct gl_shader *shader)
 {
-	return false;
+	return fail_shader;
 }
 static unsigned int n_shaders;
 static char cell_frag[16384]; /* the cell shader's fragment source, as it was last given */
@@ -434,7 +436,15 @@ bool display_has_opengl(struct display *disp)
 {
 	return true;
 }
-void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y) {}
+/* the cursor offsets gltex gave the display: how many, and the last */
+static unsigned int cursor_offsets;
+static int32_t cursor_x, cursor_y;
+void display_set_cursor_offset(struct display *disp, int32_t x, int32_t y)
+{
+	cursor_offsets++;
+	cursor_x = x;
+	cursor_y = y;
+}
 /* while set, display_use() fails, as with no GL context; display_uses counts its calls */
 static bool fail_display_use;
 static unsigned int display_uses;
@@ -445,14 +455,20 @@ int display_use(struct display *disp)
 }
 
 /* ---- font and text ---- */
+/* the text's size in cells, from the display turned by its orientation, as text.c's */
 unsigned int kmscon_text_get_cols(struct kmscon_text *txt, unsigned int font_width)
 {
-	return disp_w / font_width;
+	bool upright = txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN;
+
+	return (upright ? disp_w : disp_h) / font_width;
 }
 unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_height)
 {
-	return disp_h / font_height;
+	bool upright = txt->orientation == OR_NORMAL || txt->orientation == OR_UPSIDE_DOWN;
+
+	return (upright ? disp_h : disp_w) / font_height;
 }
+
 /*
  * The colour glyph's pixel at @x, @y, ARGB: its alpha varies,
  * and its red, green and blue differ so that a swap of any two shows.
@@ -587,6 +603,14 @@ int kmscon_text_get_image(struct kmscon_text *txt, bool overlay, uint64_t key,
 }
 
 #include "../src/render/gltex.c"
+
+/* a size the terminal gives, through kmscon_text_resize()'s check in text.c, copied */
+static void text_resize(struct kmscon_text *txt, unsigned int cols, unsigned int rows)
+{
+	if (!cols || cols > txt->max_cols || !rows || rows > txt->max_rows)
+		return;
+	gltex_resize(txt, cols, rows);
+}
 
 static void vte_write(struct tsm_vte *vte, const char *u8, size_t len, void *data) {}
 
@@ -3333,9 +3357,12 @@ static void test_cache_upload_failure(void)
  * draws nothing until a set succeeds: gltex_rotate() says so, which its
  * callers ignore, and each gltex_prepare() tries the set again, failing
  * while the context is gone and saying so once; gltex_draw() refuses instead
- * of using what the unset freed. The first prepare whose set succeeds keeps
- * the size in cells the terminal gave meanwhile, and draws as from an empty
- * cache, in the new orientation.
+ * of using what the unset freed. The failed set still gives the text its
+ * largest size in the new orientation, so the size the terminal gives
+ * meanwhile passes text.c's check; the first prepare whose set succeeds
+ * keeps that size, and draws as from an empty cache, in the new orientation.
+ * The terminal is held below the text's size throughout, as in clone mode
+ * beside a smaller display: 56x28 of 80x30 upright, 56x36 of 60x40 turned.
  */
 static void test_cache_failed_rotate(void)
 {
@@ -3348,6 +3375,8 @@ static void test_cache_failed_rotate(void)
 	rnd_state = 5;
 	open_cache(&txt, &fake_font, OR_NORMAL);
 	gt = txt.data;
+	text_resize(&txt, 56, 28);
+	assert(txt.cols == 56 && txt.rows == 28);
 	for (f = 0; f < 50; f++) {
 		n = random_frame(cells, 40);
 		cache_frame(&txt, cells, n);
@@ -3359,14 +3388,14 @@ static void test_cache_failed_rotate(void)
 	assert(gt->set_failed_logged && !gt->shader);
 	assert(gltex_prepare(&txt, &attr) == -EFAULT);
 	assert(gltex_draw(&txt, make_frame(0), false) == -EINVAL);
-	/* the terminal's size meanwhile, a cell short of the text's each way */
-	gltex_resize(&txt, txt.max_cols - 1, txt.max_rows - 1);
+	assert(txt.max_cols == 60 && txt.max_rows == 40);
+	text_resize(&txt, 56, 36);
 	fail_display_use = false;
 
 	assert(gltex_prepare(&txt, &attr) == 0);
 	assert(gt->shader && !gt->set_failed_logged && txt.orientation == OR_RIGHT);
-	assert(txt.cols == txt.max_cols - 1 && txt.rows == txt.max_rows - 1);
-	gltex_resize(&txt, txt.max_cols, txt.max_rows);
+	assert(txt.cols == 56 && txt.rows == 36);
+	text_resize(&txt, txt.max_cols, txt.max_rows);
 	gt->pool_max_glyphs = UINT_MAX;
 	gt->pool_max_bytes = CACHE_BOUND;
 	cache_frame(&txt, cells, n);
@@ -3413,6 +3442,40 @@ static void test_cache_unset_release(void)
 	n = random_frame(cells, 40);
 	cache_frame(&txt, cells, n);
 	assert_as_cold(&txt, cells, n);
+	close_cache(&txt);
+}
+
+/*
+ * A set whose shader GL reports an error fails after it cleared the gltex:
+ * gltex_set() says so and leaves it not set. A resize meanwhile records the
+ * terminal's size and nothing else, as the display's size is not known: no
+ * cursor offset is given the display. The next prepare whose set succeeds
+ * keeps that size and centres it, the cursor offset with it.
+ */
+static void test_cache_shader_failure(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int offsets;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	gltex_unset(&txt);
+	fail_shader = true;
+	assert(gltex_set(&txt) == -EFAULT);
+	assert(!gt->shader && !gt->sw);
+	offsets = cursor_offsets;
+	text_resize(&txt, 56, 28);
+	assert(txt.cols == 56 && txt.rows == 28 && cursor_offsets == offsets);
+	assert(gltex_prepare(&txt, &attr) == -EFAULT);
+	fail_shader = false;
+
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(txt.cols == 56 && txt.rows == 28);
+	/* 56x28 cells of 8x16 centred in 640x480 */
+	assert(cursor_x == 96 && cursor_y == 16);
+	assert(gltex_render(&txt) == 0);
 	close_cache(&txt);
 }
 
@@ -3769,6 +3832,7 @@ static const struct {
 	{"upload_failure", test_cache_upload_failure},
 	{"failed_rotate", test_cache_failed_rotate},
 	{"unset_release", test_cache_unset_release},
+	{"shader_failure", test_cache_shader_failure},
 	{"measure", test_cache_measure},
 };
 

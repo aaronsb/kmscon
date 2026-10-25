@@ -493,6 +493,14 @@ static int gltex_set(struct kmscon_text *txt)
 			       "ulcolor",  "strikecolor",      "decoration"};
 	GLint s;
 
+	/*
+	 * the text's largest size in cells, from the display and the
+	 * orientation alone, first: a set that fails, as a rotation's can,
+	 * leaves it right for the size the terminal gives meanwhile
+	 */
+	txt->max_cols = kmscon_text_get_cols(txt, FONT_WIDTH(txt));
+	txt->max_rows = kmscon_text_get_rows(txt, FONT_HEIGHT(txt));
+
 	if (!display_has_opengl(txt->disp))
 		return -EINVAL;
 
@@ -530,6 +538,7 @@ static int gltex_set(struct kmscon_text *txt)
 
 	if (gl_has_error(gt->shader)) {
 		log_warning("cannot create shader");
+		ret = -EFAULT;
 		goto err_shader;
 	}
 
@@ -545,8 +554,6 @@ static int gltex_set(struct kmscon_text *txt)
 	gt->sw = display_get_width(txt->disp);
 	gt->sh = display_get_height(txt->disp);
 
-	txt->max_cols = kmscon_text_get_cols(txt, FONT_WIDTH(txt));
-	txt->max_rows = kmscon_text_get_rows(txt, FONT_HEIGHT(txt));
 	txt->cols = txt->max_cols;
 	txt->rows = txt->max_rows;
 	ret = alloc_quads(gt, txt->max_cols * txt->max_rows);
@@ -1219,11 +1226,18 @@ static struct gl_glyph *find_glyph(struct kmscon_text *txt, uint64_t key, uint16
 	return slot;
 }
 
+/*
+ * The size in cells the terminal gives. A gltex not set only records it,
+ * for gltex_prepare() to put back: the display's size is not known yet.
+ */
 static void gltex_resize(struct kmscon_text *txt, unsigned int cols, unsigned int rows)
 {
+	struct gltex *gt = txt->data;
+
 	txt->cols = cols;
 	txt->rows = rows;
-	compute_advance_and_offset(txt);
+	if (gt->shader)
+		compute_advance_and_offset(txt);
 }
 
 static int gltex_rotate(struct kmscon_text *txt, enum Orientation orientation)

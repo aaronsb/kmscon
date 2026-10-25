@@ -14,8 +14,20 @@ basis:
     via: Claude Code session, 2026-10-24, about hardware acceleration for images, relayed verbatim by the team lead; the session answered that ADR-108 already records it, and it is cited here as an instance of the general rule
   - operator: aaronsb
     level: guided
-    said: "publishing shape and prepping for upstream merge isn't our focus yet"
-    via: Claude Code session, 2026-10-24, about ten minutes before the first quote above, quoted by the reviewer of aaronsb/kmscon#178 and relayed by the team lead
+    said: "let's avoid growing beyond getting all the parts working first. publishing shape and prepping for upstream merge isn't our focus yet"
+    via: Claude Code session, 2026-10-24, relayed verbatim by the team lead
+  - operator: aaronsb
+    level: guided
+    said: "my theory is the upstream will likely not converge on the work we've been doing, but we've been performing the necessary changes to facilitate the expansion of graphics and text capabilities"
+    via: Claude Code session, 2026-10-24, relayed verbatim by the team lead while ADR-303 was in review
+  - operator: aaronsb
+    level: guided
+    said: "but if we keep an eye on how it's constructed, we follow the conventions and the upstream changes shouldn't be as disruptive."
+    via: Claude Code session, 2026-10-24, relayed verbatim by the team lead while ADR-303 was in review, said right after the statement above
+  - operator: aaronsb
+    level: guided
+    said: "we need to prove the merit of our implementation - all the planned capabilities we're working on right now. when we figure that out and it fits our criteira, the heavy development phase will be relatively complete - thats when cleaning it up and making it appealing for a possible upstream merge happens (which is why its not in this session)"
+    via: Claude Code session, 2026-10-25, relayed verbatim by the team lead while ADR-303 was in review
   - precedent: ADR-108
   - precedent: ADR-101
   - precedent: ADR-102
@@ -56,7 +68,7 @@ related: []
 
 ## Summary
 
-- **Decided:** New fork work follows upstream kmscon's and libtsm's conventions by default: options and their defaults, fallbacks, backend and renderer selection, naming, file layout, and behaviour users already rely on. The fork leaves a convention only where following it would make a capability the fork is adding impossible to build, misleading or unusable, and each departure states that failure as something a reviewer can observe. A cleaner design does not qualify, and neither does a measured performance shortfall alone. Where upstream has no way of doing something, there is no convention and this record does not apply. When an upstream sync brings upstream's own solution to something the fork solved another way, which one stays is decided at that sync.
+- **Decided:** New fork work follows upstream kmscon's and libtsm's conventions by default: options and their defaults, fallbacks, backend and renderer selection, naming, file layout, and behaviour users already rely on. The fork leaves a convention only where following it would make a capability the fork is adding impossible to build, misleading or unusable, and each departure states that failure as something a reviewer can observe. A cleaner design does not qualify, and neither does a measured performance shortfall alone. Where upstream has no way of doing something, there is no convention and this record does not apply. When an upstream sync brings upstream's own solution to something the fork solved another way, which one stays is decided at that sync. The operator's two reasons: users keep the behaviour they expect, and a fork built the way upstream is built takes upstream's changes with less disruption, though upstream is not expected to converge on the fork's work.
 - **Trades away:** Freedom to redesign upstream's surfaces where they are merely inconvenient or slower. Some fork code will be shaped around an upstream choice the fork would not have made.
 - **One-way?** No. Reversible: this record changes no code and no interface, and a later record can loosen or tighten the test.
 - **Probes:**
@@ -68,7 +80,11 @@ related: []
 
 ## Context
 
-The fork adds capabilities upstream does not have, such as inline images, a rebuilt cell model and new text styles, and each one meets an upstream convention it could follow or replace. The reason to follow one is what users expect: kmscon's options, defaults and fallbacks keep behaving as users already know them, or in the operator's words for ADR-108, "this way we're not changing expected behaviors". Easier upstream syncs and work that upstream could take are secondary benefits; the operator has said "publishing shape and prepping for upstream merge isn't our focus yet".
+The fork adds capabilities upstream does not have, such as inline images, a rebuilt cell model and new text styles, and each one meets an upstream convention it could follow or replace. The operator has given two reasons to follow one. Users keep the behaviour they expect: kmscon's options, defaults and fallbacks behave as users already know them, in the operator's words for ADR-108, "this way we're not changing expected behaviors". And a fork built the way upstream is built takes upstream's changes with less disruption: "if we keep an eye on how it's constructed, we follow the conventions and the upstream changes shouldn't be as disruptive."
+
+The record does not assume upstream will converge on the fork's work. The operator expects it will not: "my theory is the upstream will likely not converge on the work we've been doing, but we've been performing the necessary changes to facilitate the expansion of graphics and text capabilities". The departures are those changes, made for the graphics and text capabilities. For the same reason, upstream gaining an equivalent does not end a departure on its own, and each overlap a sync brings is decided at that sync (point 6).
+
+The fork is in its heavy development phase, proving the planned capabilities against their criteria. Cleanup, and shaping the fork for a possible upstream merge, come in a later phase: "we need to prove the merit of our implementation - all the planned capabilities we're working on right now. when we figure that out and it fits our criteira [sic], the heavy development phase will be relatively complete - thats when cleaning it up and making it appealing for a possible upstream merge happens (which is why its not in this session)". Offering work upstream is therefore not a reason this record gives, and the record adds no upstreaming work now; as the operator put it earlier, "let's avoid growing beyond getting all the parts working first. publishing shape and prepping for upstream merge isn't our focus yet".
 
 This record makes explicit a practice the fork's merged work already follows:
 
@@ -94,8 +110,8 @@ This record makes explicit a practice the fork's merged work already follows:
 ### Positive
 
 - Users moving between upstream kmscon and the fork find the same options, defaults and fallbacks wherever the fork adds nothing.
+- Upstream syncs disrupt less, because the fork is built the way upstream is built wherever a capability does not require otherwise.
 - A later session can tell a deliberate departure from drift, because each departure names its reason and its end condition, and the code leads to it.
-- Secondary: upstream syncs conflict less, and fork work offered upstream fits upstream's shape.
 
 ### Negative
 
@@ -107,10 +123,11 @@ This record makes explicit a practice the fork's merged work already follows:
 
 - Departures made before this record, such as ADR-101's replaced screen model and ADR-102's cell layout, already have their reasons in their own records and are not revisited.
 - A sync that changes a convention changes what new work follows; existing fork code moves only where a sync decides it (point 6).
+- The record adds no work to shape the fork for an upstream merge. That belongs to a later phase, once the planned capabilities are proven against their criteria.
 
 ## Alternatives Considered
 
-- **Fork freely.** Redesign any upstream surface the fork touches. Rejected: it changes behaviour users rely on without a capability to show for it.
+- **Fork freely.** Redesign any upstream surface the fork touches. Rejected: it changes behaviour users rely on without a capability to show for it, and makes every upstream sync more disruptive.
 - **Never depart from upstream.** Rejected: several of the fork's capabilities cannot be built inside upstream's screen model and draw API (ADR-101, ADR-102).
 - **Record departures without a test.** Allow any departure as long as it is written down. Rejected: a record alone does not stop departures made for taste, and the operator's test is whether the convention blocks a capability.
 - **Let a measured performance shortfall qualify.** Rejected by the operator's answer to the performance probe.

@@ -302,6 +302,7 @@ struct gltex {
 	bool starved;		     /* a placement was left out for the budget */
 	uint64_t starved_gen;	     /* image_budget_gen() when it was */
 	bool upload_warned;
+	bool set_failed_logged; /* gltex_prepare() could not set it, and said so */
 
 	struct gl_shader *img_shader;
 	GLuint uni_img_cos;
@@ -1223,11 +1224,27 @@ static int gltex_prepare(struct kmscon_text *txt, struct tsm_screen_attr *attr)
 	struct gltex *gt = txt->data;
 	struct atlas *atlas;
 	unsigned int i;
+	bool logged;
 	int ret;
 
-	/* a gltex whose set failed, as a rotation's can, draws nothing */
-	if (!gt->shader)
-		return -EINVAL;
+	/*
+	 * A gltex whose set failed, as a rotation's can (its callers go on
+	 * without it), is set again here, each frame until a set succeeds; until
+	 * then it draws nothing, and says so once. gltex_set() clears the gltex,
+	 * so the flag is kept across it.
+	 */
+	if (!gt->shader) {
+		logged = gt->set_failed_logged;
+		ret = gltex_set(txt);
+		if (ret) {
+			if (!logged)
+				log_warning("cannot set up the GL renderer (%d), trying again each "
+					    "frame",
+					    ret);
+			gt->set_failed_logged = true;
+			return ret;
+		}
+	}
 	ret = display_use(txt->disp);
 	if (ret)
 		return ret;

@@ -3328,32 +3328,40 @@ static void test_cache_upload_failure(void)
 
 /*
  * A rotation whose set fails, as with no GL context, leaves a gltex that
- * draws nothing until a set succeeds: gltex_rotate() says so, and
- * gltex_prepare() and gltex_draw() refuse instead of using what the unset
- * freed. The next rotation draws as from an empty cache.
+ * draws nothing until a set succeeds: gltex_rotate() says so, which its
+ * callers ignore, and each gltex_prepare() tries the set again, failing
+ * while the context is gone and saying so once; gltex_draw() refuses instead
+ * of using what the unset freed. The first prepare whose set succeeds draws
+ * as from an empty cache, in the new orientation.
  */
 static void test_cache_failed_rotate(void)
 {
 	struct tsm_screen_attr attr = {0};
 	struct gcell cells[40];
 	struct kmscon_text txt;
+	struct gltex *gt;
 	unsigned int f, n = 0;
 
 	rnd_state = 5;
 	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
 	for (f = 0; f < 50; f++) {
 		n = random_frame(cells, 40);
 		cache_frame(&txt, cells, n);
 	}
 	fail_display_use = true;
 	assert(gltex_rotate(&txt, OR_RIGHT) < 0);
-	fail_display_use = false;
-	assert(gltex_prepare(&txt, &attr) == -EINVAL);
+	assert(!gt->set_failed_logged);
+	assert(gltex_prepare(&txt, &attr) == -EFAULT);
+	assert(gt->set_failed_logged && !gt->shader);
+	assert(gltex_prepare(&txt, &attr) == -EFAULT);
 	assert(gltex_draw(&txt, make_frame(0), false) == -EINVAL);
+	fail_display_use = false;
 
-	assert(gltex_rotate(&txt, OR_RIGHT) == 0);
-	((struct gltex *)txt.data)->pool_max_glyphs = UINT_MAX;
-	((struct gltex *)txt.data)->pool_max_bytes = CACHE_BOUND;
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(gt->shader && !gt->set_failed_logged && txt.orientation == OR_RIGHT);
+	gt->pool_max_glyphs = UINT_MAX;
+	gt->pool_max_bytes = CACHE_BOUND;
 	cache_frame(&txt, cells, n);
 	assert_as_cold(&txt, cells, n);
 	close_cache(&txt);

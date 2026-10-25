@@ -76,7 +76,8 @@ VARIANTS = {
 # gl-1280x800 follows the potato, so the worker that runs three variants
 # runs the three shortest.
 # gl-1280x800 joined once its goldens were blessed; its black screen,
-# aaronsb/kmscon#17, was gltex's and is fixed.
+# aaronsb/kmscon#17, was gltex's and is fixed. fork/upstream.mk's UP_VARIANTS
+# copies the 2D ones, as upstream's pin predates that fix.
 DEFAULT_VARIANTS = ["2d-1280x800", "2d-7680x2160", "2d-1366x768-potato",
                     "2d-7680x2160-font32", "gl-1280x800"]
 

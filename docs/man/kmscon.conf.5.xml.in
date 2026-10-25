@@ -569,7 +569,11 @@ font-name=Ubuntu Mono
       <varlistentry>
         <term><option>font-name</option></term>
         <listitem>
-          <para>Font name to use. (default: monospace)</para>
+          <para>Font name to use. With <option>font-engine=psf</option>, the
+                path of a PSF console font; a gzipped one
+                (<filename>.psf.gz</filename>) needs a build with zlib, and a
+                build without it logs that and moves on to the next font
+                engine. (default: monospace)</para>
         </listitem>
       </varlistentry>
 

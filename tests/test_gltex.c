@@ -3699,6 +3699,158 @@ static void test_cache_hard_stop_first(void)
 }
 
 /*
+ * A glyph that can never be had is asked of the font once (#185): the font
+ * draws no FAIL_CP, and a texture one cell wide holds no wide glyph. The
+ * first frame asks for both, and for the space their cells fall back to; no
+ * frame tries a strip for the wide glyph, and the frames after the first draw
+ * the same blank cells without asking the font or making a texture but the
+ * sprites' strip, which is tried once a frame (test_strip_failure). A
+ * release, and a set again as a font change makes, each have both asked for
+ * once more.
+ */
+static void test_cache_failed_once(void)
+{
+	static const uint64_t keys[] = {FAIL_CP, 0x65e5};
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 2};
+	struct kmscon_text txt = {0};
+	const struct gltex_quad *q;
+	struct gl_glyph *blank;
+	struct gltex *gt;
+	unsigned int f, i, textures;
+
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	max_texture_size = FAKE_CELL_W;
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	gt = txt.data;
+
+	for (f = 0; f < 6; f++) {
+		if (f == 2)
+			gltex_release(&txt);
+		if (f == 4) {
+			gltex_unset(&txt);
+			assert(gltex_set(&txt) == 0);
+		}
+		textures = n_textures;
+		assert(gltex_prepare(&txt, &attr) == 0);
+		txt.frame_misses = 0;
+		for (i = 0; i < 2; i++)
+			assert(gltex_draw_cell(&txt, &fc, keys[i], 2 * i, 0, 2, false) == -ENOMEM);
+		/* the sprites' strip, tried each frame; the space's strip after a set or release */
+		if (f % 2) {
+			assert(txt.frame_misses == 0);
+			assert(n_textures == textures + 1);
+		} else {
+			assert(txt.frame_misses == 3);
+			assert(n_textures == textures + 2);
+		}
+		blank = find_glyph(&txt, ' ', 0, 1);
+		assert(gt->quads_num == 4);
+		for (i = 0; i < 4; i++) {
+			q = &gt->quads[i];
+			assert(q->atlas == blank->atlas && q->texoff == blank->texoff);
+			assert(q->texw == 1.0 && colour_eq(q->bg, fc.bg));
+		}
+		assert(gltex_render(&txt) == 0);
+	}
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+	max_texture_size = 2048;
+}
+
+/*
+ * A glyph the font refused is asked for again once it has been refused for
+ * GLTEX_FAILED_FRAMES frames: the font may draw it by then (a fallback font
+ * installed, a backend out of memory no longer).
+ */
+static void test_cache_failed_expiry(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 2};
+	struct kmscon_text txt;
+	unsigned int f;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	for (f = 0; f <= GLTEX_FAILED_FRAMES; f++) {
+		assert(gltex_prepare(&txt, &attr) == 0);
+		txt.frame_misses = 0;
+		assert(gltex_draw_cell(&txt, &fc, FAIL_CP, 0, 0, 2, false) == -ENOMEM);
+		/* the first frame and the one GLTEX_FAILED_FRAMES on ask the font */
+		assert(txt.frame_misses == (f % GLTEX_FAILED_FRAMES ? 0 : 1) + !f);
+		assert(gltex_render(&txt) == 0);
+	}
+	close_cache(&txt);
+}
+
+/*
+ * A glyph refused for room is not remembered: with the alpha pool at its
+ * bound, every glyph of it on the frame and the hard stop at the bound, a
+ * 17th glyph is drawn blank (step 4's strip is refused), and the next frame,
+ * which draws it alone, draws it from the slot of the least recently drawn
+ * glyph.
+ */
+static void test_cache_refused_pinned(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 1};
+	struct gcell cells[NARROW_CAP + 1];
+	struct kmscon_text txt;
+	struct gltex *gt;
+	unsigned int i;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	for (i = 0; i <= NARROW_CAP; i++)
+		cells[i] = (struct gcell){NARROW_CP + i, 1};
+	cache_frame(&txt, cells, NARROW_CAP);
+	assert(pools_bytes(gt, NULL) == CACHE_BOUND);
+	gt->cache_hard_bytes = CACHE_BOUND;
+
+	assert(gltex_prepare(&txt, &attr) == 0);
+	for (i = 0; i < NARROW_CAP; i++)
+		assert(gltex_draw_cell(&txt, &fc, cells[i].key, i, 0, 1, false) == 0);
+	assert(gltex_draw_cell(&txt, &fc, cells[NARROW_CAP].key, NARROW_CAP, 0, 1, false) ==
+	       -ENOMEM);
+	assert(gltex_render(&txt) == 0);
+
+	cache_frame(&txt, &cells[NARROW_CAP], 1);
+	assert(txt.frame_misses == 1 && pools_bytes(gt, NULL) == CACHE_BOUND);
+	assert_resident(gt, &cells[NARROW_CAP], 1);
+	close_cache(&txt);
+}
+
+/*
+ * A strip GL refuses for want of memory is not remembered either: the first
+ * colour glyph is drawn blank while glTexImage2D raises GL_OUT_OF_MEMORY, and
+ * from its own strip in the next frame, once GL has the memory.
+ */
+static void test_cache_refused_transient(void)
+{
+	struct tsm_screen_attr attr = {0};
+	struct tsm_frame_cell fc = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 1};
+	struct gcell cell = {EMOJI_NARROW_CP, 1};
+	struct kmscon_text txt;
+	struct gltex *gt;
+
+	open_cache(&txt, &fake_font, OR_NORMAL);
+	gt = txt.data;
+	fail_teximage = true;
+	assert(gltex_prepare(&txt, &attr) == 0);
+	assert(gltex_draw_cell(&txt, &fc, cell.key, 0, 0, 1, false) == -ENOMEM);
+	assert(gltex_render(&txt) == 0);
+	assert(!gt->pools[2].bytes);
+	fail_teximage = false;
+
+	cache_frame(&txt, &cell, 1);
+	assert(txt.frame_misses == 1 && gt->pools[2].bytes);
+	assert_resident(gt, &cell, 1);
+	close_cache(&txt);
+}
+
+/*
  * Not run by default: GLTEX_MEASURE=1, or GLTEX_CACHE_TEST=measure, prints
  * what a schedule of frames at 7680x2160 in 19x41 cells (font size 30; 404x52
  * cells, 202 wide glyphs a line) costs the cache: under 4 MiB a pool and no
@@ -3829,6 +3981,10 @@ static const struct {
 	{"release", test_cache_release},
 	{"hard_stop", test_cache_hard_stop},
 	{"hard_stop_first", test_cache_hard_stop_first},
+	{"failed_once", test_cache_failed_once},
+	{"failed_expiry", test_cache_failed_expiry},
+	{"refused_pinned", test_cache_refused_pinned},
+	{"refused_transient", test_cache_refused_transient},
 	{"upload_failure", test_cache_upload_failure},
 	{"failed_rotate", test_cache_failed_rotate},
 	{"unset_release", test_cache_unset_release},

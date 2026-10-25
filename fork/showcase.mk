@@ -3,7 +3,10 @@
 # and run-vt.sh), with fork/showcase/bad-apple.sh as the session. See
 # fork/showcase/README.md.
 #
-#   make showcase BAD_APPLE=/path/to/your/copy [FROM=N] [AUDIO=1 [AUDIO_DEVICE=dev]] [VT=N] [DEMO_ARGS='...']
+#   make showcase BAD_APPLE=/path/to/your/copy [FROM=N] [AUDIO=1] [AUDIO_DEVICE=dev] [VT=N] [DEMO_ARGS='...']
+#
+# AUDIO_DEVICE names the soundtrack's output (mpv --audio-device=help) and
+# plays the soundtrack without AUDIO=1 too; AUDIO=0 ignores it.
 #
 # The video's frame caches are rendered first, as the invoking user, so the
 # show starts at once on the VT and a missing video or tool fails before the

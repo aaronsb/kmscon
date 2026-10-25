@@ -19,10 +19,10 @@
 # VT_DEMO_SHOWCASE names a video and runs the Bad Apple!! showcase
 # (fork/showcase/bad-apple.sh) in place of the demo, as make showcase does;
 # VT_DEMO_SHOWCASE_FROM starts it at an act and VT_DEMO_SHOWCASE_AUDIO (yes or
-# 1; no, 0 or empty for none) plays the soundtrack, through
+# 1; no or 0 for none) plays the soundtrack, through
 # VT_DEMO_SHOWCASE_AUDIO_DEVICE when set (an mpv audio device; the show asks
-# otherwise). The showcase records no answers, so its run ends with the
-# health check alone.
+# otherwise), which plays it without VT_DEMO_SHOWCASE_AUDIO too. The showcase
+# records no answers, so its run ends with the health check alone.
 #
 # VT_DEMO_LOGIN=1 (yes or 1), as make vt-login sets it, runs kmscon's own
 # login prompt in place of the demo (run-vt.sh --login). Its run ends with the
@@ -61,11 +61,14 @@ if [ -n "${VT_DEMO_SHOWCASE:-}" ]; then
 		die "BAD_APPLE=$VT_DEMO_SHOWCASE is not a readable file"
 	session=(--showcase="$video")
 	[ -z "${VT_DEMO_SHOWCASE_FROM:-}" ] || session+=(--showcase-from="$VT_DEMO_SHOWCASE_FROM")
-	case ${VT_DEMO_SHOWCASE_AUDIO:-} in
+	# A device named is a soundtrack asked for, unless AUDIO says no.
+	audio=${VT_DEMO_SHOWCASE_AUDIO:-}
+	[ -n "$audio" ] || [ -z "${VT_DEMO_SHOWCASE_AUDIO_DEVICE:-}" ] || audio=1
+	case $audio in
 	yes | 1) session+=(--showcase-audio${VT_DEMO_SHOWCASE_AUDIO_DEVICE:+="$VT_DEMO_SHOWCASE_AUDIO_DEVICE"}) ;;
 	no | 0 | '')
 		[ -z "${VT_DEMO_SHOWCASE_AUDIO_DEVICE:-}" ] ||
-			echo "vt-demo: AUDIO_DEVICE=$VT_DEMO_SHOWCASE_AUDIO_DEVICE is ignored without AUDIO=1" >&2
+			echo "vt-demo: AUDIO_DEVICE=$VT_DEMO_SHOWCASE_AUDIO_DEVICE is ignored with AUDIO=$audio" >&2
 		;;
 	*) die "AUDIO=$VT_DEMO_SHOWCASE_AUDIO: yes or 1 plays the soundtrack, no or 0 does not" ;;
 	esac

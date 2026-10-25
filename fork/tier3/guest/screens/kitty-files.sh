@@ -3,7 +3,7 @@
 # look-for: A banner saying what to expect, then each reply marked. Logged in:
 # look-for: the street at sunset three times, i=2, i=3 and i=4;OK, then
 # look-for: /etc/shadow refused with i=5;EBADF, all "(expected)". In the VT
-# look-for: demo: "No login session", no pictures, four EBADF "(expected here)".
+# look-for: demo (no XDG_SESSION_ID): "No login session", four EBADF "(expected here)".
 # wrong-looks-like: Any line marked UNEXPECTED, a picture missing beside an OK,
 # wrong-looks-like: a picture drawn under the "No login session" banner, or
 # wrong-looks-like: anything but EBADF for /etc/shadow.
@@ -21,11 +21,14 @@
 # demo's session is in no logind session of its own, which kmscon treats
 # as before login (docs/image-helper.md): every file medium answers EBADF
 # with no helper started, the temporary file and the object are left, and
-# this page removes them. The first reply decides which of the two the
-# page expects: EBADF for the photograph, which the user can read, means no
-# login session. A banner above the pictures says so, and each reply is
-# marked expected or UNEXPECTED for that case. The page refuses to run as a
-# user who can read /etc/shadow.
+# this page removes them. XDG_SESSION_ID decides which of the two the page
+# expects: pam_systemd sets it in a login, and the VT demo's setpriv
+# --reset-env clears it. The replies cannot decide it, since a missing or
+# failed helper, or an identity bug, also answers EBADF in a login. A banner
+# above the pictures says which, and each reply is marked expected or
+# UNEXPECTED for it: in a login a refusal is UNEXPECTED, and without one an
+# OK is, since the refusal before login failed. The page refuses to run as
+# a user who can read /etc/shadow.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/kitty-common.inc"
 kitty_offered
 shadow=/etc/shadow
@@ -50,21 +53,18 @@ mark() {
 
 top_row
 printf 'The photograph from its file (t=f), a temporary file (t=t), shared memory (t=s):\n'
-banner=$((top + 1))
+login=${XDG_SESSION_ID:+yes}
+if [ -n "$login" ]; then
+	printf 'Logged in: EXPECTED: three pictures with OK, then /etc/shadow refused with EBADF.\n'
+else
+	printf 'No login session (no XDG_SESSION_ID): kmscon refuses file images here by\n'
+	printf 'design, so EXPECTED: four EBADF replies and no pictures. To see the pictures,\n'
+	printf 'log in on a kmscon VT and run fork/demo/demo.sh kitty-files (fork/demo/README.md).\n'
+fi
 row=$((top + 5))
 printf '%s[%d;1H' "$esc" "$row"
 kitty_ask "a=T,i=2,t=f,f=100,C=1,c=20,r=8" "$(b64 "$photo_png")"
 file_reply=$reply
-login=yes
-[[ $file_reply != *EBADF* ]] || login=
-printf '%s[%d;1H' "$esc" "$banner"
-if [ -n "$login" ]; then
-	printf 'Logged in: EXPECTED: three pictures with OK, then /etc/shadow refused with EBADF.\n'
-else
-	printf 'No login session: kmscon refuses file images here by design, so\n'
-	printf 'EXPECTED: four EBADF replies and no pictures. To see the pictures, log in\n'
-	printf 'on a kmscon VT and run fork/demo/demo.sh kitty-files (fork/demo/README.md).\n'
-fi
 temp=$(mktemp /tmp/tty-graphics-protocol-XXXXXX)
 cp "$photo_png" "$temp"
 printf '%s[%d;24H' "$esc" "$row"

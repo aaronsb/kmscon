@@ -50,21 +50,12 @@ KNOWN_BOTTLENECKS = {}
 # A case compared with another case's golden: back from the scrollback, and
 # back from tty3 (vt-restore, with the last screen's).
 SAME_AS = {"photo-scrollforward": "photo-scroll", "vt-restore": SCREENS[-1]}
-# The screens that draw sixel or kitty pictures. A terminal offers images only
-# where its renderer draws placements (ADR-103), which gltex does not until
-# ADR-103 steps 3f and 4e (ADR-108). A variant whose renderer draws none
-# (VARIANTS' "draws_images": False) still draws NO_IMAGES_SCREENS, which there
-# print that the terminal offers neither sixel nor kitty graphics, and its
-# no-images check holds the variant to both. It skips the rest, which would
-# wait for pictures that never come; they are reported as skipped, with
-# SKIPPED_WHY.
+# The screens that draw sixel or kitty pictures. Every variant draws them: both
+# renderers draw image placements, bbulk on the 2D variants and gltex on the
+# GL one (ADR-103 steps 3f and 4e, ADR-108).
 IMAGE_SCREENS = ["sixel", "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict",
                  "photos", "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "kitty",
                  "kitty-photo", "kitty-files", "kitty-layers", "flood"]
-NO_IMAGES_SCREENS = ["sixel", "kitty"]
-SKIPPED_WHY = ("not drawn: this variant's renderer draws no image placements, so kmscon "
-               "offers no images on it (ADR-108) until gltex draws them (ADR-103 steps 3f "
-               "and 4e)")
 
 
 def keyed(name):
@@ -72,32 +63,13 @@ def keyed(name):
     return [k for s, k, _ in KEYED if s == name]
 
 
-def skipped(draws_images=True):
-    """The cases a variant skips: none, or where its renderer draws no image
-    placements, every image screen but NO_IMAGES_SCREENS and the keyed cases
-    after them."""
-    if draws_images:
-        return []
-    return [c for name in IMAGE_SCREENS if name not in NO_IMAGES_SCREENS
-            for c in [name] + keyed(name)]
-
-
-def screens(draws_images=True):
-    """The screens a variant draws, in order."""
-    return [s for s in SCREENS if s not in skipped(draws_images)]
-
-
-def cases(draws_images=True):
-    """Every case of a variant's report, skipped ones included: each screen and
-    the keyed cases after it, the no-images check after the last of
-    NO_IMAGES_SCREENS where the renderer draws no image placements, then the
-    VT switch (a check without a golden) and the restore after it."""
-    last = [s for s in SCREENS if s in NO_IMAGES_SCREENS][-1]
+def cases():
+    """Every case of a variant's report: each screen and the keyed cases after
+    it, then the VT switch (a check without a golden) and the restore after
+    it."""
     out = []
     for name in SCREENS:
         out += [name] + keyed(name)
-        if name == last and not draws_images:
-            out.append("no-images")
     return out + ["vt-switch", "vt-restore"]
 
 
@@ -122,12 +94,6 @@ CHECKS = {
     "sixel-evict-zoomed": "Scrolled down, then zoomed with Ctrl+=: a scaled copy of the last "
                           "picture for the larger cells. Correct: the last picture drawn, "
                           "scaled to the larger cells, under its caption.",
-    "no-images": "The sixel and kitty screens on a variant whose renderer draws no image "
-                 "placements (ADR-108), captured after the kitty screen. Correct: both "
-                 "report that kmscon refused, sixel because its DA1 reply has no attribute "
-                 "4 and kitty because it does not answer the graphics query, and neither "
-                 "sends a picture; once the renderer draws placements (ADR-103 steps 3f "
-                 "and 4e), this check fails and the variant's \"draws_images\" flag goes.",
     "vt-switch": "After Ctrl+Alt+F3, the second kmscon instance on tty3 with its login "
                  "prompt. Correct: a drawn screen that is neither blank nor the tty2 "
                  "screen just left.",
@@ -209,8 +175,8 @@ def screen_text(case, log):
 
 def golden_for(variant, case):
     """(golden, tolerance sidecar) paths for a case, or (None, None) for
-    vt-switch and no-images, checks without a golden."""
-    if case in ("vt-switch", "no-images"):
+    vt-switch, a check without a golden."""
+    if case == "vt-switch":
         return None, None
     base = SAME_AS.get(case, case)
     return (os.path.join(GOLDEN, variant, base + ".png"),
@@ -220,17 +186,6 @@ def golden_for(variant, case):
 def write_thumb(img, path):
     t3img.write_png(path, img)
     return rel(path)
-
-
-def skipped_entry(variant, case):
-    """The report entry for a case the variant does not draw: never a pass,
-    so a run with skipped cases cannot read as full coverage."""
-    description, wrong = describe(case)
-    return {"name": "%s/%s" % (variant, case), "description": description, "wrong": wrong,
-            "text": None, "golden": None, "actual": None, "diff": None, "tolerance": None,
-            "thumb_actual": None, "thumb_golden": None, "thumb_diff": None,
-            "stats": {"pixels": 0, "bbox": [], "max_delta": 0},
-            "status": "skipped", "error": SKIPPED_WHY}
 
 
 def evaluate(variant, case, ppm, meta, log):

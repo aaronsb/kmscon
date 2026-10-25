@@ -1796,8 +1796,8 @@ static void test_image_rotated(void)
 
 int main(void)
 {
-	/* gltex draws no image placements until ADR-103 step 3f, and says so */
-	assert(!kmscon_text_gltex_ops.draws_images);
+	/* gltex draws image placements (ADR-103 steps 3f and 4e), and says so */
+	assert(kmscon_text_gltex_ops.draws_images);
 	test_bounded();
 	test_vertex_memory();
 	test_first_glyph();

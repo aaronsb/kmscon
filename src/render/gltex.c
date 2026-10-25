@@ -1797,5 +1797,5 @@ struct kmscon_text_ops kmscon_text_gltex_ops = {
 	.abort = NULL,
 	.release = gltex_release,
 	.starved = gltex_starved,
-	.draws_images = false, /* until ADR-103 step 3f: gltex_draw_placements */
+	.draws_images = true,
 };

@@ -1,15 +1,17 @@
 /*
  * The gltex glyph cache stays bounded. A cluster's frame key carries the
  * screen's generation, so a screen that re-creates its clusters asks for new
- * keys every frame; the atlases must not grow with them. Blinking cells lose
- * their glyph in the hidden phase. The GL and display calls are stubs: the
- * test counts the textures gltex creates and checks where its glyphs land in
- * them and in the frame. We include the implementation to reach its statics.
+ * keys every frame; the atlases must not grow with them. Its memory stays
+ * linear in the cell count at a 4K cell grid. Blinking cells lose their glyph
+ * in the hidden phase. The GL and display calls are stubs: the test counts
+ * the textures gltex creates and checks where its glyphs land in them and in
+ * the frame. We include the implementation to reach its statics.
  */
 
 #include <GLES2/gl2.h>
 #include <assert.h>
 #include <errno.h>
+#include <malloc.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,17 +26,32 @@
 #define FAKE_COLS (640 / FAKE_CELL_W)
 #define FAKE_ROWS (480 / FAKE_CELL_H)
 
+static unsigned int disp_w = 640, disp_h = 480;
 static unsigned int n_textures; /* textures created */
+static GLuint bound_tex;	/* the texture glBindTexture last bound */
+static struct draw_call {
+	GLuint tex;
+	GLint first;
+	GLsizei count;
+} draws[4096];
+static unsigned int n_draws;	/* glDrawArrays calls since the last reset */
 static unsigned int n_rendered; /* glyphs rasterised */
 
 /* ---- GL ---- */
 void glActiveTexture(GLenum texture) {}
-void glBindTexture(GLenum target, GLuint texture) {}
+void glBindTexture(GLenum target, GLuint texture)
+{
+	bound_tex = texture;
+}
 void glClear(GLbitfield mask) {}
 void glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {}
 void glDisable(GLenum cap) {}
 void glDisableVertexAttribArray(GLuint index) {}
-void glDrawArrays(GLenum mode, GLint first, GLsizei count) {}
+void glDrawArrays(GLenum mode, GLint first, GLsizei count)
+{
+	assert(n_draws < sizeof(draws) / sizeof(*draws));
+	draws[n_draws++] = (struct draw_call){bound_tex, first, count};
+}
 void glEnableVertexAttribArray(GLuint index) {}
 GLenum glGetError(void)
 {
@@ -93,11 +110,11 @@ void gl_tex_free(GLuint *tex, size_t num) {}
 /* ---- display ---- */
 unsigned int display_get_width(struct display *disp)
 {
-	return 640;
+	return disp_w;
 }
 unsigned int display_get_height(struct display *disp)
 {
-	return 480;
+	return disp_h;
 }
 bool display_has_opengl(struct display *disp)
 {
@@ -112,11 +129,11 @@ int display_use(struct display *disp)
 /* ---- font and text ---- */
 unsigned int kmscon_text_get_cols(struct kmscon_text *txt, unsigned int font_width)
 {
-	return FAKE_COLS;
+	return disp_w / font_width;
 }
 unsigned int kmscon_text_get_rows(struct kmscon_text *txt, unsigned int font_height)
 {
-	return FAKE_ROWS;
+	return disp_h / font_height;
 }
 struct kmscon_glyph *kmscon_font_render(struct kmscon_font *font, struct kmscon_font_attr *attr,
 					const uint32_t *cps, size_t len, unsigned int cwidth)
@@ -246,6 +263,103 @@ static void test_bounded(void)
 	gltex_destroy(&txt);
 }
 
+/* bytes in use on the heap, the blocks malloc maps on its own included */
+static size_t heap_in_use(void)
+{
+	struct mallinfo2 mi = mallinfo2();
+
+	return mi.uordblks + mi.hblkhd;
+}
+
+/*
+ * gltex_render() drew every queued quad once, from its own atlas: each atlas
+ * with quads in one draw over its slots of the shared vertex arrays, which
+ * hold its quads in the order they were queued.
+ */
+static void check_render(struct gltex *gt)
+{
+	struct atlas *atlas;
+	unsigned int i, n = 0, total = 0;
+
+	dlist_for_each_entry(atlas, &gt->atlases, list)
+	{
+		if (!atlas->cache_num)
+			continue;
+		assert(n < n_draws);
+		assert(draws[n].tex == atlas->tex);
+		assert(draws[n].first == (GLint)(6 * atlas->cache_off));
+		assert(draws[n].count == (GLsizei)(6 * atlas->cache_num));
+		total += atlas->cache_num;
+		atlas->cache_num = 0; /* counted again below */
+		n++;
+	}
+	assert(n == n_draws);
+	assert(total == gt->quads_num);
+
+	for (i = 0; i < gt->quads_num; i++) {
+		const struct gltex_quad *q = &gt->quads[i];
+		unsigned int slot = q->atlas->cache_off + q->atlas->cache_num++;
+
+		assert(gt->cache_pos[slot * 12] == q->x1 && gt->cache_pos[slot * 12 + 3] == q->y2);
+		assert(gt->cache_texpos[slot * 12] == q->texoff);
+		assert(gt->cache_texpos[slot * 12 + 4] == q->texoff + q->texw);
+		assert(gt->cache_fgcol[slot * 18] == (GLfloat)(q->fg.r / 255.0));
+		assert(gt->cache_bgcol[slot * 18 + 17] == (GLfloat)(q->bg.b / 255.0));
+	}
+}
+
+/*
+ * #43: at a 4K cell grid, 3840x2160 in 8x16 cells (480x135), what gltex holds
+ * stays linear in the cell count: at most 1 KiB per cell, its vertex arrays,
+ * glyph cache and atlases together. Each frame draws every cell with a glyph
+ * of its own, so a frame fills about 254 atlases of 256 cells, and six frames
+ * pass the flush bound. Vertex arrays sized for a full screen in every atlas
+ * came to 15.6 MB an atlas, about 4 GB a frame here.
+ */
+static void test_vertex_memory(void)
+{
+	struct kmscon_text txt = {0};
+	struct tsm_frame_cell cell = {.fg = {200, 200, 200}, .bg = {0, 0, 40}, .width = 1};
+	uint64_t next = TSM_FRAME_CLUSTER_KEY;
+	struct tsm_screen_attr attr = {0};
+	size_t base, used, peak = 0, cells;
+	unsigned int f, x, y;
+
+	disp_w = 3840;
+	disp_h = 2160;
+	txt.font = &fake_font;
+	txt.disp = (struct display *)0x1;
+	txt.orientation = OR_NORMAL;
+	base = heap_in_use();
+	assert(gltex_init(&txt) == 0);
+	assert(gltex_set(&txt) == 0);
+	assert(txt.max_cols == 480 && txt.max_rows == 135);
+	cells = txt.max_cols * txt.max_rows;
+
+	for (f = 0; f < 6; f++) {
+		assert(gltex_prepare(&txt, &attr) == 0);
+		for (y = 0; y < txt.rows; y++)
+			for (x = 0; x < txt.cols; x++)
+				assert(gltex_draw_cell(&txt, &cell, next++, x, y, 1) == 0);
+		assert(gltex_draw_pointer(&txt, 100, 100) == 0);
+		n_draws = 0;
+		assert(gltex_render(&txt) == 0);
+		check_render(txt.data);
+		used = heap_in_use() - base;
+		if (used > peak)
+			peak = used;
+	}
+
+	fprintf(stderr, "4K grid: %zu cells, at most %zu bytes held, %zu per cell\n", cells, peak,
+		peak / cells);
+	assert(peak <= cells * 1024);
+
+	gltex_unset(&txt);
+	gltex_destroy(&txt);
+	disp_w = 640;
+	disp_h = 480;
+}
+
 /*
  * The glyph drawn at cell @col, @row of the last frame: its atlas and texture
  * offset, from the quads gltex queued. 0 if no quad starts there.
@@ -255,18 +369,14 @@ static int drawn_at(struct gltex *gt, unsigned int col, unsigned int row, struct
 {
 	float x1 = gt->off_x + gt->advance_x * col - 1.0;
 	float y1 = 1.0 - gt->off_y - gt->advance_y * row;
-	struct atlas *atlas;
 	int found = 0;
 
-	dlist_for_each_entry(atlas, &gt->atlases, list)
-	{
-		for (unsigned int i = 0; i < atlas->cache_num; i++) {
-			if (atlas->cache_pos[i * 12] != x1 || atlas->cache_pos[i * 12 + 1] != y1)
-				continue;
-			*out = atlas;
-			*texoff = atlas->cache_texpos[i * 12];
-			found++;
-		}
+	for (unsigned int i = 0; i < gt->quads_num; i++) {
+		if (gt->quads[i].x1 != x1 || gt->quads[i].y1 != y1)
+			continue;
+		*out = gt->quads[i].atlas;
+		*texoff = gt->quads[i].texoff;
+		found++;
 	}
 	return found;
 }
@@ -345,6 +455,7 @@ int main(void)
 	/* gltex draws no image placements until ADR-103 step 3f, and says so */
 	assert(!kmscon_text_gltex_ops.draws_images);
 	test_bounded();
+	test_vertex_memory();
 	test_blink();
 	return 0;
 }

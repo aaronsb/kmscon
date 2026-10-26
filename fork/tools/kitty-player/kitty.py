@@ -33,10 +33,8 @@ The transports (--transport; png by default, the cheapest inline one):
 
 Every command carries q=2, so the terminal sends nothing back into the
 player's input, and every placement C=1, so the cursor stays where it was.
-Frames follow the soundtrack's clock (mpv's time-pos over its IPC socket,
---audio-ipc), else a wall clock started with the soundtrack (--audio-started)
-or the monotonic clock, and are dropped, never delayed, when the terminal
-falls behind.
+Frames follow the monotonic clock and are dropped, never delayed, when the
+terminal falls behind.
 """
 
 import argparse
@@ -48,7 +46,6 @@ import math
 import os
 import select
 import signal
-import socket
 import struct
 import subprocess
 import sys
@@ -329,100 +326,15 @@ def delete(image_id):
 # ---------------------------------------------------------------- clock
 
 class Clock:
-    """Seconds since the act started. With an mpv IPC socket, the
-    soundtrack's own position (time-pos, less start), read every quarter
-    second and followed between reads on the monotonic clock, so a frame
-    shows when its sound plays. Until mpv answers, and for good when it has
-    not answered within wait seconds (no socket, or one it could not make),
-    a wall clock from started, the time the soundtrack was started, so the
-    video stays with the sound; fallback then says why. Without started, the
-    clock holds at 0 while it waits and then counts from when it was made.
-    Without a socket, the monotonic clock from when it was made."""
+    """Seconds since the act started: the monotonic clock from when it was
+    made."""
 
-    def __init__(self, ipc="", start=0.0, wait=3.0, started=None, now=time.monotonic, wall=time.time):
+    def __init__(self, now=time.monotonic):
         self.now_fn = now
-        self.start = start
-        self.sock = None
-        self.buf = b""
-        self.offset = None  # time-pos less start, less the monotonic clock
-        self.asked = -1.0
         self.made = now()
-        self.waited_until = self.made + wait
-        self.ipc = ipc
-        self.synced = False
-        self.fallback = ""
-        # the wall clock from started, on the monotonic clock
-        self.from_start = None if started is None else wall() - started - self.made
-
-    def _connect(self):
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            s.connect(self.ipc)
-            s.setblocking(False)
-            self.sock = s
-        except OSError as e:
-            s.close()
-            self.sock = None
-            self.error = e.strerror or str(e)
-
-    def _poll(self, mono):
-        if self.sock is None:
-            self._connect()
-            if self.sock is None:
-                return
-        if mono - self.asked >= 0.25:
-            self.asked = mono
-            try:
-                self.sock.send(b'{"command":["get_property","time-pos"],"request_id":75}\n')
-            except OSError:
-                self.sock = None
-                return
-        try:
-            while True:
-                d = self.sock.recv(4096)
-                if not d:
-                    self.sock = None
-                    return
-                self.buf += d
-        except BlockingIOError:
-            pass
-        except OSError:
-            self.sock = None
-            return
-        *lines, self.buf = self.buf.split(b"\n")
-        for line in lines:
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                continue
-            if msg.get("request_id") != 75 or not isinstance(msg.get("data"), (int, float)):
-                continue
-            off = msg["data"] - self.start - mono
-            if not self.synced or abs(off - self.offset) > 0.05:
-                self.offset = off
-            else:
-                self.offset += 0.2 * (off - self.offset)
-            self.synced = True
 
     def now(self):
-        mono = self.now_fn()
-        if self.ipc and not self.fallback:
-            self._poll(mono)
-            if not self.synced:
-                if mono >= self.waited_until:
-                    why = getattr(self, "error", "no answer")
-                    self.fallback = (f"mpv's IPC socket {self.ipc!r} gave no position in "
-                                     f"{self.waited_until - self.made:g} s ({why}); following "
-                                     + ("a wall clock started with the soundtrack" if self.from_start is not None
-                                        else "the player's own clock"))
-                    self.offset = self.from_start if self.from_start is not None else -self.made
-                elif self.from_start is not None:
-                    return mono + self.from_start
-                else:
-                    return 0.0
-        if self.offset is None:
-            self.offset = self.from_start if self.from_start is not None else -self.made
-        return mono + self.offset
+        return self.now_fn() - self.made
 
 
 # --------------------------------------------------------------- player
@@ -611,14 +523,9 @@ def cmd_kitty(a):
     enc = Encoder(transport, w, h, a.level)
 
     chor = Choreography(a.slide_at, a.copy2_at, a.copy3_at, a.move, a.bounce, a.copies)
-    clock = Clock(a.audio_ipc, a.start, a.audio_wait, a.audio_started) if a.audio_ipc else Clock()
-    player = Player(enc, lay, chor, fps, a.seconds, clock=clock, unpaced=a.unpaced)
-    told = []
+    player = Player(enc, lay, chor, fps, a.seconds, unpaced=a.unpaced)
 
     def tick(p, t):
-        if clock.fallback and not told:
-            told.append(clock.fallback)
-            print(f"kitty player: {clock.fallback}", file=sys.stderr, flush=True)
         if resized():
             p.relayout(layout(), t)
         # q is read on every pass, also while the terminal is behind and
@@ -635,9 +542,7 @@ def cmd_kitty(a):
         enc.close()
         if a.report:
             with open(a.report, "a") as f:
-                clock_name = "mpv" if clock.synced else "wall" if clock.fallback else "monotonic"
-                f.write(player.stats.line(f"kitty {transport} {w}x{h} copies={a.copies or 'moves'} clock={clock_name}")
-                        + "\n")
+                f.write(player.stats.line(f"kitty {transport} {w}x{h} copies={a.copies or 'moves'}") + "\n")
 
 
 QUIT = 10  # the exit status for q
@@ -663,10 +568,6 @@ def parser():
     p.add_argument("--move", type=float, default=1.2, help="seconds each slide takes")
     p.add_argument("--bounce", type=float, default=0.12, help="overshoot, a share of the distance")
     p.add_argument("--copies", type=int, default=0, help="hold this many copies still (measuring)")
-    p.add_argument("--audio-ipc", default="", help="mpv's IPC socket: follow its time-pos")
-    p.add_argument("--audio-wait", type=float, default=3.0, help="seconds to wait for mpv's first answer")
-    p.add_argument("--audio-started", type=float, default=None,
-                   help="when the soundtrack started (seconds since the epoch): the clock until, or if never, mpv answers")
     p.add_argument("--unpaced", action="store_true", help="every frame, as fast as the terminal takes them")
     p.add_argument("--probe-timeout", type=float, default=1.0)
     p.add_argument("--report", default="", help="a file to append the frame rate to")

@@ -31,6 +31,10 @@ option('font_freetype', type: 'feature', value: 'auto',
 option('font_pango', type: 'feature', value: 'auto',
   description: 'pango font backend')
 
+# zlib (ADR-103): compressed PSF fonts, unifont and images
+option('zlib', type: 'feature', value: 'auto',
+  description: 'zlib: compressed PSF fonts, the unifont backend and images')
+
 # images (ADR-103)
 option('images', type: 'feature', value: 'auto',
   description: 'Sixel and the kitty graphics protocol, with the image helper (libpng, zlib)')

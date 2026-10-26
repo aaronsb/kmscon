@@ -37,7 +37,9 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef KMSCON_PSF_GZ
 #include <zlib.h>
+#endif
 #include "font.h"
 #include "shl/log.h"
 
@@ -152,6 +154,9 @@ static int kmscon_font_psf_init(struct kmscon_font *out, const char *name,
 	FREAD(font_file, &magic, 4, "failed read magic");
 
 	if (IS_GZ_MAGIC(magic)) {
+		/* gzip fonts need zlib, which a build may leave out (ADR-103, The
+		 * zlib-free variant; a departure from upstream, ADR-303) */
+#ifdef KMSCON_PSF_GZ
 		_fclose(font_file);
 		font_file = gzopen(name, "rb");
 		if (!font_file) {
@@ -162,6 +167,10 @@ static int kmscon_font_psf_init(struct kmscon_font *out, const char *name,
 		_fread = (fread_t)gzread;
 		_fclose = (fclose_t)gzclose;
 		FREAD(font_file, &magic, 4, "failed read magic");
+#else
+		log_error("compressed PSF fonts need zlib, which this build leaves out: %s", name);
+		goto err_file;
+#endif
 	}
 
 	if (IS_PSF1_MAGIC(magic)) {

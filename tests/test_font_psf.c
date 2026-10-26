@@ -41,6 +41,15 @@
  * Each load runs in a child process, so a crash fails that case alone. Built
  * with -Db_sanitize=address,undefined (make asan), a read past a buffer or a
  * leak on a refusal fails it too.
+ *
+ * First, tests/fonts/psf-test.psf, a PSF2 font of 256 8x16 glyphs, loads in
+ * every build; the same font gzipped loads in a build with zlib and, in one
+ * without (ADR-103, The zlib-free variant), fails with a line saying the
+ * build leaves zlib out. Which build this is comes from meson's zlib feature
+ * (the second argument), not from the define mod-psf is compiled with, so a
+ * build with zlib whose mod-psf lost KMSCON_PSF_GZ fails here.
+ *
+ *   test_font_psf FONTS-DIR gz|no-gz
  */
 
 #undef NDEBUG
@@ -410,14 +419,6 @@ static void test_gz_corrupt(void)
 		fprintf(stderr, "test_font_psf: gz with a bad checksum: %s\n", outcome(ret));
 		failures++;
 	}
-#else
-	static const uint8_t gz[] = {0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 3};
-	struct buf b = {0};
-
-	/* without zlib a gzip font is refused */
-	put(&b, gz, sizeof(gz));
-	expect_code("gz without zlib", &b, false, REFUSED, 0);
-	free(b.p);
 #endif
 }
 
@@ -507,9 +508,76 @@ static void test_kbd(void)
 	       KBD_FONT_DIR, loaded, gunzipped, missed, refused);
 }
 
-int main(void)
+/* @name in @dir */
+static const char *fixture(const char *dir, const char *name)
+{
+	static char file[512];
+
+	snprintf(file, sizeof(file), "%s/%s", dir, name);
+	return file;
+}
+
+/* the fixture loaded: its size, and glyph 'A' row 3 holding 'A' + 3 */
+static void check_fixture(struct kmscon_font *f)
+{
+	psf_font_t *psf = f->data;
+
+	assert(f->width == 8 && f->height == 16);
+	assert(psf->glyphs == 256 && psf->width == 8 && psf->height == 16);
+	assert(psf->data['A' * psf->step + 3] == 'A' + 3);
+	kmscon_font_psf_ops.destroy(f);
+}
+
+/* @name loaded, with stderr, where the log goes, captured into @buf */
+static void capture_log(const char *name, char *buf, size_t size, int *ret)
+{
+	struct kmscon_font f = {0};
+	FILE *log = tmpfile();
+	int saved = dup(STDERR_FILENO);
+	size_t n;
+
+	assert(log && saved >= 0);
+	fflush(stderr);
+	dup2(fileno(log), STDERR_FILENO);
+	*ret = kmscon_font_psf_ops.init(&f, name, 16);
+	fflush(stderr);
+	dup2(saved, STDERR_FILENO);
+	close(saved);
+	rewind(log);
+	n = fread(buf, 1, size - 1, log);
+	buf[n] = 0;
+	fclose(log);
+	if (!*ret)
+		check_fixture(&f);
+}
+
+static void test_fixture(const char *dir, bool gz)
+{
+	struct kmscon_font f = {0};
+	char logged[4096];
+	int ret;
+
+	assert(kmscon_font_psf_ops.init(&f, fixture(dir, "psf-test.psf"), 16) == 0);
+	check_fixture(&f);
+
+	capture_log(fixture(dir, "psf-test.psf.gz"), logged, sizeof(logged), &ret);
+	if (gz) {
+		assert(ret == 0);
+	} else {
+		assert(ret != 0);
+		assert(strstr(logged,
+			      "compressed PSF fonts need zlib, which this build leaves out"));
+	}
+}
+
+int main(int argc, char **argv)
 {
 	char dir[] = "/tmp/test_font_psf.XXXXXX";
+	bool gz;
+
+	assert(argc == 3 && (!strcmp(argv[2], "gz") || !strcmp(argv[2], "no-gz")));
+	gz = !strcmp(argv[2], "gz");
+	test_fixture(argv[1], gz);
 
 	assert(mkdtemp(dir));
 	snprintf(path, sizeof(path), "%s/font", dir);
@@ -528,6 +596,7 @@ int main(void)
 		fprintf(stderr, "test_font_psf: %u failures\n", failures);
 		return 1;
 	}
-	printf("test_font_psf: ok\n");
+	printf("test_font_psf: ok (%s)\n",
+	       gz ? "gzip fonts load" : "gzip fonts refused, a build without zlib");
 	return 0;
 }

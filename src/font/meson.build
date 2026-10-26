@@ -28,7 +28,7 @@ if enable_font_psf
             'mod_psf.c',
         ],
         name_prefix: '',
-        dependencies: [shl_deps, zlib_deps],
+        dependencies: [shl_deps, psf_gz_deps],
         install: true,
         install_dir: moduledir,
     )
@@ -38,11 +38,9 @@ if enable_font_unifont
     #
     # Unifont Generator
     # This generates the unifont sources from raw hex-encoded font data.
-    # Built only for mod-unifont, so a build without it does not look zlib up
-    # for the build machine (ADR-103, The zlib-free variant).
+    # Built only for mod-unifont, with the build machine's zlib that
+    # meson.build looks up for unifont alone (ADR-103, The zlib-free variant).
     #
-    zlib_deps_native = dependency('zlib', native: true)
-
     genunifont = executable(
         'genunifont',
         'genunifont.c',

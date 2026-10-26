@@ -41,12 +41,19 @@ function ffmpeg(args) {
   return r.stderr;
 }
 
+// The drum samples: Strudel's default map of tidal-drum-machines, from
+// felixroos/dough-samples, and the samples themselves, from
+// geikha/tidal-drum-machines, each at a pinned commit. The map's own _base
+// tracks the samples' main branch, so the base is given here instead.
+const SAMPLE_MAP = 'https://raw.githubusercontent.com/felixroos/dough-samples/9eacfc86ec4393e68a463ff52b01c19cfaa77f38/tidal-drum-machines.json';
+const SAMPLE_BASE = 'https://raw.githubusercontent.com/geikha/tidal-drum-machines/6577395a4d05031728ced2ec3e5637fa89d8be48/machines/';
+
 // The page: Strudel's browser bundle, served from node_modules.
 const page = `<!doctype html><script type="module">
 import * as S from '/node_modules/@strudel/web/dist/index.mjs';
 window.renderCue = async (code, cps, end) => {
   await S.initStrudel({
-    prebake: () => S.samples('https://raw.githubusercontent.com/felixroos/dough-samples/main/tidal-drum-machines.json'),
+    prebake: () => S.samples('${SAMPLE_MAP}', '${SAMPLE_BASE}'),
   });
   const pattern = await S.evaluate(code, false);
   await S.renderPatternAudio(pattern, cps, 0, end, 48000, 256, false, 'cue');
@@ -68,13 +75,14 @@ const server = createServer((req, res) => {
 }).listen(0, '127.0.0.1');
 await new Promise((r) => server.once('listening', r));
 
-const work = mkdtempSync(join(tmpdir(), 'showcase-music-'));
-const browser = await chromium.launch({
-  executablePath: process.env.CHROMIUM ?? '/usr/bin/chromium',
-  args: ['--autoplay-policy=no-user-gesture-required'],
-});
+let browser, work;
 let failed = 0;
 try {
+  work = mkdtempSync(join(tmpdir(), 'showcase-music-'));
+  browser = await chromium.launch({
+    executablePath: process.env.CHROMIUM ?? '/usr/bin/chromium',
+    args: ['--autoplay-policy=no-user-gesture-required'],
+  });
   for (const cue of cues) {
     const code = readFileSync(cue, 'utf8');
     const bpm = header(code, 'bpm', NaN);
@@ -126,8 +134,8 @@ try {
     failed += errors.length ? 1 : 0;
   }
 } finally {
-  await browser.close();
+  await browser?.close();
   server.close();
-  rmSync(work, { recursive: true, force: true });
+  if (work) rmSync(work, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

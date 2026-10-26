@@ -19,12 +19,22 @@
  *
  * Closing drops what was queued for a child that did not read it, so the
  * next child, which may be another user's session, never reads it.
+ *
+ * The replies the input callback writes are bounded (#245): a child that
+ * floods queries and never reads its input stops being read once
+ * PTY_REPLY_HIGH of them wait, and is read again once it drains them, with
+ * every reply delivered whole and in order. Past PTY_REPLY_MAX replies are
+ * dropped. A paste larger than the bound never stops reading, the bound and
+ * a pause each hold reading until both let go, and closing drops the queue.
+ * A raw pseudo-terminal slave is the child.
  */
 
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <termios.h>
 #include <unistd.h>
 #include "../src/misc/pty.c"
 
@@ -283,22 +293,52 @@ static void test_winsize(void)
 	kmscon_pty_unref(pty);
 }
 
+static char reply[1024];
+static size_t reply_len; /* the callback answers each byte with this much */
+static size_t answered;
+
+static size_t answer(struct kmscon_pty *pty, const char *u8, size_t len, void *data)
+{
+	size_t i;
+
+	(void)u8;
+	(void)data;
+	for (i = 0; i < len; ++i)
+		kmscon_pty_write(pty, reply, reply_len);
+	answered += len;
+	return len;
+}
+
+/* a pty whose child is a raw slave that reads and writes only when told to */
+static struct kmscon_pty *open_child(int *slave)
+{
+	struct kmscon_pty *pty;
+	struct termios attr;
+	char name[64];
+	int master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
+
+	assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+	assert(ptsname_r(master, name, sizeof(name)) == 0);
+	*slave = open(name, O_RDWR | O_NOCTTY | O_NONBLOCK);
+	assert(*slave >= 0 && tcgetattr(*slave, &attr) == 0);
+	cfmakeraw(&attr);
+	assert(tcsetattr(*slave, TCSANOW, &attr) == 0);
+	assert(kmscon_pty_new(&pty, answer, NULL, NULL) == 0);
+	pty->fd = master;
+	assert(ev_eloop_new_fd(pty->eloop, &pty->efd, master, EV_ET | EV_READABLE, pty_input,
+			       pty) == 0);
+	answered = 0;
+	return pty;
+}
+
 static void test_close_queue(void)
 {
 	static char keys[256 * 1024];
 	struct kmscon_pty *pty;
-	char name[64];
-	int slave, master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
-
-	assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
-	assert(ptsname_r(master, name, sizeof(name)) == 0);
-	slave = open(name, O_RDWR | O_NOCTTY | O_NONBLOCK);
-	assert(slave >= 0 && kmscon_pty_new(&pty, input, NULL, NULL) == 0);
-	pty->fd = master;
-	assert(ev_eloop_new_fd(pty->eloop, &pty->efd, master, EV_ET | EV_READABLE, pty_input,
-			       pty) == 0);
+	int slave;
 
 	/* more than the slave holds, which reads nothing: the rest is queued */
+	pty = open_child(&slave);
 	memset(keys, 'k', sizeof(keys));
 	assert(kmscon_pty_write(pty, keys, sizeof(keys)) == 0);
 	assert(!shl_ring_is_empty(pty->msgbuf));
@@ -309,6 +349,178 @@ static void test_close_queue(void)
 	kmscon_pty_unref(pty);
 }
 
+/*
+ * A turn of the pty's loop that waits a little for the fd: bytes written to
+ * one side of a pseudo-terminal reach the other through a kernel worker, a
+ * moment later.
+ */
+static void wait_turn(struct kmscon_pty *pty)
+{
+	ev_eloop_dispatch(pty->eloop, 10);
+	assert(pty->replies <= pty->queued && pty->replies <= PTY_REPLY_MAX);
+}
+
+/*
+ * The child writes queries, reading nothing, until its output is full and
+ * the pty answers nothing more; returns the bytes it wrote. The replies
+ * waiting never pass the ceiling.
+ */
+static size_t flood(struct kmscon_pty *pty, int slave)
+{
+	static char q[4096];
+	size_t sent = 0, before;
+	unsigned int idle = 0;
+	ssize_t n;
+
+	memset(q, 'q', sizeof(q));
+	while (idle < 10) {
+		before = answered;
+		n = write(slave, q, sizeof(q));
+		if (n > 0)
+			sent += n;
+		else
+			assert(n < 0 && errno == EAGAIN);
+		wait_turn(pty);
+		idle = n > 0 || answered != before ? 0 : idle + 1;
+		assert(sent < 64 * 1024 * 1024);
+	}
+	return sent;
+}
+
+/* the child reads all its input there is, for @rounds turns of the pty's loop */
+static size_t drain(struct kmscon_pty *pty, int slave, unsigned int rounds)
+{
+	static char buf[4096];
+	size_t got = 0;
+	ssize_t n;
+
+	while (rounds--) {
+		while ((n = read(slave, buf, sizeof(buf))) > 0)
+			got += n;
+		assert(n < 0 && errno == EAGAIN);
+		wait_turn(pty);
+	}
+	return got;
+}
+
+/*
+ * The child reads until every query it wrote is answered, nothing waits for
+ * it, and nothing more arrives; returns the bytes it read.
+ */
+static size_t drain_all(struct kmscon_pty *pty, int slave, size_t sent)
+{
+	size_t got = 0, n;
+	unsigned int turns = 0, quiet = 0;
+
+	while (quiet < 10) {
+		n = drain(pty, slave, 1);
+		got += n;
+		quiet = n || answered < sent || pty->queued || pty->backlog ? 0 : quiet + 1;
+		assert(++turns < 1000);
+	}
+	return got;
+}
+
+/* whether turns of the pty's loop answer more queries */
+static bool answers(struct kmscon_pty *pty)
+{
+	size_t before = answered;
+	unsigned int i;
+
+	for (i = 0; i < 10; ++i)
+		wait_turn(pty);
+	return answered != before;
+}
+
+static void test_backlog(void)
+{
+	struct kmscon_pty *pty;
+	size_t sent, got;
+	int slave;
+
+	memset(reply, 'r', sizeof(reply));
+
+	/*
+	 * eight bytes a query: reading stops with the replies between the
+	 * bound and the ceiling, the child's own output backed up behind it
+	 */
+	reply_len = 8;
+	pty = open_child(&slave);
+	sent = flood(pty, slave);
+	assert(pty->backlog && !pty->dropping);
+	assert(pty->replies >= PTY_REPLY_HIGH && pty->replies <= PTY_REPLY_MAX);
+	assert(answered < sent && !answers(pty));
+
+	/*
+	 * the child reads: every query is answered, every reply arrives once,
+	 * and output held when the backlog began (as a callback that takes
+	 * part of it leaves) is fed first
+	 */
+	assert(!pty->held_len);
+	memset(pty->io_buf, 'q', 4);
+	pty->held_off = 0;
+	pty->held_len = 4;
+	sent += 4;
+	got = drain_all(pty, slave, sent);
+	assert(answered == sent && got == sent * reply_len);
+	assert(!pty->backlog && !pty->replies);
+
+	/* a pause and the bound: reading waits for both to let go */
+	sent = flood(pty, slave);
+	answered = 0;
+	assert(pty->backlog);
+	kmscon_pty_pause(pty);
+	kmscon_pty_resume(pty);
+	assert(!pty->paused && pty->backlog && !answers(pty));
+	kmscon_pty_pause(pty);
+	drain(pty, slave, 20);
+	assert(!pty->backlog && !pty->queued && pty->paused && !answers(pty));
+	kmscon_pty_resume(pty);
+	assert(answers(pty));
+
+	/* closing with replies waiting drops them and their count */
+	flood(pty, slave);
+	assert(pty->backlog);
+	kmscon_pty_close(pty);
+	assert(shl_ring_is_empty(pty->msgbuf) && !pty->queued && !pty->replies);
+	assert(!pty->backlog && !pty->paused);
+	close(slave);
+	kmscon_pty_unref(pty);
+
+	/*
+	 * a kilobyte a query: one call's replies would pass the ceiling, and the
+	 * rest of that call's replies are dropped whole
+	 */
+	reply_len = 1024;
+	pty = open_child(&slave);
+	sent = flood(pty, slave);
+	assert(pty->backlog && pty->dropping);
+	got = drain_all(pty, slave, sent);
+	assert(answered == sent && !pty->dropping);
+	assert(got % reply_len == 0 && got < sent * reply_len);
+	kmscon_pty_close(pty);
+	close(slave);
+	kmscon_pty_unref(pty);
+
+	/* a paste larger than the bound is queued whole and stops no reading */
+	{
+		static char paste[4 * PTY_REPLY_MAX];
+
+		reply_len = 8;
+		pty = open_child(&slave);
+		memset(paste, 'p', sizeof(paste));
+		assert(kmscon_pty_write(pty, paste, sizeof(paste)) == 0);
+		assert(pty->queued > PTY_REPLY_MAX && !pty->replies);
+		put(slave, "qqq", 3);
+		assert(answers(pty) && answered == 3 && !pty->backlog);
+		got = drain_all(pty, slave, 3);
+		assert(got == sizeof(paste) + 3 * reply_len);
+		kmscon_pty_close(pty);
+		close(slave);
+		kmscon_pty_unref(pty);
+	}
+}
+
 int main(void)
 {
 	test_held();
@@ -316,6 +528,7 @@ int main(void)
 	test_owner();
 	test_winsize();
 	test_close_queue();
+	test_backlog();
 	printf("test_pty: ok\n");
 	return 0;
 }

@@ -11,7 +11,7 @@ setcpm(138/4)
 
 const prog = "<Ebm!3 Ebm B Gb Db Abm B Bb Ebm>"
 const band = "<0!3 1!7 0>"
-const tr909 = p => p.bank("RolandTR909")
+const tr909 = p => p.bank("tr8")
 
 // the pause: a sub swell and stepped noise climbing to the first letter
 const pause = stack(

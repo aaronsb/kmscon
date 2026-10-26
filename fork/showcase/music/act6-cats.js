@@ -8,7 +8,7 @@
 // @tail 1
 setcpm(138/4)
 
-const tr909 = p => p.bank("RolandTR909")
+const tr909 = p => p.bank("tr8")
 
 // penv rises by that many semitones over pattack and falls back over pdecay
 const tune = note(`<

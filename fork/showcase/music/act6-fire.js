@@ -11,7 +11,7 @@
 // @tail 0
 setcpm(138/4)
 
-const tr909 = p => p.bank("RolandTR909")
+const tr909 = p => p.bank("tr8")
 const storm = "<0!3 1 1 0!4>"
 
 const fire = stack(

@@ -11,7 +11,7 @@
 // @tail .6
 setcpm(138/4)
 
-const tr909 = p => p.bank("RolandTR909")
+const tr909 = p => p.bank("tr8")
 
 const pops = n("<[0 2 4 7 9 11 ~ ~] ~!3>").scale("Gb4:major")
   .s("sine").penv(-5).pattack(.03).decay(.1).sustain(0).gain(.4)

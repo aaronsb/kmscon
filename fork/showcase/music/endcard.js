@@ -8,7 +8,7 @@
 setcpm(138/4)
 
 const prog = "<Ebm B Gb Db Abm B Bbsus4 Bb>"
-const tr909 = p => p.bank("RolandTR909")
+const tr909 = p => p.bank("tr8")
 
 const pad = chord(prog).voicing()
   .s("sawtooth").attack(.6).release(1.5)

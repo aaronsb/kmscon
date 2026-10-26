@@ -41,21 +41,40 @@ function ffmpeg(args) {
   return r.stderr;
 }
 
-// The drum samples: Strudel's default map of tidal-drum-machines, from
-// felixroos/dough-samples, and the samples themselves, from
-// geikha/tidal-drum-machines, each at a pinned commit. The map's own _base
-// tracks the samples' main branch, so the base is given here instead.
-const SAMPLE_MAP = 'https://raw.githubusercontent.com/felixroos/dough-samples/9eacfc86ec4393e68a463ff52b01c19cfaa77f38/tidal-drum-machines.json';
-const SAMPLE_BASE = 'https://raw.githubusercontent.com/geikha/tidal-drum-machines/6577395a4d05031728ced2ec3e5637fa89d8be48/machines/';
+// The drums: the 909 voices of a Roland TR-8, recorded one hit at a time by
+// MckAudio and dedicated to the public domain (CC0 1.0), from
+// MckAudio/MckSamplePacks at a pinned commit. A cue plays them as the bank
+// "tr8" (bd, sd, hh, oh, cp, cr, rim, lt, mt, ht). Each recording runs
+// 2.2 s, most of it its noise floor, so end cuts it 30 ms after it falls
+// to that floor; level sets its loudness to that of the 909 sample it
+// replaced, through velocity, so a cue's .gain() still works as it did.
+const DRUM_BASE = 'https://raw.githubusercontent.com/MckAudio/MckSamplePacks/5db40e8fe26785c256845a5bb38921b2654a887f/TR8/';
+const DRUMS = {
+  bd: { file: 'BD/004_909_Bass_Drum_1.wav', level: 1.33, end: 0.286 },
+  sd: { file: 'SD/005_909_Snare_Drum_1.wav', level: 1.19, end: 0.262 },
+  hh: { file: 'HATS/008_909_Closed_HiHat.wav', level: 0.75, end: 0.099 },
+  oh: { file: 'HATS/007_909_Open_HiHat.wav', level: 1.14, end: 0.305 },
+  cp: { file: 'PERC/019_909_Hand_Clap.wav', level: 1.02, end: 0.268 },
+  cr: { file: 'HATS/020_909_Crash_Cymbal.wav', level: 1.1, end: 0.422 },
+  rim: { file: 'PERC/009_909_Rim_Shot.wav', level: 1.23, end: 0.086 },
+  lt: { file: 'TOMS/010_909_Low_Tom.wav', level: 1.19, end: 0.329 },
+  mt: { file: 'TOMS/011_909_Mid_Tom.wav', level: 1.16, end: 0.217 },
+  ht: { file: 'TOMS/012_909_High_Tom.wav', level: 1.16, end: 0.297 },
+};
+const drumMap = Object.fromEntries(Object.entries(DRUMS).map(([name, d]) => [`tr8_${name}`, d.file]));
 
 // The page: Strudel's browser bundle, served from node_modules.
 const page = `<!doctype html><script type="module">
 import * as S from '/node_modules/@strudel/web/dist/index.mjs';
+const drums = ${JSON.stringify(DRUMS)};
 window.renderCue = async (code, cps, end) => {
   await S.initStrudel({
-    prebake: () => S.samples('${SAMPLE_MAP}', '${SAMPLE_BASE}'),
+    prebake: () => S.samples(${JSON.stringify(drumMap)}, '${DRUM_BASE}'),
   });
-  const pattern = await S.evaluate(code, false);
+  const pattern = (await S.evaluate(code, false)).fmap((v) => {
+    const d = v?.bank === 'tr8' && drums[v.s];
+    return d ? { ...v, velocity: (v.velocity ?? 1) * d.level, end: d.end } : v;
+  });
   await S.renderPatternAudio(pattern, cps, 0, end, 48000, 256, false, 'cue');
 };
 window.ready = true;

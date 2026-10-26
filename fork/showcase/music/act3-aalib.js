@@ -9,7 +9,7 @@
 // @tail .6
 setcpm(138/4)
 
-const tr909 = p => p.bank("RolandTR909")
+const tr909 = p => p.bank("tr8")
 
 const think = n("[0 2 4 2]*2").chord("<Ebm B Abm ~ ~>").anchor("eb5").voicing()
   .s("square").decay(.15).sustain(0).lpf(1300).delay(.3).delaytime(.326).delayfeedback(.35)

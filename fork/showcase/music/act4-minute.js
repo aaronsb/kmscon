@@ -8,7 +8,7 @@
 // @tail .3
 setcpm(138/4)
 
-const tr909 = p => p.bank("RolandTR909")
+const tr909 = p => p.bank("tr8")
 
 // the tape stops: a chord whose pitch falls two octaves
 const tape = note("<[eb3,gb3,bb3,eb4] ~!4>")

@@ -433,29 +433,28 @@ python = find_program('python3')
 
 # Capability probes (tests/capabilities/README.md): one small check per
 # terminal feature, judged against the works/missing list beside the runner.
-test_capabilities = executable(
-    'test_capabilities',
-    'test_capabilities.c',
-    dependencies: [libtsm_deps],
-)
-# sixel, kitty graphics and sixel's modes through kmscon's own configuration
-# and vte, judged against the build's images option (-Dimages in the list),
-# and the vte identification probes (XTVERSION and XTGETTCAP), which pass in
-# every build
-test_capabilities_images = executable(
-    'test_capabilities_images',
-    'test_capabilities_images.c',
-    include_directories: [src_inc, misc_inc],
-    dependencies: [libtsm_deps, shl_deps],
-)
+# The terminal's probes are probes.replay, replayed by libtsm's tsm-replay
+# under the replay interface libtsm exports (replay_spec), the contract
+# vtium's replay implementation meets too.
+libtsm_proj = subproject('libtsm')
+replay_spec = libtsm_proj.get_variable('replay_spec', [])
+if replay_spec.length() == 0
+    error(
+        'the capability probes replay through libtsm\'s tsm-replay, which -Dlibtsm:tests=false leaves out',
+    )
+endif
+replay_args = [
+    '--replay',
+    libtsm_proj.get_variable('tsm_replay'),
+    '--probes',
+    files('capabilities/probes.replay'),
+    '--spec',
+    replay_spec,
+]
 caps_args = [
     files('capabilities/run.py'),
     '--list',
     files('capabilities/capabilities.list'),
-    '--probe',
-    test_capabilities,
-    '--image-probe',
-    test_capabilities_images,
     '--build',
     'images=' + (enable_images ? 'true' : 'false'),
 ]
@@ -511,8 +510,58 @@ if tic.found() and infocmp.found()
             meson.project_source_root() / 'src/terminal_termcap.h',
         ],
     )
+    # the same table as the termcap fixture of the xtgettcap probe
+    replay_args += [
+        '--fixture',
+        custom_target(
+            'kmscon.termcap',
+            input: files('../scripts/terminfo/kmscon.ti'),
+            output: 'kmscon.termcap',
+            command: [
+                python,
+                files('../scripts/terminfo/gen_termcap.py'),
+                '--tic',
+                tic,
+                '--infocmp',
+                infocmp,
+                '--replay',
+                '@INPUT@',
+                '@OUTPUT@',
+            ],
+        ),
+    ]
 endif
-test('capabilities', python, args: caps_args)
+test('capabilities', python, args: caps_args + replay_args)
+
+# The C probe programs, the same probes through libtsm's API and kmscon's
+# own vte: every probe must pass under both or fail under both. sixel, kitty
+# graphics and sixel's modes go through kmscon's configuration, and fail in
+# a build without images.
+test_capabilities = executable(
+    'test_capabilities',
+    'test_capabilities.c',
+    dependencies: [libtsm_deps],
+)
+test_capabilities_images = executable(
+    'test_capabilities_images',
+    'test_capabilities_images.c',
+    include_directories: [src_inc, misc_inc],
+    dependencies: [libtsm_deps, shl_deps],
+)
+test(
+    'capabilities-parity',
+    python,
+    args: [
+        files('capabilities/run.py'),
+        '--parity',
+        '--list',
+        files('capabilities/capabilities.list'),
+        '--probe',
+        test_capabilities,
+        '--image-probe',
+        test_capabilities_images,
+    ] + replay_args,
+)
 
 if enable_font_freetype and enable_video_drm2d
     # ADR-103's test calls for images build only into what links this

@@ -48,6 +48,14 @@ basis:
     level: guided
     said: "if the contribution adds something new, then the eval harness needs to be proven to be extended too"
     via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, on vtium's contribution policy, said after the statement above
+  - operator: aaronsb
+    level: guided
+    said: "contributions can be llm written too, I just need the author submitting them to understand it's purpose, causes, effects, value etc"
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, on vtium's contribution policy
+  - operator: aaronsb
+    level: guided
+    said: "they need to be prepared to *defend* it"
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, a follow-up to the statement above
   - precedent: ADR-303
   - precedent: ADR-301
   - precedent: ADR-103
@@ -100,6 +108,12 @@ considered:
   - operator: aaronsb
     said: "if the contribution adds something new, then the eval harness needs to be proven to be extended too"
     via: Claude Code session, 2026-10-26, relayed by the team lead verbatim, on vtium's contribution policy, said after the statement above; also in basis
+  - operator: aaronsb
+    said: "contributions can be llm written too, I just need the author submitting them to understand it's purpose, causes, effects, value etc"
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, on vtium's contribution policy; also in basis
+  - operator: aaronsb
+    said: "they need to be prepared to *defend* it"
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, on vtium's contribution policy, a follow-up to the statement above; also in basis
 observable:
   - "R0: tier 1's cases and the capability probes that feed libtsm bytes run through one replay program, whose input and output are written down, and the C implementation passes every golden through it"
   - "vtium's minspec build passes `make tier3-minimal`'s two variants, `2d-potato-min` and `2d-potato-min-psf`, pixel-exact"
@@ -126,7 +140,7 @@ related: [ADR-303, ADR-301, ADR-103]
   - **The tiers judge it.** Tier 3 judges the Rust kmscon unchanged. Tier 1 and the capability probes move behind a replay interface, built first in the C repositories (R0). Tier 2's pixel tests are ported with the renderer. Goldens drawn with bitmap fonts are kept, and goldens drawn with outline fonts are re-baselined when the Rust font layer lands, each changed golden reviewed on its own.
   - **The C fork is frozen.** It takes security fixes only, cherry-picked, and stays the reference implementation and the harness's control. Full upstream syncs stop.
   - **Evaluation is batched.** Items are built in bundles of work that does not collide, and each bundle gets one evaluation pass.
-  - **Contributions.** Any contribution is accepted, human- or LLM-written, if its PR says how it was written and proves it passes the gates and tiers that cover it. Anything new extends the harness in the same PR. The code of conduct is the Contributor Covenant 2.1.
+  - **Contributions.** Any contribution is accepted, human- or LLM-written, if its PR says how it was written and proves it passes the gates and tiers that cover it. Anything new extends the harness in the same PR. The submitter answers for the change and defends it in review, whatever wrote the code. The code of conduct is the Contributor Covenant 2.1.
 - **Trades away:** New features in the C fork until vtium replaces the part they belong to. Pixel parity with the C fork for outline-font text, whose goldens are re-baselined. The C fork's upstream syncs and ADR-303's route to showing the work upstream. The months the port takes, during which the capability batches tracked against the C fork wait.
 - **One-way?** No, expensive. The C fork stays intact as the reference, so stopping the port returns to it and loses only the freeze. The cost grows as features are built in Rust that the C fork does not have.
 - **Probes:**
@@ -237,6 +251,8 @@ Work is cut into items of one form: the modules or files an item touches, the ga
 
 vtium accepts any contribution, human- or LLM-written, and each PR says how its code was written. The maintainer's own code stays LLM-written, under the operator's review.
 
+LLM-written contributions are welcome, and the submitter answers for them: "contributions can be llm written too, I just need the author submitting them to understand it's purpose, causes, effects, value etc". The submitter can explain the change's purpose, its cause, its effects and its value, and defends it in review: its design, its trade-offs and its proofs, in their own words. In the operator's words, "they need to be prepared to *defend* it". A change its submitter cannot explain or defend is not accepted, whatever wrote the code.
+
 Every contribution passes the gates and the tiers that cover it, and its PR carries the proofs: the commands run, their results, and a test seen red before the change and green after it. In the operator's words, "any sort of contribution needs to be able to pass the evaluation gauntlet with proofs".
 
 A contribution that adds something new extends the harness in the same PR: "if the contribution adds something new, then the eval harness needs to be proven to be extended too". The new case is shown red without the feature and green with it. A capability with no harness case that catches its absence is not accepted.
@@ -300,4 +316,4 @@ Relayed verbatim by the team lead. The words of every item are in `considered`, 
 7. **Repository:** "q5 published". vtium/vtium is public, and its first CI run passed.
 8. **Upstream syncs during the freeze:** "q6 agree - it is likely not even in the same language". Full syncs stop, and a security fix is cherry-picked on its own.
 9. **One repository:** "the vtium repo, because rust, doesn't need the seperate lib repo, I think?". Agreed: libtsm's role is carried by workspace crates, and there is no library repository.
-10. **Contribution policy:** picked "Any contribution, disclosed", then "any sort of contribution needs to be able to pass the evaluation gauntlet with proofs" and "if the contribution adds something new, then the eval harness needs to be proven to be extended too". Point 9 of the Decision states the policy, and the README's premise becomes "the maintainer's code is LLM-written; contributions disclose".
+10. **Contribution policy:** picked "Any contribution, disclosed", then "any sort of contribution needs to be able to pass the evaluation gauntlet with proofs" and "if the contribution adds something new, then the eval harness needs to be proven to be extended too". Then "contributions can be llm written too, I just need the author submitting them to understand it's purpose, causes, effects, value etc" and "they need to be prepared to *defend* it". Point 9 of the Decision states the policy, and the README's premise becomes "the maintainer's code is LLM-written; contributions disclose".

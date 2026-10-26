@@ -1,5 +1,5 @@
 # Build profiles (ADR-103, the minimal build): scripts/profiles/*.ini, meson
-# machine files holding a reduced build's options.
+# machine files holding a reduced build's options. The Makefile reads PROFILE.
 #
 #   make test PROFILE=minimal            build fork/build-minimal and run its tests
 #   make test PROFILE=zlib-free          the same, minimal.ini then no-zlib.ini
@@ -7,19 +7,16 @@
 #                                        (tests/check_profile.py), the nm check's
 #                                        control being kmscon from fork/build
 #
-# PROFILE moves BUILD and SETUP_ARGS, so every target that builds uses that
-# profile's build directory; tier 2 and tier 3 run on the default build.
+# PROFILE moves BUILD and SETUP_ARGS for build, test and profile-check. asan
+# and tier 2 run on the default build and refuse it: asan's fork/build/asan
+# would be configured from the profile and reused later by a plain make asan,
+# and tier 2's goldens are the default build's. Tier 3 builds its own package.
 
-PROFILE ?=
-PROFILE_INI_minimal := scripts/profiles/minimal.ini
-PROFILE_INI_zlib-free := scripts/profiles/minimal.ini scripts/profiles/no-zlib.ini
-
+PROFILE_REFUSED := asan tier2 tier2-golden
 ifneq ($(PROFILE),)
-ifeq ($(PROFILE_INI_$(PROFILE)),)
-$(error PROFILE=$(PROFILE): want minimal or zlib-free)
+ifneq ($(filter $(PROFILE_REFUSED),$(MAKECMDGOALS)),)
+$(error $(filter $(PROFILE_REFUSED),$(MAKECMDGOALS)) runs on the default build only; drop PROFILE=$(PROFILE))
 endif
-BUILD := fork/build-$(PROFILE)
-SETUP_ARGS := $(addprefix --native-file ,$(PROFILE_INI_$(PROFILE)))
 endif
 
 .PHONY: profile-check

@@ -352,7 +352,7 @@ def main():
         check("VT_DEMO_GUIDE reaches run-vt.sh as --guide and --steps before the VT",
               p.returncode == 0
               and plus(p)[1:] == [f"--guide={guide}", "--steps=4 5", "8", "--", "--dpms-timeout=15"]
-              and f"the answers are read from {c.checklog}" in p.stdout, p.stdout + p.stderr)
+              and f"the answers are read from {c.checklog})\n" in p.stdout, p.stdout + p.stderr)
         p = c.run(["6"], VT_DEMO_GUIDE=os.path.relpath(guide, tmp))
         check("VT_DEMO_GUIDE takes a path, made absolute",
               p.returncode == 0 and plus(p)[1:] == [f"--guide={guide}", "6", "--"], p.stdout + p.stderr)
@@ -597,13 +597,35 @@ def main():
                           (["--steps=4"], "--steps goes with --guide=FILE"),
                           (["--guide=/x.guide", "--steps=0"], "--steps takes step numbers"),
                           (["--guide=/x.guide", "--steps=4;5"], "--steps takes step numbers"),
-                          (["--guide=/x.guide", "--steps=4 $(id)"], "--steps takes step numbers"),
-                          (["--guide=/x.guide", "--steps="], None)):
+                          (["--guide=/x.guide", "--steps=4 $(id)"], "--steps takes step numbers")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "8"], capture_output=True, text=True, timeout=30)
-            if why:
-                check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
-            else:
-                check(f"run-vt.sh takes {' '.join(opts)} as all steps", "--steps" not in p.stderr, p.stderr)
+            check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
+
+        def guide_words(*opts):
+            p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
+                                f"--guide={cguide}", *opts, "6"],
+                               capture_output=True, text=True, timeout=30,
+                               env=dict(os.environ, SUDO_USER="nobody",
+                                        RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir")))
+            unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
+            return p, shlex.split(unshare[2:]) if unshare else []
+
+        p, words = guide_words("--steps=")
+        check("run-vt.sh takes an empty --steps= as all steps, with no GUIDE_STEPS",
+              p.returncode == 0 and words[-1] == cguide
+              and not any(w.startswith("GUIDE_STEPS") for w in words), p.stdout + p.stderr)
+
+        # GUIDE_STEPS as an operator types it, with stray spaces, a tab or a
+        # comma and a space, which guide.sh --check takes: vt-demo.sh hands
+        # run-vt.sh the words, one space apart, and run-vt.sh takes them.
+        for typed, want in (("4, 5", "4 5"), ("4  5", "4 5"), (" 4", "4"), ("4 ", "4"), ("4\t5", "4 5")):
+            p = c.run(["6"], VT_DEMO_GUIDE="focus-decarm-mouse", VT_DEMO_GUIDE_STEPS=typed)
+            handed = [w for w in plus(p) if w.startswith("--steps=")]
+            r, words = guide_words(*handed)
+            check(f"GUIDE_STEPS={typed!r} reaches run-vt.sh as --steps={want!r}, and run-vt.sh takes it",
+                  p.returncode == 0 and handed == [f"--steps={want}"]
+                  and r.returncode == 0 and f"GUIDE_STEPS={want}" in words,
+                  p.stdout + p.stderr + r.stderr)
 
         # --login (#207): kmscon's own login, /bin/login through PAM, as the
         # session, in the same mount namespace; no setpriv and no env, since

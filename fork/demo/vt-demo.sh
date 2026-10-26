@@ -82,8 +82,13 @@ if [ -n "${VT_DEMO_GUIDE:-}" ]; then
 	guide=$(readlink -f -- "$guide")
 	GUIDE_STEPS=${VT_DEMO_GUIDE_STEPS:-} "$here/checks/guide.sh" --check "$guide" >/dev/null ||
 		die "GUIDE=$VT_DEMO_GUIDE: the guide or GUIDE_STEPS is refused (above)"
+	# The step numbers guide.sh took, one space apart, as run-vt.sh takes
+	# them: "4, 5" or a tab between them is typed easily.
+	steps=()
+	steps_typed=${VT_DEMO_GUIDE_STEPS:-}
+	read -ra steps <<<"${steps_typed//,/ }"
 	session=(--guide="$guide")
-	[ -z "${VT_DEMO_GUIDE_STEPS:-}" ] || session+=(--steps="$VT_DEMO_GUIDE_STEPS")
+	[ ${#steps[@]} -eq 0 ] || session+=(--steps="${steps[*]}")
 elif [ -n "${VT_DEMO_GUIDE_STEPS:-}" ]; then
 	die "GUIDE_STEPS goes with GUIDE"
 fi
@@ -179,7 +184,9 @@ if [ -n "$dry" ]; then
 	printf '+'
 	printf ' %q' "${cmd[@]}"
 	printf '\n'
-	echo "  (kmscon's log would go to $log; the answers are read from ${guide:+$checklog}${guide:-$feedback})"
+	answers=$feedback
+	[ -z "$guide" ] || answers=$checklog
+	echo "  (kmscon's log would go to $log; the answers are read from $answers)"
 	exit 0
 fi
 

@@ -1205,11 +1205,44 @@ static int aftercheck_version(struct conf_option *opt, int argc, char **argv, in
 #else
 			fprintf(stdout, "  - Pango font support: disabled\n");
 #endif
+#ifdef BUILD_ENABLE_IMAGES
+			fprintf(stdout, "  - Images (sixel, kitty graphics): enabled\n");
+#else
+			fprintf(stdout, "  - Images (sixel, kitty graphics): disabled\n");
+#endif
 		}
 
 		conf->exit = true;
 	}
 
+	return 0;
+}
+
+/* a build without images (ADR-103) turns --sixel and --kitty-graphics off, as
+ * aftercheck_drm turns --drm off in a build without DRM */
+static int aftercheck_sixel(struct conf_option *opt, int argc, char **argv, int idx)
+{
+#ifndef BUILD_ENABLE_IMAGES
+	struct kmscon_conf_t *conf = KMSCON_CONF_FROM_FIELD(opt->mem, sixel);
+
+	if (conf->sixel) {
+		log_info("no image support built; disabling --sixel");
+		conf->sixel = false;
+	}
+#endif
+	return 0;
+}
+
+static int aftercheck_kitty_graphics(struct conf_option *opt, int argc, char **argv, int idx)
+{
+#ifndef BUILD_ENABLE_IMAGES
+	struct kmscon_conf_t *conf = KMSCON_CONF_FROM_FIELD(opt->mem, kitty_graphics);
+
+	if (conf->kitty_graphics) {
+		log_info("no image support built; disabling --kitty-graphics");
+		conf->kitty_graphics = false;
+	}
+#endif
 	return 0;
 }
 
@@ -1428,8 +1461,9 @@ int kmscon_conf_new(struct conf_ctx **out)
 		/* Image Options */
 		CONF_OPTION(0, 0, "image-storage-limit", &conf_image_storage, NULL, NULL, NULL,
 			    &conf->image_storage_limit, NULL),
-		CONF_OPTION_BOOL(0, "sixel", &conf->sixel, true),
-		CONF_OPTION_BOOL(0, "kitty-graphics", &conf->kitty_graphics, true),
+		CONF_OPTION_BOOL_FULL(0, "sixel", aftercheck_sixel, NULL, NULL, &conf->sixel, true),
+		CONF_OPTION_BOOL_FULL(0, "kitty-graphics", aftercheck_kitty_graphics, NULL, NULL,
+				      &conf->kitty_graphics, true),
 		CONF_OPTION(0, 0, "max-graphic-size", &conf_graphic_size, NULL, NULL, NULL,
 			    &conf->max_graphic_size, NULL),
 		CONF_OPTION(0, 0, "num-color-registers", &conf_registers, NULL, NULL, NULL,

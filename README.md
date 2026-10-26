@@ -14,7 +14,7 @@ Kmscon requires the following software:
   - [libtsm](https://github.com/kmscon/libtsm): terminal emulator state machine
   - [libudev](https://www.freedesktop.org/software/systemd/man/libudev.html): providing input, video, etc. device hotplug support (>=v172)
   - [libxkbcommon](https://xkbcommon.org/): providing internationalized keyboard handling
-  - [zlib](https://zlib.net/) and [libpng](http://www.libpng.org/pub/png/libpng.html): kmscon-image-helper decodes the kitty graphics protocol's compressed and PNG images with them, as the session's user (ADR-103)
+  - [zlib](https://zlib.net/): compressed PSF fonts and the unifont data, and the image helper's zlib images
   - **linux-headers**: linux kernel headers for ABI definitions
 
 ### Optional dependencies
@@ -36,6 +36,9 @@ For font handling the following is required:
 #### Seats
 - [libseat](https://sr.ht/~kennylevinsen/seatd/): Kmscon can take a seat with libseat . In this case you must have either systemd-logind, elogind, or seatd configured. It allows to run kmscon as a regular user, and configure which GPU/input device are allowed for kmscon. The drawback is that kmscon-launch-gui won't work to launch another GUI that uses libseat, as the seat is already in use.
 - If libseat is not present, kmscon will use its own VT handling, or a fake backend if VT is disabled in the kernel.
+
+#### Images
+- [libpng](http://www.libpng.org/pub/png/libpng.html) and zlib: sixel and the kitty graphics protocol, whose kmscon-image-helper decodes PNG and compressed images as the session's user (ADR-103). Without libpng, an `auto` build leaves images out: no helper, `--sixel` and `--kitty-graphics` turned off at start, and libtsm built without its sixel decoder and kitty parser.
 
 #### Session user
 - sd-login, from libsystemd or libelogind: kmscon-image-helper, which reads the files a kitty graphics command names, runs as the user of the logind session kmscon's login started. Before login (logind running and no session yet), files are refused and inline images decode as the system user `kmscon-image`, which kmscon creates through a sysusers.d entry, or `nobody`. Without sd-login, or with no logind running, it runs as the owner of the session's pty, except that a root-owned pty is treated as before login. [docs/image-helper.md](docs/image-helper.md) explains the rules and why the dedicated user exists.
@@ -82,7 +85,8 @@ explicitly enable it via command line:
 |:------|:-------:|:-----------|
 |`extra_debug`| `false` | Additional debug outputs |
 |`libseat`| `false` | Use libseat to get access to device (DRM and inputs) |
-|`sd_login`| `auto` | Find the image helper's user through sd-login (libsystemd, then libelogind) |
+|`images`| `auto` | Sixel and the kitty graphics protocol, with the image helper (libpng, zlib) |
+|`sd_login`| `auto` | Find the image helper's user through sd-login (libsystemd, then libelogind); needs `images` |
 |`video_fbdev`| `auto` | Linux fbdev video backend |
 |`video_drm2d`| `auto` | Linux DRM software-rendering backend |
 |`video_drm3d`| `auto` | Linux DRM hardware-rendering backend |

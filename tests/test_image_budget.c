@@ -388,6 +388,8 @@ static void vte_write(struct tsm_vte *vte, const char *u8, size_t len, void *dat
 	}
 }
 
+/* sixel and kitty graphics through the vte: a build with images only */
+#ifdef BUILD_ENABLE_IMAGES
 /* DA1 advertises sixel, attribute 4 */
 static bool da1_sixel(struct tsm_vte *vte)
 {
@@ -527,6 +529,8 @@ static void test_terminal(void)
 	tsm_screen_unref(con);
 }
 
+#endif
+
 /*
  * The terminal's teardown, image_budget_free_terminal, leaves nothing in the
  * budget. A terminal that dropped its screen without leaving the budget
@@ -545,7 +549,11 @@ static void test_terminal_teardown(void)
 	assert(tsm_screen_resize(con, 40, 10) == 0);
 	assert(tsm_vte_new(&vte, con, vte_write, NULL, NULL, NULL) == 0);
 	assert(image_budget_add_terminal(&t, con, vte, true, true) == 0);
+#ifdef BUILD_ENABLE_IMAGES
 	tsm_vte_input(vte, six, sizeof(six) - 1);
+#else
+	assert(unplaced(con, 1, false, &k) == 0);
+#endif
 	assert(image_budget_used() > 0 && image_budget_screens() == 1);
 	image_budget_free_terminal(&t);
 	assert(image_budget_screens() == 0 && image_budget_used() == 0 && !t.con && !t.vte);
@@ -604,9 +612,11 @@ static void test_terminal_vte(void)
 	conf.grapheme_width = TSM_WIDTH_UNICODE;
 	assert(terminal_vte_new(&vte, &t, con, &conf, vte_write, NULL) == 0);
 	assert(t.con == con && t.vte == vte && image_budget_screens() == 1);
+#ifdef BUILD_ENABLE_IMAGES
 	assert(kitty_answers(vte) == HAVE_KITTY);
 	tsm_vte_input(vte, six, sizeof(six) - 1);
 	assert(image_budget_used() > 0);
+#endif
 	image_budget_free_terminal(&t);
 	assert(image_budget_screens() == 0 && image_budget_used() == 0);
 }
@@ -625,8 +635,10 @@ int main(void)
 	test_display_recount();
 	test_zero();
 	test_textures();
+#ifdef BUILD_ENABLE_IMAGES
 	test_sixel();
 	test_terminal();
+#endif
 	test_terminal_teardown();
 	test_terminal_vte();
 

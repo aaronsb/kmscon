@@ -31,6 +31,10 @@ option('font_freetype', type: 'feature', value: 'auto',
 option('font_pango', type: 'feature', value: 'auto',
   description: 'pango font backend')
 
+# images (ADR-103)
+option('images', type: 'feature', value: 'auto',
+  description: 'Sixel and the kitty graphics protocol, with the image helper (libpng, zlib)')
+
 # the session's user for the image helper (ADR-103)
 option('sd_login', type: 'feature', value: 'auto',
   description: 'Find the image helper\'s user through sd-login (libsystemd or libelogind)')

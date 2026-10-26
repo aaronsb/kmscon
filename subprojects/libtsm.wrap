@@ -2,7 +2,7 @@
 directory = libtsm
 
 url = https://github.com/aaronsb/libtsm
-revision = 9ec60d6a22062fe07b93fec79b0de20868aff851
+revision = dd3aee62474f815db328bd52164b46204f70b295
 depth = 1
 
 [provide]

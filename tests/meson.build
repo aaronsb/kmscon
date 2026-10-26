@@ -491,6 +491,22 @@ if tic.found() and infocmp.found()
     if tput.found()
         caps_args += ['--tput', tput.full_path()]
     endif
+    # the XTGETTCAP table (src/terminal_termcap.h) against the entry it is
+    # generated from: a change to kmscon.ti is followed by make termcap
+    test(
+        'termcap_drift',
+        python,
+        args: [
+            files('../scripts/terminfo/gen_termcap.py'),
+            '--tic',
+            tic.full_path(),
+            '--infocmp',
+            infocmp.full_path(),
+            '--check',
+            meson.project_source_root() / 'scripts/terminfo/kmscon.ti',
+            meson.project_source_root() / 'src/terminal_termcap.h',
+        ],
+    )
 endif
 test('capabilities', python, args: caps_args)
 

@@ -141,6 +141,7 @@ static void test_real(const char *helper)
 	struct image_host_request r;
 	struct image_host *h;
 	pid_t pid;
+	int ret;
 	FILE *f;
 
 	snprintf(path, sizeof(path), "%s/px.rgba", dir);
@@ -270,13 +271,21 @@ static void test_real(const char *helper)
 	ev_eloop_dispatch(loop, 50);
 	assert(got.id != 15 && !image_host_busy(h));
 
-	/* a helper whose exec fails closes its socket: a failure */
+	/*
+	 * a helper whose exec fails closes its socket: a failure, as the reply,
+	 * or as EBADF from the send when the close comes first
+	 */
 	image_host_free(h);
 	assert(image_host_new(&h, loop, "/nonexistent/helper", reply, NULL) == 0);
 	r = request(16, 'f', path);
-	assert(image_host_send(h, &me, &r) == 0);
-	wait_reply(h, 5000);
-	assert(got.id == 16 && got.status == IMAGE_HOST_FAILED && !image_host_pid(h));
+	ret = image_host_send(h, &me, &r);
+	if (ret == 0) {
+		wait_reply(h, 5000);
+		assert(got.id == 16 && got.status == IMAGE_HOST_FAILED);
+	} else {
+		assert(ret == -EBADF && !image_host_busy(h) && got.id != 16);
+	}
+	assert(!image_host_pid(h));
 	image_host_free(h);
 	unlink(path);
 }

@@ -40,7 +40,6 @@ import tempfile
 TERMINFO = {
     "terminfo-cursor-shape": [{"Ss", "Se"}],
     "terminfo-truecolor": [{"RGB"}, {"Tc"}],
-    "terminfo-sgr-mouse": [{"XM"}],
     "terminfo-sync": [{"Sync"}],
     "terminfo-focus": [{"fe", "fd"}],
     "terminfo-clipboard": [{"Ms"}],
@@ -70,6 +69,13 @@ TERMINFO_STRINGS = {
         ("BD", (), "\033[?2004l"),
         ("PS", (), "\033[200~"),
         ("PE", (), "\033[201~"),
+    ],
+    # ncurses decodes SGR reports when XM names 1006, and matches them by
+    # kmous: XM with kmscon's old kmous, X10's CSI M, loses every click
+    "terminfo-sgr-mouse": [
+        ("XM", ("1",), "\033[?1006;1000h"),
+        ("XM", ("0",), "\033[?1006;1000l"),
+        ("kmous", (), "\033[<"),
     ],
 }
 

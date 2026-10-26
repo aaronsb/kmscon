@@ -37,7 +37,7 @@ terminfo-underline-colour     works   -          Setulc expands a packed colour 
 terminfo-truecolor            works   -          Tc, setrgbf and setrgbb (upstream 114d109) for SGR 38;2 and 48;2
 terminfo-setrgb               works   -          setrgbf and setrgbb expand with no empty final parameter, which xterm reads as SGR 0 (upstream 114d109 ends both in ";m")
 terminfo-bracketed-paste      works   -          BE/BD set and reset mode 2004, PS/PE are the markers kmscon wraps a paste in (ncurses bracketed+paste)
-terminfo-sgr-mouse            missing #94        XM: mode 1006 is implemented; kmous alone selects X10 mouse
+terminfo-sgr-mouse            works   -          XM sets modes 1006 and 1000, and kmous is SGR's CSI <, so ncurses decodes the reports (ncurses xterm+sm+1006)
 terminfo-sync                 works   -          Sync for mode 2026 (ADR-201 step 5)
 terminfo-focus                works   -          fe/fd and kxIN/kxOUT for mode 1004 (ncurses xterm+focus)
 terminfo-clipboard            missing #106       Ms, once OSC 52 exists

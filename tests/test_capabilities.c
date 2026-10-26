@@ -481,18 +481,6 @@ static bool probe_da3(struct term *t)
 	return reply_matches(t, "\e[=c", "\eP!|", "\e\\");
 }
 
-/* XTVERSION: DCS > | name and version ST */
-static bool probe_xtversion(struct term *t)
-{
-	return reply_matches(t, "\e[>q", "\eP>|", "\e\\");
-}
-
-/* XTGETTCAP for TN (the terminal name), hex encoded: DCS 1 + r 544e=... ST */
-static bool probe_xtgettcap(struct term *t)
-{
-	return reply_matches(t, "\eP+q544e\e\\", "\eP1+r544e=", "\e\\");
-}
-
 /* --- OSC colours --- */
 
 static bool probe_osc_4_query(struct term *t)
@@ -755,8 +743,6 @@ static const struct probe {
 	{"da1-level", probe_da1_level},
 	{"da2", probe_da2},
 	{"da3", probe_da3},
-	{"xtversion", probe_xtversion},
-	{"xtgettcap", probe_xtgettcap},
 	{"osc-4-query", probe_osc_4_query},
 	{"osc-4-set", probe_osc_4_set},
 	{"osc-10-11-query", probe_osc_10_11_query},

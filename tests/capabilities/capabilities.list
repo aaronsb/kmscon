@@ -60,8 +60,8 @@ da1                           works   -          CSI c replies CSI ? ... c
 da1-level                     missing libtsm#31  DA1 reports level 60, not one of xterm's 61-65
 da2                           works   -          CSI > c replies CSI > 1;1;0 c
 da3                           missing libtsm#31  CSI = c is answered as DA1 (the = marker is not parsed)
-xtversion                     missing libtsm#23  CSI > q gets no reply (and is taken as DECLL, clearing the LEDs)
-xtgettcap                     missing libtsm#23  DCS + q is dropped
+xtversion                     works   -          CSI > q replies DCS > | kmscon(version) ST, and leaves the LEDs alone (libtsm#23; through kmscon's vte)
+xtgettcap                     works   -          DCS + q answers TN and the kmscon entry's capabilities, generated from kmscon.ti, under TERM=kmscon (libtsm#23; through kmscon's vte)
 
 # OSC colours
 osc-4-query                   works   -          OSC 4 ; n ; ? replies the palette colour

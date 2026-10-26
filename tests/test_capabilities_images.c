@@ -1,5 +1,5 @@
 /*
- * kmscon - capability probes for images
+ * kmscon - capability probes through kmscon's own vte
  *
  * Copyright (c) 2026 the kmscon fork authors
  *
@@ -24,14 +24,17 @@
  */
 
 /*
- * The image probes of tests/capabilities/run.py (ADR-103, The capability
- * probes): sixel, the kitty graphics protocol and sixel's three modes, each
- * through kmscon's own path. The configuration is kmscon's defaults, parsed
- * by its option table, so a build without images has --sixel and
- * --kitty-graphics turned off by their afterchecks; the vte is
- * terminal_vte_new's, with the process's image budget. In a build with images
- * each probe passes; in one without, each must fail (-Dimages in
- * capabilities.list).
+ * The probes of tests/capabilities/run.py that need kmscon's own path, not
+ * libtsm's defaults: sixel, the kitty graphics protocol and sixel's three
+ * modes (ADR-103, The capability probes), and XTVERSION and XTGETTCAP, whose
+ * text and table kmscon sets (ADR-201's note of 2026-10-26). The
+ * configuration is kmscon's defaults, parsed by its option table, with
+ * --term kmscon, so a build without images has --sixel and --kitty-graphics
+ * turned off by their afterchecks and a build whose default TERM is another
+ * still probes the table; the vte is terminal_vte_new's, with the process's
+ * image budget. In a build with images each image probe passes; in one
+ * without, each must fail (-Dimages in capabilities.list). The XTVERSION and
+ * XTGETTCAP probes pass in both.
  *
  *   test_capabilities_images --list    print the probe names
  *   test_capabilities_images NAME      run one probe: exit 0 if it works, 1
@@ -168,18 +171,41 @@ static bool probe_mode_8452(void)
 	return probe_mode(8452);
 }
 
+/* XTVERSION: DCS > | kmscon(version) ST */
+static bool probe_xtversion(void)
+{
+	const char *r = ask("\033[>q");
+
+	if (strcmp(r, "\\eP>|kmscon(" BUILD_VERSION ")\\e\\"))
+		return fail("CSI > q replies \"%s\", not kmscon(" BUILD_VERSION ")", r);
+	return true;
+}
+
+/* XTGETTCAP: TN is kmscon, and Smulx comes back byte for byte as the entry
+ * has it, \E decoded and its % sequence kept, in one reply */
+static bool probe_xtgettcap(void)
+{
+	const char *r = ask("\033P+q544e;536d756c78\033\\");
+
+	if (strcmp(r, "\\eP1+r544e=6B6D73636F6E;536d756c78=1B5B343A25703125646D\\e\\"))
+		return fail("DCS + q TN;Smulx replies \"%s\", not TN=kmscon;Smulx=\\E[4:%%p1%%dm",
+			    r);
+	return true;
+}
+
 static const struct {
 	const char *name;
 	bool (*run)(void);
 } probes[] = {
 	{"sixel", probe_sixel},		{"kitty-graphics", probe_kitty_graphics},
 	{"mode-80", probe_mode_80},	{"mode-1070", probe_mode_1070},
-	{"mode-8452", probe_mode_8452},
+	{"mode-8452", probe_mode_8452}, {"xtversion", probe_xtversion},
+	{"xtgettcap", probe_xtgettcap},
 };
 
 int main(int argc, char **argv)
 {
-	char *args[] = {"kmscon"};
+	char *args[] = {"kmscon", "--term", "kmscon"};
 	struct image_budget_terminal images = {0};
 	struct kmscon_conf_t *conf;
 	struct conf_ctx *ctx;
@@ -204,7 +230,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 
-	if (kmscon_conf_new(&ctx) || conf_ctx_parse_argv(ctx, 1, args)) {
+	if (kmscon_conf_new(&ctx) || conf_ctx_parse_argv(ctx, 3, args)) {
 		fprintf(stderr, "test_capabilities_images: cannot parse kmscon's defaults\n");
 		return 2;
 	}

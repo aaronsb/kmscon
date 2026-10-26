@@ -20,8 +20,8 @@ does not fails the run. A probe one of the programs knows but the list
 does not name, or a name in the list no program knows, fails the run.
 
 Probes come from four places: test_capabilities (libtsm, through its public
-API), test_capabilities_images (sixel and kitty graphics through kmscon's own
-configuration and vte), test_capabilities_font (the freetype backend) and the
+API), test_capabilities_images (sixel, kitty graphics, XTVERSION and XTGETTCAP
+through kmscon's own configuration and vte), test_capabilities_font (the freetype backend) and the
 terminfo entry,
 compiled with tic and read back with infocmp, for the capabilities listed in
 TERMINFO below, and expanded with tput, for the strings listed in

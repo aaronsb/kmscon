@@ -1244,21 +1244,23 @@ Proposed, not decided here. The documentation says the minimal build is made for
 
 (Done 2026-10-25, after step 5. The variants are `2d-potato-min`, with unifont, and `2d-potato-min-psf`, with kbd's `default8x16.psfu.gz` through `font-engine=psf`; the proposed name was too long for QEMU's monitor socket path. `make pkg-minimal` builds the package from `minimal.ini`, `make tier3-minimal` runs both variants in a run of their own, and their goldens were blessed in their own commit after each capture was read. Every image screen shows its "not offered" page, with DA1 replying `^[[?60;1;6;9;15c`; the image benchmark screens pass on their capture once they report images not offered and no picture stream. The report gains kmscon's resident memory after each screen and its startup, from its first log line to its display line.)
 
-Measured on the potato machine, one VM at a time, three runs of each, medians with the range:
+Measured on the potato machine at 92abd024 with libtsm 4ee3edf, one VM at a time, three runs of each build, medians with the range. Memory is VmRSS, which /proc reports in KiB; 1 MiB is 1,024 KiB.
 
 | | default build, Pango, DejaVu Sans Mono 16 | minimal, unifont | minimal, PSF `default8x16` |
 |---|---|---|---|
 | Cell, grid | 10x19, 136x40 | 8x16, 170x48 | 8x16, 170x48 |
-| Resident after the first screen (`sgr`) | 16.3 MB (16.1 to 16.4) | 10.5 MB (10.5 to 10.6) | 5.7 MB (5.6 to 5.8) |
-| Resident peak, and where | 40.3 MB (40.3 to 40.4), `sixel-evict` | 16.0 MB (16.0 to 16.1), after S1 | 11.3 MB (11.1 to 11.3), after S1 |
-| Resident peak over the text screens alone | 23.0 MB | 14.2 MB | 9.5 MB |
-| Startup, first log line to display line | 77.2 ms (77.0 to 89.3) | 72.0 ms (71.3 to 72.1) | 65.8 ms (65.8 to 66.1) |
-| S1 frames presented a second | 42.2 (41.2 to 42.4) | 42.1 (41.9 to 43.5) | 41.7 (41.7 to 42.5) |
-| S1 drawing a frame, mean (p95) | 0.779 ms (1.046) | 0.714 ms (0.946) | 0.737 ms (1.008) |
-| Installed package size | 2.62 MB | 1.85 MB | 1.85 MB |
+| Resident after the first screen (`sgr`) | 15.9 MiB (15.8 to 15.9) | 10.3 MiB (10.2 to 10.3) | 5.6 MiB (5.5 to 5.6) |
+| Resident peak, and where | 39.4 MiB (39.3 to 39.5), `sixel-evict` | 15.7 MiB (15.6 to 15.7), after S1 | 11.0 MiB (11.0 to 11.0), after S1 |
+| Resident peak over the text screens alone | 22.4 MiB | 13.9 MiB | 9.2 MiB |
+| Startup, first log line to display line | 75.9 ms (63.9 to 76.0) | 71.4 ms (71.1 to 72.4) | 66.2 ms (65.6 to 66.6) |
+| S1 frames presented a second | 41.5 (41.4 to 43.3) | 41.7 (41.2 to 41.7) | 42.2 (40.0 to 42.4) |
+| S1 drawing a frame, mean (median p95) | 0.807 ms (1.160) | 0.772 ms (0.985) | 0.787 ms (1.014) |
+| Installed package size | 2.50 MiB | 1.77 MiB | 1.77 MiB |
 
-- S1 ran at about 192,000 lines a second in all three, the rate its script writes them, so the frames a second follow the display and the CPU cost is the comparison: the minimal build draws 8,160 cells a frame against the default build's 5,440 in about the same time.
-- The minimal build's resident memory grows only when the 1,000-line scrollback fills during S1, by about 5.5 MB in both; the default build's peak is the sixel store's.
+- The runs are saved with `make sheet-save TIERS=3` as `fork/build/saved/potato-default-r1` to `-r3` (run ids 8e1a7011, 480fdd84, 7bb4ec20) and `fork/build/saved/potato-minimal-r1` to `-r3` (run ids 914eac7c, c12646c8, 512ac802), each with its report and screens.
+- The default build's cell is the report's `cell`, from the font engine's "cell size" line. unifont and the PSF backend log no such line, so the minimal builds' `cell` is null; their 8x16 is the glyph size of unifont and of `default8x16`, and 170x48 is what their captures show: `wide-margin` places a character after 169 columns and `s1-scroll` shows 47 lines and the prompt.
+- S1 ran at about 188,000 lines a second in all three, the rate its script writes them, so the frames a second follow the display and the CPU cost is the comparison: the minimal build draws 8,160 cells a frame against the default build's 5,440 in about the same time.
+- The minimal build's resident memory grows during S1 by 5.4 MiB in both, as the 1,000-line scrollback fills; the default build's by 2.4 to 2.8 MiB, and its peak is the sixel store's.
 - The startup figure leaves out exec and dynamic linking, which happen before kmscon's first line.
 - The zlib-free variant has no tier 3 variant; it differs from the PSF variant by mod-psf reading an uncompressed font.
-- Reproduce: `make tier3-minimal` and `make tier3 VARIANTS=2d-1366x768-potato`, then read `fork/build/tier3-report.json`, `variants[*].rss_kb`, `startup_ms` and `bench["s1-scroll"]`; the package size is `.PKGINFO`'s `size`.
+- Reproduce: `make tier3-minimal`, then `make tier3-run VARIANTS="2d-potato-min 2d-potato-min-psf" PKG_DIR=fork/build/pkg-minimal` for each further run, and `make tier3 VARIANTS=2d-1366x768-potato`, then `make tier3-run VARIANTS=2d-1366x768-potato`; after each, `make sheet-save TIERS=3 SAVE=...` keeps the run, and its `tier3-report.json` has `variants[*].rss_kb`, `startup_ms` and `bench["s1-scroll"]`. The package size is `.PKGINFO`'s `size`, in bytes.

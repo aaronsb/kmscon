@@ -695,7 +695,11 @@ test(
 test(
     'kitty_player',
     python,
-    args: [files('tools/kitty_player.py'), '--root', meson.project_source_root()],
+    args: [
+        files('tools/kitty_player.py'),
+        '--root',
+        meson.project_source_root(),
+    ],
     timeout: 120,
 )
 

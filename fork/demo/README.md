@@ -10,6 +10,8 @@ The operator's review pages. The full guide is [docs/fork/demo.md](../../docs/fo
 2. `sudo systemctl restart kmsconvt@tty5.service` (or start it, after stopping `getty@tty5.service`).
 3. Ctrl-Alt-F5, log in, then `cd <checkout> && fork/demo/demo.sh kitty-files`.
 
+**Guided checks, started by the agent:** `make vt-check GUIDE=NAME` runs `fork/demo/checks/NAME.guide` on a free VT. The operator switches to it, follows each step and answers; the agent reads the answers when it ends.
+
 **Answers** land in `/tmp/kmscon-demo/feedback.tsv`; `fork/demo/feedback.sh` prints them.
 
 **Undo the install:** `sudo pacman -S kmscon kmscon-terminfo`, then restart or stop the kmscon VT.

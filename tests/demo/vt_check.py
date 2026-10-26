@@ -382,7 +382,7 @@ def main():
             tail = p.out[at:]
             check("probe bg quit during the background sends setForeground and resets 1004",
                   status == 0 and time.monotonic() - start < 3
-                  and tail.find(b"\x1b]setForeground\x07") < tail.find(b"\x1b[?1004l") and b"bg off" in tail,
+                  and 0 <= tail.find(b"\x1b]setForeground\x07") < tail.find(b"\x1b[?1004l") and b"bg off" in tail,
                   tail.decode(errors="replace"))
         except TimeoutError as e:
             check("probe bg quit during the background sends setForeground and resets 1004", False, str(e))

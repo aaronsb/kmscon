@@ -69,9 +69,9 @@ check
 want attr 0 0-0 blink
 
 # colours are kept as written and resolved at draw time: text written under
-# one palette is drawn in the next. Choosing a palette erases the screen, so
-# the text waits on the main screen while the palette changes on the
-# alternate one.
+# one palette is drawn in the next. The C reference erases the screen when a
+# palette is chosen, so the text waits on the main screen while the palette
+# changes on the alternate one.
 probe palette-at-draw
 size 4 1
 view frame
@@ -152,8 +152,9 @@ check
 want attr 0 0-79 bg=4
 
 # each display keeps its own frame age: one caller's frame does not hide a
-# change from another. The calls after the change share a block, since
-# printing one can count as a change.
+# change from another. The counts are informative unless damage-exact, so
+# the probe tells zero from nonzero only; the calls after the change share
+# a block, since printing one counts as a change in the C reference.
 probe frame-age-per-caller
 size 80 4
 cmd frame-since;caller=0

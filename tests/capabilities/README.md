@@ -38,7 +38,7 @@ A stanza opens with `probe NAME`, builds a byte stream and the cuts of INTERFACE
 
 A `test` line belongs to the block whose `checkpoint` follows it. A regular expression uses no backreference or lookaround, as in INTERFACE.md's grammar. A probe needs `view-frame` or `view-draw2` for its view, and the feature the spec's `describe` block gives each command it uses.
 
-`run.py` checks every stanza before anything runs. Each `want` and `reject` line must parse under the spec's grammar for the probe's view, with the reserved keys (`overline`, `superscript`, `subscript`) allowed only in a missing probe, so a missing probe's expectation is one the feature would print. Each assertion follows a `check` with no input between, and each probe has a `want`, `want-re`, `reply` or `reply-re`.
+`run.py` checks every stanza before anything runs. Each `want` and `reject` line must parse under the spec's grammar for the probe's view, with the reserved keys (`overline`, `superscript`, `subscript`) allowed only in a missing probe, so a missing probe's expectation is one the feature would print. A nonzero `changed` or `frame-since` count, or a placement's `changed` flag, is refused in a `want` or `reject` line unless the probe needs `damage-exact`, since a runner masks them otherwise. Each assertion follows a `check` with no input between, and each probe has a `want`, `want-re`, `reply` or `reply-re`.
 
 ## Terminfo probes
 

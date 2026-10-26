@@ -384,14 +384,26 @@ def read_probes(path, spec):
     return probes
 
 
+# what a runner masks unless both sides declare damage-exact: a nonzero
+# changed count, and a placement's changed flag (INTERFACE.md, Comparing
+# with the goldens)
+DAMAGE = re.compile(r"(?:changed|test frame-since [0-7] changed) [1-9][0-9]*|placement .* changed")
+
+
 def check_expectations(path, probe, spec, missing):
     """Exits naming the line when a want or reject line is one the spec's
     grammar does not allow in the probe's view; the keys the spec reserves
-    are allowed in a missing probe's expectations only."""
+    are allowed in a missing probe's expectations only, and an exact damage
+    count or flag in a probe that does not need damage-exact."""
     for key, arg, n in probe.steps:
-        if key in ("want", "reject") and not spec.parses(arg, probe.view, missing):
+        if key not in ("want", "reject"):
+            continue
+        if not spec.parses(arg, probe.view, missing):
             sys.exit(f"{path}:{n}: {arg!r} is not a {probe.view} view line of the spec's "
                      f"grammar{'' if missing else ' (reserved keys are for missing probes)'}")
+        if DAMAGE.fullmatch(arg) and "damage-exact" not in probe.needs:
+            sys.exit(f"{path}:{n}: {arg!r} is informative unless damage-exact: tell zero "
+                     f"from nonzero, or add needs damage-exact")
 
 
 class Replay:

@@ -52,6 +52,30 @@
 #define MAX_RETRY_TIME 2
 #define MAX_RETRY_COUNT 5
 
+/*
+ * Replies are what the input callback writes back to the child while it
+ * parses the child's output, answers to queries, and what is written between
+ * kmscon_pty_begin_reply and kmscon_pty_end_reply, such as the image host's
+ * answers to the child's image requests. msgbuf holds what the child
+ * has not read yet. Once replies there reach PTY_REPLY_HIGH, nothing more of
+ * the child's output is read or fed until they drain below PTY_REPLY_LOW, so
+ * a child that queries without reading stalls itself. A reply that would take
+ * them past PTY_REPLY_MAX, which only one callback call can do, is dropped
+ * with the rest of that call's replies. What the user sends (keys, pastes,
+ * pointer reports) is queued whole and never stops reading: a paste larger
+ * than the bound would otherwise stall a child that echoes it.
+ */
+#define PTY_REPLY_HIGH (64 * 1024)
+#define PTY_REPLY_LOW (16 * 1024)
+#define PTY_REPLY_MAX (4 * PTY_REPLY_HIGH)
+
+/* msgbuf holds runs in order: @user bytes the user sent, then @reply replies */
+struct pty_run {
+	struct pty_run *next;
+	size_t user;
+	size_t reply;
+};
+
 struct kmscon_pty {
 	unsigned long ref;
 	struct ev_eloop *eloop;
@@ -64,8 +88,15 @@ struct kmscon_pty {
 	/* io_buf[held_off, held_len) is what the input callback has not taken */
 	size_t held_off;
 	size_t held_len;
-	bool feeding; /* held_idle is registered */
-	bool paused;  /* kmscon_pty_pause: nothing is read or fed */
+	bool feeding;	      /* held_idle is registered */
+	bool paused;	      /* kmscon_pty_pause: nothing is read or fed */
+	size_t queued;	      /* the bytes msgbuf holds */
+	size_t replies;	      /* the replies msgbuf holds */
+	struct pty_run *runs; /* msgbuf's runs, first to last */
+	struct pty_run *runs_last;
+	unsigned int replying; /* the input callback or kmscon_pty_begin_reply */
+	bool backlog;	       /* replies reached PTY_REPLY_HIGH: nothing is read or fed */
+	bool dropping;	       /* a reply passed PTY_REPLY_MAX: the rest are dropped */
 	/* the size last set with TIOCSWINSZ */
 	struct winsize ws;
 
@@ -134,6 +165,8 @@ void kmscon_pty_ref(struct kmscon_pty *pty)
 	pty->ref++;
 }
 
+static void queue_flush(struct kmscon_pty *pty);
+
 void kmscon_pty_unref(struct kmscon_pty *pty)
 {
 	if (!pty || !pty->ref || --pty->ref)
@@ -146,6 +179,7 @@ void kmscon_pty_unref(struct kmscon_pty *pty)
 	free(pty->argv);
 	free(pty->colorterm);
 	free(pty->term);
+	queue_flush(pty);
 	shl_ring_free(pty->msgbuf);
 	ev_eloop_unref(pty->eloop);
 	free(pty);
@@ -392,30 +426,127 @@ static int pty_spawn(struct kmscon_pty *pty, int master, const struct winsize *s
 	return 0;
 }
 
+/* a pause or a backlog: nothing is read or fed */
+static bool stalled(struct kmscon_pty *pty)
+{
+	return pty->paused || pty->backlog;
+}
+
+/* the child read @len bytes from the front: replies among them no longer count */
+static void queue_drop(struct kmscon_pty *pty, size_t len)
+{
+	struct pty_run *run;
+	size_t n;
+
+	shl_ring_drop(pty->msgbuf, len);
+	pty->queued -= len;
+	while (len && (run = pty->runs)) {
+		n = len < run->user ? len : run->user;
+		run->user -= n;
+		len -= n;
+		n = len < run->reply ? len : run->reply;
+		run->reply -= n;
+		pty->replies -= n;
+		len -= n;
+		if (run->user || run->reply)
+			break;
+		pty->runs = run->next;
+		if (!pty->runs)
+			pty->runs_last = NULL;
+		free(run);
+	}
+}
+
+static void queue_flush(struct kmscon_pty *pty)
+{
+	struct pty_run *run;
+
+	shl_ring_flush(pty->msgbuf);
+	while ((run = pty->runs)) {
+		pty->runs = run->next;
+		free(run);
+	}
+	pty->runs_last = NULL;
+	pty->queued = 0;
+	pty->replies = 0;
+}
+
+static void queue_write(struct kmscon_pty *pty, const char *u8, size_t len)
+{
+	struct pty_run *run = pty->runs_last;
+	bool reply = pty->replying;
+
+	if (reply && (pty->dropping || pty->replies + len > PTY_REPLY_MAX)) {
+		if (!pty->dropping)
+			log_warn("child %d does not read its input; dropping replies", pty->child);
+		pty->dropping = true;
+		return;
+	}
+	/* user bytes after replies start a new run */
+	if (!run || (run->reply && !reply)) {
+		run = calloc(1, sizeof(*run));
+		if (!run) {
+			log_warn("cannot allocate buffer; dropping output");
+			return;
+		}
+	}
+	if (shl_ring_write(pty->msgbuf, u8, len)) {
+		if (run != pty->runs_last)
+			free(run);
+		log_warn("cannot allocate buffer; dropping output");
+		return;
+	}
+	if (run != pty->runs_last) {
+		if (pty->runs_last)
+			pty->runs_last->next = run;
+		else
+			pty->runs = run;
+		pty->runs_last = run;
+	}
+	pty->queued += len;
+	if (!reply) {
+		run->user += len;
+		return;
+	}
+	run->reply += len;
+	pty->replies += len;
+	if (!pty->backlog && pty->replies >= PTY_REPLY_HIGH) {
+		log_debug("child %d does not read its input; reading stops", pty->child);
+		pty->backlog = true;
+	}
+}
+
+static void restart(struct kmscon_pty *pty);
+
 static int send_buf(struct kmscon_pty *pty)
 {
 	const char *buf;
 	size_t len;
-	int ret;
+	int ret = 0;
 
 	while ((buf = shl_ring_peek(pty->msgbuf, &len, 0))) {
 		ret = write(pty->fd, buf, len);
-		if (ret > 0) {
-			shl_ring_drop(pty->msgbuf, ret);
-			continue;
-		}
-
-		if (ret < 0 && errno != EWOULDBLOCK) {
-			log_warn("cannot write to child process (%d): %m", errno);
-			return ret;
-		}
-
-		/* EWOULDBLOCK */
-		return 0;
+		if (ret <= 0)
+			break;
+		queue_drop(pty, ret);
 	}
 
-	ev_fd_update(pty->efd, EV_READABLE | EV_ET);
-	return 0;
+	if (buf && ret < 0 && errno != EWOULDBLOCK) {
+		ret = -errno;
+		log_warn("cannot write to child process (%d): %m", errno);
+	} else {
+		ret = 0;
+		if (!buf)
+			ev_fd_update(pty->efd, EV_READABLE | EV_ET);
+	}
+	/* a failed write may come with no edge to try again: what drained counts */
+	if (pty->backlog && pty->replies < PTY_REPLY_LOW) {
+		log_debug("child %d read its input; reading goes on", pty->child);
+		pty->backlog = false;
+		pty->dropping = false;
+		restart(pty);
+	}
+	return ret;
 }
 
 /* edge-triggered: asks for EV_READABLE again, which reports data already there */
@@ -438,30 +569,48 @@ static void feeding_stop(struct kmscon_pty *pty)
 	pty->feeding = false;
 }
 
+static void reply_end(struct kmscon_pty *pty)
+{
+	/* a backlog holds the drop until the drain; nothing is fed till then */
+	if (!--pty->replying && !pty->backlog)
+		pty->dropping = false;
+}
+
+static size_t call_input(struct kmscon_pty *pty, size_t off, size_t len)
+{
+	size_t n;
+
+	pty->replying++;
+	n = pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
+	reply_end(pty);
+	return n;
+}
+
 /*
  * Hands io_buf[@off, @len) to the input callback. What it does not take is
  * held: nothing more is read, and an idle source on the pty's loop hands the
  * rest over on later turns, so other events are handled between the parts.
  * Without an idle source the rest is handed over at once. A pause from inside
- * the callback holds the rest with no idle source until kmscon_pty_resume.
- * Returns true when all of it was taken and the pty is not paused.
+ * the callback, or a backlog of replies it wrote, holds the rest with no idle
+ * source until kmscon_pty_resume or the drain. Returns true when all of it was
+ * taken and the pty is not stalled.
  */
 static bool feed(struct kmscon_pty *pty, size_t off, size_t len)
 {
-	off += pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
-	if (off < len && !pty->paused && !pty->feeding) {
+	off += call_input(pty, off, len);
+	if (off < len && !stalled(pty) && !pty->feeding) {
 		if (!ev_eloop_register_idle_cb(pty->eloop, held_idle, pty, EV_NORMAL)) {
 			pty->feeding = true;
 		} else {
 			log_warn("cannot feed pty output in parts");
-			while (off < len && !pty->paused)
-				off += pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
+			while (off < len && !stalled(pty))
+				off += call_input(pty, off, len);
 		}
 	}
 	if (off >= len) {
 		pty->held_len = 0;
 		feeding_stop(pty);
-		return !pty->paused;
+		return !stalled(pty);
 	}
 	pty->held_off = off;
 	pty->held_len = len;
@@ -472,7 +621,7 @@ static int read_buf(struct kmscon_pty *pty)
 {
 	ssize_t len, num;
 
-	if (pty->held_len || pty->paused)
+	if (pty->held_len || stalled(pty))
 		return 0;
 
 	/* Use a maximum of 50 steps to avoid staying here forever.
@@ -509,7 +658,7 @@ static void held_idle(struct ev_eloop *eloop, void *unused, void *data)
 {
 	struct kmscon_pty *pty = data;
 
-	if (!pty->held_len || pty->paused) {
+	if (!pty->held_len || stalled(pty)) {
 		feeding_stop(pty);
 		return;
 	}
@@ -526,16 +675,14 @@ void kmscon_pty_pause(struct kmscon_pty *pty)
 }
 
 /*
- * The fd is edge-triggered, so rearm() reports output that came while paused;
- * a read finds the held output first and leaves it to held_idle, which rearms
- * again once it is all taken.
+ * After a pause or a backlog, once neither holds. The fd is edge-triggered,
+ * so rearm() reports output that came while stalled; a read finds the held
+ * output first and leaves it to held_idle, which rearms again once it is all
+ * taken.
  */
-void kmscon_pty_resume(struct kmscon_pty *pty)
+static void restart(struct kmscon_pty *pty)
 {
-	if (!pty || !pty->paused)
-		return;
-	pty->paused = false;
-	if (!pty_is_open(pty))
+	if (!pty_is_open(pty) || stalled(pty))
 		return;
 	rearm(pty);
 	if (!pty->held_len || pty->feeding)
@@ -547,6 +694,14 @@ void kmscon_pty_resume(struct kmscon_pty *pty)
 	log_warn("cannot feed pty output in parts");
 	if (feed(pty, pty->held_off, pty->held_len))
 		rearm(pty);
+}
+
+void kmscon_pty_resume(struct kmscon_pty *pty)
+{
+	if (!pty || !pty->paused)
+		return;
+	pty->paused = false;
+	restart(pty);
 }
 
 static void pty_input(struct ev_fd *fd, int mask, void *data)
@@ -686,6 +841,22 @@ void kmscon_pty_close(struct kmscon_pty *pty)
 	pty->held_len = 0;
 	pty->paused = false;
 	feeding_stop(pty);
+	/* what was queued for this child must not reach the next one */
+	queue_flush(pty);
+	pty->backlog = false;
+	pty->dropping = false;
+}
+
+void kmscon_pty_begin_reply(struct kmscon_pty *pty)
+{
+	if (pty)
+		pty->replying++;
+}
+
+void kmscon_pty_end_reply(struct kmscon_pty *pty)
+{
+	if (pty && pty->replying)
+		reply_end(pty);
 }
 
 int kmscon_pty_write(struct kmscon_pty *pty, const char *u8, size_t len)
@@ -714,10 +885,7 @@ int kmscon_pty_write(struct kmscon_pty *pty, const char *u8, size_t len)
 	ev_fd_update(pty->efd, EV_READABLE | EV_WRITEABLE | EV_ET);
 
 buf:
-	ret = shl_ring_write(pty->msgbuf, u8, len);
-	if (ret)
-		log_warn("cannot allocate buffer; dropping output");
-
+	queue_write(pty, u8, len);
 	return 0;
 }
 

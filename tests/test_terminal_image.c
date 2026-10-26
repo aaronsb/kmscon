@@ -18,6 +18,8 @@
  *   still decodes in a helper run as the pre-login user.
  * - The pause: the bytes after a command, a DA1 query among them, are parsed
  *   only after its reply, in order; the pty reads nothing meanwhile.
+ * - The reply counts toward the pty's bound on replies the client leaves
+ *   unread (#245), as a query's does.
  * - Cancelling: a reset while a request is out, or turning kitty graphics
  *   off, leaves no reply to the client, and the helper's late reply resumes
  *   the pty; closing kills the helper and drops the request.
@@ -96,14 +98,19 @@ static struct ev_eloop *loop; /* the pty's, kept while a test takes it away */
 static unsigned int replied;
 static const char *test_name; /* the test running, for a stuck report */
 
-/* what the vte wrote back to the client */
+/* what the vte wrote back to the client, unless it goes to the pty */
 static char out[4096];
 static size_t out_len;
+static bool to_pty;
 
 static void vte_write(struct tsm_vte *v, const char *u8, size_t len, void *data)
 {
 	(void)v;
 	(void)data;
+	if (to_pty) {
+		kmscon_pty_write(pty, u8, len);
+		return;
+	}
 	assert(out_len + len < sizeof(out));
 	memcpy(out + out_len, u8, len);
 	out_len += len;
@@ -535,6 +542,37 @@ static void test_pause(void)
 	teardown();
 }
 
+/*
+ * The reply to a request goes to the pty as src/terminal.c sends it, behind
+ * keys the client has not read: it is queued and counted as a reply, and a
+ * key after it is not.
+ */
+static void test_reply_counted(void)
+{
+	static char keys[256 * 1024];
+	static const char ok[] = "\033_Gi=12;OK\033\\";
+	const char *path = file_with_px("counted.rgba");
+	char buf[512];
+	int n;
+
+	setup(__func__, real_helper);
+	to_pty = true;
+	memset(keys, 'k', sizeof(keys));
+	assert(kmscon_pty_write(pty, keys, sizeof(keys)) == 0);
+	assert(pty->queued && !pty->replies);
+	n = snprintf(buf, sizeof(buf), "\033_Ga=t,t=f,f=32,s=2,v=1,i=12;%s\033\\",
+		     b64(path, strlen(path)));
+	send_client(buf, n);
+	run_until(request_out);
+	run_until(idle);
+	assert(replied == 1 && pty->replies == sizeof(ok) - 1);
+	/* the reply's scope closed: a key after it is the user's */
+	assert(!pty->replying);
+	assert(kmscon_pty_write(pty, "k", 1) == 0 && pty->replies == sizeof(ok) - 1);
+	to_pty = false;
+	teardown();
+}
+
 /* the text after the command is parsed: B is left of the cursor */
 static bool ab_parsed(void)
 {
@@ -830,6 +868,7 @@ int main(int argc, char **argv)
 	test_discard();
 	test_prelogin();
 	test_pause();
+	test_reply_counted();
 	test_cancel();
 	test_close();
 	test_timeout();

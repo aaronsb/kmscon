@@ -87,20 +87,37 @@ static inline bool shl_ring_is_empty(struct shl_ring *ring)
 	return ring->first == NULL;
 }
 
+/* all of @val or, when a block cannot be allocated, none of it */
 static inline int shl_ring_write(struct shl_ring *ring, const char *val, size_t len)
 {
-	struct shl_ring_entry *ent;
-	size_t space, cp;
+	struct shl_ring_entry *ent, *old_last, *tmp;
+	size_t space, cp, old_len;
 
 	if (!ring || !val || !len)
 		return -EINVAL;
 
+	old_last = ring->last;
+	old_len = old_last ? old_last->len : 0;
 next:
 	ent = ring->last;
 	if (!ent || ent->len >= SHL_RING_SIZE) {
 		ent = malloc(sizeof(*ent) + SHL_RING_SIZE);
-		if (!ent)
+		if (!ent) {
+			tmp = old_last ? old_last->next : ring->first;
+			while (tmp) {
+				ent = tmp->next;
+				free(tmp);
+				tmp = ent;
+			}
+			if (old_last) {
+				old_last->next = NULL;
+				old_last->len = old_len;
+			} else {
+				ring->first = NULL;
+			}
+			ring->last = old_last;
 			return -ENOMEM;
+		}
 
 		ent->len = 0;
 		ent->next = NULL;

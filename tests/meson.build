@@ -396,6 +396,25 @@ test_font_box = executable(
 )
 test('test_font_box', test_font_box, timeout: 300)
 
+# mod-psf's loader on a plain PSF2 fixture, and on it gzipped, which a build
+# without zlib refuses (ADR-103, The zlib-free variant)
+if enable_font_psf
+    test_font_psf = executable(
+        'test_font_psf',
+        'test_font_psf.c',
+        include_directories: [src_inc, include_directories('../src/font')],
+        dependencies: [shl_deps, psf_gz_deps],
+    )
+    test(
+        'test_font_psf',
+        test_font_psf,
+        args: [
+            meson.current_source_dir() / 'fonts',
+            enable_zlib ? 'gz' : 'no-gz',
+        ],
+    )
+endif
+
 test_conf = executable(
     'test_conf',
     'test_conf.c',

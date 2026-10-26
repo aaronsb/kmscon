@@ -60,7 +60,28 @@ libudev_deps = dependency('libudev', version: '>=172')
 dl_deps = dependency('dl')
 threads_deps = dependency('threads')
 math_deps = meson.get_compiler('c').find_library('m', required: false)
-zlib_deps = dependency('zlib')
+# Upstream requires zlib in every build; the fork makes it a feature, so a
+# build can leave it out (ADR-103, The zlib-free variant; ADR-303)
+zlib_deps = dependency('zlib', disabler: true, required: get_option('zlib'))
+# mod-psf reads gzip fonts when zlib is found (ADR-103)
+psf_gz_deps = dependency('', required: false)
+if zlib_deps.found()
+    psf_gz_deps = declare_dependency(
+        dependencies: zlib_deps,
+        compile_args: '-DKMSCON_PSF_GZ=1',
+    )
+endif
+# genunifont runs on the build machine and needs zlib there, so unifont also
+# needs the build machine's zlib: auto leaves unifont out when a cross build's
+# build machine lacks it, and nothing is looked up without unifont (ADR-103)
+zlib_deps_native = dependency('', required: false)
+if zlib_deps.found() and not get_option('font_unifont').disabled()
+    zlib_deps_native = dependency(
+        'zlib',
+        native: true,
+        required: get_option('font_unifont'),
+    )
+endif
 
 python = find_program('python3')
 
@@ -133,10 +154,13 @@ libpng_deps = dependency(
     required: get_option('images'),
 )
 # The same value as the feature loop's enable_images below, which comes too
-# late for the sd_login lookup
-images_allowed = get_option('images').require(
-    libpng_deps.found() and zlib_deps.found(),
-).allowed()
+# late for the sd_login lookup; the loop fails an enabled images that lacks
+# libpng or zlib, naming the one it lacks
+images_allowed = (
+    not get_option('images').disabled()
+    and libpng_deps.found()
+    and zlib_deps.found()
+)
 # The image helper's user through logind (ADR-103): libsystemd's sd-login, or
 # libelogind's, which provides the same <systemd/sd-login.h>. Not looked for
 # in a build without images, where -Dsd_login=enabled fails the configure.
@@ -173,26 +197,51 @@ sections = {
     'renderer': 'Renderers',
 }
 config = configuration_data()
-# Note: keep this in sync with the dependencies above
+# Note: keep this in sync with the dependencies above. Each feature names the
+# dependencies it needs, so a feature turned on without one says which.
 foreach name, reqs : {
-    'libseat': [libseat_deps],
-    'video_fbdev': [],
-    'video_drm2d': [libdrm_deps],
-    'video_drm3d': [libdrm_deps, gbm_deps, egl_deps, glesv2_deps],
-    'renderer_gltex': [glesv2_deps],
-    'font_psf': [],
-    'font_unifont': [],
-    'font_freetype': [freetype_deps, fontconfig_deps, harfbuzz_deps],
-    'font_pango': [pango_deps, freetype_deps, fontconfig_deps, harfbuzz_deps],
-    'dbus': [dbus_deps],
-    'images': [libpng_deps, zlib_deps],
-    'sd_login': [sd_login_deps],
+    'libseat': {'libseat': libseat_deps},
+    'video_fbdev': {},
+    'video_drm2d': {'libdrm': libdrm_deps},
+    'video_drm3d': {
+        'libdrm': libdrm_deps,
+        'gbm': gbm_deps,
+        'egl': egl_deps,
+        'glesv2': glesv2_deps,
+    },
+    'renderer_gltex': {'glesv2': glesv2_deps},
+    'font_psf': {},
+    'font_unifont': {
+        'zlib': zlib_deps,
+        'zlib for the build machine': zlib_deps_native,
+    },
+    'font_freetype': {
+        'freetype2': freetype_deps,
+        'fontconfig': fontconfig_deps,
+        'harfbuzz': harfbuzz_deps,
+    },
+    'font_pango': {
+        'pangoft2': pango_deps,
+        'freetype2': freetype_deps,
+        'fontconfig': fontconfig_deps,
+        'harfbuzz': harfbuzz_deps,
+    },
+    'dbus': {'dbus-1': dbus_deps},
+    'zlib': {'zlib': zlib_deps},
+    'images': {'libpng': libpng_deps, 'zlib': zlib_deps},
+    'sd_login': {'libsystemd or libelogind': sd_login_deps},
 }
-    found = true
-    foreach req : reqs
-        found = found and req.found()
+    # found() is false on a disabler, the lookup that was not found
+    missing = []
+    foreach dep_name, req : reqs
+        if not req.found()
+            missing += dep_name
+        endif
     endforeach
-    enabled = get_option(name).require(found).allowed()
+    enabled = get_option(name).require(
+        missing.length() == 0,
+        error_message: f'@name@ needs ' + ', '.join(missing),
+    ).allowed()
     upper_name = name.to_upper()
     # set a variable for later use
     set_variable(f'enable_@name@', enabled)

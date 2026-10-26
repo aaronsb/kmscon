@@ -239,6 +239,42 @@ def main():
                   and len(added) == len(want) and all(re.fullmatch(w, l) for w, l in zip(want, added)),
                   "\n".join(added))
 
+        # Ctrl-D at a line prompt is an end of file, never a crash: at a note
+        # it is no note, at a step's first prompt it ends the checks, and the
+        # log ends with a line saying so.
+        before = read(log)
+        g = Pty(["/bin/bash", runner, guide], guide_env(log))
+        try:
+            at = g.wait_for(b"Press Enter to begin.")
+            g.send(b"\x04")
+            at = g.wait_for(b"Step 1 of 4: Focus", after=at)
+            at = g.wait_for(b"q ends the checks", after=at)
+            g.send(b"\r")
+            at = g.wait_for(b"focus on; q quits", after=at)
+            g.send(b"q")
+            at = g.wait_for(b"Looked right?", after=at)
+            g.send(b"y")
+            at = g.wait_for(b"Note (Enter for none): ", after=at)
+            g.send(b"\x04")
+            at = g.wait_for(b"Step 2 of 4: Skipped", after=at)
+            at = g.wait_for(b"q ends the checks", after=at)
+            g.send(b"\x04")
+            status = g.finish()
+            added = read(log)[len(before):].splitlines()
+            want = [rf"=== Test guide, {ISO}, guide .*, steps all",
+                    r"-- step 1 of 4: Focus",
+                    r"  \[focus\] focus on; q quits",
+                    r"  answer: yes",
+                    r"-- step 2 of 4: Skipped",
+                    r"  ended here",
+                    rf"=== ended at step 2, {ISO}"]
+            check("Ctrl-D at the first screen, a note and a step's prompt ends the checks cleanly",
+                  status == 0 and len(added) == len(want)
+                  and all(re.fullmatch(w, l) for w, l in zip(want, added)),
+                  f"status {status}\n" + "\n".join(added))
+        except TimeoutError as e:
+            check("Ctrl-D at the first screen, a note and a step's prompt ends the checks cleanly", False, str(e))
+
         # A log that cannot be written is said on the screen before anything
         # is asked, and the run ends after Enter.
         g = Pty(["/bin/bash", runner, guide], guide_env("/proc/nonexistent/vt-check.log"))

@@ -120,12 +120,19 @@ fi
 log=${GUIDE_LOG:-/tmp/kmscon-demo/vt-check.log}
 if ! { mkdir -p -- "${log%/*}" && touch -- "$log"; }; then
 	printf '\nguide: cannot write %s, so no answer would be kept.\nPress Enter to end.\n' "$log"
-	read -r _
+	read -r _ || true
 	exit 1
 fi
 export PROBE_LOG=$log
 
 note() { printf '%s\n' "$*" >>"$log"; }
+
+# Ends the checks at step $k, the log's last line saying so.
+ended() {
+	note "$1"
+	note "=== ended at step $k, $(date -Is)"
+	exit 0
+}
 
 clear_screen() {
 	printf '\033[0m\033[H\033[2J\033[3J'
@@ -144,7 +151,8 @@ ask() {
 	local a n
 	while :; do
 		printf '\nLooked right? [y]es [n]o [s]kip: '
-		read -r -n 1 a
+		# Only a closed terminal fails here: read -n takes Ctrl-D as a key.
+		read -r -n 1 a || { echo; ended "  ended here (input closed)"; }
 		echo
 		case $a in
 		y | Y) a=yes; break ;;
@@ -153,7 +161,7 @@ ask() {
 		esac
 	done
 	printf 'Note (Enter for none): '
-	read -r n
+	read -r n || n=
 	note "  answer: $a${n:+  note: $n}"
 }
 
@@ -174,7 +182,7 @@ Ctrl+Alt+F$desktop is your desktop.
 
 Press Enter to begin.
 EOF
-read -r _
+read -r _ || true
 
 for ((s = 0; s < total; s++)); do
 	k=$((s + 1))
@@ -190,18 +198,15 @@ for ((s = 0; s < total; s++)); do
 	else
 		printf '\nPress Enter when done (s then Enter skips this step, q ends the checks).\n'
 	fi
-	read -r go
+	# Ctrl-D (end of file) at this prompt ends the checks, as q does.
+	read -r go || go=q
 	note "-- step $k of $total: ${titles[s]}"
 	case $go in
 	s | S)
 		note "  answer: skip  (before the probe)"
 		continue
 		;;
-	q | Q)
-		note "  ended here"
-		note "=== ended at step $k, $(date -Is)"
-		exit 0
-		;;
+	q | Q) ended "  ended here" ;;
 	esac
 	[ -z "${probes[s]}" ] || python3 "$probe" "${probes[s]}" || note "  probe exited with status $?"
 	ask
@@ -213,4 +218,4 @@ cat <<EOF
 All steps done; the answers are saved. Press Enter to end the run.
 kmscon exits and VT $vt gets its console back. Ctrl+Alt+F$desktop is your desktop.
 EOF
-read -r _
+read -r _ || true

@@ -25,8 +25,10 @@
 
 /*
  * The part of terminal_new that makes a terminal's vte on its screen, sets it
- * from the configuration, and adds the terminal to the image budget (ADR-103).
- * It is apart from terminal.c so that a test drives its failures.
+ * from the configuration, and adds the terminal to the image budget (ADR-103),
+ * and the decisions terminal.c makes for the vte's input modes: whether a key
+ * repeat goes through (DECARM). It is apart from terminal.c so that a test
+ * drives its failures and those decisions.
  */
 
 #ifndef KMSCON_TERMINAL_VTE_H
@@ -46,5 +48,14 @@
 int terminal_vte_new(struct tsm_vte **vte, struct image_budget_terminal *images,
 		     struct tsm_screen *con, struct kmscon_conf_t *conf, tsm_vte_write_cb write_cb,
 		     void *data);
+
+/*
+ * Whether a key repeat is dropped before it reaches @vte: true when @repeat
+ * (the event came from the input layer's repeat timer, not the keyboard) and
+ * the program has reset DECARM, mode 8 (xterm ctlseqs). kmscon makes a held
+ * key's repeats, so it is the one that stops them; its own key bindings are
+ * matched before this and keep repeating.
+ */
+bool terminal_vte_drop_repeat(struct tsm_vte *vte, bool repeat);
 
 #endif /* KMSCON_TERMINAL_VTE_H */

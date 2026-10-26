@@ -1,0 +1,86 @@
+/*
+ * The decisions terminal.c makes for a terminal's input modes
+ * (src/terminal_vte.c), against a real libtsm vte: a key repeat is dropped
+ * while the program has reset DECARM (mode 8), and a real key press never is.
+ */
+
+#undef NDEBUG
+#include <assert.h>
+#include <libtsm.h>
+#include <stdio.h>
+#include <string.h>
+#include "terminal_vte.h"
+
+static char reply[256];
+static size_t reply_len;
+
+static void on_write(struct tsm_vte *vte, const char *u8, size_t len, void *data)
+{
+	(void)vte;
+	(void)data;
+	if (reply_len + len >= sizeof(reply))
+		len = sizeof(reply) - 1 - reply_len;
+	memcpy(reply + reply_len, u8, len);
+	reply_len += len;
+	reply[reply_len] = 0;
+}
+
+static void clear_reply(void)
+{
+	reply_len = 0;
+	reply[0] = 0;
+}
+
+struct term {
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+};
+
+static void term_init(struct term *t)
+{
+	assert(tsm_screen_new(&t->con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(t->con, 40, 10) == 0);
+	assert(tsm_vte_new(&t->vte, t->con, on_write, NULL, NULL, NULL) == 0);
+	clear_reply();
+}
+
+static void term_free(struct term *t)
+{
+	tsm_vte_unref(t->vte);
+	tsm_screen_unref(t->con);
+}
+
+static void feed(struct term *t, const char *s)
+{
+	tsm_vte_input(t->vte, s, strlen(s));
+}
+
+/* DECARM (xterm ctlseqs): set by default, so a held key repeats */
+static void test_decarm(void)
+{
+	struct term t;
+
+	term_init(&t);
+	assert(!terminal_vte_drop_repeat(t.vte, true));
+	assert(!terminal_vte_drop_repeat(t.vte, false));
+
+	/* reset: the timer's repeats stop, a press still goes through */
+	feed(&t, "\e[?8l");
+	assert(terminal_vte_drop_repeat(t.vte, true));
+	assert(!terminal_vte_drop_repeat(t.vte, false));
+
+	feed(&t, "\e[?8h");
+	assert(!terminal_vte_drop_repeat(t.vte, true));
+
+	/* DECSTR sets it again */
+	feed(&t, "\e[?8l\e[!p");
+	assert(!terminal_vte_drop_repeat(t.vte, true));
+	term_free(&t);
+}
+
+int main(void)
+{
+	test_decarm();
+	printf("test_terminal_vte: ok\n");
+	return 0;
+}

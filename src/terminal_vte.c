@@ -1,5 +1,5 @@
 /*
- * kmscon - A terminal's vte and its place in the image budget
+ * kmscon - A terminal's vte, its place in the image budget, and its input modes
  *
  * Copyright (c) 2026 the kmscon fork authors
  *
@@ -76,4 +76,12 @@ err_images:
 err_vte:
 	tsm_vte_unref(v);
 	return ret;
+}
+
+/* DECRQM's value for a mode that is reset (ctlseqs DECRPM) */
+#define MODE_RESET 2
+
+bool terminal_vte_drop_repeat(struct tsm_vte *vte, bool repeat)
+{
+	return repeat && tsm_vte_get_mode(vte, true, 8) == MODE_RESET;
 }

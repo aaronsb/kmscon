@@ -1416,6 +1416,12 @@ static void input_event(struct input *input, struct input_key_event *ev, void *d
 		return;
 	}
 
+	/* DECARM reset: the program gets no repeats; the bindings above keep them */
+	if (terminal_vte_drop_repeat(term->vte, ev->repeat)) {
+		ev->handled = true;
+		return;
+	}
+
 	/* TODO: xkbcommon supports multiple keysyms, but it is currently
 	 * unclear how this feature will be used. There is no keymap, which
 	 * uses this, yet. */

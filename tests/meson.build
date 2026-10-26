@@ -345,6 +345,17 @@ test_terminal_sync = executable(
 )
 test('test_terminal_sync', test_terminal_sync)
 
+# the input modes terminal.c asks a vte about (DECARM) on a real vte
+test_terminal_vte = executable(
+    'test_terminal_vte',
+    'test_terminal_vte.c',
+    '../src/terminal_vte.c',
+    '../src/render/image_budget.c',
+    include_directories: [src_inc, misc_inc],
+    dependencies: [libtsm_deps, shl_deps],
+)
+test('test_terminal_vte', test_terminal_vte)
+
 # Braille, sextant and octant sprites against tests/box_model.h, at every cell
 # size to 32x64 (#76)
 test_font_box = executable(

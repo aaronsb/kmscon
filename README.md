@@ -106,7 +106,7 @@ The minimal build is kmscon as a userspace replacement for the kernel's console,
 meson setup builddir --native-file scripts/profiles/minimal.ini
 ```
 
-`scripts/profiles/minimal.ini` turns off `images`, `video_drm3d`, `renderer_gltex`, `font_freetype`, `font_pango` and `dbus`, turns on `zlib`, `font_psf` and `font_unifont`, and builds libtsm as the pinned static subproject, so libtsm leaves out its image decoders too. A `-D` given after the file overrides any of these. In the dev container, `make test PROFILE=minimal` builds and tests it in `fork/build-minimal`, and `make profile-check PROFILE=minimal` also checks what the installed files link.
+`scripts/profiles/minimal.ini` turns off `images`, `video_drm3d`, `renderer_gltex`, `font_freetype`, `font_pango` and `dbus`, turns on `video_drm2d`, `video_fbdev`, `zlib`, `font_psf` and `font_unifont`, and builds libtsm as the pinned static subproject, so libtsm leaves out its image decoders too. A `-D` given after the file overrides any of these. In the dev container, `make test PROFILE=minimal` builds and tests it in `fork/build-minimal`, and `make profile-check PROFILE=minimal` also checks what the installed files link.
 
 | | |
 |---|---|

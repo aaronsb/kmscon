@@ -5,8 +5,8 @@ scripts/profiles/minimal.ini (PROFILE minimal) or with no-zlib.ini after it
 
 - config.h: the features the profile turns off are off (images,
   video_drm3d, renderer_gltex, font_freetype, font_pango, dbus; and zlib and
-  font_unifont for zlib-free), and font_psf (and font_unifont for minimal) is
-  on. The feature loop writes config.h and the build summary from the same
+  font_unifont for zlib-free), and video_drm2d, video_fbdev and font_psf (and
+  font_unifont for minimal) are on. The feature loop writes config.h and the build summary from the same
   values.
 - ldd: no installed executable or module has libpng, a GL library (libEGL,
   libGLESv2, libGL, libgbm), libpango, libharfbuzz, libfreetype,
@@ -33,11 +33,12 @@ import sys
 OFF = ["images", "video_drm3d", "renderer_gltex", "font_freetype", "font_pango", "dbus"]
 FORBIDDEN = ["libpng", "libEGL.", "libGLESv2.", "libGL.", "libgbm.", "libpango", "libharfbuzz",
              "libfreetype.", "libfontconfig.", "libsystemd.", "libdbus-1.", "libtsm"]
+ON = ["video_drm2d", "video_fbdev", "font_psf"]
 DECODER = re.compile(r" (tsm_sixel_|tsm_kitty_)\w+$", re.M)
 PROFILES = {
-    "minimal": {"off": OFF, "on": ["font_psf", "font_unifont"], "forbidden": FORBIDDEN,
+    "minimal": {"off": OFF, "on": ON + ["font_unifont"], "forbidden": FORBIDDEN,
                 "libz": {"mod-psf.so", "mod-unifont.so"}, "absent": []},
-    "zlib-free": {"off": OFF + ["zlib", "font_unifont"], "on": ["font_psf"],
+    "zlib-free": {"off": OFF + ["zlib", "font_unifont"], "on": ON,
                   "forbidden": FORBIDDEN + ["libz."], "libz": set(),
                   "absent": ["mod-unifont.so"]},
 }

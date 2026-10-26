@@ -30,6 +30,22 @@ LIBTSM ?=
 
 SETUP_ARGS := --force-fallback-for=libtsm -Dlibtsm:default_library=static
 
+# PROFILE=minimal or zlib-free builds from that profile's machine files
+# (scripts/profiles/, ADR-103) in a build directory of its own. Set here,
+# before fork/*.mk is read, so every file sees the same BUILD; a target that
+# runs only on the default build refuses PROFILE (fork/profiles.mk).
+PROFILE ?=
+PROFILE_INI_minimal := scripts/profiles/minimal.ini
+PROFILE_INI_zlib-free := scripts/profiles/minimal.ini scripts/profiles/no-zlib.ini
+
+ifneq ($(PROFILE),)
+ifeq ($(PROFILE_INI_$(PROFILE)),)
+$(error PROFILE=$(PROFILE): want minimal or zlib-free)
+endif
+BUILD := fork/build-$(PROFILE)
+SETUP_ARGS := $(addprefix --native-file ,$(PROFILE_INI_$(PROFILE)))
+endif
+
 ifneq ($(LIBTSM),)
 LIBTSM_MOUNT := -v $(abspath $(LIBTSM)):/src/subprojects/libtsm:ro
 endif

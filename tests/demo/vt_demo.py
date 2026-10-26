@@ -418,10 +418,13 @@ def main():
               and (p.returncode == 0 or "nothing staged" in p.stderr or "does not exist" in p.stderr),
               p.stderr)
         # The showcase moved to aaronsb/kmscon-showcase (#239): its options
-        # are gone, and an old command fails rather than running the demo.
+        # are gone, and an old command fails at the usage, which is the
+        # header's option list and stops where it ends.
         for opts in (["--showcase=/v.mkv"], ["--showcase-from=5"], ["--showcase-audio"]):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
-            check(f"run-vt.sh no longer takes {' '.join(opts)}", p.returncode == 2 and "--showcase" not in p.stderr, p.stderr)
+            check(f"run-vt.sh no longer takes {' '.join(opts)}",
+                  p.returncode == 2 and "--showcase" not in p.stderr
+                  and p.stderr.rstrip().endswith("As root, any of the four set is refused."), p.stderr)
         for opts, why in ((["--kit=bogus"], "--kit takes text, sixel, kitty, glyphs or all"),
                           (["--kit="], "--kit takes text, sixel, kitty, glyphs or all")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)

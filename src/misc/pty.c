@@ -69,6 +69,13 @@
 #define PTY_REPLY_LOW (16 * 1024)
 #define PTY_REPLY_MAX (4 * PTY_REPLY_HIGH)
 
+/* msgbuf holds runs in order: @user bytes the user sent, then @reply replies */
+struct pty_run {
+	struct pty_run *next;
+	size_t user;
+	size_t reply;
+};
+
 struct kmscon_pty {
 	unsigned long ref;
 	struct ev_eloop *eloop;
@@ -81,10 +88,12 @@ struct kmscon_pty {
 	/* io_buf[held_off, held_len) is what the input callback has not taken */
 	size_t held_off;
 	size_t held_len;
-	bool feeding;	       /* held_idle is registered */
-	bool paused;	       /* kmscon_pty_pause: nothing is read or fed */
-	size_t queued;	       /* the bytes msgbuf holds */
-	size_t replies;	       /* at least the replies msgbuf holds, at most queued */
+	bool feeding;	      /* held_idle is registered */
+	bool paused;	      /* kmscon_pty_pause: nothing is read or fed */
+	size_t queued;	      /* the bytes msgbuf holds */
+	size_t replies;	      /* the replies msgbuf holds */
+	struct pty_run *runs; /* msgbuf's runs, first to last */
+	struct pty_run *runs_last;
 	unsigned int replying; /* the input callback or kmscon_pty_begin_reply */
 	bool backlog;	       /* replies reached PTY_REPLY_HIGH: nothing is read or fed */
 	bool dropping;	       /* a reply passed PTY_REPLY_MAX: the rest are dropped */
@@ -156,6 +165,8 @@ void kmscon_pty_ref(struct kmscon_pty *pty)
 	pty->ref++;
 }
 
+static void queue_flush(struct kmscon_pty *pty);
+
 void kmscon_pty_unref(struct kmscon_pty *pty)
 {
 	if (!pty || !pty->ref || --pty->ref)
@@ -168,6 +179,7 @@ void kmscon_pty_unref(struct kmscon_pty *pty)
 	free(pty->argv);
 	free(pty->colorterm);
 	free(pty->term);
+	queue_flush(pty);
 	shl_ring_free(pty->msgbuf);
 	ev_eloop_unref(pty->eloop);
 	free(pty);
@@ -420,34 +432,83 @@ static bool stalled(struct kmscon_pty *pty)
 	return pty->paused || pty->backlog;
 }
 
-/*
- * The replies msgbuf holds are not tracked byte by byte: after a drain they
- * are counted as at most what is left, which may count user bytes queued
- * behind replies the child has read, but never counts too few.
- */
+/* the child read @len bytes from the front: replies among them no longer count */
 static void queue_drop(struct kmscon_pty *pty, size_t len)
 {
+	struct pty_run *run;
+	size_t n;
+
 	shl_ring_drop(pty->msgbuf, len);
 	pty->queued -= len;
-	if (pty->replies > pty->queued)
-		pty->replies = pty->queued;
+	while (len && (run = pty->runs)) {
+		n = len < run->user ? len : run->user;
+		run->user -= n;
+		len -= n;
+		n = len < run->reply ? len : run->reply;
+		run->reply -= n;
+		pty->replies -= n;
+		len -= n;
+		if (run->user || run->reply)
+			break;
+		pty->runs = run->next;
+		if (!pty->runs)
+			pty->runs_last = NULL;
+		free(run);
+	}
+}
+
+static void queue_flush(struct kmscon_pty *pty)
+{
+	struct pty_run *run;
+
+	shl_ring_flush(pty->msgbuf);
+	while ((run = pty->runs)) {
+		pty->runs = run->next;
+		free(run);
+	}
+	pty->runs_last = NULL;
+	pty->queued = 0;
+	pty->replies = 0;
 }
 
 static void queue_write(struct kmscon_pty *pty, const char *u8, size_t len)
 {
-	if (pty->replying && (pty->dropping || pty->replies + len > PTY_REPLY_MAX)) {
+	struct pty_run *run = pty->runs_last;
+	bool reply = pty->replying;
+
+	if (reply && (pty->dropping || pty->replies + len > PTY_REPLY_MAX)) {
 		if (!pty->dropping)
 			log_warn("child %d does not read its input; dropping replies", pty->child);
 		pty->dropping = true;
 		return;
 	}
+	/* user bytes after replies start a new run */
+	if (!run || (run->reply && !reply)) {
+		run = calloc(1, sizeof(*run));
+		if (!run) {
+			log_warn("cannot allocate buffer; dropping output");
+			return;
+		}
+	}
 	if (shl_ring_write(pty->msgbuf, u8, len)) {
+		if (run != pty->runs_last)
+			free(run);
 		log_warn("cannot allocate buffer; dropping output");
 		return;
 	}
+	if (run != pty->runs_last) {
+		if (pty->runs_last)
+			pty->runs_last->next = run;
+		else
+			pty->runs = run;
+		pty->runs_last = run;
+	}
 	pty->queued += len;
-	if (!pty->replying)
+	if (!reply) {
+		run->user += len;
 		return;
+	}
+	run->reply += len;
 	pty->replies += len;
 	if (!pty->backlog && pty->replies >= PTY_REPLY_HIGH) {
 		log_debug("child %d does not read its input; reading stops", pty->child);
@@ -778,9 +839,7 @@ void kmscon_pty_close(struct kmscon_pty *pty)
 	pty->paused = false;
 	feeding_stop(pty);
 	/* what was queued for this child must not reach the next one */
-	shl_ring_flush(pty->msgbuf);
-	pty->queued = 0;
-	pty->replies = 0;
+	queue_flush(pty);
 	pty->backlog = false;
 	pty->dropping = false;
 }

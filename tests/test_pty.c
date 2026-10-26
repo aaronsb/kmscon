@@ -29,7 +29,8 @@
  * reading; the bound and a pause each hold reading until both let go; output
  * a callback left held when the backlog began is fed after the drain; and
  * reading starts again below PTY_REPLY_LOW, not just under PTY_REPLY_HIGH.
- * Closing drops the queue. A raw pseudo-terminal slave is the child.
+ * Closing drops the queue. Replies the child has read stop counting though user
+ * bytes wait behind them. A raw pseudo-terminal slave is the child.
  */
 
 #include <assert.h>
@@ -593,6 +594,54 @@ static void test_backlog(void)
 }
 
 /*
+ * Replies the child has read stop counting though user bytes wait behind
+ * them: the review's case of #246, where they kept a backlog up with only
+ * the newest replies unread until the whole paste drained.
+ */
+static void test_backlog_exact(void)
+{
+	static char paste[1024 * 1024], q[6000], buf[4096];
+	struct kmscon_pty *pty;
+	size_t want, got = 0;
+	unsigned int turns = 0;
+	ssize_t n;
+	int slave;
+
+	reply_len = 8;
+	pty = open_child(&slave);
+	memset(q, 'q', sizeof(q));
+	put(slave, q, sizeof(q));
+	while (answered < sizeof(q))
+		wait_turn(pty), assert(++turns < 1000);
+	assert(pty->replies && pty->replies < PTY_REPLY_HIGH);
+
+	/* the user pastes behind the replies; the child reads the replies alone */
+	memset(paste, 'p', sizeof(paste));
+	assert(kmscon_pty_write(pty, paste, sizeof(paste)) == 0);
+	want = sizeof(q) * reply_len;
+	turns = 0;
+	while (got < want) {
+		n = read(slave, buf, want - got < sizeof(buf) ? want - got : sizeof(buf));
+		if (n > 0)
+			got += n;
+		wait_turn(pty);
+		assert(++turns < 1000);
+	}
+	assert(!pty->replies && pty->queued > PTY_REPLY_HIGH);
+
+	/* new replies queue behind the paste, and only they count */
+	put(slave, q, 1500);
+	turns = 0;
+	while (answered < sizeof(q) + 1500)
+		wait_turn(pty), assert(++turns < 1000);
+	assert(pty->replies == 1500 * reply_len && !pty->backlog);
+
+	kmscon_pty_close(pty);
+	close(slave);
+	kmscon_pty_unref(pty);
+}
+
+/*
  * A callback that takes part of what it is handed, as libtsm does when its
  * work bound or a hold ends a call: the backlog stops feeding the rest from
  * the idle source, just past the bound, and the drain feeds it.
@@ -685,6 +734,7 @@ int main(void)
 	test_winsize();
 	test_close_queue();
 	test_backlog();
+	test_backlog_exact();
 	test_backlog_held();
 	test_backlog_latch();
 	test_backlog_hysteresis();

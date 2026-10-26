@@ -7,8 +7,9 @@
 #                       print the run's answers when it ends
 #                       (VT=N, DEMO_ARGS='kmscon options')
 #   make vt-login       make demo, then run its kmscon with a login prompt on
-#                       a free VT through sudo, for the demo or the showcase
-#                       run by hand in a logind session (VT=N, DEMO_ARGS=...)
+#                       a free VT through sudo, for the demo (or the
+#                       showcase, aaronsb/kmscon-showcase) run by hand in a
+#                       logind session (VT=N, DEMO_ARGS=...)
 #
 # Or by hand, as root: sudo fork/demo/run-vt.sh [N]
 

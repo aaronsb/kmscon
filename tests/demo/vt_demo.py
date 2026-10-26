@@ -196,11 +196,6 @@ def main():
         p = c.run(["6"], VT_DEMO_KIT="bogus")
         check("KIT=bogus is refused",
               p.returncode != 0 and "KIT=bogus: text, sixel, kitty, glyphs or all" in p.stderr, p.stderr)
-        video = os.path.join(tmp, "kit.mkv")
-        open(video, "w").close()
-        p = c.run(["6"], VT_DEMO_KIT="sixel", VT_DEMO_SHOWCASE=video)
-        check("KIT with the showcase is refused",
-              p.returncode != 0 and "KIT goes with the demo" in p.stderr, p.stderr)
 
         p = c.run([], active="tty7", sessions=[6], gone=[5])
         check("a session gone between list and query is skipped",
@@ -297,54 +292,6 @@ def main():
                   p.returncode != 0 and "/usr is a symlink, or not a directory of yours" in p.stderr,
                   p.stderr)
 
-        # The showcase (make showcase): the video, made absolute, and its act
-        # and audio options go to run-vt.sh before the VT; its run records no
-        # answers, so it ends with the health check and status 0.
-        video = os.path.join(tmp, "bad apple.mkv")
-        open(video, "w").close()
-        p = c.run(["6", "--", "--font-size=30"], VT_DEMO_SHOWCASE="bad apple.mkv",
-                  VT_DEMO_SHOWCASE_FROM="5", VT_DEMO_SHOWCASE_AUDIO="1")
-        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
-        want = "run-vt.sh --showcase=" + video.replace(" ", "\\ ") + " --showcase-from=5 --showcase-audio 6 -- --font-size=30"
-        check("the showcase's video, act and audio reach run-vt.sh before the VT",
-              p.returncode == 0 and cmd.endswith(want), p.stdout + p.stderr)
-        for value, wanted in (("no", False), ("0", False), ("yes", True), ("1", True)):
-            p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO=value)
-            check(f"AUDIO={value} {'plays' if wanted else 'does not play'} the soundtrack",
-                  p.returncode == 0 and ("--showcase-audio" in p.stdout) == wanted, p.stdout + p.stderr)
-        p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO="1",
-                  VT_DEMO_SHOWCASE_AUDIO_DEVICE="pipewire/bt sink")
-        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
-        check("AUDIO_DEVICE names the soundtrack's output to run-vt.sh",
-              p.returncode == 0 and "--showcase-audio=pipewire/bt\\ sink 6" in cmd, p.stdout + p.stderr)
-        # make showcase AUDIO_DEVICE=... alone plays the soundtrack through it
-        # (#207); AUDIO=0 or no says no sound, and the device is ignored.
-        p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO_DEVICE="pipewire/x")
-        cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
-        check("AUDIO_DEVICE alone plays the soundtrack through that output",
-              p.returncode == 0 and "--showcase-audio=pipewire/x 6" in cmd and "ignored" not in p.stderr,
-              p.stdout + p.stderr)
-        for value in ("0", "no"):
-            p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO=value,
-                      VT_DEMO_SHOWCASE_AUDIO_DEVICE="pipewire/x")
-            check(f"AUDIO_DEVICE with AUDIO={value} is reported as ignored",
-                  p.returncode == 0 and f"ignored with AUDIO={value}" in p.stderr
-                  and "--showcase-audio" not in p.stdout, p.stdout + p.stderr)
-        p = c.run(["6"], VT_DEMO_SHOWCASE=video, VT_DEMO_SHOWCASE_AUDIO="loud")
-        check("AUDIO=loud is refused", p.returncode != 0 and "AUDIO=loud" in p.stderr, p.stderr)
-        p = c.run(["6"], VT_DEMO_SHOWCASE=os.path.join(tmp, "missing.mkv"))
-        check("a showcase video that is not there is refused",
-              p.returncode != 0 and "missing.mkv is not a readable file" in p.stderr, p.stderr)
-        p = c.run(["6"], dry=False, VT_DEMO_SHOWCASE=video, APPEND="")
-        with open(c.args_out) as f:
-            args = f.read().splitlines()
-        check("a showcase run ends without answers, with the health check",
-              p.returncode == 0 and "health: 0" in p.stdout and "results:" not in p.stdout
-              and "no answers" not in p.stderr and args == ["--showcase=" + video, "6", "--"],
-              p.stdout + p.stderr + repr(args))
-        p = c.run(["6"], dry=False, VT_DEMO_SHOWCASE=video, STATUS="130", APPEND="")
-        check("a showcase cut short keeps run-vt.sh's status", p.returncode == 130, p.stdout + p.stderr)
-
         # make vt-login (#207): run-vt.sh --login before the VT, with the
         # kmscon options; a login records answers only if a demo was run in
         # it, so a run without any ends with the health check and status 0.
@@ -360,7 +307,6 @@ def main():
         check("VT_DEMO_LOGIN on a VT with a session is refused",
               p.returncode != 0 and "VT 8 refused: logind session c8" in p.stderr, p.stderr)
         for extra, why in (({"VT_DEMO_KIT": "sixel"}, "KIT goes with the demo"),
-                           ({"VT_DEMO_SHOWCASE": video}, "the showcase goes"),
                            ({"VT_DEMO_LOGIN": "maybe"}, "VT_DEMO_LOGIN=maybe")):
             p = c.run(["8"], **{"VT_DEMO_LOGIN": "1", **extra})
             check(f"VT_DEMO_LOGIN with {' '.join(f'{k}={v}' for k, v in extra.items())} is refused",
@@ -471,33 +417,21 @@ def main():
               "is refused" not in p.stderr
               and (p.returncode == 0 or "nothing staged" in p.stderr or "does not exist" in p.stderr),
               p.stderr)
-        for opts, why in ((["--showcase=video.mkv"], "needs an absolute path"),
-                          (["--showcase="], "needs the video's path"),
-                          (["--showcase=/v.mkv", "--showcase-from=8"], "an act from 1 to 7"),
-                          (["--showcase=/v.mkv", "--showcase-from=x"], "an act from 1 to 7"),
-                          (["--showcase-audio"], "go with --showcase=VIDEO"),
-                          (["--showcase=/v.mkv", "--showcase-audio=a b"], "an mpv audio device name"),
-                          (["--showcase=/v.mkv", "--showcase-audio=$(id)"], "an mpv audio device name"),
-                          (["--showcase-from=2"], "go with --showcase=VIDEO")):
+        # The showcase moved to aaronsb/kmscon-showcase (#239): its options
+        # are gone, and an old command fails rather than running the demo.
+        for opts in (["--showcase=/v.mkv"], ["--showcase-from=5"], ["--showcase-audio"]):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
-            check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
+            check(f"run-vt.sh no longer takes {' '.join(opts)}", p.returncode == 2 and "--showcase" not in p.stderr, p.stderr)
         for opts, why in ((["--kit=bogus"], "--kit takes text, sixel, kitty, glyphs or all"),
-                          (["--kit="], "--kit takes text, sixel, kitty, glyphs or all"),
-                          (["--kit=sixel", "--showcase=/v.mkv"], "--kit goes with the demo")):
+                          (["--kit="], "--kit takes text, sixel, kitty, glyphs or all")):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "3"], capture_output=True, text=True, timeout=30)
             check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
-        p = subprocess.run(["bash", run_vt, "--dry-run", "--showcase=/v.mkv", "--showcase-from=5", "--showcase-audio", "3"],
-                           capture_output=True, text=True, timeout=30)
-        check("run-vt.sh accepts the showcase's options",
-              "--showcase" not in p.stderr
-              and (p.returncode == 0 or "nothing staged" in p.stderr or "does not exist" in p.stderr), p.stderr)
-        # The showcase's login command, read from a dry run in a copy of the
+        # The demo's login command, read from a dry run in a copy of the
         # tree with a stand-in staged build: the session runs after setpriv
-        # has dropped to the user and cleared the environment, and the video
-        # is one word of env's.
+        # has dropped to the user and cleared the environment, and its label
+        # and kit are words of env's.
         copy = os.path.join(tmp, "tree")
-        for d in ("fork/demo", "fork/showcase"):
-            shutil.copytree(os.path.join(root, d), os.path.join(copy, d))
+        shutil.copytree(os.path.join(root, "fork/demo"), os.path.join(copy, "fork/demo"))
         stage = os.path.join(copy, "fork/build/demo-root")
         os.makedirs(os.path.join(stage, "usr/bin"))
         os.makedirs(os.path.join(stage, "usr/lib/kmscon"))
@@ -507,10 +441,8 @@ def main():
         with open(os.path.join(stage, "BUILD"), "w") as f:
             f.write("v10-test kmscon-aaronsb 1\n")
         os.makedirs(os.path.join(tmp, "moduledir"))
-        tricky = "/tmp/a b;$(id).mkv"
         p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
-                            f"--showcase={tricky}", "--showcase-from=5", "--showcase-audio", "4",
-                            "--", "--font-size=30"],
+                            "--kit=glyphs", "4", "--", "--font-size=30"],
                            capture_output=True, text=True, timeout=30,
                            env=dict(os.environ, SUDO_USER="nobody",
                                     RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir")))
@@ -524,30 +456,14 @@ def main():
         drop = words[setpriv:env_at]
         session = words[env_at:]
         nobody = pwd.getpwnam("nobody")
-        check("run-vt.sh runs the showcase as the user, its video one word of env's",
+        check("run-vt.sh runs the demo as the user, after setpriv has cleared the environment",
               p.returncode == 0 and 0 < login < setpriv < env_at
               and drop == ["/usr/bin/setpriv", f"--reuid={nobody.pw_uid}", f"--regid={nobody.pw_gid}",
                            "--init-groups", "--reset-env", "--"]
-              and f"BAD_APPLE={tricky}" in session
-              and not any(w.startswith("AUDIO_DEVICE=") for w in words)
-              and session[-5:] == ["/bin/bash", os.path.join(copy, "fork/showcase/bad-apple.sh"),
-                                   "--from", "5", "--audio"]
-              and not any(w.startswith("BAD_APPLE=") for w in words[:env_at])
+              and "DEMO_KIT=glyphs" in session
+              and session[-2:] == ["/bin/bash", os.path.join(copy, "fork/demo/demo.sh")]
+              and not any(w.startswith("DEMO_") for w in words[:env_at])
               and "--font-size=30" in words[:login],
-              p.stdout + p.stderr)
-
-        # The soundtrack's output is one word of env's, after setpriv.
-        p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
-                            "--showcase=/v.mkv", "--showcase-audio=alsa/hdmi:CARD=HDMI,DEV=0", "4"],
-                           capture_output=True, text=True, timeout=30,
-                           env=dict(os.environ, SUDO_USER="nobody",
-                                    RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir")))
-        unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
-        words = shlex.split(unshare[2:]) if unshare else []
-        env_at = words.index("/usr/bin/env") if "/usr/bin/env" in words else -1
-        check("run-vt.sh hands the showcase its audio device in env's words",
-              p.returncode == 0 and env_at > 0 and "AUDIO_DEVICE=alsa/hdmi:CARD=HDMI,DEV=0" in words[env_at:]
-              and words[-2:] == [os.path.join(copy, "fork/showcase/bad-apple.sh"), "--audio"],
               p.stdout + p.stderr)
 
         # The demo's kit is one word of env's, after setpriv, like the label,
@@ -596,7 +512,8 @@ def main():
         check("run-vt.sh --login says what to run once logged in, before kmscon starts",
               "Ctrl-Alt-F8" in tell and "log in" in tell
               and "DEMO_LABEL='dev build v10-test' fork/demo/demo.sh" in tell
-              and "DEMO_KIT=sixel" in tell and "fork/showcase/bad-apple.sh --audio" in tell
+              and "DEMO_KIT=sixel" in tell
+              and "github.com/aaronsb/kmscon-showcase" in tell and "./bad-apple.sh --audio" in tell
               and "log out to end it" in tell and "Ctrl-C here ends it" in tell
               and os.path.realpath(copy) in tell, tell)
         # The VT's console units, whichever of kmsconvt@, getty@ or autovt@
@@ -749,9 +666,7 @@ kill -TERM 1
                   p.stdout + p.stderr + f"\nchild {read(pidfile) if os.path.exists(pidfile) else '?'}"
                   f" taken {read(taken) if os.path.exists(taken) else '?'}")
 
-        for opts, why in ((["--login", "--kit=sixel"], "--login runs no demo"),
-                          (["--login", "--showcase=/v.mkv"], "--login runs no demo"),
-                          (["--login", "--showcase-audio"], "go with --showcase=VIDEO")):
+        for opts, why in ((["--login", "--kit=sixel"], "--login runs no demo"),):
             p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "8"], capture_output=True, text=True, timeout=30)
             check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
         for bad in ("--login=/bin/sh", "--lo", "Nerd"):

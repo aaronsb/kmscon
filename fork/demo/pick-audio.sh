@@ -1,8 +1,9 @@
 #!/bin/bash
 # Asks where a demo's sound plays, and prints mpv's name for the output on
 # stdout, or none for no sound; the questions go to the terminal on stderr
-# and stdin. The Bad Apple!! showcase runs it before act 1 when --audio is
-# given (fork/showcase/README.md, Sound).
+# and stdin. The Bad Apple!! showcase ran it before act 1 until the show
+# moved to aaronsb/kmscon-showcase (#239), which carries a copy of its own;
+# it stays here for the demos, with its checks in tests/demo/pick_audio.py.
 #
 #   pick-audio.sh            lists the outputs and asks
 #   pick-audio.sh --no-wait  lists them and asks nothing: mpv's default

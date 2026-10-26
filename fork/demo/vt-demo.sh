@@ -16,14 +16,6 @@
 # VT_DEMO_KIT picks the demo's review kit (#123): text (run-vt.sh's default),
 # sixel, kitty, glyphs or all.
 #
-# VT_DEMO_SHOWCASE names a video and runs the Bad Apple!! showcase
-# (fork/showcase/bad-apple.sh) in place of the demo, as make showcase does;
-# VT_DEMO_SHOWCASE_FROM starts it at an act and VT_DEMO_SHOWCASE_AUDIO (yes or
-# 1; no or 0 for none) plays the soundtrack, through
-# VT_DEMO_SHOWCASE_AUDIO_DEVICE when set (an mpv audio device; the show asks
-# otherwise), which plays it without VT_DEMO_SHOWCASE_AUDIO too. The showcase
-# records no answers, so its run ends with the health check alone.
-#
 # VT_DEMO_LOGIN=1 (yes or 1), as make vt-login sets it, runs kmscon's own
 # login prompt in place of the demo (run-vt.sh --login). Its run ends with the
 # health check, and with the answers of a dev build demo run in that login,
@@ -54,34 +46,14 @@ case ${VT_DEMO_KIT:-} in
 '' | text | sixel | kitty | glyphs | all) ;;
 *) die "KIT=$VT_DEMO_KIT: text, sixel, kitty, glyphs or all" ;;
 esac
-[ -z "${VT_DEMO_KIT:-}" ] || [ -z "${VT_DEMO_SHOWCASE:-}" ] ||
-	die "KIT goes with the demo, not with the showcase"
 kit=()
 [ -z "${VT_DEMO_KIT:-}" ] || kit=(--kit="$VT_DEMO_KIT")
-if [ -n "${VT_DEMO_SHOWCASE:-}" ]; then
-	video=$(readlink -f -- "$VT_DEMO_SHOWCASE") && [ -f "$video" ] && [ -r "$video" ] ||
-		die "BAD_APPLE=$VT_DEMO_SHOWCASE is not a readable file"
-	session=(--showcase="$video")
-	[ -z "${VT_DEMO_SHOWCASE_FROM:-}" ] || session+=(--showcase-from="$VT_DEMO_SHOWCASE_FROM")
-	# A device named is a soundtrack asked for, unless AUDIO says no.
-	audio=${VT_DEMO_SHOWCASE_AUDIO:-}
-	[ -n "$audio" ] || [ -z "${VT_DEMO_SHOWCASE_AUDIO_DEVICE:-}" ] || audio=1
-	case $audio in
-	yes | 1) session+=(--showcase-audio${VT_DEMO_SHOWCASE_AUDIO_DEVICE:+="$VT_DEMO_SHOWCASE_AUDIO_DEVICE"}) ;;
-	no | 0 | '')
-		[ -z "${VT_DEMO_SHOWCASE_AUDIO_DEVICE:-}" ] ||
-			echo "vt-demo: AUDIO_DEVICE=$VT_DEMO_SHOWCASE_AUDIO_DEVICE is ignored with AUDIO=$audio" >&2
-		;;
-	*) die "AUDIO=$VT_DEMO_SHOWCASE_AUDIO: yes or 1 plays the soundtrack, no or 0 does not" ;;
-	esac
-fi
 login=
 case ${VT_DEMO_LOGIN:-} in
 '') ;;
 yes | 1)
 	login=1
 	[ -z "${VT_DEMO_KIT:-}" ] || die "KIT goes with the demo, not with a login: DEMO_KIT=$VT_DEMO_KIT before demo.sh, once logged in"
-	[ -z "${VT_DEMO_SHOWCASE:-}" ] || die "the showcase goes with make showcase, or by hand once logged in, not with a login"
 	session=(--login)
 	;;
 *) die "VT_DEMO_LOGIN=$VT_DEMO_LOGIN: yes or 1 runs a login prompt" ;;

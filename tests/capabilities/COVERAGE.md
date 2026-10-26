@@ -52,7 +52,8 @@ Paths: font engine FT (freetype) / PG (pango); renderer BB (bbulk) / GT (gltex);
 | libseat `--vt`, font retry, pointer guard (upstream sync) | #62 | tier 3 `vt-switch`, `vt-restore` | PG/BB/D2 | font retry and pointer guard: #120; libseat: #121 |
 | Local demo and per-page feedback, `s` to skip a page | #42, #48, #115 | meson `demo_feedback` (run 3 checks the skip key and the summary's `skipped` line) | script on a pty | guarded |
 | `make vt-demo`, `run-vt.sh` refusals | #65 | meson `demo_vt_select` | script, stand-in loginctl | guarded |
-| Showcase | #83 | meson `showcase` | script | playback not covered (manual) |
+| Demo sound output picker (`fork/demo/pick-audio.sh`) | #171, #207 | meson `demo_pick_audio` | script, stand-in mpv | was part of meson `showcase` until the show moved to aaronsb/kmscon-showcase (#239) |
+| kitty graphics player (`fork/tools/kitty-player/kitty.py`) | #176, #177 | meson `kitty_player` | script on a pty, stand-in ffmpeg | output checked on a model of the spec's image store; playback on kmscon not covered (manual) |
 | Run and comparison page generators | #4, #6, #50, #52, #58 | `test_runpage.py`, `test_compare.py` | Python | now meson tests `sheet_runpage`, `sheet_compare` (were only in the Makefile's `make test`) |
 | Tier 3 harness modules | #14, #21, #55, #56, #74, #89 | `test_t3img.py`, `test_t3.py` | Python | now meson tests `tier3_t3img`, `tier3_t3` (were only `make tier3-selftest`) |
 | Capability probes | #113 | meson `capabilities` | libtsm, FT, terminfo | this map |

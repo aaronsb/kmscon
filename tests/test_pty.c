@@ -24,14 +24,18 @@
  * floods queries and never reads its input stops being read once
  * PTY_REPLY_HIGH of them wait, and is read again once it drains them, with
  * every reply delivered whole and in order. Past PTY_REPLY_MAX replies are
- * dropped. A paste larger than the bound never stops reading, the bound and
- * a pause each hold reading until both let go, and closing drops the queue.
- * A raw pseudo-terminal slave is the child.
+ * dropped, and after a dropped reply none from the same call arrives. A
+ * paste larger than the bound, after a query was answered, never stops
+ * reading; the bound and a pause each hold reading until both let go; output
+ * a callback left held when the backlog began is fed after the drain; and
+ * reading starts again below PTY_REPLY_LOW, not just under PTY_REPLY_HIGH.
+ * Closing drops the queue. A raw pseudo-terminal slave is the child.
  */
 
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <termios.h>
@@ -294,8 +298,29 @@ static void test_winsize(void)
 }
 
 static char reply[1024];
-static size_t reply_len; /* the callback answers each byte with this much */
+static size_t reply_len;   /* the callback answers each byte with this much */
+static size_t answer_take; /* the most it takes in one call, as libtsm may; 0: all */
 static size_t answered;
+
+/*
+ * With indexed on, the replies alternate 1024 and 8 bytes, each starting
+ * with L or s and its query's number in seven digits, and the call that
+ * answered each query is kept.
+ */
+static bool indexed;
+static unsigned int answer_calls;
+static unsigned int call_of[1 << 20];
+
+static void indexed_reply(struct kmscon_pty *pty, size_t q)
+{
+	size_t len = q % 2 ? 8 : 1024;
+
+	assert(q < sizeof(call_of) / sizeof(*call_of));
+	call_of[q] = answer_calls;
+	snprintf(reply, 9, "%c%07zu", len == 8 ? 's' : 'L', q);
+	reply[8] = 'x';
+	kmscon_pty_write(pty, reply, len);
+}
 
 static size_t answer(struct kmscon_pty *pty, const char *u8, size_t len, void *data)
 {
@@ -303,10 +328,47 @@ static size_t answer(struct kmscon_pty *pty, const char *u8, size_t len, void *d
 
 	(void)u8;
 	(void)data;
-	for (i = 0; i < len; ++i)
-		kmscon_pty_write(pty, reply, reply_len);
+	if (answer_take && len > answer_take)
+		len = answer_take;
+	answer_calls++;
+	for (i = 0; i < len; ++i) {
+		if (indexed)
+			indexed_reply(pty, answered + i);
+		else
+			kmscon_pty_write(pty, reply, reply_len);
+	}
 	answered += len;
 	return len;
+}
+
+/*
+ * The indexed replies the child reads, byte by byte: in order, each whole,
+ * and after a dropped reply none from the same call, which the drop latch
+ * holds to.
+ */
+static char rec[1024];
+static size_t rec_len;
+static long last_q = -1;
+
+static void read_indexed(const char *buf, size_t len)
+{
+	size_t want;
+	long q;
+
+	while (len--) {
+		rec[rec_len++] = *buf++;
+		assert(rec[0] == 'L' || rec[0] == 's');
+		want = rec[0] == 's' ? 8 : 1024;
+		if (rec_len < want)
+			continue;
+		rec[8] = 0;
+		q = strtol(rec + 1, NULL, 10);
+		assert(q > last_q && (q % 2 ? 8 : 1024) == want);
+		if (q != last_q + 1)
+			assert(call_of[q] != call_of[last_q + 1]);
+		last_q = q;
+		rec_len = 0;
+	}
 }
 
 /* a pty whose child is a raw slave that reads and writes only when told to */
@@ -358,6 +420,7 @@ static void wait_turn(struct kmscon_pty *pty)
 {
 	ev_eloop_dispatch(pty->eloop, 10);
 	assert(pty->replies <= pty->queued && pty->replies <= PTY_REPLY_MAX);
+	assert(!pty->replying);
 }
 
 /*
@@ -395,8 +458,11 @@ static size_t drain(struct kmscon_pty *pty, int slave, unsigned int rounds)
 	ssize_t n;
 
 	while (rounds--) {
-		while ((n = read(slave, buf, sizeof(buf))) > 0)
+		while ((n = read(slave, buf, sizeof(buf))) > 0) {
+			if (indexed)
+				read_indexed(buf, n);
 			got += n;
+		}
 		assert(n < 0 && errno == EAGAIN);
 		wait_turn(pty);
 	}
@@ -502,23 +568,113 @@ static void test_backlog(void)
 	close(slave);
 	kmscon_pty_unref(pty);
 
-	/* a paste larger than the bound is queued whole and stops no reading */
+	/*
+	 * a paste larger than the bound, after a query was answered, is queued
+	 * whole and stops no reading
+	 */
 	{
 		static char paste[4 * PTY_REPLY_MAX];
 
 		reply_len = 8;
 		pty = open_child(&slave);
+		put(slave, "q", 1);
+		assert(answers(pty) && answered == 1);
 		memset(paste, 'p', sizeof(paste));
 		assert(kmscon_pty_write(pty, paste, sizeof(paste)) == 0);
 		assert(pty->queued > PTY_REPLY_MAX && !pty->replies);
 		put(slave, "qqq", 3);
-		assert(answers(pty) && answered == 3 && !pty->backlog);
-		got = drain_all(pty, slave, 3);
-		assert(got == sizeof(paste) + 3 * reply_len);
+		assert(answers(pty) && answered == 4 && !pty->backlog);
+		got = drain_all(pty, slave, 4);
+		assert(got == sizeof(paste) + 4 * reply_len);
 		kmscon_pty_close(pty);
 		close(slave);
 		kmscon_pty_unref(pty);
 	}
+}
+
+/*
+ * A callback that takes part of what it is handed, as libtsm does when its
+ * work bound or a hold ends a call: the backlog stops feeding the rest from
+ * the idle source, just past the bound, and the drain feeds it.
+ */
+static void test_backlog_held(void)
+{
+	struct kmscon_pty *pty;
+	size_t sent;
+	int slave;
+
+	reply_len = 8;
+	answer_take = 64;
+	pty = open_child(&slave);
+	sent = flood(pty, slave);
+	assert(pty->backlog && !pty->dropping && !pty->feeding);
+	assert(pty->replies < PTY_REPLY_HIGH + answer_take * reply_len);
+	assert(drain_all(pty, slave, sent) == sent * reply_len && answered == sent);
+	answer_take = 0;
+	kmscon_pty_close(pty);
+	close(slave);
+	kmscon_pty_unref(pty);
+}
+
+/*
+ * Replies of 1024 and 8 bytes in turn: once one is dropped, the rest of that
+ * call's are, though a small one would fit, so no reply arrives out of place.
+ */
+static void test_backlog_latch(void)
+{
+	struct kmscon_pty *pty;
+	size_t sent;
+	int slave;
+
+	indexed = true;
+	last_q = -1;
+	rec_len = 0;
+	pty = open_child(&slave);
+	sent = flood(pty, slave);
+	assert(pty->backlog && pty->dropping);
+	drain_all(pty, slave, sent);
+	assert(answered == sent && last_q >= 0 && !rec_len);
+	indexed = false;
+	kmscon_pty_close(pty);
+	close(slave);
+	kmscon_pty_unref(pty);
+}
+
+/*
+ * Reading starts again only once the replies drain below PTY_REPLY_LOW, not
+ * as soon as they fall under PTY_REPLY_HIGH: the child reads a little a
+ * turn, and the turns that end with nothing more answered see the replies
+ * between the two. The kernel takes the replies back in steps of some
+ * kilobytes, smaller than the gap.
+ */
+static void test_backlog_hysteresis(void)
+{
+	static char buf[512];
+	struct kmscon_pty *pty;
+	size_t sent, before, stopped = SIZE_MAX;
+	unsigned int turns = 0;
+	int slave;
+
+	reply_len = 8;
+	pty = open_child(&slave);
+	sent = flood(pty, slave);
+	assert(pty->backlog);
+	for (;;) {
+		before = answered;
+		assert(read(slave, buf, sizeof(buf)) > 0 || errno == EAGAIN);
+		wait_turn(pty);
+		assert(++turns < 10000);
+		if (answered != before)
+			break;
+		if (pty->replies < stopped)
+			stopped = pty->replies;
+	}
+	assert(stopped >= PTY_REPLY_LOW && stopped < PTY_REPLY_HIGH);
+	drain_all(pty, slave, sent);
+	assert(answered == sent);
+	kmscon_pty_close(pty);
+	close(slave);
+	kmscon_pty_unref(pty);
 }
 
 int main(void)
@@ -529,6 +685,9 @@ int main(void)
 	test_winsize();
 	test_close_queue();
 	test_backlog();
+	test_backlog_held();
+	test_backlog_latch();
+	test_backlog_hysteresis();
 	printf("test_pty: ok\n");
 	return 0;
 }

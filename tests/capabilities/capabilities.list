@@ -6,7 +6,7 @@
 # the fork's own features (regression guards; see COVERAGE.md)
 sgr-colon-subparams           works   -          colon sub-parameters: SGR reads them, other sequences with them are ignored (ADR-102)
 sgr-underline-styles          works   -          SGR 4:1-4:5 and 21 set each underline style, 24 clears (ADR-102)
-sgr-underline-colour          works   -          SGR 58;2 and 59; 4;58;5;196 never blinks (ADR-102)
+sgr-underline-colour          works   -          SGR 58;2, 58:2::r:g:b (kmscon.ti's Setulc) and 59; 4;58;5;196 never blinks (ADR-102)
 sgr-strike                    works   -          SGR 9/29 (ADR-102)
 sgr-blink                     works   -          SGR 5/25 set the frame blink flag kmscon draws (test_blink)
 palette-at-draw               works   -          colours are resolved at draw time: a palette change recolours text

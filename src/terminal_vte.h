@@ -71,11 +71,13 @@ bool terminal_vte_focus(struct tsm_vte *vte, bool *last, bool focus);
 
 /*
  * A pointer coordinate for tsm_vte_handle_mouse: @pos, a pixel from the text
- * area's origin, clamped to 0 .. @size - 1 for a text area @size pixels wide
- * or high. The input layer's maximum is inclusive, so the pointer can sit at
- * @size; libtsm reports pixels from 1 under mode 1016, so the clamp keeps the
- * largest report at the width and height, as xterm's.
+ * area's origin, clamped to the cell grid, 0 .. @cells * @cell_size - 1. The
+ * pointer moves over the whole screen, which can be wider or higher than the
+ * grid by less than a cell, and the input layer's maximum is inclusive.
+ * libtsm reports pixels from 1 under mode 1016, so the clamp keeps the
+ * largest report at the grid's width and height, as xterm's, and a program
+ * dividing a report by the cell size never finds a cell past the grid.
  */
-unsigned int terminal_vte_pointer(int32_t pos, unsigned int size);
+unsigned int terminal_vte_pointer(int32_t pos, unsigned int cells, unsigned int cell_size);
 
 #endif /* KMSCON_TERMINAL_VTE_H */

@@ -151,14 +151,21 @@ static void test_focus(void)
 	term_free(&t);
 }
 
-/* the pointer can sit at the width or height; libtsm is given the last pixel */
+/* the pointer can sit at the screen's width or height, past the grid's;
+ * libtsm is given the grid's last pixel */
 static void test_pointer(void)
 {
-	assert(terminal_vte_pointer(0, 800) == 0);
-	assert(terminal_vte_pointer(799, 800) == 799);
-	assert(terminal_vte_pointer(800, 800) == 799);
-	assert(terminal_vte_pointer(-3, 800) == 0);
-	assert(terminal_vte_pointer(5, 0) == 0);
+	/* 100 cells of 8 pixels: the last pixel is 799 */
+	assert(terminal_vte_pointer(0, 100, 8) == 0);
+	assert(terminal_vte_pointer(799, 100, 8) == 799);
+	assert(terminal_vte_pointer(800, 100, 8) == 799);
+	assert(terminal_vte_pointer(-3, 100, 8) == 0);
+	assert(terminal_vte_pointer(5, 0, 8) == 0);
+	/* a 3840x1080 screen holding 274x38 cells of 14x28: the grid ends at
+	 * 3836x1064, and the screen's last pixel, 3839x1079, is clamped to it */
+	assert(terminal_vte_pointer(3839, 274, 14) == 3835);
+	assert(terminal_vte_pointer(1079, 38, 28) == 1063);
+	assert(terminal_vte_pointer(3835, 274, 14) == 3835);
 }
 
 int main(void)

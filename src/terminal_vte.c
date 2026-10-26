@@ -100,8 +100,10 @@ bool terminal_vte_focus(struct tsm_vte *vte, bool *last, bool focus)
 #endif
 }
 
-unsigned int terminal_vte_pointer(int32_t pos, unsigned int size)
+unsigned int terminal_vte_pointer(int32_t pos, unsigned int cells, unsigned int cell_size)
 {
+	unsigned int size = cells * cell_size;
+
 	if (pos <= 0 || !size)
 		return 0;
 	if ((unsigned int)pos >= size)

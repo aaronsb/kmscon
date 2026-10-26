@@ -96,12 +96,31 @@ static const char *ask(const char *query)
 	return shown;
 }
 
+/* the DA1 reply \e[?<a>;<a>;...c lists attribute 4 */
+static bool da1_has_sixel(const char *r)
+{
+	char attrs[sizeof(reply) * 2], *tok, *save;
+	size_t n;
+
+	if (strncmp(r, "\\e[?", 4))
+		return false;
+	n = strlen(r + 4);
+	if (!n || r[4 + n - 1] != 'c' || n > sizeof(attrs))
+		return false;
+	memcpy(attrs, r + 4, n - 1);
+	attrs[n - 1] = 0;
+	for (tok = strtok_r(attrs, ";", &save); tok; tok = strtok_r(NULL, ";", &save))
+		if (!strcmp(tok, "4"))
+			return true;
+	return false;
+}
+
 /* DA1 carries attribute 4, and XTSMGRAPHICS reads the register count */
 static bool probe_sixel(void)
 {
 	const char *r = ask("\033[c");
 
-	if (!strstr(r, ";4;"))
+	if (!da1_has_sixel(r))
 		return fail("DA1 replies %s, without attribute 4", r);
 	r = ask("\033[?1;1S");
 	if (strncmp(r, "\\e[?1;0;", 8))

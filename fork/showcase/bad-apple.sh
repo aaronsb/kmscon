@@ -33,7 +33,7 @@ set -euo pipefail
 # comes. Seconds may carry a fraction (0:54.5). Edit the times here.
 CUES="
 0:00 act1-ascii
-0:20 act1-braille
+0:11.3 act1-braille
 0:30 act3-aalib
 0:38 act5-sixel
 0:46 act7-kitty

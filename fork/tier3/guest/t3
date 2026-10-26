@@ -2,8 +2,9 @@
 # Draws one scenario screen: clears the screen and the scrollback, then runs
 # the named screen script, so the captured screen holds the script's output
 # and the next prompt only, and scrollback holds only what the script
-# scrolled. kmscon's terminfo has no E3, so clear leaves the scrollback; ED 3
-# empties it. Then tells the driver, over the event port (see setup), that
+# scrolled. clear sends ED 3 under kmscon's terminfo, which has E3 (#94); the
+# explicit ED 3 keeps the scrollback empty whatever the guest's ncurses and
+# TERM. Then tells the driver, over the event port (see setup), that
 # the script finished. A measured screen reports its figures on the same
 # port, named in T3_EVENTS.
 clear

@@ -6,7 +6,7 @@
 # the fork's own features (regression guards; see COVERAGE.md)
 sgr-colon-subparams           works   -          colon sub-parameters: SGR reads them, other sequences with them are ignored (ADR-102)
 sgr-underline-styles          works   -          SGR 4:1-4:5 and 21 set each underline style, 24 clears (ADR-102)
-sgr-underline-colour          works   -          SGR 58;2 and 59; 4;58;5;196 never blinks (ADR-102)
+sgr-underline-colour          works   -          SGR 58;2, 58:2::r:g:b (kmscon.ti's Setulc) and 59; 4;58;5;196 never blinks (ADR-102)
 sgr-strike                    works   -          SGR 9/29 (ADR-102)
 sgr-blink                     works   -          SGR 5/25 set the frame blink flag kmscon draws (test_blink)
 palette-at-draw               works   -          colours are resolved at draw time: a palette change recolours text
@@ -29,15 +29,16 @@ mode-8452                     works   -Dimages   DECRQM ?8452 (sixel cursor righ
 
 # terminfo entry (scripts/terminfo/kmscon.ti) against what kmscon implements
 terminfo-cursor-shape         works   -          Ss/Se for DECSCUSR
-terminfo-italic               missing #94        sitm/ritm: SGR 3/23 are parsed (and drawn by pango)
-terminfo-dim                  missing #94        dim: SGR 2 is implemented
-terminfo-strike               missing #94        smxx/rmxx: SGR 9/29 are implemented (ADR-102)
-terminfo-styled-underline     missing #94        Smulx: SGR 4:0-5 are implemented (ADR-102)
-terminfo-underline-colour     missing #94        Setulc: SGR 58/59 are implemented (ADR-102)
+terminfo-e3                   works   -          E3 is ED 3, so clear(1) also empties the scrollback, as under linux and xterm-256color
+terminfo-italic               works   -          sitm/ritm expand to SGR 3/23 (ncurses ecma+italics); freetype draws italic upright (#100)
+terminfo-dim                  works   -          dim expands to SGR 2, which libtsm draws as a dimmed foreground
+terminfo-strike               works   -          smxx/rmxx expand to SGR 9/29 (ncurses ecma+strikeout, ADR-102)
+terminfo-styled-underline     works   -          Smulx expands to SGR 4:n, the styles 0-5 (ADR-102)
+terminfo-underline-colour     works   -          Setulc expands a packed colour to SGR 58:2::r:g:b, T.416's colon form (ADR-102)
 terminfo-truecolor            works   -          Tc, setrgbf and setrgbb (upstream 114d109) for SGR 38;2 and 48;2
 terminfo-setrgb               works   -          setrgbf and setrgbb expand with no empty final parameter, which xterm reads as SGR 0 (upstream 114d109 ends both in ";m")
-terminfo-bracketed-paste      missing #94        BD/BE/PS/PE: mode 2004 is implemented
-terminfo-sgr-mouse            missing #94        XM: mode 1006 is implemented; kmous alone selects X10 mouse
+terminfo-bracketed-paste      works   -          BE/BD set and reset mode 2004, PS/PE are the markers kmscon wraps a paste in (ncurses bracketed+paste)
+terminfo-sgr-mouse            works   -          XM sets modes 1006 and 1000, and kmous is SGR's CSI <, so ncurses decodes the reports (ncurses xterm+sm+1006)
 terminfo-sync                 works   -          Sync for mode 2026 (ADR-201 step 5)
 terminfo-focus                works   -          fe/fd and kxIN/kxOUT for mode 1004 (ncurses xterm+focus)
 terminfo-clipboard            missing #106       Ms, once OSC 52 exists

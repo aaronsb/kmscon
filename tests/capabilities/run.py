@@ -39,14 +39,7 @@ import tempfile
 # probe -> alternatives, each a set of capability names that must all be present
 TERMINFO = {
     "terminfo-cursor-shape": [{"Ss", "Se"}],
-    "terminfo-italic": [{"sitm", "ritm"}],
-    "terminfo-dim": [{"dim"}],
-    "terminfo-strike": [{"smxx", "rmxx"}],
-    "terminfo-styled-underline": [{"Smulx"}],
-    "terminfo-underline-colour": [{"Setulc"}],
     "terminfo-truecolor": [{"RGB"}, {"Tc"}],
-    "terminfo-bracketed-paste": [{"BD", "BE", "PS", "PE"}],
-    "terminfo-sgr-mouse": [{"XM"}],
     "terminfo-sync": [{"Sync"}],
     "terminfo-focus": [{"fe", "fd"}],
     "terminfo-clipboard": [{"Ms"}],
@@ -58,6 +51,33 @@ TERMINFO_STRINGS = {
     "terminfo-setrgb": [
         ("setrgbf", ("17", "34", "51"), "\033[38;2;17;34;51m"),
         ("setrgbb", ("68", "85", "102"), "\033[48;2;68;85;102m"),
+    ],
+    # ED 3, which clear(1) sends after clear when the entry has it
+    "terminfo-e3": [("E3", (), "\033[3J")],
+    "terminfo-italic": [("sitm", (), "\033[3m"), ("ritm", (), "\033[23m")],
+    "terminfo-dim": [("dim", (), "\033[2m")],
+    "terminfo-strike": [("smxx", (), "\033[9m"), ("rmxx", (), "\033[29m")],
+    "terminfo-styled-underline": [
+        ("Smulx", ("3",), "\033[4:3m"),
+        ("Smulx", ("0",), "\033[4:0m"),
+    ],
+    # one colour packed as r*65536 + g*256 + b, written in T.416's colon form
+    "terminfo-underline-colour": [
+        ("Setulc", ("1122867",), "\033[58:2::17:34:51m"),
+        ("Setulc", ("16777215",), "\033[58:2::255:255:255m"),
+    ],
+    "terminfo-bracketed-paste": [
+        ("BE", (), "\033[?2004h"),
+        ("BD", (), "\033[?2004l"),
+        ("PS", (), "\033[200~"),
+        ("PE", (), "\033[201~"),
+    ],
+    # ncurses decodes SGR reports when XM names 1006, and matches them by
+    # kmous: XM with kmscon's old kmous, X10's CSI M, loses every click
+    "terminfo-sgr-mouse": [
+        ("XM", ("1",), "\033[?1006;1000h"),
+        ("XM", ("0",), "\033[?1006;1000l"),
+        ("kmous", (), "\033[<"),
     ],
 }
 
@@ -153,7 +173,7 @@ TPUT_UNDEFINED = (1, 4)
 def run_terminfo_strings(strings, name):
     for cap, params, want in TERMINFO_STRINGS[name]:
         res = strings[cap, params]
-        call = f"tput {cap} {' '.join(params)}"
+        call = " ".join(("tput", cap) + params)
         if res.returncode in TPUT_UNDEFINED:
             return False, f"the kmscon entry lacks {cap}"
         if res.returncode != 0:

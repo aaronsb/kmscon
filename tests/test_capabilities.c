@@ -202,12 +202,13 @@ static bool probe_sgr_underline_styles(struct term *t)
 	return true;
 }
 
-/* SGR 58/59; 4;58;5;196 sets an underline colour, never blink */
+/* SGR 58/59; 4;58;5;196 sets an underline colour, never blink; 58:2::r:g:b is
+ * the form kmscon.ti's Setulc sends */
 static bool probe_sgr_underline_colour(struct term *t)
 {
 	const struct tsm_frame_cell *c;
 
-	feed(t, "\e[4;58;2;10;20;30mA\e[59mB\e[4;58;5;196mC");
+	feed(t, "\e[4;58;2;10;20;30mA\e[59mB\e[4;58;5;196mC\e[58:2::40:50:60mD");
 	c = cell(t, 0, 0);
 	if (!(c->flags & TSM_FRAME_UL_SET) || c->ul.r != 10 || c->ul.g != 20 || c->ul.b != 30)
 		return fail("SGR 58;2;10;20;30 drew underline colour %u,%u,%u", c->ul.r, c->ul.g,
@@ -216,6 +217,10 @@ static bool probe_sgr_underline_colour(struct term *t)
 		return fail("SGR 59 did not clear the underline colour");
 	if (cell(t, 2, 0)->flags & TSM_FRAME_BLINK)
 		return fail("SGR 4;58;5;196 set blink");
+	c = cell(t, 3, 0);
+	if (!(c->flags & TSM_FRAME_UL_SET) || c->ul.r != 40 || c->ul.g != 50 || c->ul.b != 60)
+		return fail("SGR 58:2::40:50:60 drew underline colour %u,%u,%u", c->ul.r, c->ul.g,
+			    c->ul.b);
 	return true;
 }
 

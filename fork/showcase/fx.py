@@ -25,6 +25,7 @@ import effects
 import frames
 import kitty
 import scenes
+import shades
 from screen import ESC, AnyKey, Quit, geom, out, wait, watch_resize
 
 QUIT = 10
@@ -119,6 +120,7 @@ def parser():
     p.add_argument("--video", required=True)
     p.add_argument("--start", type=float, default=0)
     p.add_argument("--seconds", type=float, default=0, help="0: to the end")
+    p.add_argument("--fade-in", type=float, default=0, help="seconds the picture fades in from black")
     p.add_argument("--transport", default="png", choices=kitty.TRANSPORTS)
     p.add_argument("--fallback", default="png,raw", help="transports to try when the first is refused")
     p.add_argument("--width", type=int, default=0, help="frames are decoded this many pixels wide (0: a copy's own size, at most 2160 tall)")
@@ -152,6 +154,13 @@ def parser():
     p.add_argument("--top", type=int, default=6)
     p.add_argument("--seconds", type=float, default=8)
     p.add_argument("--density", type=float, default=0.6)
+
+    p = cmd("shades", shades.cmd_shades, "the cats in sunglasses, between act 6 and act 7")
+    p.add_argument("--kitty", action="store_true", help="kitty graphics; else emoji and text")
+    p.add_argument("--cache", default=os.path.expanduser("~/.cache/kmscon-showcase"))
+    p.add_argument("--cell-w", type=int, default=10)
+    p.add_argument("--cell-h", type=int, default=20)
+    p.add_argument("--bpm", type=float, default=138, help="the music cue's tempo, which sets the beat")
 
     p = cmd("endcard", scenes.cmd_endcard, "the credits over a Braille wireframe, until a key")
     p.add_argument("--title", required=True)

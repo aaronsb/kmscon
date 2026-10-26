@@ -81,6 +81,9 @@ cue() {
 : "${ACT3_SECONDS:=$(cue act3-aalib act5-sixel)}"
 : "${ACT3_FPS:=15}"
 : "${ACT3_DITHER:=none}"         #   img2txt -d: none, ordered2, ordered4, ordered8, random, fstein
+: "${ACT3_CPS:=14}"              #   first "this has got to beat ascii line art... how about ... AALIB?", typed this fast
+: "${ACT3_DOTS:=0.9}"            #   a pause after each "..."
+: "${ACT3_HOLD:=1}"              #   then held, 7.8 s in all, 4.5 bars of music/act3-aalib.js
 : "${ACT3_RESIZE:=auto}"         #   auto: ask for a real 80x25 grid (CSI 8;25;80 t); no: the framed box
 : "${RESIZE_WAIT:=1.5}"          #   seconds to wait for the terminal to resize
 
@@ -106,6 +109,7 @@ cue() {
 
 : "${ACT7_START:=$(cue act7-kitty)}"   # kitty graphics, full size
 : "${ACT7_SECONDS:=$(cue act7-kitty endcard)}"  #   0: to the end of the video
+: "${ACT7_FADE_IN:=1.5}"         #   the soundtrack and the picture fade in over its first seconds (0: no fade)
 : "${ACT7_FADE:=2}"              #   the soundtrack fades out over its last seconds (0: no fade)
 : "${ACT7_SLIDE_AT:=$(cue act7-kitty act7-slide -1)}"   #   copy 1 slides left, seconds into the act (-1: never)
 : "${ACT7_COPY2_AT:=$(cue act7-kitty act7-copy2 -1)}"   #   copy 2 slides out from behind it
@@ -156,16 +160,16 @@ ACT_NEEDS=(""
 	"ffmpeg img2txt python3"
 	"python3"
 	"ffmpeg mpv python3"
-	"python3"
+	"python3 rsvg-convert"
 	"ffmpeg toilet python3")
 ACT_VIDEO=("" 1 0 1 0 1 0 1)
 ACT_WHAT=(""
 	"Bad Apple!! as crude ASCII line art: outlines traced on a ${ACT1_ROWS}-row grid at ${ACT1_FPS} fps, then a Braille pass (2x4 dots a cell) at ${ACT1_DOTS_FPS} fps"
 	"black, a pause, then \"$ACT2_TEXT\" in big block letters, then a plasma and shadebobs behind them"
-	"libcaca's img2txt in 80x25 at ${ACT3_FPS} fps (a real 80x25 grid where CSI 8;25;80 t takes, else a framed region), then it freezes, broken"
+	"\"this has got to beat ascii line art... how about ... AALIB?\" typed, then libcaca's img2txt in 80x25 at ${ACT3_FPS} fps (a real 80x25 grid where CSI 8;25;80 t takes, else a framed region), then it freezes, broken"
 	"\"wait a minute... don't we have ... LIBSIXEL?\" typed over the frozen frame"
 	"sixel (DA1 attribute 4): mpv --vo=sixel plays it ${ACT5_SIZE} of the screen's height, sized from the cell size the terminal reports (XTWINOPS 16), it glitches to one channel and tears, and its last frame stays; else a placeholder"
-	"a fire wipe uncovering a stream of CJK text that then fills the screen and blows away, \"hold on, we also have kitty. one sec, feeding the cats\", a crowd of colour cats"
+	"a fire wipe uncovering a stream of CJK text that then fills the screen and blows away, \"hold on, we also have kitty. one sec, feeding the cats\", a crowd of colour cats, then big cat faces in a row in kitty graphics (emoji without), pixel sunglasses dropping onto each, sliding off as act 7 fades in"
 	"kitty graphics (a=q): each frame transmitted once and placed up to three times (fork/showcase/kitty.py), one copy in the middle that slides left, then a second and a third sliding out from behind it, until the end card's cue, above a scroller of the fork's features over copper bars; else a placeholder above the scroller; --banner-only: the scroller alone")
 ACT_KMSCON=(""
 	"plays"
@@ -189,7 +193,7 @@ EFFECTS=(
 
 # Arch Linux package of each program.
 declare -A PKG=([ffmpeg]=ffmpeg [ffprobe]=ffmpeg [python3]=python [img2txt]=libcaca
-	[mpv]=mpv [toilet]=toilet [figlet]=figlet [chafa]=chafa)
+	[mpv]=mpv [toilet]=toilet [figlet]=figlet [chafa]=chafa [rsvg-convert]=librsvg)
 
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 
@@ -770,6 +774,10 @@ act_3() {
 	version=$(img2txt --version 2>/dev/null | sed -n 's/.*Version: \([^,]*\),.*/\1/p')
 	title="img2txt $version · $(act3_size | tr ' ' x)"
 	clear_screen
+	cue_start act3-aalib
+	fx type --cps "$ACT3_CPS" --dots "$ACT3_DOTS" --hold "$ACT3_HOLD" \
+		"this has got to beat ascii line art..." "how about ... AALIB?"
+	clear_screen
 	if [ "$cols" = 80 ] && [ "$rows" = 25 ]; then
 		real=same
 	elif [ "$ACT3_RESIZE" != no ]; then
@@ -872,7 +880,21 @@ act_6() {
 	cue_start act6-cats
 	fx cats --top 8 --seconds "$ACT6_CATS" --density "$ACT6_DENSITY"
 	clear_screen
-	pause "$ACT_GAP"
+	shades
+	clear_screen
+}
+
+# The interlude after the cats (fork/showcase/shades.py): big vector cat
+# faces in a row, pixel sunglasses dropping onto them one a beat, then the
+# row sliding off as act 7 fades in. In kitty graphics where the terminal
+# has them and rsvg-convert is here to render the faces, else in emoji.
+shades() {
+	cue_start act6-shades
+	if [ -n "$have_kitty" ] && have rsvg-convert; then
+		fx shades --kitty --cache "$SHOWCASE_CACHE" --cell-w "$cell_w" --cell-h "$cell_h"
+	else
+		fx shades
+	fi
 }
 
 # Act 7: the video in the rows above the scroller, through the fork's own
@@ -899,11 +921,14 @@ act_7() {
 	local ipc=()
 	[ -n "$notes_file" ] || notes_file=$(mktemp)
 	if [ "$audio" = 1 ]; then
-		local fade=()
-		# The fade, no longer than the act, ends with it.
-		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || fade=(--af="lavfi=[afade=t=out:$(awk \
+		local fades=() fade=()
+		# The fades, in the video's time: in from the act's start, and out
+		# over its end, no longer than the act.
+		[ "$ACT7_FADE_IN" = 0 ] || fades+=("afade=t=in:st=$ACT7_START:d=$ACT7_FADE_IN")
+		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || fades+=("afade=t=out:$(awk \
 			-v s="$ACT7_START" -v l="$ACT7_SECONDS" -v f="$ACT7_FADE" \
-			'BEGIN { if (f > l) f = l; printf "st=%s:d=%s", s + l - f, f }')]")
+			'BEGIN { if (f > l) f = l; printf "st=%s:d=%s", s + l - f, f }')")
+		[ ${#fades[@]} = 0 ] || fade=(--af="lavfi=[$(IFS=,; echo "${fades[*]}")]")
 		# A socket's path must fit 108 bytes: a short directory, not a
 		# long TMPDIR. Should mpv still make none, the player follows a
 		# wall clock from the soundtrack's start, and says so.
@@ -919,7 +944,7 @@ act_7() {
 		--fps "$BANNER_FPS" </dev/null &
 	bg_pids=($!)
 	# What the player says on stderr waits for the screen to come back.
-	fx kitty --video="$BAD_APPLE" --start "$ACT7_START" --seconds "$ACT7_SECONDS" \
+	fx kitty --video="$BAD_APPLE" --start "$ACT7_START" --seconds "$ACT7_SECONDS" --fade-in "$ACT7_FADE_IN" \
 		--transport "$KITTY_TRANSPORT" --width "$KITTY_WIDTH" --cell-w "$cell_w" --cell-h "$cell_h" \
 		--banner-rows "$BANNER_ROWS" --gap "$ACT7_GAP" --slide-at "$ACT7_SLIDE_AT" \
 		--copy2-at "$ACT7_COPY2_AT" --copy3-at "$ACT7_COPY3_AT" --move "$ACT7_MOVE" \
@@ -1063,7 +1088,7 @@ main() {
 
 	take_screen
 	read_geometry
-	if (((first <= 5 && last >= 5) || (first <= 7 && last >= 7))); then
+	if (((first <= 5 && last >= 5) || (first <= 7 && last >= 6))); then
 		probe
 	fi
 	clear_screen

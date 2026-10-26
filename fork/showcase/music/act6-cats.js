@@ -1,8 +1,8 @@
 // Act 6, the cats: five bars of 138 BPM in G flat major, the relative major
 // of the video's E flat minor. A square-wave tune whose long notes meow (a
 // pitch envelope that rises and falls back), bloops for the cats popping in
-// faster and faster, and a run up to B flat, the dominant of E flat minor,
-// for act 7, where the video's soundtrack comes back.
+// faster and faster, and a run up to D flat, the dominant of G flat, into
+// the interlude of the cats in sunglasses (act6-shades).
 // @bpm 138
 // @bars 5
 // @tail 1
@@ -16,7 +16,7 @@ const tune = note(`<
     [bb4@2 gb4 bb4 eb5@3 ~]
     [eb5 db5 b4 db5 eb5 gb5@3]
     [f5@2 ab5@2 gb5 f5 eb5 db5]
-    [eb5 f5 gb5 ab5 bb5@4]
+    [db5 eb5 f5 gb5 ab5@4]
   >`)
   .penv(`<
     [0 0 0 0 5@2 0 0]
@@ -30,11 +30,11 @@ const tune = note(`<
   .delay(.2).delaytime(.217).delayfeedback(.25).room(.3)
   .gain(.22)
 
-const chords = "<Gb Ebm B Db Bb>"
+const chords = "<Gb Ebm B Db Db>"
 const arp = n("[0 1 2 3]*4").chord(chords).anchor("gb5").voicing()
   .s("square").decay(.08).sustain(0).lpf(2500).gain(.12)
 
-const bass = n("<[0 7]*4 [-2 5]*4 [-4 3]*4 [-3 4]*4 [2 9 2 9 2 ~ ~ ~]>")
+const bass = n("<[0 7]*4 [-2 5]*4 [-4 3]*4 [-3 4]*4 [4 11 4 11 4 ~ ~ ~]>")
   .scale("Gb2:major")
   .s("square").lpf(900).decay(.12).sustain(.2).gain(.3)
 

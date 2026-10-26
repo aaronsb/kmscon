@@ -82,14 +82,20 @@ def b64(b):
     return base64.b64encode(b).decode()
 
 
-def png_grey(grey, w, h, level=1):
-    """An 8-bit greyscale PNG (colour type 0) of w x h bytes, each row with
-    filter 0."""
+def png(pixels, w, h, colour=0, level=1):
+    """An 8-bit PNG of w x h pixels, each row with filter 0: colour type 0,
+    a byte of grey a pixel, or 6, four bytes of RGBA."""
     def chunk(kind, body):
         return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
-    rows = b"".join(b"\0" + grey[y * w:(y + 1) * w] for y in range(h))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+    stride = w * (4 if colour == 6 else 1)
+    rows = b"".join(b"\0" + pixels[y * stride:(y + 1) * stride] for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, colour, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(rows, level)) + chunk(b"IEND", b""))
+
+
+def png_grey(grey, w, h, level=1):
+    """An 8-bit greyscale PNG (colour type 0) of w x h bytes."""
+    return png(grey, w, h, 0, level)
 
 
 class Encoder:
@@ -536,15 +542,16 @@ def ffprobe(video):
     return s["width"] * sn / sd, s["height"], num / den if den else 30.0
 
 
-def decode(video, start, seconds, w, h, pix):
-    """ffmpeg's frames of the clip at w x h, raw, from start for seconds;
-    closing the generator stops ffmpeg."""
+def decode(video, start, seconds, w, h, pix, fade=0.0):
+    """ffmpeg's frames of the clip at w x h, raw, from start for seconds,
+    fading in from black over its first fade seconds; closing the generator
+    stops ffmpeg."""
     size = w * h * (1 if pix == "gray" else 3)
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-ss", str(start)]
     if seconds > 0:
         cmd += ["-t", str(seconds)]
-    cmd += ["-i", os.path.abspath(video), "-an", "-vf", f"scale={w}:{h}:flags=area", "-f", "rawvideo",
-            "-pix_fmt", pix, "-"]
+    vf = f"scale={w}:{h}:flags=area" + (f",fade=t=in:st=0:d={fade}" if fade > 0 else "")
+    cmd += ["-i", os.path.abspath(video), "-an", "-vf", vf, "-f", "rawvideo", "-pix_fmt", pix, "-"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
     try:
         while True:
@@ -610,7 +617,7 @@ def cmd_kitty(a):
         poll_keys()
 
     try:
-        with contextlib.closing(decode(a.video, a.start, a.seconds, w, h, enc.pix)) as frames:
+        with contextlib.closing(decode(a.video, a.start, a.seconds, w, h, enc.pix, a.fade_in)) as frames:
             try:
                 player.run(frames, on_tick=tick)
             finally:

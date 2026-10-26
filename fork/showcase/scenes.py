@@ -44,10 +44,15 @@ class BigText:
 
 
 def cmd_big(a):
-    """Act 2: the letters slam in one by one on a black screen and hold, then
-    a plasma fades in behind them, then shadebobs."""
+    """Act 2: a black pause, then the letters slam in one by one and hold,
+    then a plasma fades in behind them, then shadebobs. The pause counts
+    from the command's start and the letters are drawn during it, so the
+    first letter lands --pause seconds after the start, in time with the
+    act's music cue started just before."""
+    start = time.monotonic()
     cols, rows = geom()[:2]
     big = BigText(a.text, a.font, cols, rows, a.letter)
+    wait(a.pause - (time.monotonic() - start))
     if not big.mask.ok:
         out(f"{cup(rows // 2, max(1, (cols - len(a.text)) // 2 + 1))}{ESC}[0;1;95m{a.text}{ESC}[0m")
         wait(a.letter * len(a.text) + a.hold + a.plasma + a.bobs)

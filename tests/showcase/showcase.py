@@ -6,7 +6,8 @@ the acts draw with (screen.py, frames.py, effects.py and act 5's sizing in
 bad-apple.sh), and, on a pty, that quitting turns off every mode a player
 may have left on (#88). Act 7's kitty player (kitty.py) runs on a pty with
 stand-ins for ffmpeg and ffprobe, its output replayed on a model of the
-kitty graphics protocol's image store.
+kitty graphics protocol's image store, and act 6's interlude (shades.py)
+with a stand-in for rsvg-convert.
 
     showcase.py --root SOURCE_ROOT
 """
@@ -76,6 +77,9 @@ def main():
               f"{got!r}\n{p.stderr}")
         needs = {l[:4].strip(): l[29:60].split() for l in rows}
         check("each act lists what it needs", all(needs.get(n) for n, _ in ACTS), repr(needs))
+        # Act 6 falls back to emoji without rsvg-convert.
+        check("act 6 lists rsvg-convert as optional", "rsvg-convert?" in needs.get("6", []), repr(needs.get("6")))
+        needs = {n: [t.rstrip("?") for t in ts] for n, ts in needs.items()}
         check("every act plays on kmscon (act 7 through kitty graphics since #169)",
               all("placeholder" not in l for l in rows), p.stdout)
 
@@ -371,16 +375,26 @@ def picker_checks(root):
         p = pick("", AUDIO_DEVICE="pulse/x")
         check("AUDIO_DEVICE answers without a question", p.returncode == 0 and p.stdout == "pulse/x\n",
               p.stdout + p.stderr)
-        # Runs with no act that plays sound ask nothing.
+        # A run whose acts play no sound asks nothing; act 2 has a music cue.
         script = os.path.join(root, "fork/showcase/bad-apple.sh")
-        for first, last, banner, why in (("2", "2", "", "act 2 alone"), ("7", "7", "1", "act 7 --banner-only")):
-            p = subprocess.run(["bash", "-c", 'source "$1"; first=$2 last=$3 banner_only=$4 audio=1 wait_key=1; '
-                                'pick_audio; echo "audio=$audio"', "sh", script, first, last, banner],
+        for first, last, banner, wait_key, want, why in (
+                ("7", "7", "1", "1", "audio=0 \n", "act 7 --banner-only asks for no output"),
+                ("2", "2", "", "0", "audio=1 --audio-device=auto\n", "act 2 alone plays its cue")):
+            p = subprocess.run(["bash", "-c", 'source "$1"; first=$2 last=$3 banner_only=$4 audio=1 wait_key=$5; '
+                                'pick_audio; echo "audio=$audio ${audio_opts[*]}"',
+                                "sh", script, first, last, banner, wait_key],
                                env={"PATH": stubs + ":/usr/bin:/bin", "HOME": tmp, "LIST": listing,
                                     "PICK_AUDIO_SND": snd},
                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
-            check(f"{why} asks for no output", p.returncode == 0 and p.stdout == "audio=0\n"
-                  and "Where should" not in p.stderr, p.stdout + p.stderr)
+            check(why, p.returncode == 0 and p.stdout == want and "Where should" not in p.stderr,
+                  p.stdout + p.stderr)
+        # Every cue the show starts is rendered beside its Strudel source.
+        music = os.path.join(root, "fork/showcase/music")
+        with open(script) as f:
+            started = set(re.findall(r"^\s+cue_start ([\w-]+)", f.read(), re.M))
+        check("every cue the show starts has its .ogg and its Strudel source",
+              started and all(os.path.isfile(os.path.join(music, n + ext)) for n in started for ext in (".ogg", ".js")),
+              " ".join(sorted(started)))
         # A device name typed in place of a number is tried and kept (#207).
         p = pick("pulse/typed.sink\ny\n")
         check("a device name typed at the list is tried and kept",
@@ -886,6 +900,84 @@ def kitty_checks(root):
         check("fx.py kitty says on stderr when it falls back from mpv's clock",
               os.waitstatus_to_exitcode(st) == 0 and b"kitty player: mpv's IPC socket" in got
               and "clock=wall" in open(report).read(), repr(got[-300:]))
+
+        # fx.py shades --kitty, act 6's interlude, with rsvg-convert stood in
+        # for: a grey PNG of the size asked, or, with SHADES_RSVG=fail, half
+        # a file and status 1.
+        with open(os.path.join(stubs, "rsvg-convert"), "w") as f:
+            f.write("#!/usr/bin/env python3\nimport os, struct, sys, zlib\n"
+                    "a = sys.argv\nw, h, o = int(a[a.index('-w') + 1]), int(a[a.index('-h') + 1]), a[a.index('-o') + 1]\n"
+                    "if os.environ.get('SHADES_RSVG') == 'fail':\n    open(o, 'wb').write(b'half')\n    sys.exit(1)\n"
+                    "def chunk(t, d):\n    return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d))\n"
+                    "open(o, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 0, 0, 0, 0))"
+                    " + chunk(b'IDAT', zlib.compress(b'\\0' * (w + 1) * h)) + chunk(b'IEND', b''))\n")
+        os.chmod(os.path.join(stubs, "rsvg-convert"), 0o755)
+        shades_ids = list(range(101, 107)) + [110]
+        # The cleanup: every image deleted, 101 to 106 and then 110, last.
+        last = b"".join(b"\x1b_Ga=d,d=I,i=%d,q=2;\x1b\\" % i for i in shades_ids)
+
+        def fx_shades(*args, kill=None, timeout=10, **env):
+            """fx.py shades --kitty on a 140x40 pty of 10x20 cells: its
+            status and its output; kill is a signal sent after a second."""
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.environ["PATH"] = stubs + ":" + os.environ["PATH"]
+                os.environ.update(COLUMNS="140", LINES="40", **env)
+                os.execvp("python3", ["python3", "-B", os.path.join(root, "fork/showcase/fx.py"), "shades", "--kitty",
+                                      "--cell-w", "10", "--cell-h", "20", *args])
+            got = b""
+            start = time.monotonic()
+            while time.monotonic() - start < timeout:
+                if kill and time.monotonic() - start > 1:
+                    os.kill(pid, kill)
+                    kill = None
+                r, _, _ = select.select([fd], [], [], 0.1)
+                try:
+                    d = os.read(fd, 65536) if r else b""
+                except OSError:
+                    break
+                if r and not d:
+                    break
+                got += d
+            else:
+                os.kill(pid, 9)
+            _, st = os.waitpid(pid, 0)
+            os.close(fd)
+            return st, got
+
+        def parts(cache):
+            return [f for _, _, fs in os.walk(cache) for f in fs if f.endswith(".part")]
+
+        # The whole interlude in a second (16 beats at 960 bpm): every image
+        # transmitted as a PNG, each placement past the left edge deleted
+        # once, and every image deleted at the end.
+        cache = os.path.join(tmp, "shades-cache")
+        st, got = fx_shades("--bpm", "960", "--cache", cache)
+        sent = sorted(int(i) for i in re.findall(rb"a=t,f=100,i=(\d+)", got))
+        gone = re.findall(rb"a=d,d=i,i=(\d+),p=(\d+)", got)
+        check("fx.py shades --kitty sends its seven images, deletes each placement past the edge once, and every image at the end",
+              os.waitstatus_to_exitcode(st) == 0 and sent == shades_ids and gone and len(gone) == len(set(gone))
+              and got.rstrip().endswith(last) and not parts(cache),
+              f"status {st}, sent {sent}, {len(gone)} deletes of {len(set(gone))} placements, {got[-60:]!r}")
+
+        # SIGTERM and SIGHUP: the interlude stops through its cleanup.
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            st, got = fx_shades("--bpm", "60", "--cache", cache, kill=sig)
+            check(f"{sig.name} ends fx.py shades --kitty through its cleanup: images deleted",
+                  os.waitstatus_to_exitcode(st) == 128 + sig and got.rstrip().endswith(last),
+                  f"status {st}, {got[-200:]!r}")
+
+        # A failed render, and a cache that cannot be made: the interlude
+        # plays in emoji, says why, and leaves no .part behind.
+        fresh = os.path.join(tmp, "shades-fresh")
+        blocked = os.path.join(tmp, "shades-file")
+        open(blocked, "w").close()
+        for what, cache, env in (("rsvg-convert failing", fresh, {"SHADES_RSVG": "fail"}),
+                                 ("a cache that cannot be made", os.path.join(blocked, "cache"), {})):
+            st, got = fx_shades("--bpm", "960", "--cache", cache, **env)
+            check(f"with {what}, fx.py shades --kitty falls back to emoji",
+                  os.waitstatus_to_exitcode(st) == 0 and "🐱".encode() in got and b"\x1b_G" not in got
+                  and b"emoji instead" in got and not parts(fresh), f"status {st}, {parts(fresh)}, {got[:160]!r}")
 
     # EPOCHREALTIME takes the locale's decimal mark: the time act 7 hands
     # the player must read as a number anyway. Once with the variable set to

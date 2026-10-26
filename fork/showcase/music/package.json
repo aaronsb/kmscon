@@ -1,0 +1,13 @@
+{
+  "name": "kmscon-showcase-music",
+  "private": true,
+  "description": "Renders the Bad Apple!! showcase's music cues from Strudel to .ogg (render.mjs)",
+  "type": "module",
+  "scripts": {
+    "render": "node render.mjs"
+  },
+  "dependencies": {
+    "@strudel/web": "1.3.0",
+    "playwright-core": "1.56.1"
+  }
+}

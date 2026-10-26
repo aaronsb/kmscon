@@ -24,15 +24,16 @@ set -euo pipefail
 # soundtrack, as m:ss. Each plays until the next cue: act 1's outlines, its
 # Braille pass, act 3, act 5 (its last ACT5_GLITCH seconds glitched), then
 # act 7 until the end card's cue (delete that line to play act 7 to the end
-# of the video). Acts 2, 4 and 6 play between them, silent, for the lengths
-# set below, and the soundtrack picks up again at the next cue, so the times
-# are the video's, not the show's. Act 7's three moves are cues too: its one
+# of the video). Acts 2, 4 and 6 play between them for the lengths set
+# below, to music cues of their own (fork/showcase/music), and the
+# soundtrack picks up again at the next cue, so the times are the video's,
+# not the show's. Act 7's three moves are cues too: its one
 # copy slides left (act7-slide), a second copy slides out from behind it
 # (act7-copy2), then a third (act7-copy3); delete a move's line and it never
 # comes. Seconds may carry a fraction (0:54.5). Edit the times here.
 CUES="
 0:00 act1-ascii
-0:20 act1-braille
+0:11.3 act1-braille
 0:30 act3-aalib
 0:38 act5-sixel
 0:46 act7-kitty
@@ -64,19 +65,25 @@ cue() {
 : "${ACT1_DOTS_FPS:=24}"
 : "${ACT1_DOTS_ROWS:=52}"        #   this many rows tall, at most
 
-: "${ACT2_PAUSE:=2.5}"           # the dramatic pause on a black screen
+# Act 2's times fall on its music cue's beats (music/act2-better.js, 138
+# BPM, a sixteenth 0.1087 s, a bar 1.739 s): the "!" on bar 2, the plasma
+# on bar 3, the shadebobs on bar 7, the end on bar 10.
+: "${ACT2_PAUSE:=2.065}"         # the dramatic pause on a black screen (19 sixteenths)
 : "${ACT2_TEXT:=we can do better!}"
-: "${ACT2_LETTER:=0.14}"         #   each letter slams in after this long
-: "${ACT2_HOLD:=1.5}"            #   then holds on black
-: "${ACT2_PLASMA:=6}"            #   then a plasma behind it, this long
-: "${ACT2_FADE:=2}"              #   fading in over this long
-: "${ACT2_BOBS:=5}"              #   then shadebobs, this long
+: "${ACT2_LETTER:=0.1087}"       #   each letter slams in after this long (a sixteenth)
+: "${ACT2_HOLD:=1.630}"          #   then holds on black, until bar 3
+: "${ACT2_PLASMA:=6.957}"        #   then a plasma behind it, this long (4 bars)
+: "${ACT2_FADE:=1.739}"          #   fading in over this long (a bar)
+: "${ACT2_BOBS:=5.217}"          #   then shadebobs, this long (3 bars)
 : "${ACT2_FPS:=60}"              #   frames a second at most
 
 : "${ACT3_START:=$(cue act3-aalib)}"   # aalib (libcaca) in 80x25
 : "${ACT3_SECONDS:=$(cue act3-aalib act5-sixel)}"
 : "${ACT3_FPS:=15}"
 : "${ACT3_DITHER:=none}"         #   img2txt -d: none, ordered2, ordered4, ordered8, random, fstein
+: "${ACT3_CPS:=14}"              #   first "this has got to beat ascii line art... how about ... AALIB?", typed this fast
+: "${ACT3_DOTS:=0.9}"            #   a pause after each "..."
+: "${ACT3_HOLD:=1}"              #   then held, 7.8 s in all, 4.5 bars of music/act3-aalib.js
 : "${ACT3_RESIZE:=auto}"         #   auto: ask for a real 80x25 grid (CSI 8;25;80 t); no: the framed box
 : "${RESIZE_WAIT:=1.5}"          #   seconds to wait for the terminal to resize
 
@@ -90,15 +97,19 @@ cue() {
 : "${ACT5_SIZE:=0.5}"            #   this share of the screen's rows tall (mpv scales the clip)
 : "${ACT5_WIDTH:=960}"           #   the clip is rendered this many pixels wide
 : "${ACT5_DITHER:=none}"         #   mpv's --vo-sixel-dither (none keeps the frames small)
-: "${ACT5_HOLD:=2.5}"            #   the halted frame stays this long
+: "${ACT5_STUTTER:=2}"           #   then, over the halted frame, the sound's last moment repeats shorter each time, a skipping buffer, this long (0: none)
+: "${ACT5_HOLD:=0.5}"            #   then the halted frame stays this long, silent
 
-: "${ACT6_FIRE:=5}"              # the fire wipe
+: "${ACT6_FIRE:=5.217}"          # the fire wipe (3 bars of music/act6-fire.js), a CJK stream rising behind it
+: "${ACT6_CJK:=3.478}"           #   then the stream full screen (2 bars)
+: "${ACT6_WIND:=1.739}"          #   then a wind blows it away (a bar), and the music fades in again
 : "${ACT6_CPS:=16}"
-: "${ACT6_CATS:=9}"              #   the cats
+: "${ACT6_CATS:=8.696}"          #   the cats (5 bars of music/act6-cats.js)
 : "${ACT6_DENSITY:=0.55}"        #   share of the screen's cat spots filled
 
 : "${ACT7_START:=$(cue act7-kitty)}"   # kitty graphics, full size
 : "${ACT7_SECONDS:=$(cue act7-kitty endcard)}"  #   0: to the end of the video
+: "${ACT7_FADE_IN:=1.5}"         #   the soundtrack and the picture fade in over its first seconds (0: no fade)
 : "${ACT7_FADE:=2}"              #   the soundtrack fades out over its last seconds (0: no fade)
 : "${ACT7_SLIDE_AT:=$(cue act7-kitty act7-slide -1)}"   #   copy 1 slides left, seconds into the act (-1: never)
 : "${ACT7_COPY2_AT:=$(cue act7-kitty act7-copy2 -1)}"   #   copy 2 slides out from behind it
@@ -113,6 +124,7 @@ cue() {
 : "${KITTY_WIDTH:=0}"            #   frames are decoded this many pixels wide (0: a copy's own size, at most 2160 tall); a number limits the player's work on a slow machine
 : "${ACT7_REPORT:=}"             #   a file to append the player's frame rate to
 : "${PLACEHOLDER_SECONDS:=6}"    # a placeholder (act 5 or 7) stays this long
+: "${CUE_LATENCY:=0.1}"          # a music cue's sound starts this long after mpv does (0.10 to 0.13 s through PipeWire here); the act waits for it
 
 : "${BIG_FONT:=mono12}"          # toilet fonts drawn with ▀ ▄ █
 : "${BANNER_FONT:=mono9}"
@@ -132,8 +144,9 @@ cue() {
 : "${BANNER_OUTRO:=greetings to ZUN, Alstroemeria Records, nomico and Anira 🍎 libtsm, mpv, ffmpeg, libcaca, libsixel and toilet 💾 see you on the console 🖥️}"
 END_TEXT=${END_TEXT:-"Bad Apple!! - original by ZUN (Touhou Project), arrangement by Alstroemeria Records feat. nomico, shadow-art video by Anira"}
 
-# The act table: name, the programs it needs, what it does, and how it plays
-# on kmscon today. --list and --dry-run print it; act_N runs it.
+# The act table: name, the programs it needs (a trailing ? marks one the
+# act plays without, in a simpler form), what it does, and how it plays on
+# kmscon today. --list and --dry-run print it; act_N runs it.
 ACT_NAME=(""
 	"stick figures"
 	"we can do better"
@@ -148,16 +161,16 @@ ACT_NEEDS=(""
 	"ffmpeg img2txt python3"
 	"python3"
 	"ffmpeg mpv python3"
-	"python3"
+	"python3 rsvg-convert?"
 	"ffmpeg toilet python3")
 ACT_VIDEO=("" 1 0 1 0 1 0 1)
 ACT_WHAT=(""
 	"Bad Apple!! as crude ASCII line art: outlines traced on a ${ACT1_ROWS}-row grid at ${ACT1_FPS} fps, then a Braille pass (2x4 dots a cell) at ${ACT1_DOTS_FPS} fps"
 	"black, a pause, then \"$ACT2_TEXT\" in big block letters, then a plasma and shadebobs behind them"
-	"libcaca's img2txt in 80x25 at ${ACT3_FPS} fps (a real 80x25 grid where CSI 8;25;80 t takes, else a framed region), then it freezes, broken"
+	"\"this has got to beat ascii line art... how about ... AALIB?\" typed, then libcaca's img2txt in 80x25 at ${ACT3_FPS} fps (a real 80x25 grid where CSI 8;25;80 t takes, else a framed region), then it freezes, broken"
 	"\"wait a minute... don't we have ... LIBSIXEL?\" typed over the frozen frame"
 	"sixel (DA1 attribute 4): mpv --vo=sixel plays it ${ACT5_SIZE} of the screen's height, sized from the cell size the terminal reports (XTWINOPS 16), it glitches to one channel and tears, and its last frame stays; else a placeholder"
-	"a fire wipe, \"hold on, we also have kitty. hold on, feeding the cats\", a crowd of colour cats"
+	"a fire wipe uncovering a stream of CJK text that then fills the screen and blows away, \"hold on, we also have kitty. one sec, feeding the cats\", a crowd of colour cats, then big cat faces in a row in kitty graphics (emoji without), pixel sunglasses dropping onto each, sliding off as act 7 fades in"
 	"kitty graphics (a=q): each frame transmitted once and placed up to three times (fork/showcase/kitty.py), one copy in the middle that slides left, then a second and a third sliding out from behind it, until the end card's cue, above a scroller of the fork's features over copper bars; else a placeholder above the scroller; --banner-only: the scroller alone")
 ACT_KMSCON=(""
 	"plays"
@@ -181,7 +194,7 @@ EFFECTS=(
 
 # Arch Linux package of each program.
 declare -A PKG=([ffmpeg]=ffmpeg [ffprobe]=ffmpeg [python3]=python [img2txt]=libcaca
-	[mpv]=mpv [toilet]=toilet [figlet]=figlet [chafa]=chafa)
+	[mpv]=mpv [toilet]=toilet [figlet]=figlet [chafa]=chafa [rsvg-convert]=librsvg)
 
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 
@@ -200,12 +213,14 @@ usage() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 tool_line() {
-	local t s=
+	local t s= opt
 	for t in $1; do
+		opt=
+		[[ $t != *\? ]] || { t=${t%\?}; opt="optional; "; }
 		if have "$t"; then
-			s+=" $t"
+			s+=" $t${opt:+ (optional)}"
 		else
-			s+=" $t (missing: pacman -S ${PKG[$t]:-$t})"
+			s+=" $t (${opt}missing: pacman -S ${PKG[$t]:-$t})"
 		fi
 	done
 	printf '%s' "${s# }"
@@ -213,7 +228,7 @@ tool_line() {
 
 list_acts() {
 	local n e name where needs
-	printf '%-3s %-24s %-30s %s\n' act name needs "on kmscon today"
+	printf '%-3s %-24s %-30s %s\n' act name "needs (? optional)" "on kmscon today"
 	for ((n = 1; n <= LAST_ACT; n++)); do
 		printf '%-3s %-24s %-30s %s\n' "$n" "${ACT_NAME[n]}" "${ACT_NEEDS[n]}" "${ACT_KMSCON[n]}"
 	done
@@ -309,7 +324,17 @@ act3_cache() {
 	[ -n "$s" ] && s="$s $h" || s=$(act3_size)
 	echo "$cache/act3-${s/ /x}-${ACT3_FPS}fps-${ACT3_DITHER}-${ACT3_START}+${ACT3_SECONDS}.frames"
 }
-act5_clip() { echo "$cache/act5-${ACT5_WIDTH}px-${ACT5_START}+${ACT5_SECONDS}+${ACT5_GLITCH}.mkv"; }
+act5_clip() { echo "$cache/act5-${ACT5_WIDTH}px-${ACT5_START}+${ACT5_SECONDS}+${ACT5_GLITCH}+${ACT5_STUTTER}.mkv"; }
+
+# The lengths of act 5's stutter, one a line: the last 0.3 s of the clip's
+# sound twice, then each length 0.7 of the one before, twice each, until
+# they add up to ACT5_STUTTER or grow shorter than 30 ms.
+act5_stutter() {
+	awk -v want="$ACT5_STUTTER" 'BEGIN {
+		for (l = 0.3; sum < want && l >= 0.03; l *= 0.7)
+			for (i = 0; i < 2 && sum < want; i++) { printf "%.3f\n", l; sum += l }
+	}'
+}
 
 prepare_act() {
 	local f w h size
@@ -346,18 +371,38 @@ prepare_act() {
 		echo "rendering act 5's clip into $f"
 		# The clip: ACT5_SECONDS as it is, then ACT5_GLITCH with only the red
 		# channel, shifted, and a band of it torn sideways. The soundtrack
-		# runs straight through. Its last frame is the halted one.
-		# The shift and the tear scale with the clip's width.
-		local total w=$ACT5_WIDTH
+		# runs straight through, then stutters (act5_stutter) over the last
+		# frame, held, which stays as the halted one. Every repeat ends where
+		# the soundtrack stopped and starts abruptly, so each one clicks in
+		# like a buffer played again. The shift and the tear scale with the
+		# clip's width.
+		local total w=$ACT5_WIDTH len lens=() held n audio='0:a?'
 		total=$(awk -v a="$ACT5_SECONDS" -v b="$ACT5_GLITCH" 'BEGIN { print a + b }')
+		mapfile -t lens < <(act5_stutter)
+		held=$(printf '%s\n' "${lens[@]}" | awk '{ s += $1 } END { print s + 0 }')
 		local graph="[0:v]scale=${w}:-2,format=rgb24,split[a][b];"
 		graph+="[a]trim=0:${ACT5_SECONDS},setpts=PTS-STARTPTS[n];"
 		graph+="[b]trim=${ACT5_SECONDS}:${total},setpts=PTS-STARTPTS,"
 		graph+="lutrgb=g=0:b=0,rgbashift=rh=-$((w / 40)):rv=$((w / 160)),split[g][t];"
 		graph+="[t]crop=iw:ih/6:0:ih*2/5[band];[g][band]overlay=x=$((w * 7 / 120)):y=main_h*2/5[gl];"
-		graph+="[n][gl]concat=n=2:v=1:a=0,format=yuv420p[v]"
+		graph+="[n][gl]concat=n=2:v=1:a=0,tpad=stop_mode=clone:stop_duration=${held},format=yuv420p[v]"
+		if [ ${#lens[@]} -gt 0 ] && [ -n "$(ffprobe -v error -select_streams a:0 -show_entries stream=index \
+			-of csv=p=0 "$BAD_APPLE")" ]; then
+			graph+=";[0:a]asplit=$((${#lens[@]} + 1))[s0]"
+			for ((n = 1; n <= ${#lens[@]}; n++)); do graph+="[s$n]"; done
+			graph+=";[s0]atrim=0:${total},asetpts=PTS-STARTPTS[r0]"
+			n=0
+			for len in "${lens[@]}"; do
+				n=$((n + 1))
+				graph+=";[s$n]atrim=$(awk -v t="$total" -v l="$len" 'BEGIN { print t - l }'):${total},asetpts=PTS-STARTPTS[r$n]"
+			done
+			graph+=";"
+			for ((n = 0; n <= ${#lens[@]}; n++)); do graph+="[r$n]"; done
+			graph+="concat=n=$((${#lens[@]} + 1)):v=0:a=1[aud]"
+			audio='[aud]'
+		fi
 		ffmpeg -v error -nostdin -y -ss "$ACT5_START" -t "$total" \
-			-i "$BAD_APPLE" -filter_complex "$graph" -map '[v]' -map '0:a?' \
+			-i "$BAD_APPLE" -filter_complex "$graph" -map '[v]' -map "$audio" \
 			-c:v libx264 -crf 18 -c:a aac "$f.part.mkv"
 		mv "$f.part.mkv" "$f"
 		;;
@@ -394,6 +439,7 @@ MODES_OFF="$E[?1000l$E[?1002l$E[?1003l$E[?1005l$E[?1006l$E[?1015l$E[?1004l$E[?20
 
 bg_pids=()
 audio_pid=
+cue_pid=  # the music cue playing (cue_start)
 ipc_dir=  # act 7's directory for mpv's IPC socket
 audio_started=  # when audio_start last started the soundtrack (EPOCHREALTIME)
 notes_file=  # what the players said on stderr, printed once the screen is back
@@ -461,22 +507,49 @@ player_done() {
 
 stop_bg() {
 	local p
-	for p in "${bg_pids[@]}" $audio_pid; do
+	for p in "${bg_pids[@]}" $audio_pid $cue_pid; do
 		kill "$p" 2>/dev/null || true
 	done
-	for p in "${bg_pids[@]}" $audio_pid; do
+	for p in "${bg_pids[@]}" $audio_pid $cue_pid; do
 		wait "$p" 2>/dev/null || true
 	done
 	bg_pids=()
 	audio_pid=
+	cue_pid=
 	[ -z "$ipc_dir" ] || rm -rf "$ipc_dir"
 	ipc_dir=
 }
 
+# The music cues: original music for the stretches the video's soundtrack
+# does not cover (acts 2, 4 and 6, the end card), rendered from the Strudel
+# files beside them (music/render.mjs) in the soundtrack's key and tempo.
+music=$here/music
+
+# cue_start NAME [mpv option...]: plays music/NAME.ogg, after stopping the
+# cue before it, until it ends, cue_stop, or the soundtrack starts. It
+# returns once the sound has started (CUE_LATENCY), so what the act draws
+# next is in time with it.
+cue_start() {
+	[ "$audio" = 1 ] || return 0
+	cue_stop
+	mpv --no-config --really-quiet --no-input-terminal --no-video \
+		"${audio_opts[@]}" "${@:2}" -- "$music/$1.ogg" </dev/null >/dev/null 2>&1 &
+	cue_pid=$!
+	sleep "$CUE_LATENCY"
+}
+
+cue_stop() {
+	[ -n "$cue_pid" ] || return 0
+	kill "$cue_pid" 2>/dev/null || true
+	wait "$cue_pid" 2>/dev/null || true
+	cue_pid=
+}
+
 # audio_start START LENGTH [mpv option...]: the soundtrack from START for
-# LENGTH seconds (0: to the end).
+# LENGTH seconds (0: to the end), cutting off the cue still ringing.
 audio_start() {
 	[ "$audio" = 1 ] || return 0
+	cue_stop
 	local length=(--length="$2")
 	[ "$2" != 0 ] || length=()
 	# EPOCHREALTIME takes the locale's decimal mark (1792895934,861204 under
@@ -498,12 +571,12 @@ audio_stop() {
 # the screen (--audio) by fork/demo/pick-audio.sh, which AUDIO_DEVICE
 # answers in advance: mpv's name for it, or none for no sound. With
 # --no-wait nothing is asked. Nothing is asked either when no act in the run
-# plays sound (acts 2, 4 and 6, or act 7 with --banner-only).
+# plays sound: act 7 with --banner-only alone.
 audio_opts=()
 pick_audio() {
 	local dev n heard= no_wait=()
 	for ((n = first; n <= last; n++)); do
-		case $n in 1 | 3 | 5) heard=1 ;; 7) [ -n "$banner_only" ] || heard=1 ;; esac
+		[ "$n" = 7 ] && [ -n "$banner_only" ] || heard=1
 	done
 	if [ -z "$heard" ]; then
 		audio=0
@@ -683,10 +756,12 @@ act_1() {
 	clear_screen
 }
 
+# Act 2's pause runs in fx big, which counts it from its own start and draws
+# the letters during it, so they land on the cue's sixteenths.
 act_2() {
 	clear_screen
-	pause "$ACT2_PAUSE"
-	fx big "$ACT2_TEXT" --font "$BIG_FONT" --letter "$ACT2_LETTER" --hold "$ACT2_HOLD" \
+	cue_start act2-better
+	fx big "$ACT2_TEXT" --font "$BIG_FONT" --pause "$ACT2_PAUSE" --letter "$ACT2_LETTER" --hold "$ACT2_HOLD" \
 		--plasma "$ACT2_PLASMA" --fade "$ACT2_FADE" --bobs "$ACT2_BOBS" --fps "$ACT2_FPS"
 	clear_screen
 	pause "$ACT_GAP"
@@ -701,6 +776,10 @@ act_3() {
 	local version title cols=$screen_cols rows=$screen_rows real=
 	version=$(img2txt --version 2>/dev/null | sed -n 's/.*Version: \([^,]*\),.*/\1/p')
 	title="img2txt $version · $(act3_size | tr ' ' x)"
+	clear_screen
+	cue_start act3-aalib
+	fx type --cps "$ACT3_CPS" --dots "$ACT3_DOTS" --hold "$ACT3_HOLD" \
+		"this has got to beat ascii line art..." "how about ... AALIB?"
 	clear_screen
 	if [ "$cols" = 80 ] && [ "$rows" = 25 ]; then
 		real=same
@@ -733,6 +812,7 @@ act_3() {
 }
 
 act_4() {
+	cue_start act4-minute
 	fx type --bar --cps "$ACT4_CPS" --dots "$ACT4_DOTS" --hold "$ACT4_HOLD" \
 		"wait a minute..." "don't we have ... LIBSIXEL?"
 }
@@ -794,14 +874,30 @@ act_6() {
 	# Sixel pixels are cleared before the fire, so none outlive the act;
 	# a placeholder is text, and burns.
 	[ -z "$have_sixel" ] || clear_screen
-	fx effect fire --seconds "$ACT6_FIRE"
+	cue_start act6-fire
+	fx effect fire --seconds "$ACT6_FIRE" --cjk "$ACT6_CJK" --wind "$ACT6_WIND"
 	clear_screen
 	pause "$ACT_GAP"
 	fx type --row 3 --cps "$ACT6_CPS" --dots 0.4 --hold 0.4 \
-		"hold on, we also have kitty." "hold on, feeding the cats"
+		"hold on, we also have kitty." "one sec, feeding the cats"
+	cue_start act6-cats
 	fx cats --top 8 --seconds "$ACT6_CATS" --density "$ACT6_DENSITY"
 	clear_screen
-	pause "$ACT_GAP"
+	shades
+	clear_screen
+}
+
+# The interlude after the cats (fork/showcase/shades.py): big vector cat
+# faces in a row, pixel sunglasses dropping onto them one a beat, then the
+# row sliding off as act 7 fades in. In kitty graphics where the terminal
+# has them and rsvg-convert is here to render the faces, else in emoji.
+shades() {
+	cue_start act6-shades
+	if [ -n "$have_kitty" ] && have rsvg-convert; then
+		fx shades --kitty --cache "$SHOWCASE_CACHE" --cell-w "$cell_w" --cell-h "$cell_h"
+	else
+		fx shades
+	fi
 }
 
 # Act 7: the video in the rows above the scroller, through the fork's own
@@ -828,11 +924,14 @@ act_7() {
 	local ipc=()
 	[ -n "$notes_file" ] || notes_file=$(mktemp)
 	if [ "$audio" = 1 ]; then
-		local fade=()
-		# The fade, no longer than the act, ends with it.
-		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || fade=(--af="lavfi=[afade=t=out:$(awk \
+		local fades=() fade=()
+		# The fades, in the video's time: in from the act's start, and out
+		# over its end, no longer than the act.
+		[ "$ACT7_FADE_IN" = 0 ] || fades+=("afade=t=in:st=$ACT7_START:d=$ACT7_FADE_IN")
+		[ "$ACT7_SECONDS" = 0 ] || [ "$ACT7_FADE" = 0 ] || fades+=("afade=t=out:$(awk \
 			-v s="$ACT7_START" -v l="$ACT7_SECONDS" -v f="$ACT7_FADE" \
-			'BEGIN { if (f > l) f = l; printf "st=%s:d=%s", s + l - f, f }')]")
+			'BEGIN { if (f > l) f = l; printf "st=%s:d=%s", s + l - f, f }')")
+		[ ${#fades[@]} = 0 ] || fade=(--af="lavfi=[$(IFS=,; echo "${fades[*]}")]")
 		# A socket's path must fit 108 bytes: a short directory, not a
 		# long TMPDIR. Should mpv still make none, the player follows a
 		# wall clock from the soundtrack's start, and says so.
@@ -848,7 +947,7 @@ act_7() {
 		--fps "$BANNER_FPS" </dev/null &
 	bg_pids=($!)
 	# What the player says on stderr waits for the screen to come back.
-	fx kitty --video="$BAD_APPLE" --start "$ACT7_START" --seconds "$ACT7_SECONDS" \
+	fx kitty --video="$BAD_APPLE" --start "$ACT7_START" --seconds "$ACT7_SECONDS" --fade-in "$ACT7_FADE_IN" \
 		--transport "$KITTY_TRANSPORT" --width "$KITTY_WIDTH" --cell-w "$cell_w" --cell-h "$cell_h" \
 		--banner-rows "$BANNER_ROWS" --gap "$ACT7_GAP" --slide-at "$ACT7_SLIDE_AT" \
 		--copy2-at "$ACT7_COPY2_AT" --copy3-at "$ACT7_COPY3_AT" --move "$ACT7_MOVE" \
@@ -857,9 +956,12 @@ act_7() {
 	clear_screen
 }
 
+# The end card's epilogue loops until the key that ends it.
 end_card() {
 	[ -t 0 ] || return 0
+	cue_start endcard --loop-file=inf
 	fx endcard --title "kmscon · github.com/aaronsb/kmscon" --text "$END_TEXT"
+	cue_stop
 }
 
 # ------------------------------------------------------------------- main
@@ -989,7 +1091,7 @@ main() {
 
 	take_screen
 	read_geometry
-	if (((first <= 5 && last >= 5) || (first <= 7 && last >= 7))); then
+	if (((first <= 5 && last >= 5) || (first <= 7 && last >= 6))); then
 		probe
 	fi
 	clear_screen

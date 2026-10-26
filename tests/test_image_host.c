@@ -100,18 +100,16 @@ static uint64_t now_ns(void)
 
 /*
  * turns of the loop until the request out ends, at most @ms by the clock (a
- * turn that another event ends is shorter than 10 ms), then one more turn
- * for a timer due by then
+ * turn that another event ends is shorter than 10 ms) and 50 ms more, so a
+ * timer due at @ms is dispatched even late
  */
 static void wait_reply(struct image_host *h, unsigned int ms)
 {
-	uint64_t end = now_ns() + (uint64_t)ms * 1000000;
+	uint64_t end = now_ns() + (uint64_t)(ms + 50) * 1000000;
 	unsigned int calls = got.calls;
 
 	while (got.calls == calls && now_ns() < end)
 		ev_eloop_dispatch(loop, 10);
-	if (got.calls == calls)
-		ev_eloop_dispatch(loop, 0);
 	assert(got.calls == calls + 1 && !image_host_busy(h));
 }
 
@@ -153,6 +151,7 @@ static void test_real(const char *helper)
 	char path[PATH_MAX + 16];
 	struct image_host_request r;
 	struct image_host *h;
+	unsigned int calls;
 	pid_t pid;
 	int ret;
 	FILE *f;
@@ -291,12 +290,16 @@ static void test_real(const char *helper)
 	image_host_free(h);
 	assert(image_host_new(&h, loop, "/nonexistent/helper", reply, NULL) == 0);
 	r = request(16, 'f', path);
+	calls = got.calls;
 	ret = image_host_send(h, &me, &r);
 	if (ret == 0) {
 		wait_reply(h, 5000);
 		assert(got.id == 16 && got.status == IMAGE_HOST_FAILED);
 	} else {
-		assert(ret == -EBADF && !image_host_busy(h) && got.id != 16);
+		assert(ret == -EBADF && !image_host_busy(h));
+		/* no reply comes */
+		ev_eloop_dispatch(loop, 50);
+		assert(got.calls == calls);
 	}
 	assert(!image_host_pid(h));
 	image_host_free(h);

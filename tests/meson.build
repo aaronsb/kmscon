@@ -395,6 +395,18 @@ test_font_box = executable(
 )
 test('test_font_box', test_font_box, timeout: 300)
 
+# mod-psf against crafted fonts, plain and gzipped, and against every console
+# font kbd installs on the build machine (#229)
+if enable_font_psf
+    test_font_psf = executable(
+        'test_font_psf',
+        'test_font_psf.c',
+        include_directories: src_inc,
+        dependencies: [shl_deps, zlib_deps],
+    )
+    test('test_font_psf', test_font_psf, timeout: 120)
+endif
+
 test_conf = executable(
     'test_conf',
     'test_conf.c',

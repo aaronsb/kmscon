@@ -207,6 +207,7 @@ static void timer_event(struct ev_timer *timer, uint64_t num, void *data)
 	struct input_dev *dev = data;
 
 	dev->repeat_event.handled = false;
+	dev->repeat_event.repeat = true;
 	shl_hook_call(dev->input->key_hook, dev->input, &dev->repeat_event);
 }
 
@@ -537,6 +538,7 @@ int uxkb_dev_process(struct input_dev *dev, uint16_t key_state, uint16_t code)
 		return -ENOKEY;
 
 	dev->event.handled = false;
+	dev->event.repeat = false;
 	shl_hook_call(dev->input->key_hook, dev->input, &dev->event);
 
 	return 0;

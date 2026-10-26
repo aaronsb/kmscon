@@ -99,6 +99,8 @@ struct kmscon_terminal {
 	struct input *input;
 	bool opened;
 	bool awake;
+	/* the focus last reported to the vte (terminal_set_focus) */
+	bool focus;
 
 	struct conf_ctx *conf_ctx;
 	struct kmscon_conf_t *conf;
@@ -1416,6 +1418,12 @@ static void input_event(struct input *input, struct input_key_event *ev, void *d
 		return;
 	}
 
+	/* DECARM reset: the program gets no repeats; the bindings above keep them */
+	if (terminal_vte_drop_repeat(term->vte, ev->repeat)) {
+		ev->handled = true;
+		return;
+	}
+
 	/* TODO: xkbcommon supports multiple keysyms, but it is currently
 	 * unclear how this feature will be used. There is no keymap, which
 	 * uses this, yet. */
@@ -1492,8 +1500,10 @@ static void forward_pointer_event(struct kmscon_terminal *term, struct input_poi
 	default:
 		return;
 	}
-	tsm_vte_handle_mouse(term->vte, term->pointer.posx, term->pointer.posy, term->pointer.x,
-			     term->pointer.y, button, event, 0);
+	tsm_vte_handle_mouse(term->vte, term->pointer.posx, term->pointer.posy,
+			     terminal_vte_pointer(term->pointer.x, term->cols, term->cell_w),
+			     terminal_vte_pointer(term->pointer.y, term->rows, term->cell_h),
+			     button, event, 0);
 }
 
 static void handle_pointer_button(struct kmscon_terminal *term, struct input_pointer_event *ev)
@@ -1782,6 +1792,12 @@ void terminal_deactivate(struct kmscon_terminal *term)
 	terminal_image_play(&term->image, false);
 	/* not awake: disarms the timer of a failed font set */
 	set_retry_arm(term);
+}
+
+void terminal_set_focus(struct kmscon_terminal *term, bool focus)
+{
+	if (terminal_vte_focus(term->vte, &term->focus, focus))
+		log_debug("focus %s reported to terminal %p", focus ? "in" : "out", term);
 }
 
 void terminal_destroy(struct kmscon_terminal *term)

@@ -33,6 +33,8 @@
 #ifndef KMSCON_TERMINAL_H
 #define KMSCON_TERMINAL_H
 
+#include <stdbool.h>
+
 struct conf_ctx;
 struct display;
 struct ev_eloop;
@@ -49,5 +51,14 @@ void terminal_rm_display(struct kmscon_terminal *term, struct display *disp);
 void terminal_refresh_displays(struct kmscon_terminal *term);
 void terminal_activate(struct kmscon_terminal *term);
 void terminal_deactivate(struct kmscon_terminal *term);
+
+/*
+ * Gives the terminal the focus or takes it away, for mode 1004: the program
+ * hears of a change (CSI I, CSI O) if it set the mode, and a repeat of the
+ * last state is dropped. The seat decides when a terminal has the focus
+ * (seat.c, seat_update_focus); terminal_activate and terminal_deactivate do
+ * not, since they also run when the display blanks.
+ */
+void terminal_set_focus(struct kmscon_terminal *term, bool focus);
 
 #endif /* KMSCON_TERMINAL_H */

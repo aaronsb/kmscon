@@ -1,5 +1,5 @@
 /*
- * kmscon - A terminal's vte and its place in the image budget
+ * kmscon - A terminal's vte, its place in the image budget, and its input modes
  *
  * Copyright (c) 2026 the kmscon fork authors
  *
@@ -76,4 +76,37 @@ err_images:
 err_vte:
 	tsm_vte_unref(v);
 	return ret;
+}
+
+/* DECRQM's value for a mode that is reset (ctlseqs DECRPM) */
+#define MODE_RESET 2
+
+bool terminal_vte_drop_repeat(struct tsm_vte *vte, bool repeat)
+{
+	return repeat && tsm_vte_get_mode(vte, true, 8) == MODE_RESET;
+}
+
+bool terminal_vte_focus(struct tsm_vte *vte, bool *last, bool focus)
+{
+	if (*last == focus)
+		return false;
+	*last = focus;
+#ifdef TSM_VTE_HANDLE_FOCUS
+	return tsm_vte_handle_focus(vte, focus);
+#else
+	/* a libtsm before mode 1004: nothing to report to */
+	(void)vte;
+	return false;
+#endif
+}
+
+unsigned int terminal_vte_pointer(int32_t pos, unsigned int cells, unsigned int cell_size)
+{
+	unsigned int size = cells * cell_size;
+
+	if (pos <= 0 || !size)
+		return 0;
+	if ((unsigned int)pos >= size)
+		return size - 1;
+	return pos;
 }

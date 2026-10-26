@@ -314,7 +314,8 @@ else
     test('test_terminal_image_none', test_terminal_image_none, timeout: 60)
 endif
 
-# the vte kmscon makes from its settings, in every build
+# the vte kmscon makes from its settings, and the input modes terminal.c
+# asks it about (DECARM, focus, the pointer), in every build
 test_terminal_vte = executable(
     'test_terminal_vte',
     'test_terminal_vte.c',

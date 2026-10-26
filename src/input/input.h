@@ -54,6 +54,7 @@ enum input_modifier {
 
 struct input_key_event {
 	bool handled;	   /* user-controlled, default is false */
+	bool repeat;	   /* made by the repeat timer of a held key, not by the keyboard */
 	uint16_t keycode;  /* linux keycode - KEY_* - linux/input.h */
 	uint32_t ascii;	   /* ascii keysym for @keycode */
 	unsigned int mods; /* active modifiers - input_modifier mask */

@@ -558,7 +558,8 @@ static bool probe_kitty_keyboard(struct term *t)
 	return reply_matches(t, "\e[?u", "\e[?", "u");
 }
 
-/* xterm modifyOtherKeys level 2: Ctrl+1 is sent as CSI 27 ; 5 ; 49 ~ */
+/* xterm modifyOtherKeys level 2: Ctrl+1 is sent as CSI 27 ; 5 ; 49 ~, and
+ * XTQMODKEYS replies with the XTMODKEYS that sets the level */
 static bool probe_modify_other_keys(struct term *t)
 {
 	feed(t, "\e[>4;2m");
@@ -567,7 +568,7 @@ static bool probe_modify_other_keys(struct term *t)
 	if (strcmp(t->reply, "\e[27;5;49~"))
 		return fail("Ctrl+1 under CSI > 4;2 m sent \"%s\", want \"\\e[27;5;49~\"",
 			    shown(t->reply));
-	return true;
+	return reply_is(t, "\e[?4m", "\e[>4;2m");
 }
 
 /* --- mouse and paste --- */
@@ -618,10 +619,11 @@ static bool probe_mouse_1003_x10(struct term *t)
 	return mouse_is(t, 2, 3, 0, TSM_MOUSE_EVENT_MOVED, "\e[MC#$");
 }
 
+/* SGR-Pixels: pixels 20,30 counted from 1, as xterm counts them (libtsm#67) */
 static bool probe_mouse_1016(struct term *t)
 {
 	feed(t, "\e[?1000h\e[?1016h");
-	return mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_PRESSED, "\e[<0;20;30M");
+	return mouse_is(t, 2, 3, TSM_MOUSE_BUTTON_LEFT, TSM_MOUSE_EVENT_PRESSED, "\e[<0;21;31M");
 }
 
 static bool probe_bracketed_paste(struct term *t)
@@ -633,6 +635,41 @@ static bool probe_bracketed_paste(struct term *t)
 		return fail("paste under ?2004h sent \"%s\", want \"\\e[200~x\\e[201~\"",
 			    shown(t->reply));
 	return true;
+}
+
+#ifdef TSM_VTE_HANDLE_FOCUS
+static bool focus_is(struct term *t, bool focused, const char *when, const char *want)
+{
+	clear_reply(t);
+	tsm_vte_handle_focus(t->vte, focused);
+	if (strcmp(t->reply, want))
+		return fail("focus %s %s sent \"%s\", want \"%s\"", focused ? "in" : "out", when,
+			    shown(t->reply), shown(want));
+	return true;
+}
+#endif
+
+/* focus events, mode 1004: CSI I and CSI O for focus in and out while the
+ * mode is set, and nothing before it is set or after it is reset */
+static bool probe_focus_1004(struct term *t)
+{
+#ifdef TSM_VTE_HANDLE_FOCUS
+	if (!focus_is(t, true, "before ?1004h", "") || !focus_is(t, false, "before ?1004h", ""))
+		return false;
+	clear_reply(t);
+	feed(t, "\e[?1004h");
+	if (t->reply_len)
+		return fail("?1004h replied \"%s\", want nothing", shown(t->reply));
+	if (!focus_is(t, true, "under ?1004h", "\e[I") ||
+	    !focus_is(t, false, "under ?1004h", "\e[O"))
+		return false;
+	feed(t, "\e[?1004l");
+	return focus_is(t, true, "after ?1004l", "") && focus_is(t, false, "after ?1004l", "");
+#else
+	(void)t;
+	return fail("libtsm has no tsm_vte_handle_focus for kmscon to report focus in and out "
+		    "(CSI I, CSI O) through");
+#endif
 }
 
 /* --- screen --- */
@@ -657,13 +694,6 @@ static bool probe_reflow(struct term *t)
 static bool placeholder(const char *what)
 {
 	return fail("placeholder: %s; the change that adds it replaces this probe", what);
-}
-
-static bool probe_focus_1004(struct term *t)
-{
-	(void)t;
-	return placeholder(
-		"libtsm has no call for kmscon to report focus in and out (CSI I, CSI O)");
 }
 
 static bool probe_osc_8(struct term *t)

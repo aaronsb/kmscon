@@ -25,8 +25,11 @@
 
 /*
  * The part of terminal_new that makes a terminal's vte on its screen, sets it
- * from the configuration, and adds the terminal to the image budget (ADR-103).
- * It is apart from terminal.c so that a test drives its failures.
+ * from the configuration, and adds the terminal to the image budget (ADR-103),
+ * and the decisions terminal.c makes for the vte's input modes: whether a key
+ * repeat goes through (DECARM) and when a focus change is reported (mode
+ * 1004). It is apart from terminal.c so that a test drives its failures and
+ * those decisions.
  */
 
 #ifndef KMSCON_TERMINAL_VTE_H
@@ -46,5 +49,35 @@
 int terminal_vte_new(struct tsm_vte **vte, struct image_budget_terminal *images,
 		     struct tsm_screen *con, struct kmscon_conf_t *conf, tsm_vte_write_cb write_cb,
 		     void *data);
+
+/*
+ * Whether a key repeat is dropped before it reaches @vte: true when @repeat
+ * (the event came from the input layer's repeat timer, not the keyboard) and
+ * the program has reset DECARM, mode 8 (xterm ctlseqs). kmscon makes a held
+ * key's repeats, so it is the one that stops them; its own key bindings are
+ * matched before this and keep repeating.
+ */
+bool terminal_vte_drop_repeat(struct tsm_vte *vte, bool repeat);
+
+/*
+ * Reports a change of focus to @vte, for mode 1004 (xterm ctlseqs,
+ * FocusIn/FocusOut): @focus is the terminal's focus now and @last the focus
+ * last given, which this updates. libtsm keeps no focus state, so a call that
+ * repeats @last gives @vte nothing. Returns true when a report (CSI I or
+ * CSI O) was written, that is when the focus changed while a program had set
+ * mode 1004.
+ */
+bool terminal_vte_focus(struct tsm_vte *vte, bool *last, bool focus);
+
+/*
+ * A pointer coordinate for tsm_vte_handle_mouse: @pos, a pixel from the text
+ * area's origin, clamped to the cell grid, 0 .. @cells * @cell_size - 1. The
+ * pointer moves over the whole screen, which can be wider or higher than the
+ * grid by less than a cell, and the input layer's maximum is inclusive.
+ * libtsm reports pixels from 1 under mode 1016, so the clamp keeps the
+ * largest report at the grid's width and height, as xterm's, and a program
+ * dividing a report by the cell size never finds a cell past the grid.
+ */
+unsigned int terminal_vte_pointer(int32_t pos, unsigned int cells, unsigned int cell_size);
 
 #endif /* KMSCON_TERMINAL_VTE_H */

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Capability probes: what kmscon's terminal does and what it is missing.
 
-  run.py --list FILE --probe EXE [--image-probe EXE] [--build FEATURE=true|false]...
-         [--font-probe EXE --fonts DIR]
+  run.py --list FILE (--replay EXE --probes FILE --spec FILE [--fixture PATH]...
+                      | --probe EXE [--image-probe EXE])
+         [--build FEATURE=true|false]... [--font-probe EXE --fonts DIR]
          [--terminfo SRC --tic PATH --infocmp PATH [--tput PATH]]
+  run.py --parity --list FILE --replay EXE --probes FILE --spec FILE
+         [--fixture PATH]... --probe EXE --image-probe EXE
 
 Every probe named in FILE (capabilities.list) is run and judged against the
 status recorded there:
@@ -19,18 +22,27 @@ says which features this build has; a feature the list names and --build
 does not fails the run. A probe one of the programs knows but the list
 does not name, or a name in the list no program knows, fails the run.
 
-Probes come from four places: test_capabilities (libtsm, through its public
-API), test_capabilities_images (sixel, kitty graphics, XTVERSION and XTGETTCAP
-through kmscon's own configuration and vte), test_capabilities_font (the
-freetype backend) and the terminfo entry, compiled with tic and read back with
-infocmp, for the capabilities listed in TERMINFO below, and expanded with
-tput, for the strings listed in TERMINFO_STRINGS. A source that was not built or has no tool is reported as
-skipped, probe by probe.
+The terminal's probes are the stanzas of probes.replay, replayed by a
+program that meets libtsm's replay interface (--spec, INTERFACE.md): libtsm's
+tsm-replay, or vtium's. README.md, The replay probes, says how a stanza is
+judged and checked. --fixture names a file each probe's fixture directory
+holds, as `fixture NAME` asks. The C probe programs, test_capabilities (libtsm, through its
+public API) and test_capabilities_images (sixel, kitty graphics, XTVERSION
+and XTGETTCAP through kmscon's own configuration and vte), are the same
+probes; --parity runs both sources and fails when a probe passes in one and
+fails in the other.
+
+The rest come from test_capabilities_font (the freetype backend) and the
+terminfo entry, compiled with tic and read back with infocmp, for the
+capabilities listed in TERMINFO below, and expanded with tput, for the
+strings listed in TERMINFO_STRINGS. A source that was not built or has no
+tool is reported as skipped, probe by probe.
 """
 
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -182,11 +194,433 @@ def run_terminfo_strings(strings, name):
     return True, ""
 
 
+# probes.replay (README.md, The replay probes): the keys that build the input,
+# and the assertions, each judged against the block of the last check
+INPUT_KEYS = ("send", "cmd", "check")
+VIEW_FEATURES = {"screen": None, "frame": "view-frame", "draw2": "view-draw2"}
+# the escapes of INTERFACE.md's worked examples, each one byte
+ESCAPES = {"e": b"\x1b", "r": b"\r", "n": b"\n", "t": b"\t", "\\": b"\\", '"': b'"'}
+
+
+def unquote(text):
+    """The bytes of a "..." string written with ESCAPES and \\xHH, or None."""
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        return None
+    out, i, body = b"", 0, text[1:-1]
+    while i < len(body):
+        c = body[i]
+        if c == '"':
+            return None
+        if c != "\\":
+            out += c.encode()
+            i += 1
+        elif body[i + 1:i + 2] in ESCAPES:
+            out += ESCAPES[body[i + 1]]
+            i += 2
+        elif re.fullmatch(r"x[0-9a-fA-F]{2}", body[i + 1:i + 4]):
+            out += bytes([int(body[i + 2:i + 4], 16)])
+            i += 4
+        else:
+            return None
+    return out
+
+
+def shown(data):
+    """@data printable, ESC as \\e and other controls as \\xNN."""
+    text = data.decode("utf-8", "backslashreplace")
+    return "".join("\\e" if c == "\x1b" else f"\\x{ord(c):02x}" if ord(c) < 0x20 or c == "\x7f"
+                   else c for c in text)
+
+
+def fenced(path, name):
+    """The lines of the fenced block @name in @path."""
+    lines, inside = [], False
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line == "```" + name:
+                inside = True
+            elif inside and line == "```":
+                return lines
+            elif inside:
+                lines.append(line)
+    sys.exit(f"{path}: no ```{name} block")
+
+
+class Spec:
+    """INTERFACE.md's describe and grammar blocks."""
+
+    def __init__(self, path):
+        describe = fenced(path, "describe")
+        self.major = describe[0].split()[1].split(".")[0]
+        self.features = {line.split()[1] for line in describe if line.startswith("feature ")}
+        self.commands = {}
+        for line in describe:
+            if line.startswith("command "):
+                words = line.split()
+                self.commands[words[1]] = words[2] if len(words) > 2 else None
+
+        defines, reserved = {}, {}
+        self.lines = {}  # kind -> [(views, regex, regex with the reserved keys)]
+
+        def expand(regex, with_reserved):
+            def fragment(m):
+                name = m.group(1)
+                if name in reserved:
+                    return f"(?:{reserved[name] if with_reserved else ''})"
+                return f"(?:{defines[name][with_reserved]})"
+            return re.sub(r"\{([A-Z][A-Z0-9]*)\}", fragment, regex)
+
+        for line in fenced(path, "grammar"):
+            word, rest = line.split(" ", 1)
+            if word == "define":
+                name, regex = rest.split(" ", 1)
+                defines[name] = (expand(regex, False), expand(regex, True))
+            elif word == "reserved":
+                name, regex = rest.split(" ", 1)
+                reserved[name] = regex
+            elif word == "line":
+                kind, views, regex = rest.split(" ", 2)
+                self.lines.setdefault(kind, []).append(
+                    ("screen,draw2,frame" if views == "*" else views,
+                     expand(regex, False), expand(regex, True)))
+
+    def parses(self, line, view, with_reserved):
+        """Whether @line is a line the grammar allows in @view."""
+        for views, plain, reserved in self.lines.get(line.split(" ", 1)[0], ()):
+            if view in views.split(",") and re.fullmatch(reserved if with_reserved else plain,
+                                                         line):
+                return True
+        return False
+
+
+class Probe:
+    def __init__(self, name, n):
+        self.name, self.line = name, n
+        self.size, self.view, self.placeholder = None, "screen", None
+        self.needs, self.fixtures = set(), []
+        self.steps = []  # (key, argument, line number), in file order
+        self.examples = {}  # index of a want-re or reply-re step -> (example, line number)
+
+
+def read_probes(path, spec):
+    """{name: Probe} from probes.replay, each checked for form here."""
+    probes, probe = {}, None
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            key, _, arg = line.partition(" ")
+            where = f"{path}:{n}"
+            if key == "probe":
+                if arg in probes:
+                    sys.exit(f"{where}: {arg} is already a probe, on line {probes[arg].line}")
+                probe = probes[arg] = Probe(arg, n)
+                continue
+            if probe is None:
+                sys.exit(f"{where}: {key} before the first probe line")
+            if key == "size":
+                if not re.fullmatch(r"[1-9][0-9]* [1-9][0-9]*", arg):
+                    sys.exit(f"{where}: want size COLS ROWS")
+                probe.size = tuple(int(x) for x in arg.split())
+            elif key == "view":
+                if arg not in VIEW_FEATURES:
+                    sys.exit(f"{where}: view {arg!r} is not one of {', '.join(VIEW_FEATURES)}")
+                probe.view = arg
+            elif key == "needs":
+                for feature in arg.split():
+                    if feature not in spec.features:
+                        sys.exit(f"{where}: {feature} is not a feature of the spec")
+                    probe.needs.add(feature)
+            elif key == "fixture":
+                probe.fixtures.append(arg)
+            elif key == "placeholder":
+                probe.placeholder = arg
+            elif key == "cmd":
+                if arg.split(";", 1)[0] not in spec.commands:
+                    sys.exit(f"{where}: {arg.split(';', 1)[0]} is not a command of the spec")
+                probe.steps.append((key, arg, n))
+            elif key in ("send", "reply", "reply-re"):
+                data = unquote(arg)
+                if data is None:
+                    sys.exit(f'{where}: want {key} "..." with \\e, \\r, \\n, \\t, \\\\, '
+                             f'\\" or \\xHH escapes')
+                if key == "reply-re":
+                    try:
+                        data = re.compile(data, re.DOTALL)
+                    except re.error as e:
+                        sys.exit(f"{where}: {e}")
+                probe.steps.append((key, data, n))
+            elif key in ("want-re", "reject-re"):
+                try:
+                    probe.steps.append((key, re.compile(arg), n))
+                except re.error as e:
+                    sys.exit(f"{where}: {e}")
+            elif key in ("check", "want", "reject"):
+                probe.steps.append((key, arg, n))
+            elif key == "example":
+                data = unquote(arg)
+                if data is None or not probe.steps or probe.steps[-1][0] not in (
+                        "want-re", "reply-re") or len(probe.steps) - 1 in probe.examples:
+                    sys.exit(f'{where}: want example "..." once, after a want-re or reply-re')
+                probe.examples[len(probe.steps) - 1] = (data, n)
+            else:
+                sys.exit(f"{where}: {key!r} is not a key of probes.replay")
+
+    for probe in probes.values():
+        where = f"{path}:{probe.line}: {probe.name}"
+        keys = [s[0] for s in probe.steps]
+        if probe.placeholder is not None:
+            if probe.steps:
+                sys.exit(f"{where}: a placeholder has nothing to run")
+            continue
+        if probe.size is None:
+            sys.exit(f"{where}: no size")
+        if not any(k in ("want", "want-re", "reply", "reply-re") for k in keys):
+            sys.exit(f"{where}: no want or reply, so nothing it prints could fail it")
+        checked = False
+        for key, arg, n in probe.steps:
+            if key in INPUT_KEYS:
+                checked = key == "check"
+            elif not checked:
+                sys.exit(f"{path}:{n}: {key} after input with no check between")
+    return probes
+
+
+# what a runner masks unless both sides declare damage-exact (INTERFACE.md,
+# Comparing with the goldens): a nonzero changed count, which becomes N,
+# and a placement's changed flag, which goes
+DAMAGE_COUNT = re.compile(r"((?:changed|test frame-since [0-7] changed) )([1-9][0-9]*|N)")
+PLACEMENT_CHANGED = re.compile(r"(placement .*) changed")
+
+
+def masked(line):
+    """@line as a runner compares it without damage-exact."""
+    m = DAMAGE_COUNT.fullmatch(line) or PLACEMENT_CHANGED.fullmatch(line)
+    if not m:
+        return line
+    return m.group(1) + "N" if m.re is DAMAGE_COUNT else m.group(1)
+
+
+def check_expectations(path, probe, spec, missing):
+    """Exits naming the line when a want or reject line, or the example of a
+    want-re, is one the spec's grammar does not allow in the probe's view
+    (the keys the spec reserves are allowed in a missing probe only), when a
+    want-re or reply-re does not match its example, or when a missing probe
+    gives one no example. A masked count, N, stands for a nonzero digit."""
+    exact = "damage-exact" in probe.needs
+
+    def parses(line, n):
+        m = DAMAGE_COUNT.fullmatch(line)
+        if m and (m.group(2) == "N") == exact:
+            sys.exit(f"{path}:{n}: {line!r}: " + (
+                "a probe that needs damage-exact compares exact counts" if exact else
+                "a nonzero count is informative unless damage-exact; write N, or add "
+                "needs damage-exact"))
+        if PLACEMENT_CHANGED.fullmatch(line) and not exact:
+            sys.exit(f"{path}:{n}: {line!r}: a placement's changed flag is informative unless "
+                     f"damage-exact; leave it out, or add needs damage-exact")
+        if not spec.parses(line.replace(" changed N", " changed 1"), probe.view, missing):
+            sys.exit(f"{path}:{n}: {line!r} is not a {probe.view} view line of the spec's "
+                     f"grammar{'' if missing else ' (reserved keys are for missing probes)'}")
+
+    for i, (key, arg, n) in enumerate(probe.steps):
+        if key in ("want", "reject"):
+            parses(arg, n)
+        if key not in ("want-re", "reply-re"):
+            continue
+        if i not in probe.examples:
+            if missing:
+                sys.exit(f"{path}:{n}: a missing probe's {key} needs an example line after it, "
+                         f"a reply or line the feature would print")
+            continue
+        example, m = probe.examples[i]
+        if key == "want-re":
+            example = example.decode("utf-8", "replace")
+            parses(example, m)
+        if not arg.fullmatch(example):
+            sys.exit(f"{path}:{m}: the example does not match the {key} on line {n}")
+
+
+class Replay:
+    """A replay implementation, judged by INTERFACE.md."""
+
+    def __init__(self, exe, spec, fixtures, tmp):
+        self.exe, self.spec, self.tmp = exe, spec, tmp
+        self.fixtures = {os.path.basename(p): p for p in fixtures}
+        res = subprocess.run([exe, "--describe"], capture_output=True, text=True)
+        lines = res.stdout.splitlines()
+        version = lines[0].split() if lines else []
+        if (res.returncode or len(version) != 2 or version[0] != "interface"
+                or version[1].split(".")[0] != spec.major):
+            sys.exit(f"{exe} --describe: exit {res.returncode}, first line "
+                     f"{lines[0] if lines else 'none'!r}; want interface {spec.major}.N")
+        self.views = {line.split()[1] for line in lines if line.startswith("view ")}
+        self.features = {line.split()[1] for line in lines if line.startswith("feature ")}
+        self.commands = {line.split()[1] for line in lines if line.startswith("command ")}
+
+    def absent(self, probe):
+        """What the implementation lacks for @probe, or None."""
+        if probe.view not in self.views:
+            return f"the implementation has no {probe.view} view"
+        needs = set(probe.needs)
+        if VIEW_FEATURES[probe.view]:
+            needs.add(VIEW_FEATURES[probe.view])
+        for key, arg, _ in probe.steps:
+            if key == "cmd":
+                name = arg.split(";", 1)[0]
+                if name not in self.commands:
+                    return f"the implementation has no {name} command"
+                if self.spec.commands[name]:
+                    needs.add(self.spec.commands[name])
+        lacking = sorted(needs - self.features)
+        if lacking:
+            return f"the implementation does not declare {', '.join(lacking)}"
+        return None
+
+    def run(self, probe):
+        """(passed, reason) for @probe; passed is None when the replay could
+        not judge it."""
+        if probe.placeholder is not None:
+            return False, f"placeholder: {probe.placeholder}"
+        absent = self.absent(probe)
+        if absent:
+            return False, f"absent: {absent}"
+
+        data, cuts = b"", []
+        for key, arg, _ in probe.steps:
+            if key == "send":
+                data += arg
+            elif key == "cmd":
+                data += b"\x1b_tsm-test;" + arg.encode() + b"\x1b\\"
+            elif key == "check":
+                cuts.append(len(data))
+        base = os.path.join(self.tmp, probe.name)
+        with open(base + ".bin", "wb") as f:
+            f.write(data)
+        with open(base + ".cuts", "w") as f:
+            f.writelines(f"{c}\n" for c in cuts)
+        os.makedirs(base + ".files", exist_ok=True)
+        for name in probe.fixtures:
+            shutil.copy(self.fixtures[name], base + ".files")
+        view = [] if probe.view == "screen" else ["--" + probe.view]
+        res = subprocess.run([self.exe, *view, *map(str, probe.size), base + ".bin",
+                              base + ".cuts"], capture_output=True)
+        if res.returncode:
+            return None, (f"the replay exited {res.returncode}: "
+                          f"{res.stderr.decode(errors='replace').strip()}")
+        lines = res.stdout.decode(errors="replace").splitlines()
+        for line in lines:
+            if not self.spec.parses(line, probe.view, False):
+                return None, f"{line!r} is not a {probe.view} line of the grammar"
+        exact = "damage-exact" in probe.needs and "damage-exact" in self.features
+        if not exact:
+            lines = [masked(line) for line in lines]
+
+        # a test line belongs to the block whose checkpoint follows it
+        blocks, pending = [], []
+        for line in lines:
+            if line.startswith("test "):
+                pending.append(line)
+            elif line.startswith("checkpoint "):
+                blocks.append([line] + pending)
+                pending = []
+            elif blocks:
+                blocks[-1].append(line)
+        if len(blocks) != len(cuts) + 1:
+            return False, f"the replay printed {len(blocks)} blocks, want {len(cuts) + 1}"
+        for k, cut in enumerate(cuts):
+            if blocks[k][0] != f"checkpoint {cut}":
+                return False, f"block {k + 1} is {blocks[k][0]!r}, want 'checkpoint {cut}'"
+
+        # assertions on test lines take them in order: the next one each
+        # matches is after the last one matched in its block
+        k, tests = -1, []
+        for key, arg, n in probe.steps:
+            if key == "check":
+                k += 1
+                tests = [line for line in blocks[k] if line.startswith("test ")]
+                continue
+            if key in INPUT_KEYS:
+                continue
+            block = blocks[k]
+            reply = b"".join(bytes.fromhex(line.split()[1]) for line in block
+                             if line.startswith("reply "))
+            what = f"line {n}, block {k + 1}"
+            if key in ("want", "reject") and not exact:
+                arg = masked(arg)
+            pattern = arg.pattern if key == "want-re" else arg if key == "want" else ""
+            if pattern.startswith("test "):
+                hit = next((i for i, line in enumerate(tests) if
+                            (arg.fullmatch(line) if key == "want-re" else line == arg)), None)
+                if hit is None:
+                    taken = len([line for line in block if line.startswith("test ")]) - len(tests)
+                    return False, (f"{what}: no test line {'matching ' if key == 'want-re' else ''}"
+                                   f"{pattern!r}" + (f" after test line {taken}" if taken else ""))
+                tests = tests[hit + 1:]
+                continue
+            if key == "want" and arg not in block:
+                kind = " ".join(arg.split()[:2])
+                near = [line for line in block if line.startswith(kind + " ")]
+                return False, f"{what}: no {arg!r}; " + (
+                    f"it has {', '.join(map(repr, near))}" if near else f"no {kind!r} line")
+            if key == "want-re" and not any(arg.fullmatch(line) for line in block):
+                return False, f"{what}: no line matches {arg.pattern!r}"
+            if key == "reject" and arg in block:
+                return False, f"{what}: {arg!r}"
+            if key == "reject-re":
+                hit = [line for line in block if arg.fullmatch(line)]
+                if hit:
+                    return False, f"{what}: {hit[0]!r} matches {arg.pattern!r}"
+            if key == "reply" and reply != arg:
+                return False, f'{what}: replied "{shown(reply)}", want "{shown(arg)}"'
+            if key == "reply-re" and not arg.fullmatch(reply):
+                return False, (f'{what}: replied "{shown(reply)}", want a match of '
+                               f'"{shown(arg.pattern)}"')
+        return True, ""
+
+
+def parity(c_runners, replay, probes):
+    """Each probe's result from the C programs against the replay's."""
+    differ = skipped = 0
+    names = sorted(set(c_runners) | set(probes))
+    if not names:
+        print("no probes in either source")
+        return 1
+    for name in names:
+        if name not in c_runners or name not in probes:
+            print(f"DIFF {name}: only the {'replay' if name in probes else 'C'} probes have it")
+            differ += 1
+            continue
+        missing_fixture = [f for f in probes[name].fixtures if f not in replay.fixtures]
+        if missing_fixture:
+            print(f"skip {name}: no --fixture {', '.join(missing_fixture)}")
+            skipped += 1
+            continue
+        (c_passed, c_reason), (r_passed, r_reason) = c_runners[name](), replay.run(probes[name])
+        word = {True: "passes", False: "fails", None: "cannot run"}
+        if c_passed is not None and c_passed == r_passed:
+            print(f"same {name}: both {'pass' if c_passed else 'fail'}")
+            continue
+        print(f"DIFF {name}: the C probe {word[c_passed]}{': ' + c_reason if c_reason else ''}; "
+              f"the replay {word[r_passed]}{': ' + r_reason if r_reason else ''}")
+        differ += 1
+    print(f"{len(names)} probes: {len(names) - differ - skipped} agree, {differ} differ, "
+          f"{skipped} skipped")
+    return 1 if differ else 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", required=True)
-    ap.add_argument("--probe", required=True)
+    ap.add_argument("--replay")
+    ap.add_argument("--probes")
+    ap.add_argument("--spec")
+    ap.add_argument("--fixture", action="append", default=[])
+    ap.add_argument("--probe")
     ap.add_argument("--image-probe")
+    ap.add_argument("--parity", action="store_true")
     ap.add_argument("--build", action="append", default=[])
     ap.add_argument("--font-probe")
     ap.add_argument("--fonts")
@@ -196,18 +630,39 @@ def main():
     ap.add_argument("--tput")
     args = ap.parse_args()
     args.list = os.path.normpath(args.list)
+    if args.replay and not (args.probes and args.spec):
+        sys.exit("--replay needs --probes and --spec")
+    if args.parity and not (args.replay and args.probe and args.image_probe):
+        sys.exit("--parity needs --replay and the C probe programs, --probe and --image-probe")
+    if not args.parity and bool(args.replay) == bool(args.probe):
+        sys.exit("give the probes' source: --replay, or the C programs with --probe")
 
+    entries = read_list(args.list)
     runners = {}  # probe name -> callable returning (passed, reason)
     skipped = {}  # probe name -> why it cannot run here
 
-    probe = [args.probe]
-    for name in program_probes(probe):
-        runners[name] = lambda name=name: run_program(probe, name)
+    c_runners = {}
+    for program in filter(None, (args.probe, args.image_probe)):
+        for name in program_probes([program]):
+            c_runners[name] = lambda name=name, program=program: run_program([program], name)
 
-    if args.image_probe:
-        image = [args.image_probe]
-        for name in program_probes(image):
-            runners[name] = lambda name=name: run_program(image, name)
+    if args.replay:
+        tmp = tempfile.TemporaryDirectory()
+        spec = Spec(args.spec)
+        probes = read_probes(args.probes, spec)
+        missing = {e[0] for e in entries if e[1] == "missing"}
+        for probe in probes.values():
+            check_expectations(args.probes, probe, spec, probe.name in missing)
+        replay = Replay(args.replay, spec, args.fixture, tmp.name)
+        if args.parity:
+            return parity(c_runners, replay, probes)
+        for name, probe in probes.items():
+            lacking = [f for f in probe.fixtures if f not in replay.fixtures]
+            if lacking:
+                skipped[name] = f"no --fixture {', '.join(lacking)}"
+            runners[name] = lambda probe=probe: replay.run(probe)
+    else:
+        runners.update(c_runners)
 
     build = {}
     for b in args.build:
@@ -241,7 +696,6 @@ def main():
         for name in list(TERMINFO) + list(TERMINFO_STRINGS):
             skipped[name] = "tic or infocmp not found"
 
-    entries = read_list(args.list)
     listed = {e[0] for e in entries}
     failures = 0
 

@@ -31,7 +31,7 @@ terminfo-setrgb               works   -          setrgbf and setrgbb expand with
 terminfo-bracketed-paste      missing #94        BD/BE/PS/PE: mode 2004 is implemented
 terminfo-sgr-mouse            missing #94        XM: mode 1006 is implemented; kmous alone selects X10 mouse
 terminfo-sync                 works   -          Sync for mode 2026 (ADR-201 step 5)
-terminfo-focus                missing libtsm#29  fe/fd, once mode 1004 exists
+terminfo-focus                works   -          fe/fd and kxIN/kxOUT for mode 1004 (ncurses xterm+focus)
 terminfo-clipboard            missing #106       Ms, once OSC 52 exists
 
 # SGR

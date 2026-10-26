@@ -686,6 +686,8 @@ void kmscon_pty_close(struct kmscon_pty *pty)
 	pty->held_len = 0;
 	pty->paused = false;
 	feeding_stop(pty);
+	/* what was queued for this child must not reach the next one */
+	shl_ring_flush(pty->msgbuf);
 }
 
 int kmscon_pty_write(struct kmscon_pty *pty, const char *u8, size_t len)

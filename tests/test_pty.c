@@ -16,6 +16,9 @@
  * 16 bits, and a new cell size with the same size in cells still sets it. A
  * pseudo-terminal pair stands in for the child's, and the slave's owner is
  * read through the master.
+ *
+ * Closing drops what was queued for a child that did not read it, so the
+ * next child, which may be another user's session, never reads it.
  */
 
 #include <assert.h>
@@ -280,12 +283,39 @@ static void test_winsize(void)
 	kmscon_pty_unref(pty);
 }
 
+static void test_close_queue(void)
+{
+	static char keys[256 * 1024];
+	struct kmscon_pty *pty;
+	char name[64];
+	int slave, master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
+
+	assert(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0);
+	assert(ptsname_r(master, name, sizeof(name)) == 0);
+	slave = open(name, O_RDWR | O_NOCTTY | O_NONBLOCK);
+	assert(slave >= 0 && kmscon_pty_new(&pty, input, NULL, NULL) == 0);
+	pty->fd = master;
+	assert(ev_eloop_new_fd(pty->eloop, &pty->efd, master, EV_ET | EV_READABLE, pty_input,
+			       pty) == 0);
+
+	/* more than the slave holds, which reads nothing: the rest is queued */
+	memset(keys, 'k', sizeof(keys));
+	assert(kmscon_pty_write(pty, keys, sizeof(keys)) == 0);
+	assert(!shl_ring_is_empty(pty->msgbuf));
+	kmscon_pty_close(pty);
+	assert(shl_ring_is_empty(pty->msgbuf));
+
+	close(slave);
+	kmscon_pty_unref(pty);
+}
+
 int main(void)
 {
 	test_held();
 	test_pause();
 	test_owner();
 	test_winsize();
+	test_close_queue();
 	printf("test_pty: ok\n");
 	return 0;
 }

@@ -126,10 +126,14 @@ static void kmscon_session_unregister(struct kmscon_session *sess);
  * the display, that is while the session is the seat's current one and in the
  * foreground (not sent to the background by OSC setBackground), and the seat
  * is awake and in the foreground: its VT is active or libseat has enabled it,
- * and its video is awake, holding DRM master; and the seat has at least one
- * display it activated. A DPMS blank keeps the focus, since the session still
- * holds the blanked display, and so does unplugging one display of two;
- * unplugging the last loses it, and plugging one in gains it.
+ * and the seat has at least one display it activated that is active, online
+ * on a video that is awake and so holds DRM master. A video whose wake-up
+ * failed, because another process holds DRM master, leaves its displays
+ * inactive, and the terminal without the focus. A DPMS blank keeps the focus,
+ * since a blanked display stays online on an awake video, and so does
+ * unplugging one display of two; unplugging the last loses it, and plugging
+ * one in gains it. A wake-up that failed is not tried again until the next
+ * transition below, so the focus comes back with it (#234).
  *
  * Every transition that changes one of those calls this at its end: a VT
  * switch away and back and libseat's disable and enable (seat_vt_deactivate,
@@ -146,7 +150,7 @@ static bool seat_has_display(struct kmscon_seat *seat)
 
 	dlist_for_each_entry(d, &seat->displays, list)
 	{
-		if (d->activated)
+		if (d->activated && display_get_state(d->disp) == DISPLAY_ACTIVE)
 			return true;
 	}
 	return false;
@@ -313,7 +317,8 @@ static void seat_switch(struct kmscon_seat *seat, struct kmscon_session *new)
 	seat_update_focus(seat);
 }
 
-static void seat_next(struct kmscon_seat *seat)
+/* the session after the current one, wrapping, or NULL if there is no other */
+static struct kmscon_session *seat_next_session(struct kmscon_seat *seat)
 {
 	struct kmscon_session *next = NULL;
 
@@ -323,8 +328,12 @@ static void seat_next(struct kmscon_seat *seat)
 		next = dlist_first(&seat->sessions, struct kmscon_session, list);
 	if (next && next == seat->current_sess)
 		next = NULL;
+	return next;
+}
 
-	seat_switch(seat, next);
+static void seat_next(struct kmscon_seat *seat)
+{
+	seat_switch(seat, seat_next_session(seat));
 }
 
 static void seat_prev(struct kmscon_seat *seat)
@@ -1175,6 +1184,7 @@ static struct kmscon_session *kmscon_seat_new_session(struct kmscon_seat *seat)
 static void kmscon_session_unregister(struct kmscon_session *sess)
 {
 	struct kmscon_seat *seat;
+	struct kmscon_session *next = NULL;
 
 	if (!sess || !sess->seat)
 		return;
@@ -1184,11 +1194,15 @@ static void kmscon_session_unregister(struct kmscon_session *sess)
 	seat = sess->seat;
 
 	if (seat->current_sess == sess) {
-		terminal_deactivate(seat->current_sess->term);
-		seat_next(seat);
+		terminal_deactivate(sess->term);
+		next = seat_next_session(seat);
 	}
 
+	/* unlinked before the switch, so the focus it recomputes skips the
+	 * closing session, which gets no CSI O */
 	dlist_unlink(&sess->list);
+	if (seat->current_sess == sess)
+		seat_switch(seat, next);
 	--seat->session_count;
 	sess->seat = NULL;
 

@@ -171,7 +171,7 @@ TPUT_UNDEFINED = (1, 4)
 def run_terminfo_strings(strings, name):
     for cap, params, want in TERMINFO_STRINGS[name]:
         res = strings[cap, params]
-        call = f"tput {cap} {' '.join(params)}"
+        call = " ".join(("tput", cap) + params)
         if res.returncode in TPUT_UNDEFINED:
             return False, f"the kmscon entry lacks {cap}"
         if res.returncode != 0:

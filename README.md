@@ -115,7 +115,7 @@ meson setup builddir --native-file scripts/profiles/minimal.ini
 | **You gain** | fewer libraries and less code reading untrusted data: no PNG decoder, no image helper, no GL stack, no font shaper, no D-Bus; a smaller install; a console that starts with libdrm, libudev, libxkbcommon and zlib alone |
 | **Who it is for** | consoles on servers and appliances that show only text, rescue and recovery systems, and old or small hardware |
 
-It is made for the fork's potato computer standard: tier 3's `2d-1366x768-potato` variant, a guest with 1 vCPU, 512 MB, a 1366x768 display, drm2d and bbulk, is its baseline.
+In use, a minimal build behaves much like fbcon, which suits the fork's potato computer standard: tier 3's `2d-1366x768-potato` variant, a guest with 1 vCPU, 512 MB, a 1366x768 display, drm2d and bbulk, is its baseline.
 
 On that machine (tier 3's `2d-potato-min` and `2d-potato-min-psf` variants, `make tier3-minimal`; the median of three runs), kmscon holds 10.5 MB resident after its first screen with unifont and 5.7 MB with a PSF console font, against 16.3 MB for the default build drawing DejaVu Sans Mono through Pango. Its peak, once 500,000 lines of text have filled its 1,000-line scrollback, is 16.0 MB and 11.3 MB, against 40.3 MB for the default build while it holds sixel pictures. Scrolling text presents 42 frames a second in all three at about 0.7 ms of drawing a frame, and the minimal build's 8x16 cells fill the screen with 170 by 48 of them where the default build's 10x19 give 136 by 40.
 

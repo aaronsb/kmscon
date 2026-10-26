@@ -24,12 +24,9 @@ does not name, or a name in the list no program knows, fails the run.
 
 The terminal's probes are the stanzas of probes.replay, replayed by a
 program that meets libtsm's replay interface (--spec, INTERFACE.md): libtsm's
-tsm-replay, or vtium's. --describe says which interface, views and features
-the program has; a probe that needs a feature it does not declare fails as
-absent, and a program of another major version is refused. Each probe's
-expectations are checked against the spec's grammar before anything runs.
---fixture names a file each probe's fixture directory holds, as `fixture
-NAME` asks. The C probe programs, test_capabilities (libtsm, through its
+tsm-replay, or vtium's. README.md, The replay probes, says how a stanza is
+judged and checked. --fixture names a file each probe's fixture directory
+holds, as `fixture NAME` asks. The C probe programs, test_capabilities (libtsm, through its
 public API) and test_capabilities_images (sixel, kitty graphics, XTVERSION
 and XTGETTCAP through kmscon's own configuration and vte), are the same
 probes; --parity runs both sources and fails when a probe passes in one and
@@ -303,6 +300,7 @@ class Probe:
         self.size, self.view, self.placeholder = None, "screen", None
         self.needs, self.fixtures = set(), []
         self.steps = []  # (key, argument, line number), in file order
+        self.examples = {}  # index of a want-re or reply-re step -> (example, line number)
 
 
 def read_probes(path, spec):
@@ -361,6 +359,12 @@ def read_probes(path, spec):
                     sys.exit(f"{where}: {e}")
             elif key in ("check", "want", "reject"):
                 probe.steps.append((key, arg, n))
+            elif key == "example":
+                data = unquote(arg)
+                if data is None or not probe.steps or probe.steps[-1][0] not in (
+                        "want-re", "reply-re") or len(probe.steps) - 1 in probe.examples:
+                    sys.exit(f'{where}: want example "..." once, after a want-re or reply-re')
+                probe.examples[len(probe.steps) - 1] = (data, n)
             else:
                 sys.exit(f"{where}: {key!r} is not a key of probes.replay")
 
@@ -384,26 +388,59 @@ def read_probes(path, spec):
     return probes
 
 
-# what a runner masks unless both sides declare damage-exact: a nonzero
-# changed count, and a placement's changed flag (INTERFACE.md, Comparing
-# with the goldens)
-DAMAGE = re.compile(r"(?:changed|test frame-since [0-7] changed) [1-9][0-9]*|placement .* changed")
+# what a runner masks unless both sides declare damage-exact (INTERFACE.md,
+# Comparing with the goldens): a nonzero changed count, which becomes N,
+# and a placement's changed flag, which goes
+DAMAGE_COUNT = re.compile(r"((?:changed|test frame-since [0-7] changed) )([1-9][0-9]*|N)")
+PLACEMENT_CHANGED = re.compile(r"(placement .*) changed")
+
+
+def masked(line):
+    """@line as a runner compares it without damage-exact."""
+    m = DAMAGE_COUNT.fullmatch(line) or PLACEMENT_CHANGED.fullmatch(line)
+    if not m:
+        return line
+    return m.group(1) + "N" if m.re is DAMAGE_COUNT else m.group(1)
 
 
 def check_expectations(path, probe, spec, missing):
-    """Exits naming the line when a want or reject line is one the spec's
-    grammar does not allow in the probe's view; the keys the spec reserves
-    are allowed in a missing probe's expectations only, and an exact damage
-    count or flag in a probe that does not need damage-exact."""
-    for key, arg, n in probe.steps:
-        if key not in ("want", "reject"):
-            continue
-        if not spec.parses(arg, probe.view, missing):
-            sys.exit(f"{path}:{n}: {arg!r} is not a {probe.view} view line of the spec's "
+    """Exits naming the line when a want or reject line, or the example of a
+    want-re, is one the spec's grammar does not allow in the probe's view
+    (the keys the spec reserves are allowed in a missing probe only), when a
+    want-re or reply-re does not match its example, or when a missing probe
+    gives one no example. A masked count, N, stands for a nonzero digit."""
+    exact = "damage-exact" in probe.needs
+
+    def parses(line, n):
+        m = DAMAGE_COUNT.fullmatch(line)
+        if m and (m.group(2) == "N") == exact:
+            sys.exit(f"{path}:{n}: {line!r}: " + (
+                "a probe that needs damage-exact compares exact counts" if exact else
+                "a nonzero count is informative unless damage-exact; write N, or add "
+                "needs damage-exact"))
+        if PLACEMENT_CHANGED.fullmatch(line) and not exact:
+            sys.exit(f"{path}:{n}: {line!r}: a placement's changed flag is informative unless "
+                     f"damage-exact; leave it out, or add needs damage-exact")
+        if not spec.parses(line.replace(" changed N", " changed 1"), probe.view, missing):
+            sys.exit(f"{path}:{n}: {line!r} is not a {probe.view} view line of the spec's "
                      f"grammar{'' if missing else ' (reserved keys are for missing probes)'}")
-        if DAMAGE.fullmatch(arg) and "damage-exact" not in probe.needs:
-            sys.exit(f"{path}:{n}: {arg!r} is informative unless damage-exact: tell zero "
-                     f"from nonzero, or add needs damage-exact")
+
+    for i, (key, arg, n) in enumerate(probe.steps):
+        if key in ("want", "reject"):
+            parses(arg, n)
+        if key not in ("want-re", "reply-re"):
+            continue
+        if i not in probe.examples:
+            if missing:
+                sys.exit(f"{path}:{n}: a missing probe's {key} needs an example line after it, "
+                         f"a reply or line the feature would print")
+            continue
+        example, m = probe.examples[i]
+        if key == "want-re":
+            example = example.decode("utf-8", "replace")
+            parses(example, m)
+        if not arg.fullmatch(example):
+            sys.exit(f"{path}:{m}: the example does not match the {key} on line {n}")
 
 
 class Replay:
@@ -473,10 +510,17 @@ class Replay:
         if res.returncode:
             return None, (f"the replay exited {res.returncode}: "
                           f"{res.stderr.decode(errors='replace').strip()}")
+        lines = res.stdout.decode(errors="replace").splitlines()
+        for line in lines:
+            if not self.spec.parses(line, probe.view, False):
+                return None, f"{line!r} is not a {probe.view} line of the grammar"
+        exact = "damage-exact" in probe.needs and "damage-exact" in self.features
+        if not exact:
+            lines = [masked(line) for line in lines]
 
         # a test line belongs to the block whose checkpoint follows it
         blocks, pending = [], []
-        for line in res.stdout.decode(errors="replace").splitlines():
+        for line in lines:
             if line.startswith("test "):
                 pending.append(line)
             elif line.startswith("checkpoint "):
@@ -490,10 +534,13 @@ class Replay:
             if blocks[k][0] != f"checkpoint {cut}":
                 return False, f"block {k + 1} is {blocks[k][0]!r}, want 'checkpoint {cut}'"
 
-        k = -1
+        # assertions on test lines take them in order: the next one each
+        # matches is after the last one matched in its block
+        k, tests = -1, []
         for key, arg, n in probe.steps:
             if key == "check":
                 k += 1
+                tests = [line for line in blocks[k] if line.startswith("test ")]
                 continue
             if key in INPUT_KEYS:
                 continue
@@ -501,6 +548,18 @@ class Replay:
             reply = b"".join(bytes.fromhex(line.split()[1]) for line in block
                              if line.startswith("reply "))
             what = f"line {n}, block {k + 1}"
+            if key in ("want", "reject") and not exact:
+                arg = masked(arg)
+            pattern = arg.pattern if key == "want-re" else arg if key == "want" else ""
+            if pattern.startswith("test "):
+                hit = next((i for i, line in enumerate(tests) if
+                            (arg.fullmatch(line) if key == "want-re" else line == arg)), None)
+                if hit is None:
+                    taken = len([line for line in block if line.startswith("test ")]) - len(tests)
+                    return False, (f"{what}: no test line {'matching ' if key == 'want-re' else ''}"
+                                   f"{pattern!r}" + (f" after test line {taken}" if taken else ""))
+                tests = tests[hit + 1:]
+                continue
             if key == "want" and arg not in block:
                 kind = " ".join(arg.split()[:2])
                 near = [line for line in block if line.startswith(kind + " ")]
@@ -524,8 +583,11 @@ class Replay:
 
 def parity(c_runners, replay, probes):
     """Each probe's result from the C programs against the replay's."""
-    differ = 0
+    differ = skipped = 0
     names = sorted(set(c_runners) | set(probes))
+    if not names:
+        print("no probes in either source")
+        return 1
     for name in names:
         if name not in c_runners or name not in probes:
             print(f"DIFF {name}: only the {'replay' if name in probes else 'C'} probes have it")
@@ -534,6 +596,7 @@ def parity(c_runners, replay, probes):
         missing_fixture = [f for f in probes[name].fixtures if f not in replay.fixtures]
         if missing_fixture:
             print(f"skip {name}: no --fixture {', '.join(missing_fixture)}")
+            skipped += 1
             continue
         (c_passed, c_reason), (r_passed, r_reason) = c_runners[name](), replay.run(probes[name])
         word = {True: "passes", False: "fails", None: "cannot run"}
@@ -543,7 +606,8 @@ def parity(c_runners, replay, probes):
         print(f"DIFF {name}: the C probe {word[c_passed]}{': ' + c_reason if c_reason else ''}; "
               f"the replay {word[r_passed]}{': ' + r_reason if r_reason else ''}")
         differ += 1
-    print(f"{len(names)} probes: {len(names) - differ} agree, {differ} differ")
+    print(f"{len(names)} probes: {len(names) - differ - skipped} agree, {differ} differ, "
+          f"{skipped} skipped")
     return 1 if differ else 0
 
 

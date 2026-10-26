@@ -34,11 +34,14 @@ A stanza opens with `probe NAME`, builds a byte stream and the cuts of INTERFACE
 | `reject-re REGEX` | No line of the block matches REGEX whole. |
 | `reply "..."` | The block's replies, its `reply` lines decoded and joined, are these bytes. |
 | `reply-re "..."` | The replies match these bytes, read as a regular expression, whole. A metacharacter meant literally takes a backslash, written `\\`. |
+| `example "..."` | Follows a `want-re` or `reply-re`: a line or reply, written as for `send`, that the expression must match. Required in a missing probe. |
 | `placeholder REASON` | The probe has nothing to run, and fails with REASON. |
 
-A `test` line belongs to the block whose `checkpoint` follows it. A regular expression uses no backreference or lookaround, as in INTERFACE.md's grammar. A probe needs `view-frame` or `view-draw2` for its view, and the feature the spec's `describe` block gives each command it uses.
+A `test` line belongs to the block whose `checkpoint` follows it, and the `want` and `want-re` assertions on `test` lines take them in order: each matches a line after the one the assertion before it matched. A regular expression uses no backreference or lookaround, as in INTERFACE.md's grammar.
 
-`run.py` checks every stanza before anything runs. Each `want` and `reject` line must parse under the spec's grammar for the probe's view, with the reserved keys (`overline`, `superscript`, `subscript`) allowed only in a missing probe, so a missing probe's expectation is one the feature would print. A nonzero `changed` or `frame-since` count, or a placement's `changed` flag, is refused in a `want` or `reject` line unless the probe needs `damage-exact`, since a runner masks them otherwise. Each assertion follows a `check` with no input between, and each probe has a `want`, `want-re`, `reply` or `reply-re`.
+Every line the replay prints must parse under the spec's grammar for the view, or the probe fails. Unless the probe needs `damage-exact` and the replay declares it, the output and the `want` and `reject` lines are masked as INTERFACE.md's "Comparing with the goldens" says: a nonzero `changed` or `frame-since` count becomes `N`, and a placement's `changed` flag goes. An expectation writes such a count as `N`.
+
+`run.py` checks every stanza before anything runs. Each `want` and `reject` line, and each `want-re` example, must parse under the spec's grammar for the probe's view, with the reserved keys (`overline`, `superscript`, `subscript`) allowed only in a missing probe, and each `want-re` and `reply-re` must match its example. A missing probe's expectations are then lines and replies the feature could print, so a typo reads as malformed instead of as still missing. An exact `reply` has no grammar to check it against, and a typo in one reads as still missing. A nonzero count or a placement's `changed` flag in a probe that does not need `damage-exact` is refused with the advice to write `N`. Each assertion follows a `check` with no input between, and each probe has a `want`, `want-re`, `reply` or `reply-re`.
 
 ## Terminfo probes
 

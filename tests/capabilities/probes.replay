@@ -69,8 +69,8 @@ check
 want attr 0 0-0 blink
 
 # colours are kept as written and resolved at draw time: text written under
-# one palette is drawn in the next. The C reference erases the screen when a
-# palette is chosen, so the text waits on the main screen while the palette
+# one palette is drawn in the next. The C reference erased the screen when a
+# palette was chosen, so the text waits on the main screen while the palette
 # changes on the alternate one.
 probe palette-at-draw
 size 4 1
@@ -135,7 +135,8 @@ want row 0 |abbbb|
 want row 1 |中中中|
 want cursor 6,1
 
-# erased cells take the pen's background only, for EL, SU, SD and RI
+# erased cells take the pen's background only, for EL, SU, SD and RI; Y,
+# written before RI, shows that RI scrolled
 probe erase-colours-only
 size 80 4
 send "\e[1;4;9;44mX\e[K"
@@ -147,14 +148,15 @@ want attr 3 0-79 bg=4
 send "\e[T"
 check
 want attr 0 0-79 bg=4
-send "\e[H\eM"
+send "\e[H\e[0mY\e[1;4;9;44m\eM"
 check
+want row 1 |Y|
 want attr 0 0-79 bg=4
 
 # each display keeps its own frame age: one caller's frame does not hide a
 # change from another. The counts are informative unless damage-exact, so
 # the probe tells zero from nonzero only; the calls after the change share
-# a block, since printing one counts as a change in the C reference.
+# a block, since printing one counted as a change in the C reference.
 probe frame-age-per-caller
 size 80 4
 cmd frame-since;caller=0
@@ -165,9 +167,9 @@ cmd frame-since;caller=0
 cmd frame-since;caller=0
 cmd frame-since;caller=1
 check
-want-re test frame-since 0 changed [1-9][0-9]*
+want test frame-since 0 changed N
 want test frame-since 0 changed 0
-want-re test frame-since 1 changed [1-9][0-9]*
+want test frame-since 1 changed N
 
 # ECMA-48 SGR 53 overline, 55 not overlined
 probe sgr-overline
@@ -231,6 +233,7 @@ size 80 4
 send "\e[c"
 check
 reply-re "\e\\[\\?6[1-5](;.*)?c"
+example "\e[?62;1;4c"
 
 probe da2
 size 80 4
@@ -244,6 +247,7 @@ size 80 4
 send "\e[=c"
 check
 reply-re "\eP!\\|.*\e\\\\"
+example "\eP!|00000000\e\\"
 
 # --- OSC colours ---
 
@@ -286,6 +290,7 @@ size 80 4
 send "\e]12;?\e\\"
 check
 reply-re "\e]12;rgb:.*\e\\\\"
+example "\e]12;rgb:e5e5/e5e5/e5e5\e\\"
 
 # OSC 104 and 110 put back what OSC 4 and 10 changed, here to the reference
 # host's legacy palette; the sets must take first, so the probe never passes
@@ -311,6 +316,7 @@ size 80 4
 send "\e[?u"
 check
 reply-re "\e\\[\\?.*u"
+example "\e[?0u"
 
 # xterm modifyOtherKeys level 2: Ctrl+1 is sent as CSI 27 ; 5 ; 49 ~, and
 # XTQMODKEYS replies with the XTMODKEYS that sets the level

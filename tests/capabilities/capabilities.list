@@ -29,9 +29,9 @@ mode-8452                     works   -Dimages   DECRQM ?8452 (sixel cursor righ
 
 # terminfo entry (scripts/terminfo/kmscon.ti) against what kmscon implements
 terminfo-cursor-shape         works   -          Ss/Se for DECSCUSR
-terminfo-italic               missing #94        sitm/ritm: SGR 3/23 are parsed (and drawn by pango)
-terminfo-dim                  missing #94        dim: SGR 2 is implemented
-terminfo-strike               missing #94        smxx/rmxx: SGR 9/29 are implemented (ADR-102)
+terminfo-italic               works   -          sitm/ritm expand to SGR 3/23 (ncurses ecma+italics); freetype draws italic upright (#100)
+terminfo-dim                  works   -          dim expands to SGR 2, which libtsm draws as a dimmed foreground
+terminfo-strike               works   -          smxx/rmxx expand to SGR 9/29 (ncurses ecma+strikeout, ADR-102)
 terminfo-styled-underline     missing #94        Smulx: SGR 4:0-5 are implemented (ADR-102)
 terminfo-underline-colour     missing #94        Setulc: SGR 58/59 are implemented (ADR-102)
 terminfo-truecolor            works   -          Tc, setrgbf and setrgbb (upstream 114d109) for SGR 38;2 and 48;2

@@ -61,7 +61,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 	text=${text//\{desktop\}/$desktop}
 	# "Logo" was misread at the #233 pass; a guide names the key as the
 	# operator's keyboard does.
-	[[ ! $text =~ (^|[^[:alnum:]])Logo([^[:alnum:]]|$) ]] ||
+	[[ ! ${text,,} =~ (^|[^[:alnum:]])logo([^[:alnum:]]|$) ]] ||
 		die "$guide:$n: name the Super (Windows) key, not Logo"
 	s=$((${#titles[@]} - 1))
 	case $key in
@@ -118,11 +118,18 @@ if [ -n "$check" ]; then
 fi
 
 log=${GUIDE_LOG:-/tmp/kmscon-demo/vt-check.log}
-if ! { mkdir -p -- "${log%/*}" && touch -- "$log"; }; then
-	printf '\nguide: cannot write %s, so no answer would be kept.\nPress Enter to end.\n' "$log"
+dir=${log%/*}
+# Stops the run before anything is asked, saying why on the screen.
+refuse() {
+	printf '\nguide: %s, so no answer would be kept.\nPress Enter to end.\n' "$1"
 	read -r _ || true
 	exit 1
-fi
+}
+# The log goes only in a directory of the user's own, as vt-demo.sh's does.
+mkdir -p -- "$dir" 2>/dev/null || refuse "cannot write $log"
+[ ! -L "$dir" ] && [ -d "$dir" ] && [ -O "$dir" ] ||
+	refuse "$dir is a symlink, or not a directory of yours"
+touch -- "$log" 2>/dev/null || refuse "cannot write $log"
 export PROBE_LOG=$log
 
 note() { printf '%s\n' "$*" >>"$log"; }

@@ -288,6 +288,26 @@ def main():
         except TimeoutError as e:
             check("a results log that cannot be written ends the run at once, saying so", False, str(e))
 
+        # The log's directory is refused when it is a symlink or another
+        # user's, as vt-demo.sh refuses it for kmscon's log.
+        real = os.path.join(tmp, "real")
+        os.makedirs(real)
+        os.symlink(real, os.path.join(tmp, "linked"))
+        dirs = [(os.path.join(tmp, "linked"), "symlinked")]
+        if os.getuid() != 0:
+            dirs.append(("/usr", "someone else's"))
+        for d, what in dirs:
+            g = Pty(["/bin/bash", runner, guide], guide_env(os.path.join(d, "vt-check.log")))
+            try:
+                g.wait_for(b"Press Enter to end.")
+                g.send(b"\r")
+                status = g.finish()
+                check(f"a {what} results log directory is refused before anything is asked",
+                      status == 1 and f"{d} is a symlink, or not a directory of yours".encode() in g.out
+                      and b"Step 1" not in g.out and not os.listdir(real), g.out.decode(errors="replace"))
+            except TimeoutError as e:
+                check(f"a {what} results log directory is refused before anything is asked", False, str(e))
+
         # --check reads the guide without a terminal and refuses a broken one
         # by its line.
         def lint(text, **env):
@@ -318,6 +338,10 @@ def main():
             ("a step without expect:", "title: t\nstep: s\ndo: d\n", {}, "step 1 (s) needs do: and expect: lines"),
             ("Logo for the Super key", "title: t\nstep: s\ndo: Ctrl+Logo+Return\nexpect: e\n", {},
              "lint.guide:3: name the Super (Windows) key, not Logo"),
+            ("logo in lower case", "title: t\nstep: s\ndo: press logo+Left\nexpect: e\n", {},
+             "lint.guide:3: name the Super (Windows) key, not Logo"),
+            ("LOGO in capitals", "title: t\nintro: the LOGO key\nstep: s\ndo: d\nexpect: e\n", {},
+             "lint.guide:2: name the Super (Windows) key, not Logo"),
             ("GUIDE_STEPS past the last step", "title: t\n" + step, {"GUIDE_STEPS": "1,2"},
              "GUIDE_STEPS: '2' is not a step of this guide (1 to 1)"),
             ("GUIDE_STEPS of 0", "title: t\n" + step, {"GUIDE_STEPS": "0"}, "GUIDE_STEPS: '0'"),

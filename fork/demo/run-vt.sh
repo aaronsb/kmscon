@@ -19,8 +19,9 @@
 # --guide=FILE runs the guided checks of FILE (checks/guide.sh, #238) in place
 # of the demo, as the user, with no login; --steps="4 8 9" (or 4,8,9) runs
 # only those steps. The answers go to /tmp/kmscon-demo/vt-check.log.
-# --dry-run prints every command and runs none; it needs no root. For the
-# tests, a dry run takes the module directory from RUN_VT_MODULEDIR, calls
+# --dry-run prints every command and runs none, except the check that the
+# user can read the guide, which it skips; it needs no root. For the tests, a
+# dry run takes the module directory from RUN_VT_MODULEDIR, calls
 # RUN_VT_LOGINCTL for the session checks, takes the units in RUN_VT_ACTIVE as
 # the active ones, and starts RUN_VT_CHILD in kmscon's place and waits on it.
 # As root, any of the four set is refused.
@@ -33,7 +34,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,26s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,27s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 

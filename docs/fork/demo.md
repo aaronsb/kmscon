@@ -60,7 +60,7 @@ make vt-check GUIDE=focus-decarm-mouse DEMO_ARGS=--dpms-timeout=15
 
 Each step is one screen: what to do and what to expect. Enter starts `fork/demo/checks/probe.py` in the step's mode, q stops it, and the operator answers y, n or s, with a note. At a step's first prompt, s skips the step and q ends the checks. The probe prints each sequence the terminal sends, one line each, split at each ESC, with FOCUS IN and FOCUS OUT labelled, and timed in seconds from its start. A time is when the probe read the bytes. After the last step kmscon exits and the stock console comes back.
 
-The answers and the probe's lines are appended to `/tmp/kmscon-demo/vt-check.log` under a header line naming the guide, the time, the tty and the steps. When the run ends, `make vt-check` prints the health check, the lines the run added and the log's path, and fails when kmscon failed or the run added nothing. `GUIDE` is a name in `fork/demo/checks` or a path. The guide and `GUIDE_STEPS` are checked with `guide.sh --check` before sudo, and without `GUIDE` the target fails before the build, naming the guides. `VT`, `DEMO_ARGS` and `VT_DEMO_DRY_RUN=1` work as for `make vt-demo`; `KIT` is refused. By hand: `sudo fork/demo/run-vt.sh --guide=FILE [--steps="4 5"] [N] [-- kmscon-option...]`.
+The answers and the probe's lines are appended to `/tmp/kmscon-demo/vt-check.log` under a header line naming the guide, the time, the tty and the steps. `guide.sh` refuses that directory, before anything is asked, when it is a symlink or another user's. When the run ends, `make vt-check` prints the health check, the lines the run added and the log's path, and fails when kmscon failed or the run added nothing. `GUIDE` is a name in `fork/demo/checks` or a path. The guide and `GUIDE_STEPS` are checked with `guide.sh --check` before sudo, and without `GUIDE` the target fails before the build, naming the guides. `VT`, `DEMO_ARGS` and `VT_DEMO_DRY_RUN=1` work as for `make vt-demo`; `KIT` is refused. By hand: `sudo fork/demo/run-vt.sh --guide=FILE [--steps="4 5"] [N] [-- kmscon-option...]`.
 
 The #233 pass, the first run of this kind, left these lessons in the guide and the tools:
 
@@ -143,7 +143,7 @@ The script is `fork/demo/vt-demo.sh [N] [-- KMSCON-OPTION...]`; `tests/demo/vt_d
 4. Prints the steps and the manual restore command.
 5. Runs the staged kmscon on VT N with `--no-switchvt --oneshot`, the demo config and the demonstration as its session, in the background so that only the script's trap stops it, and waits for it. With `--login`, the session is `/bin/login -p` and kmscon runs without `--oneshot`; the script watches the VT's logind sessions and ends the run at the first logout, and Ctrl-C, a kmscon crash or kmscon's retry limit ends it as well, the last two as failures (the retry limit's 0 becomes 1).
 
-`--dry-run` prints each of these commands (and the checks it would make) without running any, and needs no root.
+`--dry-run` prints each of these commands (and the checks it would make) without running any, and needs no root. It skips the check that the user can read a `--guide` file, which runs a command as the user.
 
 ## The demonstration
 

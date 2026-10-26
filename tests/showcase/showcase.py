@@ -76,6 +76,9 @@ def main():
               f"{got!r}\n{p.stderr}")
         needs = {l[:4].strip(): l[29:60].split() for l in rows}
         check("each act lists what it needs", all(needs.get(n) for n, _ in ACTS), repr(needs))
+        # Act 6 falls back to emoji without rsvg-convert.
+        check("act 6 lists rsvg-convert as optional", "rsvg-convert?" in needs.get("6", []), repr(needs.get("6")))
+        needs = {n: [t.rstrip("?") for t in ts] for n, ts in needs.items()}
         check("every act plays on kmscon (act 7 through kitty graphics since #169)",
               all("placeholder" not in l for l in rows), p.stdout)
 

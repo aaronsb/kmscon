@@ -144,8 +144,9 @@ cue() {
 : "${BANNER_OUTRO:=greetings to ZUN, Alstroemeria Records, nomico and Anira 🍎 libtsm, mpv, ffmpeg, libcaca, libsixel and toilet 💾 see you on the console 🖥️}"
 END_TEXT=${END_TEXT:-"Bad Apple!! - original by ZUN (Touhou Project), arrangement by Alstroemeria Records feat. nomico, shadow-art video by Anira"}
 
-# The act table: name, the programs it needs, what it does, and how it plays
-# on kmscon today. --list and --dry-run print it; act_N runs it.
+# The act table: name, the programs it needs (a trailing ? marks one the
+# act plays without, in a simpler form), what it does, and how it plays on
+# kmscon today. --list and --dry-run print it; act_N runs it.
 ACT_NAME=(""
 	"stick figures"
 	"we can do better"
@@ -160,7 +161,7 @@ ACT_NEEDS=(""
 	"ffmpeg img2txt python3"
 	"python3"
 	"ffmpeg mpv python3"
-	"python3 rsvg-convert"
+	"python3 rsvg-convert?"
 	"ffmpeg toilet python3")
 ACT_VIDEO=("" 1 0 1 0 1 0 1)
 ACT_WHAT=(""
@@ -212,12 +213,14 @@ usage() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 tool_line() {
-	local t s=
+	local t s= opt
 	for t in $1; do
+		opt=
+		[[ $t != *\? ]] || { t=${t%\?}; opt="optional; "; }
 		if have "$t"; then
-			s+=" $t"
+			s+=" $t${opt:+ (optional)}"
 		else
-			s+=" $t (missing: pacman -S ${PKG[$t]:-$t})"
+			s+=" $t (${opt}missing: pacman -S ${PKG[$t]:-$t})"
 		fi
 	done
 	printf '%s' "${s# }"
@@ -225,7 +228,7 @@ tool_line() {
 
 list_acts() {
 	local n e name where needs
-	printf '%-3s %-24s %-30s %s\n' act name needs "on kmscon today"
+	printf '%-3s %-24s %-30s %s\n' act name "needs (? optional)" "on kmscon today"
 	for ((n = 1; n <= LAST_ACT; n++)); do
 		printf '%-3s %-24s %-30s %s\n' "$n" "${ACT_NAME[n]}" "${ACT_NEEDS[n]}" "${ACT_KMSCON[n]}"
 	done

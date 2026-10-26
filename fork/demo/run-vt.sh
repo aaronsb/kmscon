@@ -4,7 +4,7 @@
 # autovt@ttyN). When the demo ends, or this script is interrupted, or kmscon
 # fails, the units that were running are started again. See docs/fork/demo.md.
 #
-#   sudo fork/demo/run-vt.sh [--dry-run] [--kit=KIT | --login] [N] [-- kmscon-option...]
+#   sudo fork/demo/run-vt.sh [--dry-run] [--kit=KIT | --login | --guide=FILE [--steps=LIST]] [N] [-- kmscon-option...]
 #
 # N is the VT, 2-12, default 3. Options after -- go to kmscon, for display
 # settings of one machine (--mode=..., --no-use-original-mode, --font-size=...).
@@ -16,6 +16,9 @@
 # of the demo, so the session is a logind session. The first logout ends the
 # run; so do Ctrl-C, a kmscon crash and kmscon's limit on logins failing in a
 # row, the last two as failures.
+# --guide=FILE runs the guided checks of FILE (checks/guide.sh, #238) in place
+# of the demo, as the user, with no login; --steps="4 8 9" (or 4,8,9) runs
+# only those steps. The answers go to /tmp/kmscon-demo/vt-check.log.
 # --dry-run prints every command and runs none; it needs no root. For the
 # tests, a dry run takes the module directory from RUN_VT_MODULEDIR, calls
 # RUN_VT_LOGINCTL for the session checks, takes the units in RUN_VT_ACTIVE as
@@ -30,7 +33,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,23s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,26s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -44,11 +47,15 @@ vt=
 kit=
 extra=()
 login=
+guide=
+steps=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
 	--kit=*) kit=${1#*=}; [ -n "$kit" ] || die "--kit takes text, sixel, kitty, glyphs or all, not ''" ;;
 	--login) login=1 ;;
+	--guide=*) guide=${1#*=}; [ -n "$guide" ] || die "--guide needs the guide's path: --guide=fork/demo/checks/NAME.guide" ;;
+	--steps=*) steps=${1#*=} ;;
 	-h | --help) usage ;;
 	--) shift; extra=("$@"); break ;;
 	[0-9]*) [ -z "$vt" ] || usage; vt=$1 ;;
@@ -142,6 +149,15 @@ case $kit in
 esac
 [ -z "$login" ] || [ -z "$kit" ] ||
 	die "--login runs no demo: log in, then run the demo yourself (it says how)"
+if [ -n "$guide" ]; then
+	[ -z "$kit$login" ] || die "--guide runs the guided checks, with no demo and no login"
+	# The guide is read by the session, as the user, from this absolute path.
+	guide=$(readlink -m -- "$guide")
+	[[ -z $steps || $steps =~ ^[1-9][0-9]*([ ,][1-9][0-9]*)*$ ]] ||
+		die "--steps takes step numbers, \"4 8 9\" or 4,8,9, not '$steps'"
+elif [ -n "$steps" ]; then
+	die "--steps goes with --guide=FILE"
+fi
 [ -n "$dry" ] || [ "$(id -u)" -eq 0 ] || die "run as root, through sudo"
 [ -x "$kmscon" ] && [ -d "$modules" ] || die "nothing staged in $stage: run make demo first"
 [ -d "$moduledir" ] || die "$moduledir does not exist, so the staged modules have nowhere to be mounted"
@@ -153,6 +169,10 @@ user=${SUDO_USER:-}
 uid=$(id -u "$user") || die "no such user: $user"
 gid=$(id -g "$user")
 drop=(/usr/bin/setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env)
+if [ -n "$guide" ] && [ -z "$dry" ]; then
+	"${drop[@]}" -- /usr/bin/test -f "$guide" -a -r "$guide" ||
+		die "$user cannot read the guide $guide"
+fi
 
 # Prints "ID STATE" for each logind session on VT $vt, and fails when loginctl
 # cannot list the sessions. A session whose query fails is skipped only when a
@@ -256,6 +276,7 @@ trap 'exit 129' HUP
 build=$(cut -d' ' -f1 "$stage/BUILD" 2>/dev/null) || build='(unknown)'
 ends="the demo ends" last=3
 [ -z "$login" ] || ends="it ends" last=4
+[ -z "$guide" ] || ends="the checks end"
 if [ ${#active[@]} -gt 0 ]; then
 	after="when $ends, ${active[*]} is started again on VT $vt"
 	manual="manual restore: sudo systemctl start ${active[*]}"
@@ -272,13 +293,16 @@ if [ -n "$login" ]; then
        github.com/aaronsb/kmscon-showcase (its README says how)
      until someone logs in, the prompt comes back after login's timeout
   3. log out to end it; Ctrl-C here ends it too, the login with it"
+elif [ -n "$guide" ]; then
+	what="follow each step of $guide${steps:+ (steps $steps)}
+     and answer y, n or s; the run ends after the last step"
 else
 	what="rate each page with 1, 2 or 3 (c adds a comment, b goes back);
      press q in the demo to finish"
 fi
 cat <<EOF
 
-kmscon dev build $build on VT $vt${login:+, with a login prompt}
+kmscon dev build $build on VT $vt${login:+, with a login prompt}${guide:+, with guided checks}
   1. switch with Ctrl-Alt-F$vt
   2. $what
   $last. $after;
@@ -298,9 +322,15 @@ EOF
 # releasing the VT. unshare and sh exec, so $! is kmscon's own PID. kmscon
 # starts its child with execve, without a PATH search, so its path is absolute.
 # kmscon and setpriv both clear the environment, so DEMO_LABEL, which names the
-# build on the demo's title page, is set last, by env.
+# build on the demo's title page, is set last, by env. The guided checks get
+# the VT, the desktop's and the steps there instead, and the guide's path as
+# one word of their own, never through a shell.
 session=(/usr/bin/env DEMO_LABEL="dev build $build" ${kit:+DEMO_KIT="$kit"}
 	/bin/bash "$here/demo.sh")
+if [ -n "$guide" ]; then
+	session=(/usr/bin/env GUIDE_VT="$vt" GUIDE_DESKTOP="${fg:-N}" ${steps:+GUIDE_STEPS="$steps"}
+		/bin/bash "$here/checks/guide.sh" "$guide")
+fi
 once=(--oneshot)
 login_argv=("${drop[@]}" -- "${session[@]}")
 if [ -n "$login" ]; then

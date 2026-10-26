@@ -699,6 +699,17 @@ test(
     timeout: 120,
 )
 
+# make vt-check's guided checks (fork/demo/checks, #238): guide.sh driven
+# through scripted answers on a pty, with probe.py reading the bytes sent, and
+# the results log; guide.sh --check on broken guides and the tree's; probe.py's
+# bg mode, about 7 s of it, and how it splits a read.
+test(
+    'demo_vt_check',
+    python,
+    args: [files('demo/vt_check.py'), '--root', meson.project_source_root()],
+    timeout: 60,
+)
+
 # The kitty graphics player of the acceptance runs
 # (fork/tools/kitty-player/kitty.py, #177): its layout and moves, and its
 # output on a model of the spec's image store, alone and on a pty with

@@ -68,8 +68,10 @@ kitty_offered() {
 	local r
 	r=$(ask "${esc}_Gi=31,s=1,v=1,a=q,f=24;AAAA${esc}\\${esc}[c" c)
 	if [[ $r != *"_Gi=31;OK"* ]]; then
-		printf 'This terminal does not answer the kitty graphics query (an a=q of\n'
-		printf 'one pixel before DA1), so no picture is sent.\n'
+		# the screen's name first, so each screen's page differs from the last
+		printf '%s: this terminal does not answer the kitty graphics query (an\n' \
+			"$(basename "$0" .sh)"
+		printf 'a=q of one pixel before DA1), so no picture is sent.\n'
 		[ -n "$T3_EVENTS" ] && echo T3-NO-KITTY >"$T3_EVENTS"
 		exit 0
 	fi

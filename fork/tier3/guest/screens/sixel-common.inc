@@ -28,8 +28,10 @@ sixel_offered() {
 	da1=$(ask "$esc[c" c)
 	if [[ ";${da1##*\?};" != *";4;"* ]]; then
 		shown=${da1:+${da1//$esc/^[}c}
-		printf 'This terminal does not offer sixel graphics: its DA1 reply has\n'
-		printf 'no attribute 4 (%s), so no picture is sent.\n' "${shown:-no reply}"
+		# the screen's name first, so each screen's page differs from the last
+		printf '%s: this terminal does not offer sixel graphics: its DA1 reply\n' \
+			"$(basename "$0" .sh)"
+		printf 'has no attribute 4 (%s), so no picture is sent.\n' "${shown:-no reply}"
 		[ -n "$T3_EVENTS" ] && echo T3-NO-SIXEL >"$T3_EVENTS"
 		exit 0
 	fi

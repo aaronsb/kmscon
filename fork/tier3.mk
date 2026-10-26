@@ -6,6 +6,10 @@
 #   make tier3-image    fetch, verify and provision the guest base image
 #   make tier3          install the package in a guest and run every variant
 #   make tier3-gl       the same for the GL (virgl) variant alone
+#   make tier3-minimal  the minimal build's package (make pkg-minimal) on the
+#                       potato machine, with unifont and with a PSF font
+#   make tier3-run      a run without rebuilding the package; PKG_DIR=
+#                       fork/build/pkg-minimal for the minimal variants
 #   make tier3-bless    rewrite the goldens from the last run's captures
 #
 # JOBS=N runs up to N variants at once, each in its own VM (the vCPUs and
@@ -80,9 +84,29 @@ tier3: tier3-image ## Tier 3: every variant, or VARIANTS="2d-1280x800 gl-1280x80
 tier3-gl: tier3-image ## Tier 3 on the GL variant (virgl) alone
 	$(T3_RUN) --pkg-target pkg gl-1280x800
 
+# The minimal build (ADR-103) under the same package names, in a directory of
+# its own, for the potato-minimal variants, which run in their own run since
+# every variant of a run installs the same packages.
+T3_MINPKGOUT := fork/build/pkg-minimal
+
+.PHONY: pkg-minimal
+pkg-minimal: image ## Build the minimal build's package (scripts/profiles/minimal.ini) -> fork/build/pkg-minimal
+	mkdir -p $(T3_MINPKGOUT)/work
+	docker run --rm --user $(shell id -u):$(shell id -g) -e HOME=/tmp \
+		-e KMSCON_SRC=/src -e KMSCON_PKGVER=$(T3_PKGVER) -e KMSCON_PROFILE=minimal \
+		-e PKGDEST=/out -e BUILDDIR=/out/work -e SRCDEST=/out/work \
+		-v $(CURDIR):/src:ro $(LIBTSM_MOUNT) -v $(CURDIR)/$(T3_MINPKGOUT):/out \
+		-w /out/work $(IMAGE) \
+		sh -c 'cp /src/fork/pkg/PKGBUILD . && makepkg --nodeps --cleanbuild --force'
+
+.PHONY: tier3-minimal
+tier3-minimal: tier3-image ## Tier 3 on the potato machine with the minimal build: unifont and a PSF font
+	$(T3_RUN) --pkg-target pkg-minimal --pkg-dir $(T3_MINPKGOUT) \
+		$(or $(VARIANTS),2d-potato-min 2d-potato-min-psf)
+
 .PHONY: tier3-run
-tier3-run: ## Tier 3 without rebuilding the package (VARIANTS=, JOBS= as for tier3)
-	$(T3_RUN) $(VARIANTS)
+tier3-run: ## Tier 3 without rebuilding the package (VARIANTS=, JOBS= as for tier3; PKG_DIR=fork/build/pkg-minimal for the minimal variants)
+	$(T3_RUN) $(if $(PKG_DIR),--pkg-dir $(PKG_DIR)) $(VARIANTS)
 
 .PHONY: tier3-bless
 tier3-bless: ## Copy the last tier 3 run's captures over the goldens

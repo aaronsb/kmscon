@@ -404,6 +404,86 @@ class VariantTest(unittest.TestCase):
         self.assertFalse(t3_scenario.uses_virgl("2d-1366x768-potato"))
         self.assertIn("2d-1366x768-potato", t3_scenario.DEFAULT_VARIANTS)
 
+    def test_potato_minimal(self):
+        # The potato machine with the minimal build (ADR-103), unifont and a
+        # PSF font: the minimal package, so out of the default run, whose
+        # variants install the default package.
+        for name, conf in (("2d-potato-min", "kmscon-minimal.conf"),
+                           ("2d-potato-min-psf", "kmscon-minimal-psf.conf")):
+            with self.subTest(name):
+                v = t3_scenario.VARIANTS[name]
+                potato = t3_scenario.VARIANTS["2d-1366x768-potato"]
+                for key in ("device", "cpus", "memory_mb", "renderer"):
+                    self.assertEqual(v[key], potato[key])
+                self.assertEqual(v["conf"], conf)
+                self.assertEqual(t3_scenario.package_target(name), "pkg-minimal")
+                self.assertNotIn(name, t3_scenario.DEFAULT_VARIANTS)
+                # no picture to key: the image screens' keyed cases are left out
+                cases = t3_scenario.variant_cases(name)
+                self.assertNotIn("photo-scrollback", cases)
+                self.assertNotIn("sixel-evict-zoomed", cases)
+                self.assertIn("photo-scroll", cases)
+                self.assertIn("vt-restore", cases)
+        for name in t3_scenario.DEFAULT_VARIANTS:
+            self.assertEqual(t3_scenario.variant_cases(name), t3_evaluate.CASES)
+            self.assertEqual(t3_scenario.package_target(name), "pkg")
+        with open(os.path.join(t3_common.GUEST, "kmscon-minimal-psf.conf")) as f:
+            self.assertIn("font-engine=psf\n", f.read())
+
+    def test_resident_memory(self):
+        # guest/t3's T3-RSS lines: the largest VmRSS of the kmscon
+        # processes after each screen; a line with none is left out.
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("T3-LOGIN /dev/tty2\nT3-RSS sgr 5120 \nT3-DONE sgr\n"
+                    "T3-RSS vt-x 5200 9000 \nT3-RSS empty \n")
+        try:
+            vm = type("Vm", (), {"events": f.name})
+            self.assertEqual(t3_scenario.resident_kb(vm), {"sgr": 5120, "vt-x": 9000})
+        finally:
+            os.unlink(f.name)
+
+    def test_image_benchmarks_without_images(self):
+        # A variant without images measures no picture stream: each image
+        # benchmark screen must have found images not offered since the
+        # screen before it ended, and must report no window.
+        def figures(events, images=False):
+            with tempfile.TemporaryDirectory() as d:
+                vm = type("Vm", (), {"serial": os.path.join(d, "serial"),
+                                     "events": os.path.join(d, "events")})
+                with open(vm.serial, "w") as f:
+                    f.write("")
+                with open(vm.events, "w") as f:
+                    f.write(events)
+                caps = {"mpv-sixel": "x", "tmux-2x2": "x"}
+                return t3_scenario.bench_figures(vm, caps, "", images)
+        got = figures("T3-NO-SIXEL\nT3-RSS mpv-sixel 5000 \nT3-DONE mpv-sixel\n"
+                      "T3-DONE tmux-2x2\n")
+        self.assertEqual(got["mpv-sixel"], {"not_offered": "T3-NO-SIXEL"})
+        self.assertIn("not offered", got["tmux-2x2"]["error"])
+        got = figures("T3-NO-SIXEL\nT3-BENCH mpv-sixel 1.0 2.0\nT3-DONE mpv-sixel\n")
+        self.assertIn("measured a picture stream", got["mpv-sixel"]["error"])
+        # a variant with images measures, as before
+        got = figures("T3-NO-SIXEL\nT3-DONE mpv-sixel\n", images=True)
+        self.assertIn("no benchmark window", got["mpv-sixel"]["error"])
+
+    def test_startup(self):
+        # from kmscon's revision line to its display line, same process
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("[    6.663227] kmscon[459]: log: kmscon Revision v10\n"
+                    "[    6.700000] kmscon[460]: terminal: Display a with backend [x]\n"
+                    "[    6.739898] kmscon[459]: terminal: Display pci-0000:00:01.0[Virtual-1] "
+                    "with backend [drm2d] text renderer [bbulk]\n")
+        try:
+            self.assertEqual(t3_scenario.kmscon_startup_ms(f.name), 76.7)
+        finally:
+            os.unlink(f.name)
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("[    6.663227] kmscon[459]: log: kmscon Revision v10\n")
+        try:
+            self.assertIsNone(t3_scenario.kmscon_startup_ms(f.name))
+        finally:
+            os.unlink(f.name)
+
     def test_gl_draws_images(self):
         # gltex draws image placements (ADR-103 steps 3f and 4e), so the GL
         # variant runs every case, the image screens and their keyed cases
@@ -655,6 +735,13 @@ class BenchTest(unittest.TestCase):
                 self.assertEqual((entry["status"], entry["error"]), ("fail", "no render-timer line"))
                 with contextlib.redirect_stderr(io.StringIO()):
                     entry = t3_evaluate.evaluate("v", "s1-scroll", ppm, {}, LOG)
+                self.assertEqual(entry["status"], "pass")
+                # an image screen a build without images found not offered
+                # is judged by its capture alone, its rate unjudged
+                t3img.write_png(os.path.join(d, "v", "mpv-sixel.png"), t3img.Image(2, 1, b"\0" * 6))
+                meta = {"bench": {"mpv-sixel": {"not_offered": "T3-NO-SIXEL"}}}
+                with contextlib.redirect_stderr(io.StringIO()):
+                    entry = t3_evaluate.evaluate("v", "mpv-sixel", ppm, meta, LOG)
                 self.assertEqual(entry["status"], "pass")
             finally:
                 t3_evaluate.GOLDEN, t3_evaluate.RUNDIR = saved

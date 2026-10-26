@@ -124,6 +124,14 @@ def run(args, log):
             r = subprocess.run(["make", "--no-print-directory", args.pkg_target], cwd=ROOT)
             if r.returncode:
                 raise SystemExit("package build failed with exit code %d" % r.returncode)
+        # every variant of a run installs the same packages, so a variant that
+        # needs other ones (the minimal build's) runs in a run of its own
+        for v in variants:
+            want = os.path.join(ROOT, "fork", "build", t3_scenario.package_target(v))
+            if not args.compare_only and os.path.realpath(args.pkg_dir) != os.path.realpath(want):
+                raise SystemExit("%s installs the packages of make %s, in %s; this run's are "
+                                 "in %s" % (v, t3_scenario.package_target(v), rel(want),
+                                            rel(args.pkg_dir)))
         pkgs = t3_scenario.newest_packages(args.pkg_dir, args.pkg_name)
         log("packages: %s" % ", ".join(map(os.path.basename, pkgs)))
         results, interrupted = t3_runner.run_variants(variants, args.jobs, pkgs,

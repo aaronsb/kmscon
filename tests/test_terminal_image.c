@@ -35,6 +35,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -466,6 +467,13 @@ static void test_discard(void)
 	teardown();
 }
 
+/* DA1 is answered; before each turn, no request was out and the pty was not paused */
+static bool da1_unpaused(void)
+{
+	assert(!terminal_image_busy(&ti) && !pty->paused);
+	return out_len && out[out_len - 1] == 'c' && strstr(out, "\033[?");
+}
+
 /*
  * #167: the hook acts on a refusal before login. Each file medium is
  * answered in the same input call, no helper starts and the pty never
@@ -486,8 +494,9 @@ static void test_prelogin(void)
 	strcpy(p3, file_with_px("tty-graphics-protocol-prelogin-discard"));
 	kitty("a=f,t=t,f=32,s=2,v=1,i=10", b64(p3, strlen(p3)));
 	send_client("\033[c", 3);
-	ev_eloop_dispatch(pty->eloop, 100);
-	/* one turn read and answered all four, in order, with no request out */
+	/* the pty can read the four writes over several turns */
+	run_until(da1_unpaused);
+	/* all four answered, in order */
 	assert(strstr(out, "\033_Gi=8;EBADF:Failed to read image file\033\\"
 			   "\033_Gi=9;EBADF:Failed to read image file\033\\"
 			   "\033_Gi=10;EINVAL:invalid argument\033\\"
@@ -508,9 +517,48 @@ static void test_prelogin(void)
 }
 
 /*
+ * a helper test_pause stopped, killed on a fatal signal meanwhile: an
+ * assertion's, a crash's, or meson's timeout
+ */
+static volatile sig_atomic_t stopped;
+static const int fatal[] = {SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGTERM, SIGINT};
+static struct sigaction fatal_old[sizeof(fatal) / sizeof(fatal[0])];
+
+static void kill_stopped(int sig)
+{
+	if (stopped > 0)
+		kill(stopped, SIGKILL);
+	raise(sig);
+}
+
+static void helper_stop(pid_t pid)
+{
+	struct sigaction sa = {.sa_handler = kill_stopped, .sa_flags = SA_RESETHAND};
+	size_t i;
+
+	sigemptyset(&sa.sa_mask);
+	for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); i++)
+		assert(!sigaction(fatal[i], &sa, &fatal_old[i]));
+	stopped = pid;
+	assert(!kill(pid, SIGSTOP));
+}
+
+static void helper_continue(void)
+{
+	size_t i;
+
+	assert(!kill(stopped, SIGCONT));
+	stopped = 0;
+	for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); i++)
+		assert(!sigaction(fatal[i], &fatal_old[i], NULL));
+}
+
+/*
  * The bytes after a command wait for its reply: a put of the image, text and
  * DA1 in the same write are parsed after it, in order, and nothing more is
- * read from the pty meanwhile.
+ * read from the pty meanwhile. The helper is started by a first transmission
+ * and stopped before the second, so its reply cannot arrive while the pause
+ * is checked.
  */
 static void test_pause(void)
 {
@@ -521,6 +569,14 @@ static void test_pause(void)
 	setup(__func__, real_helper);
 	n = snprintf(buf, sizeof(buf), "\033_Ga=t,t=f,f=32,s=2,v=1,i=12;%s\033\\",
 		     b64(path, strlen(path)));
+	send_client(buf, n);
+	run_until(have_answer);
+	answered(12, "OK");
+	run_until(idle);
+	replied = 0;
+	assert(image_host_pid(ti.host) > 0);
+	helper_stop(image_host_pid(ti.host));
+
 	n += snprintf(buf + n, sizeof(buf) - n, "\033_Ga=p,i=12,C=1;\033\\AB\033[c");
 	send_client(buf, n);
 	run_until(request_out);
@@ -533,6 +589,7 @@ static void test_pause(void)
 	ev_eloop_dispatch(pty->eloop, 20);
 	assert(pty->paused && !out_len && tsm_screen_get_cursor_x(con) == 0);
 
+	helper_continue();
 	run_until(idle);
 	/* the transmission's OK, then the put's, then DA1; then AB and CD */
 	assert(strstr(out, "\033_Gi=12;OK\033\\\033_Gi=12;OK\033\\\033[?") == out);

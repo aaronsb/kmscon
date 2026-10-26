@@ -90,15 +90,26 @@ static unsigned int open_fds(void)
 	return n;
 }
 
-/* turns of the loop until the request out ends, at most @ms */
+static uint64_t now_ns(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+/*
+ * turns of the loop until the request out ends, at most @ms by the clock (a
+ * turn that another event ends is shorter than 10 ms) and 50 ms more, so a
+ * timer due at @ms is dispatched even late
+ */
 static void wait_reply(struct image_host *h, unsigned int ms)
 {
+	uint64_t end = now_ns() + (uint64_t)(ms + 50) * 1000000;
 	unsigned int calls = got.calls;
 
-	while (ms && got.calls == calls) {
+	while (got.calls == calls && now_ns() < end)
 		ev_eloop_dispatch(loop, 10);
-		ms -= ms < 10 ? ms : 10;
-	}
 	assert(got.calls == calls + 1 && !image_host_busy(h));
 }
 
@@ -140,7 +151,9 @@ static void test_real(const char *helper)
 	char path[PATH_MAX + 16];
 	struct image_host_request r;
 	struct image_host *h;
+	unsigned int calls;
 	pid_t pid;
+	int ret;
 	FILE *f;
 
 	snprintf(path, sizeof(path), "%s/px.rgba", dir);
@@ -270,13 +283,25 @@ static void test_real(const char *helper)
 	ev_eloop_dispatch(loop, 50);
 	assert(got.id != 15 && !image_host_busy(h));
 
-	/* a helper whose exec fails closes its socket: a failure */
+	/*
+	 * a helper whose exec fails closes its socket: a failure, as the reply,
+	 * or as EBADF from the send when the close comes first
+	 */
 	image_host_free(h);
 	assert(image_host_new(&h, loop, "/nonexistent/helper", reply, NULL) == 0);
 	r = request(16, 'f', path);
-	assert(image_host_send(h, &me, &r) == 0);
-	wait_reply(h, 5000);
-	assert(got.id == 16 && got.status == IMAGE_HOST_FAILED && !image_host_pid(h));
+	calls = got.calls;
+	ret = image_host_send(h, &me, &r);
+	if (ret == 0) {
+		wait_reply(h, 5000);
+		assert(got.id == 16 && got.status == IMAGE_HOST_FAILED);
+	} else {
+		assert(ret == -EBADF && !image_host_busy(h));
+		/* no reply comes */
+		ev_eloop_dispatch(loop, 50);
+		assert(got.calls == calls);
+	}
+	assert(!image_host_pid(h));
 	image_host_free(h);
 	unlink(path);
 }

@@ -81,7 +81,8 @@ class Probe:
             if not select.select([self.fd], [], [], left)[0]:
                 continue
             data = os.read(self.fd, 256)
-            if quit and data in (b"q", b"Q"):
+            # An empty read is the terminal gone: nothing more will come.
+            if not data or quit and data in (b"q", b"Q"):
                 return True
             self.show(data, "" if quit else "(before set) ")
 
@@ -125,7 +126,8 @@ def main():
         if background:
             os.write(1, b"\033]setForeground\a")
         os.write(1, off.encode())
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        # TCSAFLUSH drops keys typed after q, so none answers guide.sh's prompt.
+        termios.tcsetattr(fd, termios.TCSAFLUSH, saved)
         print("%s off" % mode)
     return 0
 

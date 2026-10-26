@@ -437,7 +437,9 @@ test_capabilities = executable(
     dependencies: [libtsm_deps],
 )
 # sixel, kitty graphics and sixel's modes through kmscon's own configuration
-# and vte, judged against the build's images option (-Dimages in the list)
+# and vte, judged against the build's images option (-Dimages in the list),
+# and the vte identification probes (XTVERSION and XTGETTCAP), which pass in
+# every build
 test_capabilities_images = executable(
     'test_capabilities_images',
     'test_capabilities_images.c',

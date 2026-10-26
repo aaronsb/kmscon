@@ -40,7 +40,6 @@ import tempfile
 TERMINFO = {
     "terminfo-cursor-shape": [{"Ss", "Se"}],
     "terminfo-truecolor": [{"RGB"}, {"Tc"}],
-    "terminfo-bracketed-paste": [{"BD", "BE", "PS", "PE"}],
     "terminfo-sgr-mouse": [{"XM"}],
     "terminfo-sync": [{"Sync"}],
     "terminfo-focus": [{"fe", "fd"}],
@@ -65,6 +64,12 @@ TERMINFO_STRINGS = {
     "terminfo-underline-colour": [
         ("Setulc", ("1122867",), "\033[58:2::17:34:51m"),
         ("Setulc", ("16777215",), "\033[58:2::255:255:255m"),
+    ],
+    "terminfo-bracketed-paste": [
+        ("BE", (), "\033[?2004h"),
+        ("BD", (), "\033[?2004l"),
+        ("PS", (), "\033[200~"),
+        ("PE", (), "\033[201~"),
     ],
 }
 

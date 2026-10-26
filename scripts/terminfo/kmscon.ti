@@ -105,6 +105,9 @@ kmscon|KMS Console,
 # Focus Events (mode 1004, ncurses xterm+focus)
   XF, fd=\E[?1004l, fe=\E[?1004h, kxIN=\E[I, kxOUT=\E[O,
 
+# Bracketed Paste (mode 2004, ncurses bracketed+paste)
+  BD=\E[?2004l, BE=\E[?2004h, PE=\E[201~, PS=\E[200~,
+
 # Input Keys
   kbs=^?, kcub1=\E[D, kcud1=\E[B,
   kcuf1=\E[C, kcuu1=\E[A, kcbt=\E[Z,

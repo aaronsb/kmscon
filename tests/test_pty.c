@@ -44,6 +44,23 @@
 #include <unistd.h>
 #include "../src/misc/pty.c"
 
+/*
+ * malloc is wrapped (-Wl,--wrap=malloc): with fail_after at n, it fails once
+ * after n more calls succeed. Volatile: the compiler takes the call for the
+ * builtin malloc, which touches no other memory, and would keep the count
+ * it last read across it.
+ */
+void *__real_malloc(size_t size);
+void *__wrap_malloc(size_t size);
+static volatile long fail_after = -1;
+
+void *__wrap_malloc(size_t size)
+{
+	if (fail_after >= 0 && !fail_after--)
+		return NULL;
+	return __real_malloc(size);
+}
+
 static char seen[4 * KMSCON_NREAD];
 static size_t n_seen;
 static size_t take; /* the most the callback takes in one call */
@@ -500,6 +517,63 @@ static bool answers(struct kmscon_pty *pty)
 	return answered != before;
 }
 
+/* the bytes the ring holds, block by block */
+static size_t ring_bytes(struct shl_ring *ring)
+{
+	struct shl_ring_entry *e;
+	size_t n = 0;
+
+	for (e = ring->first; e; e = e->next)
+		n += e->len;
+	return n;
+}
+
+/*
+ * A write whose second new ring block cannot be allocated leaves nothing of
+ * itself queued: the child reads every byte counted and no more, and the
+ * count drains to zero.
+ */
+static void test_queue_nomem(void)
+{
+	static char keys[256 * 1024], more[1500];
+	struct kmscon_pty *pty;
+	size_t queued;
+	int slave;
+
+	pty = open_child(&slave);
+	memset(keys, 'k', sizeof(keys));
+	assert(kmscon_pty_write(pty, keys, sizeof(keys)) == 0);
+	assert(kmscon_pty_write(pty, keys, 100) == 0);
+	queued = pty->queued;
+	assert(queued && ring_bytes(pty->msgbuf) == queued);
+
+	/* 412 bytes fill the last block, one block is allocated, the next is not */
+	memset(more, 'm', sizeof(more));
+	fail_after = 1;
+	assert(kmscon_pty_write(pty, more, sizeof(more)) == 0);
+	assert(fail_after == -1);
+	assert(pty->queued == queued && ring_bytes(pty->msgbuf) == queued);
+	assert(kmscon_pty_write(pty, more, 10) == 0 && pty->queued == queued + 10);
+	assert(drain_all(pty, slave, 0) == sizeof(keys) + 110 && !pty->queued);
+
+	kmscon_pty_close(pty);
+	close(slave);
+	kmscon_pty_unref(pty);
+
+	/* an empty ring stays empty, and takes the next write */
+	{
+		struct shl_ring *ring;
+
+		assert(shl_ring_new(&ring) == 0);
+		fail_after = 1;
+		assert(shl_ring_write(ring, more, sizeof(more)) == -ENOMEM && fail_after == -1);
+		assert(!ring->first && !ring->last);
+		assert(shl_ring_write(ring, more, sizeof(more)) == 0);
+		assert(ring_bytes(ring) == sizeof(more));
+		shl_ring_free(ring);
+	}
+}
+
 static void test_backlog(void)
 {
 	struct kmscon_pty *pty;
@@ -768,6 +842,7 @@ int main(void)
 	test_owner();
 	test_winsize();
 	test_close_queue();
+	test_queue_nomem();
 	test_backlog();
 	test_backlog_exact();
 	test_backlog_held();

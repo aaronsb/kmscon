@@ -30,7 +30,8 @@
  * a callback left held when the backlog began is fed after the drain; and
  * reading starts again below PTY_REPLY_LOW, not just under PTY_REPLY_HIGH.
  * Closing drops the queue. Replies the child has read stop counting though user
- * bytes wait behind them. A raw pseudo-terminal slave is the child.
+ * bytes wait behind them, and a failed write still lifts the backlog. A raw pseudo-terminal slave
+ * is the child.
  */
 
 #include <assert.h>
@@ -726,6 +727,40 @@ static void test_backlog_hysteresis(void)
 	kmscon_pty_unref(pty);
 }
 
+/*
+ * A write to the child that fails, after the replies drained below the low
+ * mark in the same call, still lifts the backlog: the edge-triggered fd may
+ * report nothing more to try again with.
+ */
+static void test_backlog_write_error(void)
+{
+	static char keys[256 * 1024];
+	struct kmscon_pty *pty;
+	int slave, master, bad = open("/dev/null", O_RDONLY);
+
+	pty = open_child(&slave);
+	memset(keys, 'k', sizeof(keys));
+	assert(kmscon_pty_write(pty, keys, sizeof(keys)) == 0);
+	kmscon_pty_begin_reply(pty);
+	assert(kmscon_pty_write(pty, "reply", 5) == 0);
+	kmscon_pty_end_reply(pty);
+	assert(pty->replies == 5 && !pty->replying);
+
+	/* as if replies above PTY_REPLY_HIGH had just drained to these five */
+	pty->backlog = true;
+	master = pty->fd;
+	assert(bad >= 0);
+	pty->fd = bad;
+	assert(send_buf(pty) < 0);
+	pty->fd = master;
+	assert(!pty->backlog);
+
+	close(bad);
+	kmscon_pty_close(pty);
+	close(slave);
+	kmscon_pty_unref(pty);
+}
+
 int main(void)
 {
 	test_held();
@@ -738,6 +773,7 @@ int main(void)
 	test_backlog_held();
 	test_backlog_latch();
 	test_backlog_hysteresis();
+	test_backlog_write_error();
 	printf("test_pty: ok\n");
 	return 0;
 }

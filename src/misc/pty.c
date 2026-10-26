@@ -532,18 +532,21 @@ static int send_buf(struct kmscon_pty *pty)
 	}
 
 	if (buf && ret < 0 && errno != EWOULDBLOCK) {
+		ret = -errno;
 		log_warn("cannot write to child process (%d): %m", errno);
-		return ret;
+	} else {
+		ret = 0;
+		if (!buf)
+			ev_fd_update(pty->efd, EV_READABLE | EV_ET);
 	}
-	if (!buf)
-		ev_fd_update(pty->efd, EV_READABLE | EV_ET);
+	/* a failed write may come with no edge to try again: what drained counts */
 	if (pty->backlog && pty->replies < PTY_REPLY_LOW) {
 		log_debug("child %d read its input; reading goes on", pty->child);
 		pty->backlog = false;
 		pty->dropping = false;
 		restart(pty);
 	}
-	return 0;
+	return ret;
 }
 
 /* edge-triggered: asks for EV_READABLE again, which reports data already there */

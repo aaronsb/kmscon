@@ -126,21 +126,36 @@ static void kmscon_session_unregister(struct kmscon_session *sess);
  * the display, that is while the session is the seat's current one and in the
  * foreground (not sent to the background by OSC setBackground), and the seat
  * is awake and in the foreground: its VT is active or libseat has enabled it,
- * and its video is awake, holding DRM master. A DPMS blank keeps the focus,
- * since the session still holds the blanked display, and so does unplugging
- * a display.
+ * and its video is awake, holding DRM master; and the seat has at least one
+ * display it activated. A DPMS blank keeps the focus, since the session still
+ * holds the blanked display, and so does unplugging one display of two;
+ * unplugging the last loses it, and plugging one in gains it.
  *
  * Every transition that changes one of those calls this at its end: a VT
  * switch away and back and libseat's disable and enable (seat_vt_deactivate,
  * seat_vt_activate), a switch between the seat's sessions (seat_switch, which
  * a new session, the close of the current one and the seat's exit go
- * through), and OSC setBackground and setForeground. The others lose the
+ * through), OSC setBackground and setForeground, and a display activated or
+ * removed (activate_display, _seat_remove_display). The others lose the
  * focus before the current session gains it, so two terminals of a seat never
  * hold it at once.
  */
+static bool seat_has_display(struct kmscon_seat *seat)
+{
+	struct kmscon_display *d;
+
+	dlist_for_each_entry(d, &seat->displays, list)
+	{
+		if (d->activated)
+			return true;
+	}
+	return false;
+}
+
 static bool session_has_focus(struct kmscon_seat *seat, struct kmscon_session *s)
 {
-	return seat->awake && seat->foreground && seat->current_sess == s && s->foreground;
+	return seat->awake && seat->foreground && seat->current_sess == s && s->foreground &&
+	       seat_has_display(seat);
 }
 
 static void seat_update_focus(struct kmscon_seat *seat)
@@ -187,6 +202,7 @@ static void activate_display(struct kmscon_display *d)
 		}
 		if (seat->current_sess)
 			terminal_activate(seat->current_sess->term);
+		seat_update_focus(seat);
 	}
 }
 
@@ -380,6 +396,7 @@ static void _seat_remove_display(struct kmscon_seat *seat, struct kmscon_display
 	}
 	display_unref(d->disp);
 	free(d);
+	seat_update_focus(seat);
 }
 
 static void seat_remove_display(void *data, struct display *disp)

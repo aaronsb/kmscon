@@ -913,7 +913,8 @@ def kitty_checks(root):
                     " + chunk(b'IDAT', zlib.compress(b'\\0' * (w + 1) * h)) + chunk(b'IEND', b''))\n")
         os.chmod(os.path.join(stubs, "rsvg-convert"), 0o755)
         shades_ids = list(range(101, 107)) + [110]
-        last = b"a=d,d=I,i=110,q=2;\x1b\\"
+        # The cleanup: every image deleted, 101 to 106 and then 110, last.
+        last = b"".join(b"\x1b_Ga=d,d=I,i=%d,q=2;\x1b\\" % i for i in shades_ids)
 
         def fx_shades(*args, kill=None, timeout=10, **env):
             """fx.py shades --kitty on a 140x40 pty of 10x20 cells: its
@@ -964,7 +965,7 @@ def kitty_checks(root):
             st, got = fx_shades("--bpm", "60", "--cache", cache, kill=sig)
             check(f"{sig.name} ends fx.py shades --kitty through its cleanup: images deleted",
                   os.waitstatus_to_exitcode(st) == 128 + sig and got.rstrip().endswith(last),
-                  f"status {st}, {got[-80:]!r}")
+                  f"status {st}, {got[-200:]!r}")
 
         # A failed render, and a cache that cannot be made: the interlude
         # plays in emoji, says why, and leaves no .part behind.

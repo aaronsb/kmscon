@@ -10,7 +10,12 @@
 # PROFILE moves BUILD and SETUP_ARGS for build, test and profile-check. asan
 # and tier 2 run on the default build and refuse it: asan's fork/build/asan
 # would be configured from the profile and reused later by a plain make asan,
-# and tier 2's goldens are the default build's. Tier 3 builds its own package.
+# and tier 2's goldens are the default build's. Tier 3 builds its own
+# packages, the minimal build's with make tier3-minimal.
+#
+# meson applies a machine file's options when a build directory is set up, so
+# an edited profile .ini reaches only a freshly configured one: run
+# `make clean PROFILE=x` after editing one.
 
 PROFILE_REFUSED := asan tier2 tier2-golden
 ifneq ($(PROFILE),)

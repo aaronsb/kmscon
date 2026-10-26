@@ -429,6 +429,15 @@ def main():
             out = (p.stdout + p.stderr) if p else "make not found"
             check(f"make vt-login {' '.join(args) or '(no KIT)'} {'runs' if ok else 'is refused'}",
                   p is not None and (p.returncode == 0) == ok and why in out, out)
+        # A GUIDE exported in the operator's shell does not reach vt-demo or
+        # vt-login: they run the demo, or the login, as they say.
+        for target, want in (("vt-demo", "run-vt.sh 8 --"), ("vt-login", "run-vt.sh --login 8 --")):
+            p = subprocess.run([make or "make", "-s", "-C", root, "-o", "demo", "-o", "pkg", target, "VT=8"],
+                               env=dict(base, VT_DEMO_GUIDE="focus-decarm-mouse", VT_DEMO_GUIDE_STEPS="4"),
+                               capture_output=True, text=True, timeout=60) if make else None
+            out = (p.stdout + p.stderr) if p else "make not found"
+            check(f"make {target} ignores a VT_DEMO_GUIDE in the environment",
+                  p is not None and p.returncode == 0 and want in out and "--guide" not in out, out)
         # make vt-check hands GUIDE and GUIDE_STEPS on, and KIT to be refused;
         # without GUIDE it fails before the build, naming the guides.
         for args, ok, why in ((["GUIDE=focus-decarm-mouse", "GUIDE_STEPS=4 5"], True,

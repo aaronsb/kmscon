@@ -14,10 +14,11 @@
 # The libtsm commit compiled in is installed as /usr/share/doc/<pkgname>/libtsm-commit,
 # so tier 3's guest log names the libtsm each run drew with (#38).
 #
-# KMSCON_PROFILE=minimal builds the minimal build instead
-# (scripts/profiles/minimal.ini, ADR-103) under the same package names, for
-# tier 3's potato-minimal variants (make pkg-minimal), depending on the
-# minimal build's libraries alone.
+# KMSCON_PROFILE=minimal or zlib-free builds that profile instead
+# (scripts/profiles/, ADR-103, the names fork/profiles.mk takes) under the same
+# package names, depending on the profile's libraries alone; minimal is what
+# tier 3's potato-minimal variants install (make pkg-minimal). Any other value
+# is refused.
 #
 # fork/pkg/upstream/PKGBUILD sources this recipe to package upstream kmscon
 # under other names for tier 3's comparison; the package functions take the
@@ -57,10 +58,6 @@ makedepends=(
   meson
   pango
 )
-_profile=${KMSCON_PROFILE:-}
-if [ "$_profile" = minimal ]; then
-  depends=(bash glibc libdrm libxkbcommon systemd-libs zlib)
-fi
 optdepends=(
   'fontconfig: for freetype font rendering'
   'harfbuzz: for freetype font rendering (cluster shaping)'
@@ -69,6 +66,29 @@ optdepends=(
   'libx11: for XKB compose support'
   'pango: for pango font rendering'
 )
+# A profile's machine files, read in order, and the libraries it links; its
+# build has no freetype, pango or GL to take fontconfig, harfbuzz, pango or
+# libglvnd
+_profile_ini=()
+case ${KMSCON_PROFILE:-} in
+  '') ;;
+  minimal|zlib-free)
+    _profile_ini=(minimal.ini)
+    depends=(bash glibc libdrm libxkbcommon systemd-libs zlib)
+    if [ "$KMSCON_PROFILE" = zlib-free ]; then
+      _profile_ini+=(no-zlib.ini)
+      depends=(bash glibc libdrm libxkbcommon systemd-libs)
+    fi
+    optdepends=(
+      'inotify-tools: for kmscon-launch-gui waiting mechanism'
+      'libx11: for XKB compose support'
+    )
+    ;;
+  *)
+    echo "KMSCON_PROFILE=$KMSCON_PROFILE: want minimal or zlib-free" >&2
+    exit 1
+    ;;
+esac
 options=(!debug)
 source=()
 
@@ -89,8 +109,12 @@ build() {
   # them; arch-meson's auto-features would turn its auto ones on
   local options=(--auto-features enabled -D images=enabled -D zlib=enabled --force-fallback-for=libtsm
                  -D libtsm:default_library=static)
-  if [ -n "$_profile" ]; then
-    options=(--native-file "kmscon/scripts/profiles/$_profile.ini")
+  if [ ${#_profile_ini[@]} -gt 0 ]; then
+    options=()
+    local ini
+    for ini in "${_profile_ini[@]}"; do
+      options+=(--native-file "kmscon/scripts/profiles/$ini")
+    done
   fi
   meson setup kmscon build \
     --prefix /usr \

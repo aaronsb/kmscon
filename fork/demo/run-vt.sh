@@ -13,10 +13,9 @@
 # --kit=KIT picks the demo's review kit (#123): text (the default), sixel,
 # kitty or all.
 # --login runs kmscon's own login prompt (/bin/login, through PAM) in place
-# of the demo, so the session is a logind session, given the sound cards
-# while its VT is on screen. The first logout ends the run; so do Ctrl-C, a
-# kmscon crash and kmscon's limit on logins failing in a row, the last two as
-# failures.
+# of the demo, so the session is a logind session. The first logout ends the
+# run; so do Ctrl-C, a kmscon crash and kmscon's limit on logins failing in a
+# row, the last two as failures.
 # --dry-run prints every command and runs none; it needs no root. For the
 # tests, a dry run takes the module directory from RUN_VT_MODULEDIR, calls
 # RUN_VT_LOGINCTL for the session checks, takes the units in RUN_VT_ACTIVE as
@@ -31,7 +30,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,24s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,23s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -269,11 +268,8 @@ if [ -n "$login" ]; then
        DEMO_LABEL='dev build $build' fork/demo/demo.sh
            the demo; DEMO_KIT=sixel (or kitty, glyphs, all) before it picks a
            review kit, and its answers go where make vt-demo's go
-     or, in a checkout of github.com/aaronsb/kmscon-showcase:
-       BAD_APPLE=/path/to/video ./bad-apple.sh --audio
-           the Bad Apple!! showcase with its soundtrack; this login holds
-           the sound cards while VT $vt is on screen, so no audio group is
-           needed
+     or the Bad Apple!! showcase, from a checkout of
+       github.com/aaronsb/kmscon-showcase (its README says how)
      until someone logs in, the prompt comes back after login's timeout
   3. log out to end it; Ctrl-C here ends it too, the login with it"
 else
@@ -302,10 +298,9 @@ EOF
 # releasing the VT. unshare and sh exec, so $! is kmscon's own PID. kmscon
 # starts its child with execve, without a PATH search, so its path is absolute.
 # kmscon and setpriv both clear the environment, so DEMO_LABEL, which names the
-# build on the demo's title page, is set last, by env, with the user's runtime
-# directory, where mpv finds the user's sound server.
+# build on the demo's title page, is set last, by env.
 session=(/usr/bin/env DEMO_LABEL="dev build $build" ${kit:+DEMO_KIT="$kit"}
-	XDG_RUNTIME_DIR="/run/user/$uid" /bin/bash "$here/demo.sh")
+	/bin/bash "$here/demo.sh")
 once=(--oneshot)
 login_argv=("${drop[@]}" -- "${session[@]}")
 if [ -n "$login" ]; then

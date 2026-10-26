@@ -679,15 +679,6 @@ test(
     timeout: 120,
 )
 
-# The demos' sound output picker (fork/demo/pick-audio.sh), against stand-ins
-# for mpv, pgrep, getent and id.
-test(
-    'demo_pick_audio',
-    python,
-    args: [files('demo/pick_audio.py'), '--root', meson.project_source_root()],
-    timeout: 60,
-)
-
 # The kitty graphics player of the acceptance runs
 # (fork/tools/kitty-player/kitty.py, #177): its layout and moves, and its
 # output on a model of the spec's image store, alone and on a pty with

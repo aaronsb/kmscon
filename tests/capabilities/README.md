@@ -26,7 +26,7 @@ A probe whose source is not built (the freetype backend) or whose tool is not in
 
 ## Placeholders
 
-Some features have no interface to observe them through yet (focus reporting, OSC 8, OSC 52, OSC 133, bidirectional text). Their probes are placeholders that always fail and say so; the change that adds the feature replaces the placeholder with a real probe in the same commit that sets the line to `works`. Two probes check a frame flag libtsm does not define yet (`TSM_FRAME_OVERLINE`, `TSM_FRAME_SUPERSCRIPT`/`SUBSCRIPT`); a change that names the flag differently renames it in the probe.
+Some features have no interface to observe them through yet (OSC 8, OSC 52, OSC 133, bidirectional text). Their probes are placeholders that always fail and say so; the change that adds the feature replaces the placeholder with a real probe in the same commit that sets the line to `works`. Two probes check a frame flag libtsm does not define yet (`TSM_FRAME_OVERLINE`, `TSM_FRAME_SUPERSCRIPT`/`SUBSCRIPT`); a change that names the flag differently renames it in the probe.
 
 ## Adding a probe
 

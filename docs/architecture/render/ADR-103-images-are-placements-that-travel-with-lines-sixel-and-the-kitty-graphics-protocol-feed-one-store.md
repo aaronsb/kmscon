@@ -1236,8 +1236,29 @@ ADR-201 asks every reply to describe what the terminal does. A build without ima
 4. **kmscon, `zlib`.** The option, mod-psf without gzip, its unit test and fixture. About 80 lines.
 5. **The profiles.** `scripts/profiles/minimal.ini` and `no-zlib.ini`, `fork/profiles.mk`, the two CI jobs, and the README's "Minimal build" section with the trade table, the fbcon comparison and the zlib-free variant's extra step. About 150 lines.
 
-Six PRs, two of them libtsm's, and the pin bump (corrected 2026-10-25; it read "Seven PRs"): about 900 new lines with tests and 450 moved, and no tier 2 or tier 3 golden moves. Steps 1 and 2 can run in parallel, 2b after 2a; 3 follows the pin bump; 4 and 5 follow 3.
+Six PRs, two of them libtsm's, and the pin bump (corrected 2026-10-25; it read "Seven PRs"; the review of step 3 added a third libtsm PR, aaronsb/libtsm#73, which gives libtsm's `images` a top-level variable so kmscon's configure fails when the two disagree, and a second pin bump): about 900 new lines with tests and 450 moved, and no tier 2 or tier 3 golden moves. Steps 1 and 2 can run in parallel, 2b after 2a; 3 follows the pin bump; 4 and 5 follow 3.
 
 ### Later: the potato variant boots the minimal build
 
 Proposed, not decided here. The documentation says the minimal build is made for the potato class of machine, and nothing tests that on such a machine. A tier 3 variant `2d-1366x768-potato-minimal` would boot a package built with `minimal.ini` on the potato machine (1 vCPU, 512 MB), run the text screens with a PSF font and with unifont, run the image screens to show nothing is drawn and no reply claims images, and record kmscon's resident memory beside the potato variant's. Its text goldens are its own, since freetype draws the default variant's text. It needs the tier 3 build to make a second package and its goldens blessed in their own commit; about a day, after step 5.
+
+(Done 2026-10-25, after step 5. The variants are `2d-potato-min`, with unifont, and `2d-potato-min-psf`, with kbd's `default8x16.psfu.gz` through `font-engine=psf`; the proposed name was too long for QEMU's monitor socket path. `make pkg-minimal` builds the package from `minimal.ini`, `make tier3-minimal` runs both variants in a run of their own, and their goldens were blessed in their own commit after each capture was read. Every image screen shows its "not offered" page, with DA1 replying `^[[?60;1;6;9;15c`; the image benchmark screens pass on their capture once they report images not offered and no picture stream. The report gains kmscon's resident memory after each screen and its startup, from its first log line to its display line.)
+
+Measured on the potato machine, one VM at a time, three runs of each, medians with the range:
+
+| | default build, Pango, DejaVu Sans Mono 16 | minimal, unifont | minimal, PSF `default8x16` |
+|---|---|---|---|
+| Cell, grid | 10x19, 136x40 | 8x16, 170x48 | 8x16, 170x48 |
+| Resident after the first screen (`sgr`) | 16.3 MB (16.1 to 16.4) | 10.5 MB (10.5 to 10.6) | 5.7 MB (5.6 to 5.8) |
+| Resident peak, and where | 40.3 MB (40.3 to 40.4), `sixel-evict` | 16.0 MB (16.0 to 16.1), after S1 | 11.3 MB (11.1 to 11.3), after S1 |
+| Resident peak over the text screens alone | 23.0 MB | 14.2 MB | 9.5 MB |
+| Startup, first log line to display line | 77.2 ms (77.0 to 89.3) | 72.0 ms (71.3 to 72.1) | 65.8 ms (65.8 to 66.1) |
+| S1 frames presented a second | 42.2 (41.2 to 42.4) | 42.1 (41.9 to 43.5) | 41.7 (41.7 to 42.5) |
+| S1 drawing a frame, mean (p95) | 0.779 ms (1.046) | 0.714 ms (0.946) | 0.737 ms (1.008) |
+| Installed package size | 2.62 MB | 1.85 MB | 1.85 MB |
+
+- S1 ran at about 192,000 lines a second in all three, the rate its script writes them, so the frames a second follow the display and the CPU cost is the comparison: the minimal build draws 8,160 cells a frame against the default build's 5,440 in about the same time.
+- The minimal build's resident memory grows only when the 1,000-line scrollback fills during S1, by about 5.5 MB in both; the default build's peak is the sixel store's.
+- The startup figure leaves out exec and dynamic linking, which happen before kmscon's first line.
+- The zlib-free variant has no tier 3 variant; it differs from the PSF variant by mod-psf reading an uncompressed font.
+- Reproduce: `make tier3-minimal` and `make tier3 VARIANTS=2d-1366x768-potato`, then read `fork/build/tier3-report.json`, `variants[*].rss_kb`, `startup_ms` and `bench["s1-scroll"]`; the package size is `.PKGINFO`'s `size`.

@@ -75,6 +75,16 @@ kmscon|KMS Console,
   setrgbb=\E[48;2;%p1%d;%p2%d;%p3%dm,
   setrgbf=\E[38;2;%p1%d;%p2%d;%p3%dm,
 
+# Underline Styles and Colour ("user defined" capabilities, ADR-102)
+# Smulx is SGR 4:n, 0 (none) to 5 (dashed). Setulc takes one colour packed as
+# r*65536 + g*256 + b, as tmux(1) passes it, and writes ITU T.416's colon form
+# 58:2::r:g:b with the colour space empty. libtsm reads 58:2:r:g:b (kitty's
+# Setulc) and 58;2;r;g;b too; the T.416 form is the standard one, and a
+# terminal that does not know SGR 58 cannot read its fields as SGR 2 (dim)
+# and so on, as it would the semicolon form.
+  Smulx=\E[4:%p1%dm,
+  Setulc=\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%dm,
+
 # Scrolling and Margins
   csr=\E[%i%p1%d;%p2%dr,
   indn=\E[%p1%dS, rin=\E[%p1%dT,

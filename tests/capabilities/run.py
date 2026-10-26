@@ -39,8 +39,6 @@ import tempfile
 # probe -> alternatives, each a set of capability names that must all be present
 TERMINFO = {
     "terminfo-cursor-shape": [{"Ss", "Se"}],
-    "terminfo-styled-underline": [{"Smulx"}],
-    "terminfo-underline-colour": [{"Setulc"}],
     "terminfo-truecolor": [{"RGB"}, {"Tc"}],
     "terminfo-bracketed-paste": [{"BD", "BE", "PS", "PE"}],
     "terminfo-sgr-mouse": [{"XM"}],
@@ -59,6 +57,15 @@ TERMINFO_STRINGS = {
     "terminfo-italic": [("sitm", (), "\033[3m"), ("ritm", (), "\033[23m")],
     "terminfo-dim": [("dim", (), "\033[2m")],
     "terminfo-strike": [("smxx", (), "\033[9m"), ("rmxx", (), "\033[29m")],
+    "terminfo-styled-underline": [
+        ("Smulx", ("3",), "\033[4:3m"),
+        ("Smulx", ("0",), "\033[4:0m"),
+    ],
+    # one colour packed as r*65536 + g*256 + b, written in T.416's colon form
+    "terminfo-underline-colour": [
+        ("Setulc", ("1122867",), "\033[58:2::17:34:51m"),
+        ("Setulc", ("16777215",), "\033[58:2::255:255:255m"),
+    ],
 }
 
 # test_capabilities_font's probes, named here so that a build without the

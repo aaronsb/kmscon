@@ -516,14 +516,41 @@ static void test_prelogin(void)
 	teardown();
 }
 
-/* a helper test_pause stopped: killed if an assertion fails meanwhile */
-static pid_t stopped;
+/*
+ * a helper test_pause stopped, killed on a fatal signal meanwhile: an
+ * assertion's, a crash's, or meson's timeout
+ */
+static volatile sig_atomic_t stopped;
+static const int fatal[] = {SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGTERM, SIGINT};
+static struct sigaction fatal_old[sizeof(fatal) / sizeof(fatal[0])];
 
 static void kill_stopped(int sig)
 {
-	(void)sig;
 	if (stopped > 0)
 		kill(stopped, SIGKILL);
+	raise(sig);
+}
+
+static void helper_stop(pid_t pid)
+{
+	struct sigaction sa = {.sa_handler = kill_stopped, .sa_flags = SA_RESETHAND};
+	size_t i;
+
+	sigemptyset(&sa.sa_mask);
+	for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); i++)
+		assert(!sigaction(fatal[i], &sa, &fatal_old[i]));
+	stopped = pid;
+	assert(!kill(pid, SIGSTOP));
+}
+
+static void helper_continue(void)
+{
+	size_t i;
+
+	assert(!kill(stopped, SIGCONT));
+	stopped = 0;
+	for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); i++)
+		assert(!sigaction(fatal[i], &fatal_old[i], NULL));
 }
 
 /*
@@ -547,9 +574,8 @@ static void test_pause(void)
 	answered(12, "OK");
 	run_until(idle);
 	replied = 0;
-	stopped = image_host_pid(ti.host);
-	assert(stopped > 0 && signal(SIGABRT, kill_stopped) != SIG_ERR);
-	assert(!kill(stopped, SIGSTOP));
+	assert(image_host_pid(ti.host) > 0);
+	helper_stop(image_host_pid(ti.host));
 
 	n += snprintf(buf + n, sizeof(buf) - n, "\033_Ga=p,i=12,C=1;\033\\AB\033[c");
 	send_client(buf, n);
@@ -563,8 +589,7 @@ static void test_pause(void)
 	ev_eloop_dispatch(pty->eloop, 20);
 	assert(pty->paused && !out_len && tsm_screen_get_cursor_x(con) == 0);
 
-	assert(!kill(stopped, SIGCONT));
-	stopped = 0;
+	helper_continue();
 	run_until(idle);
 	/* the transmission's OK, then the put's, then DA1; then AB and CD */
 	assert(strstr(out, "\033_Gi=12;OK\033\\\033_Gi=12;OK\033\\\033[?") == out);

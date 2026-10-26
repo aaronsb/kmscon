@@ -2,7 +2,9 @@
 # Defines domain numbering and validation rules.
 # Used by: docs/scripts/adr  — and, if the doc catalog is installed,
 #          docs/scripts/{doc,doclint}: prose docs share these same domain bands
-#          (the "shared first octet"; catalog ids are DD.NNN.P). See ADR-302.
+#          (the "shared first octet"; catalog ids are DD.NNN.P). See
+#          agent-ways ADR-302, the ADR tool's own record, not this
+#          repository's ADR-302.
 #
 # Customize domains for your project. Each domain reserves a number range.
 # New ADRs get the next available number in their domain.
@@ -30,7 +32,8 @@ domains:
     description: Carrying this fork - upstream tracking, packaging, contribution back
     folder: fork
 
-# The record contract (ADR-304). With `contract: adr/v1`, records are typed:
+# The record contract (agent-ways ADR-304, the ADR tool's own record, not
+# this repository's ADR-304). With `contract: adr/v1`, records are typed:
 # each declares a kind, and a decision names a verb, a capability and its
 # basis. Delete this line and the v1 blocks below to stay on adr/v0.
 contract: adr/v1

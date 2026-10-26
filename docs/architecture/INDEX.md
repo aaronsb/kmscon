@@ -46,3 +46,4 @@ _Carrying this fork - upstream tracking, packaging, contribution back_
 | [ADR-301](./fork/ADR-301-gate-rendering-changes-on-a-three-tier-conformance-harness.md) | Gate rendering changes on a three-tier conformance harness | accepted |
 | [ADR-302](./fork/ADR-302-record-conformance-runs-as-markdown-pages-committed-at-bring-home.md) | Record conformance runs as markdown pages, committed at bring-home | accepted |
 | [ADR-303](./fork/ADR-303-follow-upstream-s-conventions-and-leave-one-only-where-it-blocks-a-capability.md) | Follow upstream's conventions, and leave one only where it blocks a capability | accepted |
+| [ADR-304](./fork/ADR-304-vtium-a-full-rust-port-of-kmscon-and-libtsm-minspec-first-judged-by-the-existing-tiers.md) | vtium: a full Rust port of kmscon and libtsm, minspec first, judged by the existing tiers | accepted |

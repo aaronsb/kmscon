@@ -36,6 +36,10 @@ basis:
     level: guided
     said: "vtium has a nice sound to it"
     via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, choosing the project's name in place of the working title kmscon-rust
+  - operator: aaronsb
+    level: guided
+    said: "the vtium repo, because rust, doesn't need the seperate lib repo, I think?"
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, who agreed
   - precedent: ADR-303
   - precedent: ADR-301
   - precedent: ADR-103
@@ -96,6 +100,7 @@ related: [ADR-303, ADR-301, ADR-103]
   - **Licence and provenance.** vtium is MIT, as kmscon and libtsm are, and carries David Herrmann's and the other contributors' copyright notices from its first commit. Its README says all of its code is written by an LLM, under the operator's review, judged by the harness.
   - **Our own parser.** The escape-sequence parser is ported from the fork's libtsm. vtium depends on a crate only where it never needs to change the crate.
   - **Minspec first.** The first Rust kmscon is the minimal build as a vertical slice through every layer. Outline-font text comes next, then images, then the GPU path, then libseat, multi-monitor and the rest.
+  - **One repository.** libtsm's role is carried by crates in vtium's workspace, so there is no separate library repository and no pin to bump.
   - **The stack.** Fonts are pure Rust from the start, with no bindings to FreeType, HarfBuzz or fontconfig. The GPU path is a direct port of gltex on glow over EGL and GBM. The event loop is calloop.
   - **The tiers judge it.** Tier 3 judges the Rust kmscon unchanged. Tier 1 and the capability probes move behind a replay interface, built first in the C repositories (R0). Tier 2's pixel tests are ported with the renderer. Goldens drawn with bitmap fonts are kept, and goldens drawn with outline fonts are re-baselined when the Rust font layer lands, each changed golden reviewed on its own.
   - **The C fork is frozen.** It takes security fixes only, cherry-picked, and stays the reference implementation and the harness's control. Full upstream syncs stop.
@@ -126,6 +131,8 @@ vtium is a new repository, vtium/vtium, in the GitHub organization `vtium`, whic
 The name is distinct because upstream plans to convert kmscon itself to Rust, so "kmscon in Rust" would mean upstream's. A distinct name keeps packagers and bug reporters from confusing the two, and does not suggest that vtium is upstream's sanctioned Rust kmscon. The name was free as a GitHub organization and as a crates.io crate on 2026-10-26. vtium describes itself as a Rust port derived from kmscon and libtsm by David Herrmann and contributors.
 
 The repository is public; the operator published the workspace skeleton on 2026-10-26, and its first CI run passed. The skeleton splits the port along the C code's layers. `vtium-parse` is the escape-sequence parser and `vtium-term` the screen, cells, modes and replies, which together replace libtsm. `vtium-image` decodes sixel and kitty graphics and keeps the image store. `vtium-font` loads glyph sources, bitmap fonts first and outline fonts behind a feature. `vtium-render` draws frames with a CPU compositor, with the GPU path behind a feature. `vtium-platform` holds DRM/KMS and fbdev, VTs, seats, input, the pty and the event loop. The `vtium` binary wires them together; its default build is minspec, and `vtium-image` enters only with its `images` feature. The skeleton's COPYING carries kmscon's and libtsm's author lists and notices, and its README states the provenance (point 2).
+
+vtium is one repository. libtsm's role is carried by the `vtium-parse`, `vtium-term` and `vtium-image` crates in the same workspace, so there is no separate library repository and no pin to bump. The operator asked for this: "the vtium repo, because rust, doesn't need the seperate lib repo, I think?" The C fork's flow of a libtsm PR followed by a kmscon PR that moves the pin ends with the port, and so does the stale and mixed libtsm build hazard (#38). The crate boundaries keep the terminal core a library with no I/O and no dependency outside the workspace: `vtium-parse` depends on nothing, and `vtium-term` and `vtium-image` only on `vtium-parse`. Bytes go in, and screen state and replies come out. The core can be published to crates.io on its own if that is ever wanted.
 
 vtium keeps the C kmscon's interface where the tiers drive it: the `kmscon.conf` keys and command-line options the tier 3 variants use, the replies tier 1 and the probes check, and the `kmscon` terminfo entry. That is the harness's interface. A part that changes it updates the harness in the same bundle, and its record says so. The operator confirmed this compatibility (probe 2).
 
@@ -194,7 +201,7 @@ Tier 3's report measures them on every run from the first Rust build.
 - **Tier 3** is black-box and judges the Rust kmscon unchanged. `make tier3-minimal` judges the minspec build. The default variants judge the later layers as they arrive: the 2D variants need outline-font text and images, and the GL variant needs the GPU path. Their screens drawn with outline fonts are re-baselined as tier 2's are.
 - **Tier 1 and the probes, R0.** The first work item is a language-neutral replay interface, built in the C repositories: a program takes a terminal size, a byte stream, optional checkpoints and the host settings a case names (such as images off or the XTGETTCAP table), and prints the screen state and the replies as text. `tsm-replay` is that program for tier 1 today; R0 writes its input and output down as the interface. The probes in `test_capabilities.c` that feed bytes and check a reply or the screen become replay cases. The font probes, which test the C freetype backend, are rewritten for the Rust font layer, and the terminfo probes already read only `kmscon.ti`. The C implementation passes every golden through the interface before vtium relies on it. R0 is test infrastructure and is allowed under the freeze.
 - **Tier 2's pixel tests** are ported with the renderer, each screen when the layer it draws arrives. A screen drawn with bitmap fonts keeps its golden. A screen drawn with outline fonts gets a new golden when the Rust font layer lands, since another rasteriser and shaper move pixels. The re-baseline is an enumerated delta: each changed golden is listed with what moved and why, reviewed on its own, and lands in its own change, apart from the code (ADR-301's rule for an intended difference).
-- **Goldens.** Goldens for behaviour the C fork has stay in the C repositories, and vtium pins them by commit, as kmscon pins libtsm today. A golden changes in one place, reviewed against the C implementation. Goldens for behaviour only vtium has live in vtium, and so do the re-baselined outline-font goldens.
+- **Goldens.** Until vtium owns a behaviour, its goldens stay in the C repositories, vtium pins them by commit, and a golden changes in one place, reviewed against the C implementation. vtium owns a behaviour once it passes the tiers that cover it, and the goldens for that behaviour then move into vtium. Goldens for behaviour only vtium has live in vtium from the start, and so do the re-baselined outline-font goldens.
 
 ### 7. The C fork is frozen
 
@@ -214,6 +221,7 @@ Work is cut into items of one form: the modules or files an item touches, the ga
 - The parser keeps the fork's fixes, and vtium carries no patched fork of a crate.
 - Bundled evaluation runs review and the slow gates once per bundle, where the C fork ran them once per change.
 - The font layer carries no C bindings to remove later.
+- One repository: a change to the parser or the screen and the console code that uses it land in one PR, with no pin to move and no mixed build.
 
 ### Negative
 
@@ -247,7 +255,7 @@ Work is cut into items of one form: the modules or files an item touches, the ga
 
 ## Operator answers (2026-10-26)
 
-Relayed verbatim by the team lead; the words are in `considered`, and the Decision above is written to match.
+Relayed verbatim by the team lead. The words of items 1 to 8 are in `considered` and those of item 9 in `basis`, and the Decision above is written to match.
 
 1. **Freeze** (probe 1): "p1 yes". The C fork gets security fixes only.
 2. **Interface** (probe 2): "p2 yes". vtium keeps the `kmscon.conf` keys and options the tests use.
@@ -257,3 +265,4 @@ Relayed verbatim by the team lead; the words are in `considered`, and the Decisi
 6. **Minspec targets:** "q4 agree". The targets are the C minimal build's measured figures.
 7. **Repository:** "q5 published". vtium/vtium is public, and its first CI run passed.
 8. **Upstream syncs during the freeze:** "q6 agree - it is likely not even in the same language". Full syncs stop, and a security fix is cherry-picked on its own.
+9. **One repository:** "the vtium repo, because rust, doesn't need the seperate lib repo, I think?". Agreed: libtsm's role is carried by workspace crates, and there is no library repository.

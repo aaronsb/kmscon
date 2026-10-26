@@ -54,9 +54,31 @@
 #define PSF1_FLAG_SEQ 0x4
 
 #define PSF2_FLAG_TAB 0x1
+#define PSF2_HEADER_SIZE 32
+
+/*
+ * Bounds on what a font file may ask for (#229). The largest font kbd ships
+ * is 512 glyphs of 24x32 pixels in 34 KiB.
+ * - PSF_MAX_GLYPHS: the unicode table holds glyph indices in 16 bits, and
+ *   unicode_table_get answers 0xffff for a code it lacks, so 0xffff must not
+ *   be a glyph.
+ * - PSF_MAX_WIDTH: readrow packs a row into 32 bits.
+ * - PSF_MAX_HEIGHT: PSF1 stores the height in a byte; PSF2 gets the same
+ *   bound.
+ * - PSF_MAX_BYTES: all of the file read, decompressed: header, glyphs and
+ *   unicode table. A font of 65535 glyphs of 16x32 is 4 MiB of glyphs.
+ * - PSF_MAX_ENTRIES: one entry for each Unicode code point; past that,
+ *   entries only repeat. The table's capacity stays at most 2^21 entries of
+ *   8 bytes, so a font holds about 32 MiB of heap at most.
+ */
+#define PSF_MAX_GLYPHS 0xffffu
+#define PSF_MAX_WIDTH 32u
+#define PSF_MAX_HEIGHT 256u
+#define PSF_MAX_BYTES (16u << 20)
+#define PSF_MAX_ENTRIES 0x110000u
 
 #define FREAD(f, to, size, err, ...)                                                               \
-	if (_fread(f, to, size) < (size)) {                                                        \
+	if (_fread(f, to, size) != (int)(size)) {                                                  \
 		log_error(err);                                                                    \
 		__VA_ARGS__                                                                        \
 		goto err_file;                                                                     \
@@ -93,9 +115,20 @@ static fseek_t _fseek;
 static fread_t _fread;
 static fclose_t _fclose;
 
+#define UCODE_SIZE 1024
+
+/* the unicode table, read UCODE_SIZE bytes at a time */
+struct ucode_reader {
+	void *file;
+	size_t left; /* bytes the file may still hold under PSF_MAX_BYTES */
+	unsigned int idx, len;
+	bool failed;
+	uint8_t buf[UCODE_SIZE];
+};
+
 static uint8_t unicode_table_init(unicode_table_t *);
-static uint8_t psf1_unicode_table_parse(unicode_table_t *, void *);
-static uint8_t psf2_unicode_table_parse(unicode_table_t *, void *);
+static uint8_t psf1_unicode_table_parse(unicode_table_t *, struct ucode_reader *);
+static uint8_t psf2_unicode_table_parse(unicode_table_t *, struct ucode_reader *);
 static uint16_t unicode_table_get(unicode_table_t *, uint32_t);
 static void unicode_table_exit(unicode_table_t *);
 
@@ -104,8 +137,9 @@ static int kmscon_font_psf_init(struct kmscon_font *out, const char *name,
 {
 	unsigned char magic[4];
 	psf_font_t *font = NULL;
-	uint32_t flags, glyphs, step, height, width;
+	uint32_t headersize, flags, glyphs, step, height, width, size;
 	bool has_unicode_table;
+	struct ucode_reader reader;
 
 	_fseek = (fseek_t)fseek;
 	_fread = (fread_t)fread_;
@@ -123,8 +157,8 @@ static int kmscon_font_psf_init(struct kmscon_font *out, const char *name,
 		/* gzip fonts need zlib, which a build may leave out (ADR-103, The
 		 * zlib-free variant; a departure from upstream, ADR-303) */
 #ifdef KMSCON_PSF_GZ
-		_fseek(font_file, 0, SEEK_SET);
-		font_file = gzdopen(fileno(font_file), "rb");
+		_fclose(font_file);
+		font_file = gzopen(name, "rb");
 		if (!font_file) {
 			log_error("failed open font as gz: %s", name);
 			return 1;
@@ -144,11 +178,13 @@ static int kmscon_font_psf_init(struct kmscon_font *out, const char *name,
 		glyphs = (flags & PSF1_FLAG_512) ? 512 : 256;
 		has_unicode_table = flags & (PSF1_FLAG_TAB | PSF1_FLAG_SEQ);
 
+		headersize = 4;
 		width = 8;
 		height = magic[3];
 		step = height;
 	} else if (IS_PSF2_MAGIC(magic)) {
-		_fseek(font_file, 12, SEEK_SET);
+		_fseek(font_file, 8, SEEK_SET);
+		FREAD(font_file, &headersize, 4, "failed read header size");
 		FREAD(font_file, &flags, 4, "failed read flags");
 		FREAD(font_file, &glyphs, 4, "failed read glyphs");
 		FREAD(font_file, &step, 4, "failed read step");
@@ -161,7 +197,26 @@ static int kmscon_font_psf_init(struct kmscon_font *out, const char *name,
 		goto err_file;
 	}
 
-	font = calloc(1, sizeof(*font) + step * glyphs);
+	if (!glyphs || glyphs > PSF_MAX_GLYPHS || !width || width > PSF_MAX_WIDTH || !height ||
+	    height > PSF_MAX_HEIGHT || step != height * ((width + 7) / 8)) {
+		log_error("bad psf font: %u glyphs of %ux%u in %u bytes each", glyphs, width,
+			  height, step);
+		goto err_file;
+	}
+	if (headersize < (IS_PSF2_MAGIC(magic) ? PSF2_HEADER_SIZE : 4) ||
+	    __builtin_mul_overflow(glyphs, step, &size) ||
+	    __builtin_add_overflow(size, headersize, &size) || size > PSF_MAX_BYTES) {
+		log_error(
+			"bad psf font: header of %u bytes and %u glyphs of %u bytes, past %u bytes",
+			headersize, glyphs, step, PSF_MAX_BYTES);
+		goto err_file;
+	}
+	if (IS_PSF2_MAGIC(magic) && _fseek(font_file, headersize, SEEK_SET) < 0) {
+		log_error("failed seek to psf glyphs");
+		goto err_file;
+	}
+
+	font = calloc(1, sizeof(*font) + glyphs * step);
 	if (!font) {
 		log_error("failed allocate font data");
 		goto err_file;
@@ -180,8 +235,9 @@ static int kmscon_font_psf_init(struct kmscon_font *out, const char *name,
 			goto err_file;
 		}
 
+		reader = (struct ucode_reader){.file = font_file, .left = PSF_MAX_BYTES - size};
 		if ((IS_PSF2_MAGIC(magic) ? psf2_unicode_table_parse : psf1_unicode_table_parse)(
-			    &font->unicode_table, font_file)) {
+			    &font->unicode_table, &reader)) {
 			log_error("failed parse unicode table");
 			goto err_file;
 		}
@@ -203,6 +259,10 @@ static int kmscon_font_psf_init(struct kmscon_font *out, const char *name,
 	return 0;
 
 err_file:
+	if (font) {
+		unicode_table_exit(&font->unicode_table);
+		free(font);
+	}
 	_fclose(font_file);
 	return 1;
 }
@@ -269,7 +329,7 @@ static struct kmscon_glyph *new_glyph(const struct kmscon_font *kfont,
 		for (j = 0; j < w; j++) {
 			l = j / font->scale;
 			glyph->buf.data[i * glyph->buf.width + j] =
-				unfold(c & (1 << (font->width - 1 - l)));
+				unfold(c & (1u << (font->width - 1 - l)));
 		}
 	}
 	return glyph;
@@ -297,8 +357,9 @@ static struct kmscon_glyph *kmscon_font_psf_render(struct kmscon_font *kfont,
 	if (font->has_unicode_table)
 		ch = unicode_table_get(&font->unicode_table, ch);
 
+	/* a font of fewer than 64 glyphs has no '?' */
 	if (ch >= font->glyphs)
-		return new_glyph(kfont, attr, '?');
+		ch = '?' < font->glyphs ? '?' : 0;
 
 	return new_glyph(kfont, attr, ch);
 }
@@ -317,16 +378,24 @@ uint8_t unicode_table_init(unicode_table_t *self)
 
 static uint8_t unicode_table_add(unicode_table_t *self, uint32_t code, uint16_t ch)
 {
-	self->data[self->size] = (unicode_entry_t){.glyph = ch, .code = code};
+	unicode_entry_t *data;
 
-	if ((++self->size) >= self->cap)
-		self->data = realloc(self->data, sizeof(unicode_entry_t) * (self->cap *= 2));
-
-	if (!self->data) {
-		log_error("failed realloc unicode table");
+	if (self->size >= PSF_MAX_ENTRIES) {
+		log_error("unicode table has more than %u entries", PSF_MAX_ENTRIES);
 		return 1;
 	}
 
+	if (self->size == self->cap) {
+		data = realloc(self->data, sizeof(unicode_entry_t) * self->cap * 2);
+		if (!data) {
+			log_error("failed realloc unicode table");
+			return 1;
+		}
+		self->data = data;
+		self->cap *= 2;
+	}
+
+	self->data[self->size++] = (unicode_entry_t){.glyph = ch, .code = code};
 	return 0;
 }
 
@@ -342,34 +411,47 @@ static int cmp_unicode_entry(const void *__1, const void *__2)
 	return 0;
 }
 
-#define UCODE_SIZE 1024
-uint8_t psf1_unicode_table_parse(unicode_table_t *self, void *file)
+/* the table's next byte, or -1 at its end and on an error, which sets failed */
+static int ucode_next(struct ucode_reader *r)
 {
-	uint8_t ucode[UCODE_SIZE];
-	uint32_t ucode_idx = 0;
-	uint32_t ucode_size;
-	uint16_t ch = 0;
+	int n;
 
-	union {
-		uint16_t val;
-		uint8_t map[2];
-	} code;
-
-	while ((ucode_size = _fread(file, &ucode, UCODE_SIZE))) {
-		while (ucode_idx < ucode_size) {
-			code.map[0] = ucode[ucode_idx++];
-			code.map[1] = ucode[ucode_idx++];
-
-			if (code.map[0] == 0xff && (code.map[1] == 0xfe || code.map[1] == 0xff)) {
-				ch++;
-				continue;
-			}
-
-			if (unicode_table_add(self, code.val, ch))
-				return 1;
+	if (r->idx == r->len) {
+		n = _fread(r->file, r->buf, UCODE_SIZE);
+		if (n <= 0) {
+			r->failed |= n < 0;
+			return -1;
 		}
-		ucode_idx = 0;
+		if ((size_t)n > r->left) {
+			log_error("psf font is larger than %u bytes", PSF_MAX_BYTES);
+			r->failed = true;
+			return -1;
+		}
+		r->left -= n;
+		r->idx = 0;
+		r->len = n;
 	}
+
+	return r->buf[r->idx++];
+}
+
+uint8_t psf1_unicode_table_parse(unicode_table_t *self, struct ucode_reader *r)
+{
+	uint16_t ch = 0;
+	int lo, hi;
+
+	/* an odd byte at the end is dropped */
+	while ((lo = ucode_next(r)) >= 0 && (hi = ucode_next(r)) >= 0) {
+		if (lo == 0xff && (hi == 0xfe || hi == 0xff)) {
+			ch++;
+			continue;
+		}
+
+		if (unicode_table_add(self, lo | hi << 8, ch))
+			return 1;
+	}
+	if (r->failed)
+		return 1;
 
 	qsort(self->data, self->size, sizeof(unicode_entry_t), cmp_unicode_entry);
 	return 0;
@@ -380,44 +462,32 @@ static uint8_t utf8_len(uint8_t c)
 	return (c & 0x80) == 0 ? 0 : (c & 0xE0) == 0xC0 ? 1 : (c & 0xF0) == 0xE0 ? 2 : 3;
 }
 
-uint8_t psf2_unicode_table_parse(unicode_table_t *self, void *file)
+uint8_t psf2_unicode_table_parse(unicode_table_t *self, struct ucode_reader *r)
 {
-	uint8_t ucode[UCODE_SIZE];
-	uint32_t ucode_idx = 0;
-	uint32_t ucode_size;
 	uint16_t ch = 0;
+	uint32_t code;
 	uint8_t len;
+	int c;
 
-	union {
-		uint32_t val;
-		uint8_t map[4];
-	} code;
-
-	while ((ucode_size = _fread(file, &ucode, UCODE_SIZE))) {
-		while (ucode_idx < ucode_size) {
-			code.val = 0;
-			switch ((code.map[0] = ucode[ucode_idx++])) {
-			case 0xfe:
-			case 0xff:
-				ch++;
-				break;
-			default:
-				len = utf8_len(code.map[0]);
-				if (len) {
-					code.val = ((uint32_t)(code.map[0] & (0xFF >> (2 + len)))
-						    << len * 6);
-
-					for (; len; len--)
-						code.val |= ((uint32_t)(ucode[ucode_idx++] & 0x3f)
-							     << (len - 1) * 6);
-				}
-
-				if (unicode_table_add(self, code.val, ch))
-					return 1;
-			}
+	while ((c = ucode_next(r)) >= 0) {
+		if (c == 0xfe || c == 0xff) {
+			ch++;
+			continue;
 		}
-		ucode_idx = 0;
+
+		len = utf8_len(c);
+		code = len ? (uint32_t)(c & (0xFF >> (2 + len))) << len * 6 : c;
+		/* a sequence the end of the file cuts off is dropped */
+		for (; len && (c = ucode_next(r)) >= 0; len--)
+			code |= (uint32_t)(c & 0x3f) << (len - 1) * 6;
+		if (c < 0)
+			break;
+
+		if (unicode_table_add(self, code, ch))
+			return 1;
 	}
+	if (r->failed)
+		return 1;
 
 	qsort(self->data, self->size, sizeof(unicode_entry_t), cmp_unicode_entry);
 	return 0;

@@ -110,19 +110,25 @@ static void psf1(struct buf *b, uint8_t mode, uint8_t height)
 	put(b, hdr, 4);
 }
 
-static void psf2(struct buf *b, uint32_t flags, uint32_t glyphs, uint32_t charsize, uint32_t height,
-		 uint32_t width)
+static void psf2_header(struct buf *b, uint32_t headersize, uint32_t flags, uint32_t glyphs,
+			uint32_t charsize, uint32_t height, uint32_t width)
 {
 	static const uint8_t magic[4] = {0x72, 0xb5, 0x4a, 0x86};
 
 	put(b, magic, 4);
 	put32(b, 0);
-	put32(b, 32);
+	put32(b, headersize);
 	put32(b, flags);
 	put32(b, glyphs);
 	put32(b, charsize);
 	put32(b, height);
 	put32(b, width);
+}
+
+static void psf2(struct buf *b, uint32_t flags, uint32_t glyphs, uint32_t charsize, uint32_t height,
+		 uint32_t width)
+{
+	psf2_header(b, 32, flags, glyphs, charsize, height, width);
 }
 
 /* writes @b to the scratch file, gzipped if @gz */
@@ -295,6 +301,59 @@ static void test_header(void)
 	psf2(&b, 0, 4, 256 * 4, 256, 32);
 	put_bytes(&b, 0xaa, 4 * 256 * 4);
 	expect_both("32x256", &b, true);
+
+	psf2_header(&b, 16, 0, 256, 16, 16, 8);
+	put_bytes(&b, 0xaa, 16 + 256 * 16);
+	expect_both("16-byte header", &b, false);
+
+	psf2_header(&b, 0xfffffff0, 0, 256, 16, 16, 8);
+	put_bytes(&b, 0xaa, 256 * 16);
+	expect_both("header size wraps with the glyphs", &b, false);
+
+	/* inside the byte cap, but past the end of the file */
+	psf2_header(&b, 15u << 20, 0, 256, 16, 16, 8);
+	put_bytes(&b, 0xaa, 256 * 16);
+	expect_both("15 MiB header", &b, false);
+}
+
+/* a 64-byte PSF2 header: glyph i, all of whose bytes are i, starts at 64 + 16i */
+static void test_header_size(void)
+{
+	struct kmscon_font kfont;
+	struct buf b = {0};
+	psf_font_t *font;
+	uint32_t i;
+	int gz;
+
+	psf2_header(&b, 64, 0, 256, 16, 16, 8);
+	put_bytes(&b, 0x55, 32);
+	for (i = 0; i < 256; i++)
+		put_bytes(&b, i, 16);
+	for (gz = 0; gz < 2; gz++) {
+#ifndef ZLIB_VERSION
+		if (gz)
+			break;
+#endif
+		write_font(&b, gz);
+		memset(&kfont, 0, sizeof(kfont));
+		if (kmscon_font_psf_ops.init(&kfont, path, 16)) {
+			fprintf(stderr, "test_font_psf: 64-byte header%s: refused\n",
+				gz ? " (gz)" : "");
+			failures++;
+			continue;
+		}
+		font = kfont.data;
+		for (i = 0; i < 256 * 16; i++) {
+			if (font->data[i] != i / 16) {
+				fprintf(stderr, "test_font_psf: 64-byte header%s: byte %u is %u\n",
+					gz ? " (gz)" : "", i, font->data[i]);
+				failures++;
+				break;
+			}
+		}
+		kmscon_font_psf_ops.destroy(&kfont);
+	}
+	free(b.p);
 }
 
 static void test_short(void)
@@ -465,6 +524,11 @@ static void test_kbd(void)
 	bool psf, gz;
 	DIR *d;
 
+#ifndef ZLIB_VERSION
+	/* kbd ships every font gzipped, so here none would load */
+	printf("test_font_psf: a build without zlib, positive control skipped\n");
+	return;
+#endif
 	d = opendir(KBD_FONT_DIR);
 	if (!d) {
 		printf("test_font_psf: no %s, positive control skipped\n", KBD_FONT_DIR);
@@ -583,6 +647,7 @@ int main(int argc, char **argv)
 	snprintf(path, sizeof(path), "%s/font", dir);
 
 	test_header();
+	test_header_size();
 	test_short();
 	test_small();
 	test_table();

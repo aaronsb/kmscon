@@ -14,7 +14,6 @@ Kmscon requires the following software:
   - [libtsm](https://github.com/kmscon/libtsm): terminal emulator state machine
   - [libudev](https://www.freedesktop.org/software/systemd/man/libudev.html): providing input, video, etc. device hotplug support (>=v172)
   - [libxkbcommon](https://xkbcommon.org/): providing internationalized keyboard handling
-  - [zlib](https://zlib.net/): compressed PSF fonts and the unifont data, and the image helper's zlib images
   - **linux-headers**: linux kernel headers for ABI definitions
 
 ### Optional dependencies
@@ -28,8 +27,8 @@ For video output at least one of the following is required:
 #### Fonts
 For font handling the following is required:
 - **8x16**: static built-in font which does not require external dependencies.
-- [psf](https://aeb.win.tue.nl/linux/kbd/font-formats-1.html): bitmap font backend, this requires no external dependencies, but you need to provide a path to a psf file that kmscon can read.
-- [unifont](https://unifoundry.com/unifont/index.html): embed unifont in kmscon, this requires no external dependencies.
+- [psf](https://aeb.win.tue.nl/linux/kbd/font-formats-1.html): bitmap font backend, this requires no external dependencies, but you need to provide a path to a psf file that kmscon can read. It reads gzipped fonts (`.psf.gz`, `.psfu.gz`) with zlib; a build without zlib reads uncompressed ones only.
+- [unifont](https://unifoundry.com/unifont/index.html): embed unifont in kmscon; it needs [zlib](https://zlib.net/).
 - [freetype](https://freetype.org/): lightweight font rendering, using only freetype2 and fontconfig.
 - [pango](https://gitlab.gnome.org/GNOME/pango): drawing text with Pango requires: glib, pango, fontconfig, freetype2 and more
 
@@ -85,6 +84,7 @@ explicitly enable it via command line:
 |:------|:-------:|:-----------|
 |`extra_debug`| `false` | Additional debug outputs |
 |`libseat`| `false` | Use libseat to get access to device (DRM and inputs) |
+|`zlib`| `auto` | zlib: gzipped PSF fonts, the unifont backend and images |
 |`images`| `auto` | Sixel and the kitty graphics protocol, with the image helper (libpng, zlib) |
 |`sd_login`| `auto` | Find the image helper's user through sd-login (libsystemd, then libelogind); needs `images` |
 |`video_fbdev`| `auto` | Linux fbdev video backend |

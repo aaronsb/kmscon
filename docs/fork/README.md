@@ -76,6 +76,7 @@ make test                    # build and run kmscon's and libtsm's test suites, 
 make test LIBTSM=../libtsm   # the same, against a local checkout of the libtsm fork
 make demo                    # stage the package for a VT demo: sudo fork/demo/run-vt.sh (see demo.md)
 make vt-demo [VT=N]          # make demo, then run it on a free VT and print its answers
+make vt-check GUIDE=NAME     # make demo, then a guide's checks on a free VT; the operator answers
 make help                    # every target
 ```
 

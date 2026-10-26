@@ -17,6 +17,8 @@ make vt-demo KIT=glyphs DEMO_ARGS='--hwaccel --render-timer=log'
 make vt-demo DEMO_ARGS='--font-name="Monoid Nerd Font Mono" --font-size=30 --mode=7680x2160 --no-use-original-mode'
                                    # options for kmscon
 make vt-login VT=8 DEMO_ARGS='...' # the dev build with a login prompt (below)
+make vt-check GUIDE=focus-decarm-mouse
+                                   # a guide's checks, the operator answering (below)
 ```
 
 It asks for sudo's password first if sudo wants one, then prints the VT to switch to and the key back:
@@ -44,6 +46,45 @@ DEMO_LABEL='dev build <git describe>' fork/demo/demo.sh     # the demo; DEMO_KIT
 The Bad Apple!! showcase runs in such a login from a checkout of [aaronsb/kmscon-showcase](https://github.com/aaronsb/kmscon-showcase), whose README says how.
 
 The first logout ends the run: once a logind session on that VT has been open, `run-vt.sh` (which asks `loginctl` once a second) sees none open there, or only one closing, stops kmscon, prints `vt-login: session ended` and starts the VT's console unit again. A login left behind therefore does not keep a dev build running as root on the VT. Before anyone logs in, kmscon runs without `--oneshot`, so `login`'s own timeout at the prompt (60 s by default) brings a new prompt rather than the end. Ctrl-C in the terminal `make vt-login` runs in also ends the run, the login with it; both are a normal end, status 0. kmscon ending on its own ends it as a failure: a crash, with kmscon's status, even when the next poll finds the session gone, or kmscon's limit on logins that exit at once in a row (a broken PAM stack, say), which kmscon ends with 0 and `run-vt.sh` reports as 1. A poll whose `loginctl` fails, or that cannot read a session a second list still has, changes nothing; after 10 such polls in a row `run-vt.sh` warns that a logout cannot end the run until `loginctl` answers again, and Ctrl-C still can. The demo's answers go to the same file as `make vt-demo`'s, and when the run ends it prints those of the last `dev build` demo run in the login, if any; none is no failure. `VT`, `DEMO_ARGS` and `VT_DEMO_DRY_RUN=1` work as for `make vt-demo`; `KIT` is refused, since the demo is run by hand. By hand: `sudo fork/demo/run-vt.sh --login [N] [-- kmscon-option...]`.
+
+### Guided checks: `make vt-check`
+
+`make vt-check` runs the dev build the same way with a guide's checks as its session, in place of the demo (#238). The agent starts it from the desktop and reads the answers when it ends; the operator only switches to the VT, follows each step and answers. Nobody logs in.
+
+```sh
+make vt-check GUIDE=focus-decarm-mouse                          # every step of fork/demo/checks/focus-decarm-mouse.guide
+make vt-check GUIDE=focus-decarm-mouse GUIDE_STEPS="4 5"        # only those steps
+make vt-check GUIDE=focus-decarm-mouse DEMO_ARGS=--dpms-timeout=15
+                                                                # kmscon blanks after 15 s, for the DPMS step
+```
+
+Each step is one screen: what to do and what to expect. Enter starts `fork/demo/checks/probe.py` in the step's mode, q stops it, and the operator answers y, n or s, with a note. At a step's first prompt, s skips the step and q ends the checks. The probe prints each sequence the terminal sends, one line each, split at each ESC, with FOCUS IN and FOCUS OUT labelled, and timed in seconds from its start. A time is when the probe read the bytes. After the last step kmscon exits and the stock console comes back.
+
+The answers and the probe's lines are appended to `/tmp/kmscon-demo/vt-check.log` under a header line naming the guide, the time, the tty and the steps. `guide.sh` refuses that directory, before anything is asked, when it is a symlink or another user's. When the run ends, `make vt-check` prints the health check, the lines the run added and the log's path, and fails when kmscon failed or the run added nothing. `GUIDE` is a name in `fork/demo/checks` or a path. The guide and `GUIDE_STEPS` are checked with `guide.sh --check` before sudo, and without `GUIDE` the target fails before the build, naming the guides. `VT`, `DEMO_ARGS` and `VT_DEMO_DRY_RUN=1` work as for `make vt-demo`; `KIT` is refused. By hand: `sudo fork/demo/run-vt.sh --guide=FILE [--steps="4 5"] [N] [-- kmscon-option...]`.
+
+The #233 pass, the first run of this kind, left these lessons in the guide and the tools:
+
+- A guide names the Super (Windows) key in full: "Logo" was misread. `guide.sh --check` refuses a guide that says Logo.
+- Shift+PgUp is kmscon's scrollback key and never reaches the probe.
+- Turning a monitor off and on is an unplug, which gives FOCUS OUT and then FOCUS IN, not a DPMS blank. The DPMS step needs kmscon's own blank, from `--dpms-timeout`.
+- kmscon disables session control on a real VT (`src/seat.c:840`), so a check of a second session (open, switch to, close) cannot run there. The guide has none.
+- The probe's times are read times. The prototype's `bg` mode slept while the session was in the background, so a report sent then showed after setForeground; `bg` now reads while it waits.
+
+#### Writing a guide
+
+A guide is `fork/demo/checks/NAME.guide`, lines of `key: text`; blank lines and lines starting with `#` are skipped. Its opening comment says what it checks and the command that runs it.
+
+| Key | What it holds |
+|---|---|
+| `title:` | once, before the first step: the first screen's heading and the results log's header |
+| `intro:` | a line for the first screen, before the first step |
+| `step:` | starts a step, with its title |
+| `probe:` | the step's `probe.py` mode: `focus`, `focus-later`, `decarm`, `mouse` or `bg` (`probe.py --list`). A step without one asks once Enter is pressed |
+| `do:`, `expect:` | a line shown as typed under `Do:` or `Expect:`; each step needs both |
+
+`{vt}` and `{desktop}` in the text are the run's VT and the desktop's. `fork/demo/checks/guide.sh --check FILE` checks a guide without a terminal and lists its steps. A new probe mode is an entry in `MODES` in `probe.py`.
+
+`tests/demo/vt_check.py`, part of `make test`, drives `guide.sh` through scripted answers on a pseudo-terminal, with `probe.py` reading the bytes the driver sends, and checks the results log. It also runs `--check` on broken guides and on each guide in the tree, and checks `probe.py`'s `bg` timing and how it splits a read.
 
 ### By hand
 
@@ -79,7 +120,7 @@ The extracted binary runs on the host as it is: libtsm is linked statically, and
 | Backend modules (pango, freetype, gltex, drm3d, ...) | `/usr/lib/kmscon`, compiled in (`BUILD_MODULE_DIR`); no option or environment variable changes it | kmscon runs in a private mount namespace (`unshare --mount`) in which `fork/build/demo-root/usr/lib/kmscon` is bind-mounted over `/usr/lib/kmscon`. The rest of the system never sees the mount, and it ends with kmscon. Without it the fork's binary would load the stock package's modules, which are built against a different tree. |
 | Config | `--configdir`, default `/etc/kmscon` | `--configdir fork/demo`, so `fork/demo/kmscon.conf` is read and `/etc/kmscon` is not. |
 | Fonts | fontconfig, through the pango module | the host's fonts. `kmscon.conf` asks for DejaVu Sans Mono at size 24; pango falls back to other installed fonts for CJK and emoji. |
-| The session | `--login -- argv`, started with `execve` | `/usr/bin/setpriv` drops to the invoking user (`$SUDO_USER`), then `env` sets `DEMO_LABEL="dev build <git describe>"` and runs `/bin/bash fork/demo/demo.sh`; the demonstration never runs as root. With `--login`, `/bin/login -p`, kmscon's default, named so that no config file changes it. |
+| The session | `--login -- argv`, started with `execve` | `/usr/bin/setpriv` drops to the invoking user (`$SUDO_USER`), then `env` sets `DEMO_LABEL="dev build <git describe>"` and runs `/bin/bash fork/demo/demo.sh`; the demonstration never runs as root. With `--login`, `/bin/login -p`, kmscon's default, named so that no config file changes it. With `--guide`, `env` sets `GUIDE_VT`, `GUIDE_DESKTOP` and `GUIDE_STEPS` and runs `/bin/bash fork/demo/checks/guide.sh FILE`, as the user. |
 
 Display settings belong to one machine, so they are not in `fork/demo/kmscon.conf`. Pass them after `--` (for example the `mode=` and `use-original-mode` lines of `/etc/kmscon/kmscon.conf`, as `--mode=...` and `--no-use-original-mode`), together with `--font-size=N` for a different size.
 
@@ -92,17 +133,17 @@ Display settings belong to one machine, so they are not in `fork/demo/kmscon.con
 5. Counts `atomic commit failed` and `vt_timeout` lines in that log, the stock-kmscon freeze signature (see "Seen on hardware").
 6. Finds this run by its run id: the last run of a `dev build` label among the answers appended to `/tmp/kmscon-demo/feedback.tsv` since step 4, so a stock run on another VT writing to the same file meanwhile is not taken for it. It prints that run with `feedback.sh --run`.
 
-The script is `fork/demo/vt-demo.sh [N] [-- KMSCON-OPTION...]`; `tests/demo/vt_demo.py`, part of `make test`, runs it against a planted VT on screen, a stand-in `loginctl` and a stand-in `run-vt.sh`, and `run-vt.sh` itself through `--dry-run` with stand-ins for `loginctl`, the active units and kmscon. The stand-ins for `sudo` and `run-vt.sh` are taken from the environment only in a dry run or with `VT_DEMO_TEST=1`, so a stale export in the shell cannot decide what runs as root. `run-vt.sh`'s own stand-ins (`RUN_VT_MODULEDIR`, `RUN_VT_LOGINCTL`, `RUN_VT_ACTIVE`, `RUN_VT_CHILD`) count only in a dry run, and as root `run-vt.sh` refuses to start with any of them set, so a dry run as root runs nothing its caller chose. `make vt-login` runs the same script with `VT_DEMO_LOGIN=1`, which passes `--login` to `run-vt.sh`; in step 6 a run without answers is no failure, and `run-vt.sh`'s 130 (Ctrl-C) is a normal end.
+The script is `fork/demo/vt-demo.sh [N] [-- KMSCON-OPTION...]`; `tests/demo/vt_demo.py`, part of `make test`, runs it against a planted VT on screen, a stand-in `loginctl` and a stand-in `run-vt.sh`, and `run-vt.sh` itself through `--dry-run` with stand-ins for `loginctl`, the active units and kmscon. The stand-ins for `sudo` and `run-vt.sh` are taken from the environment only in a dry run or with `VT_DEMO_TEST=1`, so a stale export in the shell cannot decide what runs as root. `run-vt.sh`'s own stand-ins (`RUN_VT_MODULEDIR`, `RUN_VT_LOGINCTL`, `RUN_VT_ACTIVE`, `RUN_VT_CHILD`) count only in a dry run, and as root `run-vt.sh` refuses to start with any of them set, so a dry run as root runs nothing its caller chose. `make vt-login` runs the same script with `VT_DEMO_LOGIN=1`, which passes `--login` to `run-vt.sh`; in step 6 a run without answers is no failure, and `run-vt.sh`'s 130 (Ctrl-C) is a normal end. `make vt-check` runs it with `VT_DEMO_GUIDE` and `VT_DEMO_GUIDE_STEPS`, which pass `--guide` and `--steps` to `run-vt.sh`; in step 6 it prints the lines the run added to the results log (`VT_DEMO_CHECKLOG` in the tests) in place of the demo's answers.
 
 ## What `run-vt.sh` does
 
-1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists. It also refuses every kmscon option after `--` but display, font, palette, text and input ones, `--render-timer`, `--image-storage-limit` (`auto` or a size up to 4G, since kmscon holds the budget as root here; a full-screen 8K video needs about 1G with `--hwaccel`, #188) and `--sync-timeout` (to try a synchronized frame's hold at the review; it names no file, runs nothing, and kmscon holds it to 10000 ms), named in full (kmscon takes a unique prefix, so `--lo` would be `--login`), each as one word: `--name=value`, or `--name` / `--no-name` for a switch. A value in a word of its own would be taken as the option's value or, as a stray word, be moved by kmscon into the login command that runs as root. Left out on purpose: the VT, seat and session options, `--login`, `--configdir`, `--oneshot`, the grabs, and the options that name files (`--asciicast`, `--issue-path`, `--xkb-keymap`, `--xkb-compose-file`). The list is `valued` and `switches` in `run-vt.sh`. Before N, `--kit=KIT` picks the demo's review kit (text, sixel, kitty, glyphs or all; any other name is refused), which reaches the demo as `DEMO_KIT`, one word of `env`'s after `setpriv`. `--login` makes the session kmscon's login prompt, `/bin/login -p` (see `make vt-login` above), and refuses `--kit`; the kmscon options after `--` keep the same allowlist.
+1. Refuses unless it runs as root, N is from 2 to 12, `make demo` has staged a build, it was started through `sudo` from a user account, and `/usr/lib/kmscon` exists. It also refuses every kmscon option after `--` but display, font, palette, text and input ones, `--render-timer`, `--image-storage-limit` (`auto` or a size up to 4G, since kmscon holds the budget as root here; a full-screen 8K video needs about 1G with `--hwaccel`, #188) and `--sync-timeout` (to try a synchronized frame's hold at the review; it names no file, runs nothing, and kmscon holds it to 10000 ms), named in full (kmscon takes a unique prefix, so `--lo` would be `--login`), each as one word: `--name=value`, or `--name` / `--no-name` for a switch. A value in a word of its own would be taken as the option's value or, as a stray word, be moved by kmscon into the login command that runs as root. Left out on purpose: the VT, seat and session options, `--login`, `--configdir`, `--oneshot`, the grabs, and the options that name files (`--asciicast`, `--issue-path`, `--xkb-keymap`, `--xkb-compose-file`). The list is `valued` and `switches` in `run-vt.sh`. Before N, `--kit=KIT` picks the demo's review kit (text, sixel, kitty, glyphs or all; any other name is refused), which reaches the demo as `DEMO_KIT`, one word of `env`'s after `setpriv`. `--login` makes the session kmscon's login prompt, `/bin/login -p` (see `make vt-login` above), and refuses `--kit`; the kmscon options after `--` keep the same allowlist. `--guide=FILE` makes the session `fork/demo/checks/guide.sh` on FILE, made absolute (see `make vt-check` above), and refuses `--kit` and `--login`; `--steps` takes step numbers only, separated by spaces or commas, and goes with `--guide`. Before kmscon starts, the user must be able to read the guide.
 2. Refuses the VT on screen (`fgconsole`) and any VT a logind session is on, the desktop's included: stopping the unit there would end that session. When `loginctl` cannot list the sessions, or cannot read one that a second list still has, it refuses too; a session gone from the second list ended in between and is skipped.
 3. Records which of `kmsconvt@ttyN.service`, `getty@ttyN.service` and `autovt@ttyN.service` are active and stops them. A trap on exit, Ctrl-C, SIGTERM and SIGHUP stops kmscon with SIGTERM if it still runs, waits for it (SIGKILL after 5 seconds), and starts again the units that were active, so the stock console comes back after a normal end, an interrupt or a kmscon failure. While it restores, it ignores Ctrl-C, SIGTERM, SIGHUP and SIGPIPE, so a second Ctrl-C or a closed terminal cannot cut it short before the unit is started.
 4. Prints the steps and the manual restore command.
 5. Runs the staged kmscon on VT N with `--no-switchvt --oneshot`, the demo config and the demonstration as its session, in the background so that only the script's trap stops it, and waits for it. With `--login`, the session is `/bin/login -p` and kmscon runs without `--oneshot`; the script watches the VT's logind sessions and ends the run at the first logout, and Ctrl-C, a kmscon crash or kmscon's retry limit ends it as well, the last two as failures (the retry limit's 0 becomes 1).
 
-`--dry-run` prints each of these commands (and the checks it would make) without running any, and needs no root.
+`--dry-run` prints each of these commands (and the checks it would make) without running any, and needs no root. It skips the check that the user can read a `--guide` file, which runs a command as the user.
 
 ## The demonstration
 

@@ -1,0 +1,56 @@
+# The VT checks of #233: focus reports (mode 1004), DECARM and mouse
+# reports in pixels (mode 1016), first run on 2026-10-25.
+#
+#   make vt-check GUIDE=focus-decarm-mouse DEMO_ARGS=--dpms-timeout=15
+#
+# --dpms-timeout gives step 6 kmscon's own blank; without it step 6 is
+# skipped. The session checks of #233 (a second session, switching to it and
+# closing it) are not here: kmscon disables session control on a real VT
+# (src/seat.c:840), so they cannot run on one.
+
+title: Focus reports, DECARM and mouse pixels (#233)
+
+step: VT switch
+probe: focus
+do: Ctrl+Alt+F{desktop} to your desktop, wait a second, Ctrl+Alt+F{vt} back. Then q.
+expect: one FOCUS OUT when you leave and one FOCUS IN when you return.
+
+step: Mode set while away
+probe: focus-later
+do: start it, then switch away (Ctrl+Alt+F{desktop}) within 10 s. Wait until
+do: 15 s have passed, then come back (Ctrl+Alt+F{vt}). Then q.
+expect: no event before the mode is set, then exactly one FOCUS IN on return.
+
+step: DECARM off: no key repeat
+probe: decarm
+do: hold 'a' for two seconds, then hold the Down arrow key. Then q.
+do: (Shift+PgUp is kmscon's own scrollback key and never reaches the probe.)
+expect: one line per press, no repeats while held, and no press lost.
+
+step: Mouse 1016: pixel reports from 1
+probe: mouse
+do: click the very top-left corner, then the very bottom-right corner,
+do: then any cell in the middle. Then q.
+expect: top-left reads ;1;1M (from 1, not 0); bottom-right is the last pixel
+expect: of the text area (columns x cell width ; rows x cell height), not of
+expect: the whole screen.
+
+step: OSC setBackground and setForeground
+probe: bg
+do: start it and watch; the screen may go dark for 5 s. Then q.
+expect: FOCUS OUT just after setBackground, then FOCUS IN just after
+expect: setForeground, 5 s later.
+
+step: DPMS blank
+probe: focus
+do: touch nothing for 20 s. If the screen blanks (the run has kmscon's
+do: --dpms-timeout), move the mouse to wake it, then q. If it does not
+do: blank, q and answer s. Turning the monitor off is an unplug (step 7).
+expect: no focus events at all.
+
+step: Monitors
+probe: focus
+do: with two monitors, unplug one (or turn it off), then the other, then
+do: plug one back. With one, turn it off and on again. Then q.
+expect: nothing while a monitor is still on, FOCUS OUT when the last one
+expect: goes, FOCUS IN when one comes back.

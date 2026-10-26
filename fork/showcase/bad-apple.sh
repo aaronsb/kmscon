@@ -94,7 +94,8 @@ cue() {
 : "${ACT5_SIZE:=0.5}"            #   this share of the screen's rows tall (mpv scales the clip)
 : "${ACT5_WIDTH:=960}"           #   the clip is rendered this many pixels wide
 : "${ACT5_DITHER:=none}"         #   mpv's --vo-sixel-dither (none keeps the frames small)
-: "${ACT5_HOLD:=2.5}"            #   the halted frame stays this long
+: "${ACT5_STUTTER:=2}"           #   then, over the halted frame, the sound's last moment repeats shorter each time, a skipping buffer, this long (0: none)
+: "${ACT5_HOLD:=0.5}"            #   then the halted frame stays this long, silent
 
 : "${ACT6_FIRE:=5.217}"          # the fire wipe (3 bars of music/act6-fire.js)
 : "${ACT6_CPS:=16}"
@@ -314,7 +315,17 @@ act3_cache() {
 	[ -n "$s" ] && s="$s $h" || s=$(act3_size)
 	echo "$cache/act3-${s/ /x}-${ACT3_FPS}fps-${ACT3_DITHER}-${ACT3_START}+${ACT3_SECONDS}.frames"
 }
-act5_clip() { echo "$cache/act5-${ACT5_WIDTH}px-${ACT5_START}+${ACT5_SECONDS}+${ACT5_GLITCH}.mkv"; }
+act5_clip() { echo "$cache/act5-${ACT5_WIDTH}px-${ACT5_START}+${ACT5_SECONDS}+${ACT5_GLITCH}+${ACT5_STUTTER}.mkv"; }
+
+# The lengths of act 5's stutter, one a line: the last 0.3 s of the clip's
+# sound twice, then each length 0.7 of the one before, twice each, until
+# they add up to ACT5_STUTTER or grow shorter than 30 ms.
+act5_stutter() {
+	awk -v want="$ACT5_STUTTER" 'BEGIN {
+		for (l = 0.3; sum < want && l >= 0.03; l *= 0.7)
+			for (i = 0; i < 2 && sum < want; i++) { printf "%.3f\n", l; sum += l }
+	}'
+}
 
 prepare_act() {
 	local f w h size
@@ -351,18 +362,38 @@ prepare_act() {
 		echo "rendering act 5's clip into $f"
 		# The clip: ACT5_SECONDS as it is, then ACT5_GLITCH with only the red
 		# channel, shifted, and a band of it torn sideways. The soundtrack
-		# runs straight through. Its last frame is the halted one.
-		# The shift and the tear scale with the clip's width.
-		local total w=$ACT5_WIDTH
+		# runs straight through, then stutters (act5_stutter) over the last
+		# frame, held, which stays as the halted one. Every repeat ends where
+		# the soundtrack stopped and starts abruptly, so each one clicks in
+		# like a buffer played again. The shift and the tear scale with the
+		# clip's width.
+		local total w=$ACT5_WIDTH len lens=() held n audio='0:a?'
 		total=$(awk -v a="$ACT5_SECONDS" -v b="$ACT5_GLITCH" 'BEGIN { print a + b }')
+		mapfile -t lens < <(act5_stutter)
+		held=$(printf '%s\n' "${lens[@]}" | awk '{ s += $1 } END { print s + 0 }')
 		local graph="[0:v]scale=${w}:-2,format=rgb24,split[a][b];"
 		graph+="[a]trim=0:${ACT5_SECONDS},setpts=PTS-STARTPTS[n];"
 		graph+="[b]trim=${ACT5_SECONDS}:${total},setpts=PTS-STARTPTS,"
 		graph+="lutrgb=g=0:b=0,rgbashift=rh=-$((w / 40)):rv=$((w / 160)),split[g][t];"
 		graph+="[t]crop=iw:ih/6:0:ih*2/5[band];[g][band]overlay=x=$((w * 7 / 120)):y=main_h*2/5[gl];"
-		graph+="[n][gl]concat=n=2:v=1:a=0,format=yuv420p[v]"
+		graph+="[n][gl]concat=n=2:v=1:a=0,tpad=stop_mode=clone:stop_duration=${held},format=yuv420p[v]"
+		if [ ${#lens[@]} -gt 0 ] && [ -n "$(ffprobe -v error -select_streams a:0 -show_entries stream=index \
+			-of csv=p=0 "$BAD_APPLE")" ]; then
+			graph+=";[0:a]asplit=$((${#lens[@]} + 1))[s0]"
+			for ((n = 1; n <= ${#lens[@]}; n++)); do graph+="[s$n]"; done
+			graph+=";[s0]atrim=0:${total},asetpts=PTS-STARTPTS[r0]"
+			n=0
+			for len in "${lens[@]}"; do
+				n=$((n + 1))
+				graph+=";[s$n]atrim=$(awk -v t="$total" -v l="$len" 'BEGIN { print t - l }'):${total},asetpts=PTS-STARTPTS[r$n]"
+			done
+			graph+=";"
+			for ((n = 0; n <= ${#lens[@]}; n++)); do graph+="[r$n]"; done
+			graph+="concat=n=$((${#lens[@]} + 1)):v=0:a=1[aud]"
+			audio='[aud]'
+		fi
 		ffmpeg -v error -nostdin -y -ss "$ACT5_START" -t "$total" \
-			-i "$BAD_APPLE" -filter_complex "$graph" -map '[v]' -map '0:a?' \
+			-i "$BAD_APPLE" -filter_complex "$graph" -map '[v]' -map "$audio" \
 			-c:v libx264 -crf 18 -c:a aac "$f.part.mkv"
 		mv "$f.part.mkv" "$f"
 		;;

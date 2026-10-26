@@ -1,7 +1,9 @@
 /*
  * The decisions terminal.c makes for a terminal's input modes
  * (src/terminal_vte.c), against a real libtsm vte: a key repeat is dropped
- * while the program has reset DECARM (mode 8), and a real key press never is.
+ * while the program has reset DECARM (mode 8), and a real key press never is;
+ * a change of focus is reported once while the program has set mode 1004, and
+ * a repeat of the last focus is not reported again.
  */
 
 #undef NDEBUG
@@ -78,9 +80,42 @@ static void test_decarm(void)
 	term_free(&t);
 }
 
+/* focus events, mode 1004 (xterm ctlseqs, FocusIn/FocusOut) */
+static void test_focus(void)
+{
+	struct term t;
+	bool last = false;
+
+	term_init(&t);
+	/* mode 1004 reset: the focus is kept, nothing is written */
+	assert(!terminal_vte_focus(t.vte, &last, true));
+	assert(last && reply_len == 0);
+
+	/* setting the mode reports nothing; the next change does */
+	feed(&t, "\e[?1004h");
+	assert(reply_len == 0);
+	assert(!terminal_vte_focus(t.vte, &last, true));
+	assert(reply_len == 0);
+	assert(terminal_vte_focus(t.vte, &last, false));
+	assert(!strcmp(reply, "\e[O") && !last);
+	clear_reply();
+	assert(!terminal_vte_focus(t.vte, &last, false));
+	assert(reply_len == 0);
+	assert(terminal_vte_focus(t.vte, &last, true));
+	assert(!strcmp(reply, "\e[I") && last);
+	clear_reply();
+
+	/* reset again: changes are kept and not reported */
+	feed(&t, "\e[?1004l");
+	assert(!terminal_vte_focus(t.vte, &last, false));
+	assert(reply_len == 0 && !last);
+	term_free(&t);
+}
+
 int main(void)
 {
 	test_decarm();
+	test_focus();
 	printf("test_terminal_vte: ok\n");
 	return 0;
 }

@@ -27,8 +27,9 @@
  * The part of terminal_new that makes a terminal's vte on its screen, sets it
  * from the configuration, and adds the terminal to the image budget (ADR-103),
  * and the decisions terminal.c makes for the vte's input modes: whether a key
- * repeat goes through (DECARM). It is apart from terminal.c so that a test
- * drives its failures and those decisions.
+ * repeat goes through (DECARM) and when a focus change is reported (mode
+ * 1004). It is apart from terminal.c so that a test drives its failures and
+ * those decisions.
  */
 
 #ifndef KMSCON_TERMINAL_VTE_H
@@ -57,5 +58,15 @@ int terminal_vte_new(struct tsm_vte **vte, struct image_budget_terminal *images,
  * matched before this and keep repeating.
  */
 bool terminal_vte_drop_repeat(struct tsm_vte *vte, bool repeat);
+
+/*
+ * Reports a change of focus to @vte, for mode 1004 (xterm ctlseqs,
+ * FocusIn/FocusOut): @focus is the terminal's focus now and @last the focus
+ * last given, which this updates. libtsm keeps no focus state, so a call that
+ * repeats @last gives @vte nothing. Returns true when a report (CSI I or
+ * CSI O) was written, that is when the focus changed while a program had set
+ * mode 1004.
+ */
+bool terminal_vte_focus(struct tsm_vte *vte, bool *last, bool focus);
 
 #endif /* KMSCON_TERMINAL_VTE_H */

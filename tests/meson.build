@@ -345,7 +345,7 @@ test_terminal_sync = executable(
 )
 test('test_terminal_sync', test_terminal_sync)
 
-# the input modes terminal.c asks a vte about (DECARM) on a real vte
+# the input modes terminal.c asks a vte about (DECARM, focus) on a real vte
 test_terminal_vte = executable(
     'test_terminal_vte',
     'test_terminal_vte.c',

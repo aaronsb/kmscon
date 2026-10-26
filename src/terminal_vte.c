@@ -85,3 +85,17 @@ bool terminal_vte_drop_repeat(struct tsm_vte *vte, bool repeat)
 {
 	return repeat && tsm_vte_get_mode(vte, true, 8) == MODE_RESET;
 }
+
+bool terminal_vte_focus(struct tsm_vte *vte, bool *last, bool focus)
+{
+	if (*last == focus)
+		return false;
+	*last = focus;
+#ifdef TSM_VTE_HANDLE_FOCUS
+	return tsm_vte_handle_focus(vte, focus);
+#else
+	/* a libtsm before mode 1004: nothing to report to */
+	(void)vte;
+	return false;
+#endif
+}

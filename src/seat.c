@@ -121,6 +121,41 @@ static void seat_dpms_reset_timer(struct kmscon_seat *seat);
 static struct kmscon_session *kmscon_seat_new_session(struct kmscon_seat *seat);
 static void kmscon_session_unregister(struct kmscon_session *sess);
 
+/*
+ * Focus, for mode 1004 (libtsm#29): a terminal has it while its session holds
+ * the display, that is while the session is the seat's current one and in the
+ * foreground (not sent to the background by OSC setBackground), and the seat
+ * is awake and in the foreground: its VT is active or libseat has enabled it,
+ * and its video is awake, holding DRM master. A DPMS blank keeps the focus,
+ * since the session still holds the blanked display, and so does unplugging
+ * a display.
+ *
+ * Every transition that changes one of those calls this at its end: a VT
+ * switch away and back and libseat's disable and enable (seat_vt_deactivate,
+ * seat_vt_activate), a switch between the seat's sessions (seat_switch, which
+ * a new session, the close of the current one and the seat's exit go
+ * through), and OSC setBackground and setForeground. The others lose the
+ * focus before the current session gains it, so two terminals of a seat never
+ * hold it at once.
+ */
+static bool session_has_focus(struct kmscon_seat *seat, struct kmscon_session *s)
+{
+	return seat->awake && seat->foreground && seat->current_sess == s && s->foreground;
+}
+
+static void seat_update_focus(struct kmscon_seat *seat)
+{
+	struct kmscon_session *s;
+
+	dlist_for_each_entry(s, &seat->sessions, list)
+	{
+		if (!session_has_focus(seat, s))
+			terminal_set_focus(s->term, false);
+	}
+	if (seat->current_sess && session_has_focus(seat, seat->current_sess))
+		terminal_set_focus(seat->current_sess->term, true);
+}
+
 static void activate_display(struct kmscon_display *d)
 {
 	int ret;
@@ -259,6 +294,7 @@ static void seat_switch(struct kmscon_seat *seat, struct kmscon_session *new)
 		seat_go_background(seat);
 	}
 	seat->current_sess = new;
+	seat_update_focus(seat);
 }
 
 static void seat_next(struct kmscon_seat *seat)
@@ -378,12 +414,9 @@ static void seat_vt_activate(struct uterm_vt *vt, void *data)
 
 	log_debug("VT %d activated on seat %s", uterm_vt_get_num(vt), seat->name);
 
-	if (seat_go_awake(seat))
-		return;
-	if (seat_go_foreground(seat))
-		return;
-	if (seat->current_sess)
+	if (!seat_go_awake(seat) && !seat_go_foreground(seat) && seat->current_sess)
 		terminal_activate(seat->current_sess->term);
+	seat_update_focus(seat);
 }
 
 static int seat_vt_deactivate(struct uterm_vt *vt, bool force, void *data)
@@ -395,12 +428,10 @@ static int seat_vt_deactivate(struct uterm_vt *vt, bool force, void *data)
 		terminal_deactivate(seat->current_sess->term);
 
 	ret = seat_go_background(seat);
-	if (ret)
-		return ret;
-	ret = seat_go_asleep(seat);
-	if (ret)
-		return ret;
-	return 0;
+	if (!ret)
+		ret = seat_go_asleep(seat);
+	seat_update_focus(seat);
+	return ret;
 }
 
 static void seat_vt_hup(struct uterm_vt *vt, void *data)
@@ -1177,6 +1208,8 @@ int kmscon_session_set_foreground(struct kmscon_session *sess)
 	}
 
 	sess->foreground = true;
+	if (seat)
+		seat_update_focus(seat);
 	return 0;
 }
 
@@ -1204,6 +1237,8 @@ int kmscon_session_set_background(struct kmscon_session *sess)
 	}
 
 	sess->foreground = false;
+	if (seat)
+		seat_update_focus(seat);
 	return 0;
 }
 

@@ -99,6 +99,8 @@ struct kmscon_terminal {
 	struct input *input;
 	bool opened;
 	bool awake;
+	/* the focus last reported to the vte (terminal_set_focus) */
+	bool focus;
 
 	struct conf_ctx *conf_ctx;
 	struct kmscon_conf_t *conf;
@@ -1788,6 +1790,12 @@ void terminal_deactivate(struct kmscon_terminal *term)
 	terminal_image_play(&term->image, false);
 	/* not awake: disarms the timer of a failed font set */
 	set_retry_arm(term);
+}
+
+void terminal_set_focus(struct kmscon_terminal *term, bool focus)
+{
+	if (terminal_vte_focus(term->vte, &term->focus, focus))
+		log_debug("focus %s reported to terminal %p", focus ? "in" : "out", term);
 }
 
 void terminal_destroy(struct kmscon_terminal *term)

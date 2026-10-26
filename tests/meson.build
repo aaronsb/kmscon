@@ -439,7 +439,9 @@ test_capabilities = executable(
     dependencies: [libtsm_deps],
 )
 # sixel, kitty graphics and sixel's modes through kmscon's own configuration
-# and vte, judged against the build's images option (-Dimages in the list)
+# and vte, judged against the build's images option (-Dimages in the list),
+# and the vte identification probes (XTVERSION and XTGETTCAP), which pass in
+# every build
 test_capabilities_images = executable(
     'test_capabilities_images',
     'test_capabilities_images.c',
@@ -493,6 +495,22 @@ if tic.found() and infocmp.found()
     if tput.found()
         caps_args += ['--tput', tput.full_path()]
     endif
+    # the XTGETTCAP table (src/terminal_termcap.h) against the entry it is
+    # generated from: a change to kmscon.ti is followed by make termcap
+    test(
+        'termcap_drift',
+        python,
+        args: [
+            files('../scripts/terminfo/gen_termcap.py'),
+            '--tic',
+            tic.full_path(),
+            '--infocmp',
+            infocmp.full_path(),
+            '--check',
+            meson.project_source_root() / 'scripts/terminfo/kmscon.ti',
+            meson.project_source_root() / 'src/terminal_termcap.h',
+        ],
+    )
 endif
 test('capabilities', python, args: caps_args)
 

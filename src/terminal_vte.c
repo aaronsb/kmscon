@@ -24,10 +24,38 @@
  */
 
 #include <libtsm.h>
+#include <string.h>
 #include "shl/log.h"
 #include "terminal_vte.h"
 
 #define LOG_SUBSYSTEM "terminal"
+
+#ifdef TSM_VTE_TERMCAP
+#include "terminal_termcap.h"
+#endif
+
+/*
+ * XTVERSION and XTGETTCAP (ADR-201's note of 2026-10-26): kmscon's name and
+ * version, and the capabilities of the kmscon terminfo entry, generated from
+ * scripts/terminfo/kmscon.ti. The table describes that entry alone, so it is
+ * given only to a vte whose session gets TERM=kmscon; under another TERM
+ * every name is unknown.
+ */
+static void identify(struct tsm_vte *vte, const struct kmscon_conf_t *conf)
+{
+	(void)vte;
+	(void)conf;
+#ifdef TSM_VTE_XTVERSION
+	if (tsm_vte_set_version(vte, "kmscon(" BUILD_VERSION ")"))
+		log_warning("cannot set the XTVERSION reply; libtsm's stands");
+#endif
+#ifdef TSM_VTE_TERMCAP
+	if (conf->term && !strcmp(conf->term, "kmscon") &&
+	    tsm_vte_set_termcap(vte, terminal_termcap,
+				sizeof(terminal_termcap) / sizeof(*terminal_termcap)))
+		log_warning("cannot set the XTGETTCAP table; every name is unknown");
+#endif
+}
 
 int terminal_vte_new(struct tsm_vte **vte, struct image_budget_terminal *images,
 		     struct tsm_screen *con, struct kmscon_conf_t *conf, tsm_vte_write_cb write_cb,
@@ -51,6 +79,7 @@ int terminal_vte_new(struct tsm_vte **vte, struct image_budget_terminal *images,
 	if (ret)
 		goto err_vte;
 
+	identify(v, conf);
 	tsm_vte_set_backspace_sends_delete(v, conf->backspace_delete);
 	/* DECRQM ?12 tells the truth only if libtsm knows the cursor can't blink */
 	tsm_vte_set_cursor_blink(v, conf->blink);

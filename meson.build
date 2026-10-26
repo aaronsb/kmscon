@@ -284,6 +284,9 @@ config.set_quoted('BUILD_CONFIG_DIR', prefix / sysconfdir)
 # Default $TERM value
 config.set_quoted('BUILD_DEFAULT_TERM', get_option('term'))
 
+# The version XTVERSION reports (terminal_vte.c)
+config.set_quoted('BUILD_VERSION', meson.project_version())
+
 # Make all files include "config.h" by default. This shouldn't cause any
 # problems and we cannot forget to include it anymore.
 config_h = configure_file(configuration: config, output: 'config.h')

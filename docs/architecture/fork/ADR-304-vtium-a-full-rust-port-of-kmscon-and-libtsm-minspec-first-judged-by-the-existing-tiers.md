@@ -114,12 +114,15 @@ considered:
   - operator: aaronsb
     said: "they need to be prepared to *defend* it"
     via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, on vtium's contribution policy, a follow-up to the statement above; also in basis
+  - operator: aaronsb
+    said: "agree to to the adr. I read it in full."
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, accepting ADR-304 after reading the record in full
 observable:
   - "R0: tier 1's cases and the capability probes that feed libtsm bytes run through one replay program, whose input and output are written down, and the C implementation passes every golden through it"
   - "vtium's minspec build passes `make tier3-minimal`'s two variants, `2d-potato-min` and `2d-potato-min-psf`, pixel-exact"
   - "vtium's README states the provenance and the contribution policy, its CONTRIBUTING and PR template ask each PR how its code was written and for its proofs, and its licence file quotes kmscon's and libtsm's copyright notices from its first commit"
   - "the minspec build's size and memory targets are written down before the first Rust build, and tier 3's report measures them on every run from that build"
-status: proposed
+status: accepted
 date: 2026-10-26
 deciders:
   - aaronsb

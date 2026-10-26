@@ -102,6 +102,7 @@ def parser():
     p.add_argument("--subtitle", default="")
     p.add_argument("--font", default="mono12")
     p.add_argument("--cjk", type=float, default=0)
+    p.add_argument("--wind", type=float, default=0)
     p.add_argument("--report", default="")
 
     p = cmd("banner", scenes.cmd_banner, "act 7's scroller over copper bars")

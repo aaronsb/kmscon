@@ -8,6 +8,7 @@ seconds; run() and run_dots() draw one alone, rebuild it when the window is
 resized, and report frames per second and bytes per frame.
 """
 
+import collections
 import importlib.util
 import math
 import os
@@ -98,11 +99,12 @@ class CJKStream:
     terminal doing the scrolling: a stress of the parser, the glyph cache
     and the scroll. The ideographs are the glyph kit's (fork/demo/
     glyph-text.py), drawn by Zipf's law from a seeded pool, so every run
-    sends the same text; each line opens with its number."""
+    sends the same text; each line opens with its number. blow() then
+    blows the lines on the screen away."""
 
     PER_FRAME = 3  # lines a frame: 120 a second at 40 fps
 
-    def __init__(self, cols):
+    def __init__(self, cols, rows):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "demo", "glyph-text.py")
         spec = importlib.util.spec_from_file_location("glyph_text", path)
         glyphs = importlib.util.module_from_spec(spec)
@@ -110,9 +112,12 @@ class CJKStream:
         rng = random.Random(2026)
         chars, weights = glyphs.ideographs(rng)
         self.pool = "".join(rng.choices(chars, weights, k=20000))
+        self.cols, self.rows = cols, rows
         self.width = max(1, (cols - 7) // 2)  # ideographs a line, after "nnnnn "
         self.n = 0
         self.at = 0
+        self.screen = collections.deque(maxlen=rows)  # the lines on screen, the newest at the bottom
+        self.gusts = None
 
     def lines(self, top, bottom):
         """The escape string scrolling PER_FRAME new lines up rows top to
@@ -123,9 +128,36 @@ class CJKStream:
                 self.at = 0
             text = self.pool[self.at:self.at + self.width]
             self.at += self.width
-            s.append(f"{cup(bottom, 1)}\r\n{ESC}[0;90m{self.n % 100000:5d} {ESC}[0;97m{text}{ESC}[0m")
+            number = f"{self.n % 100000:5d} "
+            s.append(f"{cup(bottom, 1)}\r\n{ESC}[0;90m{number}{ESC}[0;97m{text}{ESC}[0m")
+            self.screen.append([(c, 1) for c in number] + [(c, 2) for c in text])
             self.n += 1
         s.append(f"{ESC}[r")
+        return "".join(s)
+
+    def blow(self, u, seconds):
+        """The escape string of the wind u seconds into its seconds: each
+        line, after a delay of its own, slides right faster and faster,
+        thinning and greying, until the screen is clear."""
+        rows, cols = self.rows, self.cols
+        lines = [[] for _ in range(rows - len(self.screen))] + list(self.screen)
+        if self.gusts is None:
+            rnd = random.Random(11)
+            self.gusts = [(rnd.uniform(0, 0.35 * seconds), [rnd.random() for _ in line]) for line in lines]
+        s = []
+        for r, (line, (delay, keep)) in enumerate(zip(lines, self.gusts)):
+            go = max(0.0, (u - delay) / max(0.01, seconds - delay))
+            off = int(cols * 1.15 * go * go) & ~1  # even, so ideographs keep their cells
+            gone = go * 1.4
+            colour = 97 if go < 0.35 else 37 if go < 0.7 else 90
+            cells, width = [" " * off], off
+            for (c, w), k in zip(line, keep):
+                if width + w > cols:
+                    break
+                cells.append(" " * w if k < gone else c)
+                width += w
+            s.append(f"{cup(r + 1, 1)}{ESC}[0;{colour}m{''.join(cells)}{ESC}[K")
+        s.append(f"{ESC}[0m")
         return "".join(s)
 
 
@@ -138,12 +170,13 @@ class Fire:
 
     With cjk seconds, a CJKStream scrolls up the rows the edge has left
     behind, rising into view under the flames as they climb, and after the
-    fire has burnt out fills the screen for those seconds more; after()
-    returns its lines for the frame."""
+    fire has burnt out fills the screen for those seconds more, then for
+    wind seconds is blown away; after() returns its lines for the frame."""
 
-    def __init__(self, cols, rows, seconds=5.0, cjk=0.0):
-        self.seconds = seconds
-        self.stream = CJKStream(cols) if cjk > 0 else None
+    def __init__(self, cols, rows, seconds=5.0, cjk=0.0, wind=0.0):
+        self.seconds, self.cjk, self.wind = seconds, cjk, wind
+        self.t = 0.0
+        self.stream = CJKStream(cols, rows) if cjk > 0 else None
         self.reveal = rows  # first row of the stream's region (0-based); rows: none
         self.cols, self.rows = cols, rows
         self.h2 = rows * 2
@@ -206,6 +239,7 @@ class Fire:
         # The stream's region: the rows a little below the edge, where the
         # fire has gone out; all of them once it has burnt out. The painter
         # leaves them to the stream.
+        self.t = t
         self.reveal = 0 if t >= self.seconds else min(self.rows, (edge + 6) // 2)
         mask = [self.touched[r] if r < self.reveal else [False] * cols for r in range(self.rows)]
         return px, mask
@@ -213,6 +247,9 @@ class Fire:
     def after(self):
         if not self.stream or self.reveal > self.rows - 2:
             return ""
+        blowing = self.t - self.seconds - self.cjk
+        if blowing >= 0 and self.wind > 0:
+            return self.stream.blow(blowing, self.wind)
         return self.stream.lines(self.reveal + 1, self.rows)
 
 
@@ -386,8 +423,8 @@ def run_dots(make, seconds, fps, name, report="", text=None):
 EFFECTS = {
     "plasma": ("the plasma behind act 2's letters", lambda c, r, a: Plasma(c, r), 0),
     "shadebobs": ("shadebobs behind act 2's letters, after the plasma", lambda c, r, a: Shadebobs(c, r), 40),
-    "fire": ("the fire wipe into act 6, revealing a CJK stream with --cjk",
-             lambda c, r, a: Fire(c, r, a.seconds or 5, a.cjk), 40),
+    "fire": ("the fire wipe into act 6, revealing a CJK stream with --cjk, blown away with --wind",
+             lambda c, r, a: Fire(c, r, a.seconds or 5, a.cjk, a.wind if a.cjk > 0 else 0), 40),
     "copper": ("the copper bars under act 7's scroller", lambda c, r, a: Copper(c, r), 40),
     "stars": ("the starfield title card before act 1 (TITLE_SECONDS)",
               lambda c, r, a: Stars(c, r, a.title, a.subtitle, a.font), 40),
@@ -400,14 +437,14 @@ DOT_EFFECTS = {
 def cmd_effect(a):
     """--fx NAME: one effect alone. The fire, being a wipe, clears the
     screen when it has burnt out, and its CJK stream (--cjk) runs on after
-    it for those seconds."""
+    it for those seconds, then blows away (--wind)."""
     name = "stars" if a.name == "starfield" else a.name
     if name in DOT_EFFECTS:
         _, make, fps = DOT_EFFECTS[name]
         run_dots(lambda c, r: make(c, r, a), a.seconds, fps, name, a.report)
         return
     _, make, fps = EFFECTS[name]
-    seconds = a.seconds + a.cjk if name == "fire" and a.seconds > 0 else a.seconds
+    seconds = a.seconds + a.cjk + (a.wind if a.cjk > 0 else 0) if name == "fire" and a.seconds > 0 else a.seconds
     run(lambda c, r: make(c, r, a), seconds, fps, name, a.report)
     if name == "fire":
         clear()

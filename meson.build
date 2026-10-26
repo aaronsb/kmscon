@@ -132,6 +132,8 @@ libpng_deps = dependency(
     disabler: true,
     required: get_option('images'),
 )
+# The same value as the feature loop's enable_images below, which comes too
+# late for the sd_login lookup
 images_allowed = get_option('images').require(
     libpng_deps.found() and zlib_deps.found(),
 ).allowed()
@@ -205,13 +207,26 @@ foreach name, reqs : {
 endforeach
 
 # libtsm builds its sixel decoder and kitty parser only for a kmscon with
-# images (ADR-103, libtsm's images option)
+# images (ADR-103, libtsm's images option). default_options reach only a
+# libtsm built here, and only at its first configure: a system libtsm ignores
+# them (a build that needs libtsm without images sets
+# force_fallback_for=libtsm), and `meson configure -Dimages=...` on an
+# existing build leaves libtsm's setting as it was, so it is read back here.
 libtsm_deps = dependency(
     'libtsm',
     version: '>=4.8.0',
     allow_fallback: true,
     default_options: ['images=' + (enable_images ? 'true' : 'false')],
 )
+if libtsm_deps.type_name() == 'internal'
+    libtsm_images = subproject('libtsm').get_variable('images')
+    if libtsm_images != enable_images
+        error(
+            f'images is @enable_images@ and libtsm\'s images is @libtsm_images@:',
+            f'pass -Dlibtsm:images=@enable_images@ or set up a new build directory',
+        )
+    endif
+endif
 
 config.set('BUILD_ENABLE_DEBUG', get_option('extra_debug'))
 config.set_quoted('BUILD_MODULE_DIR', prefix / moduledir)

@@ -50,9 +50,10 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y meson check libudev-dev libxkbcommon-dev libdrm-dev libgbm-dev libegl1-mesa-dev libgles-dev libpango1.0-dev libsystemd-dev jq libseat-dev
 
     - name: Configure Meson
-      # images enabled, so the image tests cannot vanish if libpng stops
-      # arriving through another package (ADR-103)
-      run: meson setup -Dlibseat=enabled -Dimages=enabled build
+      # images and zlib enabled, so the image tests and gzip fonts cannot
+      # vanish if libpng or zlib stops arriving through another package
+      # (ADR-103)
+      run: meson setup -Dlibseat=enabled -Dimages=enabled -Dzlib=enabled build
 
     - name: Build
       working-directory: ./build

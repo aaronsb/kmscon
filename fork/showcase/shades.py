@@ -9,7 +9,8 @@ run finds them. Each is placed at its own pixel size, so nothing is scaled
 by the terminal; the sunglasses sit above the faces (z) and fall by being
 placed again lower each frame, at a pixel offset within the cell (X, Y);
 leaving the screen, an image is placed at the left edge cropped (x, w).
-Without kitty graphics the faces are emoji and the sunglasses ⌐■-■.
+Without kitty graphics, or when the images cannot be rendered or cached,
+the faces are emoji and the sunglasses ⌐■-■.
 
 Times are in beats of the interlude's music cue (music/act6-shades.js):
 the faces pop in on the first six eighths, the sunglasses land on beats 4
@@ -18,9 +19,11 @@ beats 12 to 16.
 """
 
 import os
+import signal
 import subprocess
+import sys
 
-from kitty import apc, b64, chunked
+from kitty import apc, b64, chunked, hang_up
 from screen import ESC, cup, frames, geom, out, resized
 
 CATS = ["1f431", "1f63a", "1f638", "1f63c", "1f63b", "1f63d"]
@@ -42,11 +45,19 @@ SHADES_X, SHADES_Y = (0.375 + 0.62) / 2 - 14 * UNIT, 0.45 - 2 * UNIT
 
 
 def render(svg, png, w, h):
-    """svg rendered to png at w x h pixels, unless it already is."""
+    """svg rendered to png at w x h pixels, unless it already is; a failed
+    render leaves no .part behind."""
     if not os.path.exists(png):
         os.makedirs(os.path.dirname(png), exist_ok=True)
-        subprocess.run(["rsvg-convert", "-w", str(w), "-h", str(h), "-o", png + ".part", svg], check=True)
-        os.replace(png + ".part", png)
+        try:
+            subprocess.run(["rsvg-convert", "-w", str(w), "-h", str(h), "-o", png + ".part", svg], check=True)
+            os.replace(png + ".part", png)
+        except BaseException:
+            try:
+                os.unlink(png + ".part")
+            except OSError:
+                pass
+            raise
     with open(png, "rb") as f:
         return f.read()
 
@@ -64,6 +75,7 @@ class Row:
         top = max(0, (rows - -(-self.s // cell_h)) // 2)
         self.faces = [((gap + i * (wc + gap)) * cell_w, top * cell_h) for i in range(n)]
         self.shades = (round(self.s * SHADES_W), round(self.s * SHADES_H))
+        self.gone = set()  # the placements deleted past the left edge
 
     def glasses(self, i):
         """Where the sunglasses rest on face i, in pixels."""
@@ -72,8 +84,12 @@ class Row:
 
     def place(self, image_id, pid, x, y, z, width):
         """Places image_id (pid) with its top-left at pixel x, y; past the
-        left edge, cropped to what is left of it, or deleted once gone."""
+        left edge, cropped to what is left of it, or deleted once gone,
+        and then nothing more."""
         if x + width <= 0:
+            if (image_id, pid) in self.gone:
+                return ""
+            self.gone.add((image_id, pid))
             return apc(f"a=d,d=i,i={image_id},p={pid},q=2")
         crop = f",x={-x},w={width + x}" if x < 0 else ""
         x = max(0, x)
@@ -100,17 +116,22 @@ def drop(row, i, beat):
     return int(rest * u * u)
 
 
-def run_kitty(a, beat_s):
-    cols, rows = geom()[:2]
-    row = Row(cols, rows, a.cell_w, a.cell_h)
+def images(row, cache):
+    """The faces and the sunglasses as PNGs at row's sizes, rendered into
+    cache the first time."""
     sw, sh = row.shades
     here = os.path.dirname(os.path.abspath(__file__))
-    cache = os.path.join(a.cache, f"cats-{row.s}")
-    images = [render(os.path.join(here, "cats", f"emoji_u{c}.svg"), os.path.join(cache, f"{c}.png"), row.s, row.s)
-              for c in CATS]
+    cache = os.path.join(cache, f"cats-{row.s}")
+    faces = [render(os.path.join(here, "cats", f"emoji_u{c}.svg"), os.path.join(cache, f"{c}.png"), row.s, row.s)
+             for c in CATS]
     shades = render(os.path.join(here, "cats", "sunglasses.svg"), os.path.join(cache, f"shades-{sw}x{sh}.png"), sw, sh)
-    sent = [chunked(f"a=t,f=100,i={CAT_ID + i},q=2", b64(png)) for i, png in enumerate(images)]
+    return faces, shades
+
+
+def run_kitty(a, beat_s, row, faces, shades):
+    sent = [chunked(f"a=t,f=100,i={CAT_ID + i},q=2", b64(png)) for i, png in enumerate(faces)]
     out("".join(sent) + chunked(f"a=t,f=100,i={SHADES_ID},q=2", b64(shades)))
+    sw = row.shades[0]
     shown = set()
     try:
         for _n, t in frames(END * beat_s, 60):
@@ -128,7 +149,7 @@ def run_kitty(a, beat_s):
                 height = drop(row, i, beat)
                 if height is not None and (beat < LAND + i + 0.1 or dx):
                     s.append(row.place(SHADES_ID, i + 1, row.glasses(i)[0] - dx, height, 2, sw))
-            if s:
+            if any(s):
                 out("".join(s))
     finally:
         out("".join(apc(f"a=d,d=I,i={image_id},q=2") for image_id in list(range(CAT_ID, CAT_ID + len(CATS))) + [SHADES_ID]))
@@ -165,9 +186,21 @@ def run_text(beat_s):
 
 
 def cmd_shades(a):
-    """The interlude: the cats in sunglasses, in kitty graphics or text."""
+    """The interlude: the cats in sunglasses, in kitty graphics or text.
+    Images that cannot be rendered or cached (no rsvg-convert, a read-only
+    or full cache) fall back to text, so the show goes on to act 7. TERM
+    and HUP end it as Ctrl-C does, through its cleanup."""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, hang_up)
     beat_s = 60.0 / a.bpm
     if a.kitty:
-        run_kitty(a, beat_s)
-    else:
-        run_text(beat_s)
+        cols, rows = geom()[:2]
+        row = Row(cols, rows, a.cell_w, a.cell_h)
+        try:
+            faces, shades = images(row, a.cache)
+        except (OSError, subprocess.CalledProcessError) as e:
+            print(f"shades: no cat images ({e}); emoji instead", file=sys.stderr, flush=True)
+        else:
+            run_kitty(a, beat_s, row, faces, shades)
+            return
+    run_text(beat_s)

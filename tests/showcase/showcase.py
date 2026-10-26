@@ -6,7 +6,8 @@ the acts draw with (screen.py, frames.py, effects.py and act 5's sizing in
 bad-apple.sh), and, on a pty, that quitting turns off every mode a player
 may have left on (#88). Act 7's kitty player (kitty.py) runs on a pty with
 stand-ins for ffmpeg and ffprobe, its output replayed on a model of the
-kitty graphics protocol's image store.
+kitty graphics protocol's image store, and act 6's interlude (shades.py)
+with a stand-in for rsvg-convert.
 
     showcase.py --root SOURCE_ROOT
 """
@@ -899,6 +900,83 @@ def kitty_checks(root):
         check("fx.py kitty says on stderr when it falls back from mpv's clock",
               os.waitstatus_to_exitcode(st) == 0 and b"kitty player: mpv's IPC socket" in got
               and "clock=wall" in open(report).read(), repr(got[-300:]))
+
+        # fx.py shades --kitty, act 6's interlude, with rsvg-convert stood in
+        # for: a grey PNG of the size asked, or, with SHADES_RSVG=fail, half
+        # a file and status 1.
+        with open(os.path.join(stubs, "rsvg-convert"), "w") as f:
+            f.write("#!/usr/bin/env python3\nimport os, struct, sys, zlib\n"
+                    "a = sys.argv\nw, h, o = int(a[a.index('-w') + 1]), int(a[a.index('-h') + 1]), a[a.index('-o') + 1]\n"
+                    "if os.environ.get('SHADES_RSVG') == 'fail':\n    open(o, 'wb').write(b'half')\n    sys.exit(1)\n"
+                    "def chunk(t, d):\n    return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d))\n"
+                    "open(o, 'wb').write(b'\\x89PNG\\r\\n\\x1a\\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 0, 0, 0, 0))"
+                    " + chunk(b'IDAT', zlib.compress(b'\\0' * (w + 1) * h)) + chunk(b'IEND', b''))\n")
+        os.chmod(os.path.join(stubs, "rsvg-convert"), 0o755)
+        shades_ids = list(range(101, 107)) + [110]
+        last = b"a=d,d=I,i=110,q=2;\x1b\\"
+
+        def fx_shades(*args, kill=None, timeout=10, **env):
+            """fx.py shades --kitty on a 140x40 pty of 10x20 cells: its
+            status and its output; kill is a signal sent after a second."""
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.environ["PATH"] = stubs + ":" + os.environ["PATH"]
+                os.environ.update(COLUMNS="140", LINES="40", **env)
+                os.execvp("python3", ["python3", "-B", os.path.join(root, "fork/showcase/fx.py"), "shades", "--kitty",
+                                      "--cell-w", "10", "--cell-h", "20", *args])
+            got = b""
+            start = time.monotonic()
+            while time.monotonic() - start < timeout:
+                if kill and time.monotonic() - start > 1:
+                    os.kill(pid, kill)
+                    kill = None
+                r, _, _ = select.select([fd], [], [], 0.1)
+                try:
+                    d = os.read(fd, 65536) if r else b""
+                except OSError:
+                    break
+                if r and not d:
+                    break
+                got += d
+            else:
+                os.kill(pid, 9)
+            _, st = os.waitpid(pid, 0)
+            os.close(fd)
+            return st, got
+
+        def parts(cache):
+            return [f for _, _, fs in os.walk(cache) for f in fs if f.endswith(".part")]
+
+        # The whole interlude in a second (16 beats at 960 bpm): every image
+        # transmitted as a PNG, each placement past the left edge deleted
+        # once, and every image deleted at the end.
+        cache = os.path.join(tmp, "shades-cache")
+        st, got = fx_shades("--bpm", "960", "--cache", cache)
+        sent = sorted(int(i) for i in re.findall(rb"a=t,f=100,i=(\d+)", got))
+        gone = re.findall(rb"a=d,d=i,i=(\d+),p=(\d+)", got)
+        check("fx.py shades --kitty sends its seven images, deletes each placement past the edge once, and every image at the end",
+              os.waitstatus_to_exitcode(st) == 0 and sent == shades_ids and gone and len(gone) == len(set(gone))
+              and got.rstrip().endswith(last) and not parts(cache),
+              f"status {st}, sent {sent}, {len(gone)} deletes of {len(set(gone))} placements, {got[-60:]!r}")
+
+        # SIGTERM and SIGHUP: the interlude stops through its cleanup.
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            st, got = fx_shades("--bpm", "60", "--cache", cache, kill=sig)
+            check(f"{sig.name} ends fx.py shades --kitty through its cleanup: images deleted",
+                  os.waitstatus_to_exitcode(st) == 128 + sig and got.rstrip().endswith(last),
+                  f"status {st}, {got[-80:]!r}")
+
+        # A failed render, and a cache that cannot be made: the interlude
+        # plays in emoji, says why, and leaves no .part behind.
+        fresh = os.path.join(tmp, "shades-fresh")
+        blocked = os.path.join(tmp, "shades-file")
+        open(blocked, "w").close()
+        for what, cache, env in (("rsvg-convert failing", fresh, {"SHADES_RSVG": "fail"}),
+                                 ("a cache that cannot be made", os.path.join(blocked, "cache"), {})):
+            st, got = fx_shades("--bpm", "960", "--cache", cache, **env)
+            check(f"with {what}, fx.py shades --kitty falls back to emoji",
+                  os.waitstatus_to_exitcode(st) == 0 and "🐱".encode() in got and b"\x1b_G" not in got
+                  and b"emoji instead" in got and not parts(fresh), f"status {st}, {parts(fresh)}, {got[:160]!r}")
 
     # EPOCHREALTIME takes the locale's decimal mark: the time act 7 hands
     # the player must read as a number anyway. Once with the variable set to

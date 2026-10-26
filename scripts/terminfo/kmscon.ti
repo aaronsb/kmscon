@@ -40,8 +40,10 @@ kmscon|KMS Console,
   hpa=\E[%i%p1%dG, vpa=\E[%i%p1%dd,
 
 # Erasure
+# E3 is ED 3, which empties the scrollback; clear(1) sends it after clear,
+# as under linux and xterm-256color.
   clear=\E[H\E[2J, ed=\E[J, el=\E[K, el1=\E[1K,
-  ech=\E[%p1%dX, cbt=\E[Z,
+  ech=\E[%p1%dX, cbt=\E[Z, E3=\E[3J,
 
 # Insert/Delete
   dch1=\E[P, dch=\E[%p1%dP,

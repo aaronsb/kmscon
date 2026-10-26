@@ -29,6 +29,7 @@ mode-8452                     works   -Dimages   DECRQM ?8452 (sixel cursor righ
 
 # terminfo entry (scripts/terminfo/kmscon.ti) against what kmscon implements
 terminfo-cursor-shape         works   -          Ss/Se for DECSCUSR
+terminfo-e3                   works   -          E3 is ED 3, so clear(1) also empties the scrollback, as under linux and xterm-256color
 terminfo-italic               works   -          sitm/ritm expand to SGR 3/23 (ncurses ecma+italics); freetype draws italic upright (#100)
 terminfo-dim                  works   -          dim expands to SGR 2, which libtsm draws as a dimmed foreground
 terminfo-strike               works   -          smxx/rmxx expand to SGR 9/29 (ncurses ecma+strikeout, ADR-102)

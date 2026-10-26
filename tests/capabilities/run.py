@@ -52,6 +52,8 @@ TERMINFO_STRINGS = {
         ("setrgbf", ("17", "34", "51"), "\033[38;2;17;34;51m"),
         ("setrgbb", ("68", "85", "102"), "\033[48;2;68;85;102m"),
     ],
+    # ED 3, which clear(1) sends after clear when the entry has it
+    "terminfo-e3": [("E3", (), "\033[3J")],
     "terminfo-italic": [("sitm", (), "\033[3m"), ("ritm", (), "\033[23m")],
     "terminfo-dim": [("dim", (), "\033[2m")],
     "terminfo-strike": [("smxx", (), "\033[9m"), ("rmxx", (), "\033[29m")],

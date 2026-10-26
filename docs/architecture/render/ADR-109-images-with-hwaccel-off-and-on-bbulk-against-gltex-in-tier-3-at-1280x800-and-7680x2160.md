@@ -43,6 +43,8 @@ Temporary measuring screens, put into the guest by an installer and taken out af
 | ps-region | The street photograph through chafa as sixel over the top half of the screen, and numbered lines scrolling in a region under it. |
 | mpv-sixel | Tier 3's own A2 screen: `mpv --vo=sixel`, ffmpeg's testsrc2 at 30 frames per second for 5 seconds, in a 1280x720 window at 1280x800 and 1920x1080 at 7680x2160. |
 
+(Note 2026-10-26: the player these screens ran, `fork/showcase/fx.py kitty`, is now `fork/tools/kitty-player/kitty.py`, with the same options; the Bad Apple!! showcase moved to aaronsb/kmscon-showcase with a copy of its own, and kmscon kept the player for its acceptance runs (#239).)
+
 The player sends each frame once to one of two image ids and places it once per copy. Computed from the player's layout for these grids, each copy's box is 38x15 cells (380x285 pixels) at 1280x800 and 254x100 cells (2540x1900) at 7680x2160. The player's own report gives the frame sizes it sent: 480x360 for the scaled screens, and 380x284 and 2540x1900 for the screens at their own size. So the scaled screens shrink each frame at 1280x800 and enlarge it about five times at 7680x2160. bbulk's damage share matches these boxes: 11% at 1280x800 and 29% at 7680x2160 for one copy.
 
 
@@ -197,6 +199,16 @@ make vt-demo KIT=all DEMO_ARGS='--hwaccel --mode=7680x2160 --no-use-original-mod
 make showcase BAD_APPLE=/path/to/video FROM=7 DEMO_ARGS='--mode=7680x2160 --no-use-original-mode --render-timer=both'
 make showcase BAD_APPLE=/path/to/video FROM=7 DEMO_ARGS='--hwaccel --mode=7680x2160 --no-use-original-mode --render-timer=both'
 ```
+
+(Note 2026-10-26: `make showcase` is gone from kmscon (#239). Act 7's player stays in kmscon as `fork/tools/kitty-player/kitty.py`; the show's copy in aaronsb/kmscon-showcase may drift from it, so a re-run measures kmscon's. Start a `make vt-login` session with the same `DEMO_ARGS` and, once logged in, run from the checkout:
+
+```sh
+python3 -c 'import fcntl, struct, termios; r, c, x, y = struct.unpack("4H", fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8))); print(x // c, y // r)'
+python3 fork/tools/kitty-player/kitty.py --video /path/to/video --start 46 --seconds 60 --fade-in 1.5 \
+    --slide-at 8 --copy2-at 16 --copy3-at 24 --banner-rows 12 --cell-w W --cell-h H --report /tmp/kitty-player.txt
+```
+
+The first line prints the session's cell in pixels, W and H; the player assumes 10x20 without them. The times are act 7's cue sheet: from 0:46 to the end card at 1:46, the moves at 0:54, 1:02 and 1:10. The run leaves out the scroller and the soundtrack that runs 6 and 7 had: the 12 rows stay empty (a banner screen in kmscon is #241), and the player follows the monotonic clock.)
 
 The first two run the demo's pages, the sixel acceptance pages (photographs, `mpv-sixel`, the tmux grids) among them; the last two run the showcase's act 7, the kitty player. Font options, if any are added, are the same in both runs of a pair. The figures come from the render timer's lines in each run's log, `/tmp/kmscon-demo/vt-demo-<time>-ttyN-<random>.log`, which also shows `backend [drm3d] text renderer [gltex]` when `hwaccel` took. The demo's cell differs from tier 3's 10x19, so the VT figures compare off with on, not with the tables above.
 

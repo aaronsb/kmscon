@@ -19,8 +19,8 @@ import unicodedata
 
 def ideographs(rng):
     """6000 ideographs of the URO block in an order rng shuffles, and their
-    weights by Zipf's law, the first commonest. The showcase's CJK stream
-    (fork/showcase/effects.py) draws from them too."""
+    weights by Zipf's law, the first commonest. The Bad Apple!! showcase's
+    CJK stream (aaronsb/kmscon-showcase, ideographs.py) draws from a copy."""
     chars = [chr(c) for c in range(0x4E00, 0x9FF0)]
     rng.shuffle(chars)
     chars = chars[:6000]

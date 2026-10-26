@@ -4,7 +4,7 @@
 # autovt@ttyN). When the demo ends, or this script is interrupted, or kmscon
 # fails, the units that were running are started again. See docs/fork/demo.md.
 #
-#   sudo fork/demo/run-vt.sh [--dry-run] [--kit=KIT | --showcase=VIDEO ... | --login] [N] [-- kmscon-option...]
+#   sudo fork/demo/run-vt.sh [--dry-run] [--kit=KIT | --login] [N] [-- kmscon-option...]
 #
 # N is the VT, 2-12, default 3. Options after -- go to kmscon, for display
 # settings of one machine (--mode=..., --no-use-original-mode, --font-size=...).
@@ -12,10 +12,6 @@
 # word: --name=value, or --name / --no-name for a switch.
 # --kit=KIT picks the demo's review kit (#123): text (the default), sixel,
 # kitty or all.
-# --showcase=VIDEO runs the Bad Apple!! showcase (fork/showcase/bad-apple.sh)
-# on VIDEO, an absolute path, in place of the demo; --showcase-from=N starts it
-# at act N and --showcase-audio plays the soundtrack, through an output the
-# show asks for, or --showcase-audio=DEVICE through mpv's audio device DEVICE.
 # --login runs kmscon's own login prompt (/bin/login, through PAM) in place
 # of the demo, so the session is a logind session, given the sound cards
 # while its VT is on screen. The first logout ends the run; so do Ctrl-C, a
@@ -35,7 +31,7 @@
 set -euo pipefail
 
 usage() {
-	sed -n '7,28s/^# \{0,1\}//p' "$0" >&2
+	sed -n '7,24s/^# \{0,1\}//p' "$0" >&2
 	exit 2
 }
 
@@ -48,19 +44,11 @@ dry=
 vt=
 kit=
 extra=()
-video=
-from=
-audio=
-device=
 login=
 while [ $# -gt 0 ]; do
 	case $1 in
 	--dry-run) dry=1 ;;
 	--kit=*) kit=${1#*=}; [ -n "$kit" ] || die "--kit takes text, sixel, kitty, glyphs or all, not ''" ;;
-	--showcase=*) video=${1#*=}; [ -n "$video" ] || die "--showcase needs the video's path: --showcase=/path/to/video" ;;
-	--showcase-from=*) from=${1#*=} ;;
-	--showcase-audio) audio=1 ;;
-	--showcase-audio=*) audio=1; device=${1#*=} ;;
 	--login) login=1 ;;
 	-h | --help) usage ;;
 	--) shift; extra=("$@"); break ;;
@@ -92,7 +80,6 @@ if [ -n "$dry" ]; then
 	loginctl=${RUN_VT_LOGINCTL:-}
 fi
 checkout=$(readlink -m "$here/../..")
-showcase=$checkout/fork/showcase/bad-apple.sh
 # The units that may hold the VT: the stock kmscon, a getty, and autovt@,
 # which logind starts on a switch to the VT and which is one of the other two.
 units=("kmsconvt@tty$vt.service" "getty@tty$vt.service" "autovt@tty$vt.service")
@@ -150,24 +137,12 @@ for o in "${extra[@]}"; do
 	fi
 	die "kmscon option '$o' is refused. Accepted: display, font, palette, text and input options, --render-timer, --image-storage-limit and --sync-timeout, one word each: --name=value (quoted as one word: --font-name=\"Monoid Nerd Font Mono\"), or --name / --no-name for a switch (see docs/fork/demo.md)"
 done
-# The showcase's video is a path the session opens as the user; it reaches the
-# session as one word in its environment, never through a shell.
 case $kit in
 '' | text | sixel | kitty | glyphs | all) ;;
 *) die "--kit takes text, sixel, kitty, glyphs or all, not '$kit'" ;;
 esac
-[ -z "$kit" ] || [ -z "$video" ] || die "--kit goes with the demo, not with --showcase"
-[ -z "$login" ] || [ -z "$kit$video" ] ||
-	die "--login runs no demo: log in, then run the demo or the showcase yourself (it says how)"
-if [ -n "$video" ]; then
-	[[ $video == /* ]] || die "--showcase needs an absolute path, not '$video'"
-	[ -z "$from" ] || [[ $from =~ ^[1-7]$ ]] || die "--showcase-from must be an act from 1 to 7, not '$from'"
-	# mpv's device names: pipewire/alsa_output.usb-..., alsa/hdmi:CARD=HDMI,DEV=0.
-	[[ -z $device || $device =~ ^[A-Za-z0-9_.:,=@+/-]+$ ]] ||
-		die "--showcase-audio=DEVICE takes an mpv audio device name (mpv --audio-device=help), not '$device'"
-elif [ -n "$from" ] || [ -n "$audio" ]; then
-	die "--showcase-from and --showcase-audio go with --showcase=VIDEO"
-fi
+[ -z "$login" ] || [ -z "$kit" ] ||
+	die "--login runs no demo: log in, then run the demo yourself (it says how)"
 [ -n "$dry" ] || [ "$(id -u)" -eq 0 ] || die "run as root, through sudo"
 [ -x "$kmscon" ] && [ -d "$modules" ] || die "nothing staged in $stage: run make demo first"
 [ -d "$moduledir" ] || die "$moduledir does not exist, so the staged modules have nowhere to be mounted"
@@ -179,10 +154,6 @@ user=${SUDO_USER:-}
 uid=$(id -u "$user") || die "no such user: $user"
 gid=$(id -g "$user")
 drop=(/usr/bin/setpriv --reuid="$uid" --regid="$gid" --init-groups --reset-env)
-if [ -n "$video" ] && [ -z "$dry" ]; then
-	"${drop[@]}" -- /usr/bin/test -f "$video" -a -r "$video" ||
-		die "$user cannot read the showcase video $video"
-fi
 
 # Prints "ID STATE" for each logind session on VT $vt, and fails when loginctl
 # cannot list the sessions. A session whose query fails is skipped only when a
@@ -298,14 +269,13 @@ if [ -n "$login" ]; then
        DEMO_LABEL='dev build $build' fork/demo/demo.sh
            the demo; DEMO_KIT=sixel (or kitty, glyphs, all) before it picks a
            review kit, and its answers go where make vt-demo's go
-       BAD_APPLE=/path/to/video fork/showcase/bad-apple.sh --audio
-           the showcase with its soundtrack (--from N starts at act N); this
-           login holds the sound cards while VT $vt is on screen, so no
-           audio group is needed
+     or, in a checkout of github.com/aaronsb/kmscon-showcase:
+       BAD_APPLE=/path/to/video ./bad-apple.sh --audio
+           the Bad Apple!! showcase with its soundtrack; this login holds
+           the sound cards while VT $vt is on screen, so no audio group is
+           needed
      until someone logs in, the prompt comes back after login's timeout
   3. log out to end it; Ctrl-C here ends it too, the login with it"
-elif [ -n "$video" ]; then
-	what="press a key to start the showcase; q ends it at any time"
 else
 	what="rate each page with 1, 2 or 3 (c adds a comment, b goes back);
      press q in the demo to finish"
@@ -333,16 +303,9 @@ EOF
 # starts its child with execve, without a PATH search, so its path is absolute.
 # kmscon and setpriv both clear the environment, so DEMO_LABEL, which names the
 # build on the demo's title page, is set last, by env, with the user's runtime
-# directory, where mpv finds the user's sound server. The showcase also gets
-# its video, and the soundtrack's output when one was named.
+# directory, where mpv finds the user's sound server.
 session=(/usr/bin/env DEMO_LABEL="dev build $build" ${kit:+DEMO_KIT="$kit"}
 	XDG_RUNTIME_DIR="/run/user/$uid" /bin/bash "$here/demo.sh")
-if [ -n "$video" ]; then
-	session=(/usr/bin/env SHOWCASE_LABEL="dev build $build" BAD_APPLE="$video"
-		XDG_RUNTIME_DIR="/run/user/$uid" ${device:+AUDIO_DEVICE="$device"} /bin/bash "$showcase")
-	[ -z "$from" ] || session+=(--from "$from")
-	[ -z "$audio" ] || session+=(--audio)
-fi
 once=(--oneshot)
 login_argv=("${drop[@]}" -- "${session[@]}")
 if [ -n "$login" ]; then

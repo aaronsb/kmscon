@@ -730,3 +730,33 @@ foreach name, script : {
         workdir: meson.project_source_root(),
     )
 endforeach
+
+# waiting for the VT on the loop (#250): the VT backends on a pseudo-terminal,
+# with ioctl wrapped to stand in for the kernel's VT calls, and input and
+# libseat stood in for
+test_vt_wait_srcs = [
+    'test_vt_wait.c',
+    '../src/uterm/vt.c',
+    '../src/uterm/vt_fake.c',
+    '../src/uterm/vt_real.c',
+]
+test_vt_wait_deps = [
+    shl_deps,
+    eloop_deps,
+    xkbcommon_deps.partial_dependency(compile_args: true, includes: true),
+]
+if enable_libseat
+    test_vt_wait_srcs += '../src/uterm/vt_libseat.c'
+    test_vt_wait_deps += libseat_deps.partial_dependency(
+        compile_args: true,
+        includes: true,
+    )
+endif
+test_vt_wait = executable(
+    'test_vt_wait',
+    test_vt_wait_srcs,
+    include_directories: [src_inc, include_directories('../src/uterm')],
+    link_args: ['-Wl,--wrap=ioctl'],
+    dependencies: test_vt_wait_deps,
+)
+test('test_vt_wait', test_vt_wait)

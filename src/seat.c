@@ -99,6 +99,7 @@ struct kmscon_seat {
 	bool awake;
 	bool foreground;
 	bool exiting;
+	int startup_error;
 	struct kmscon_session *current_sess;
 
 	/* DPMS timeout management */
@@ -1093,6 +1094,30 @@ static void kmscon_seat_poll_video(void *data)
 	video_poll(vid->video);
 }
 
+static void seat_scan(struct kmscon_seat *seat)
+{
+	if (seat->conf->switchvt || uterm_vt_get_num(seat->vt) == 0)
+		uterm_vt_activate(seat->vt);
+
+	log_debug("scanning for devices...");
+	uterm_monitor_scan(seat->mon, seat->name);
+}
+
+static void seat_vt_waited(struct uterm_vt *vt, int error, void *data)
+{
+	struct kmscon_seat *seat = data;
+
+	if (error) {
+		log_error("cannot wait for VT %u on seat %s: %d", uterm_vt_get_num(vt), seat->name,
+			  error);
+		seat->startup_error = error;
+		ev_eloop_exit(seat->eloop);
+		return;
+	}
+
+	seat_scan(seat);
+}
+
 int kmscon_seat_startup(struct kmscon_seat *seat)
 {
 	int ret;
@@ -1109,21 +1134,24 @@ int kmscon_seat_startup(struct kmscon_seat *seat)
 	/*
 	 * With --switchvt, activation below initiates the VT switch; waiting
 	 * here would deadlock. Without it, the service manager is responsible
-	 * for activating the requested VT first.
+	 * for activating the requested VT first. Until it does, the event loop
+	 * runs, so signals are served, and seat_vt_waited() goes on.
 	 */
 	if (seat->conf->vt && !seat->conf->switchvt) {
-		ret = uterm_vt_wait(seat->vt);
+		ret = uterm_vt_wait(seat->vt, seat_vt_waited, seat);
+		if (ret == -EINPROGRESS)
+			return 0;
 		if (ret)
 			return ret;
 	}
 
-	if (seat->conf->switchvt || uterm_vt_get_num(seat->vt) == 0)
-		uterm_vt_activate(seat->vt);
-
-	log_debug("scanning for devices...");
-	uterm_monitor_scan(seat->mon, seat->name);
-
+	seat_scan(seat);
 	return 0;
+}
+
+int kmscon_seat_get_startup_error(struct kmscon_seat *seat)
+{
+	return seat ? seat->startup_error : 0;
 }
 
 struct conf_ctx *kmscon_seat_get_conf(struct kmscon_seat *seat)

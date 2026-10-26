@@ -200,7 +200,8 @@ int main(int argc, char **argv)
 
 	ev_eloop_run(app.eloop, -1);
 
-	ret = 0;
+	/* a startup step that waited for the VT and failed (seat_vt_waited) */
+	ret = kmscon_seat_get_startup_error(app.seat);
 	/* if config->switchvt is set, kmscon needs to switch back
 	 * to the previous VT, and wait 100ms to acknowledge SIGUSR2
 	 */

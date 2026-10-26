@@ -39,11 +39,15 @@
 
 #define LOG_SUBSYSTEM "libseat"
 
+/* how often vt_libseat_wait() looks for its VT to become active */
+#define VT_WAIT_POLL_NS (100 * 1000 * 1000)
+
 struct uterm_vt_libseat {
 	struct uterm_vt base;
 
 	struct libseat *libseat;
 	struct ev_fd *libseat_efd;
+	struct ev_timer *wait_timer;
 	int tty_fd;
 	int tty_num;
 	int saved_kbmode;
@@ -211,6 +215,7 @@ static void vt_libseat_destroy(struct uterm_vt *base)
 {
 	struct uterm_vt_libseat *vt = to_libseat(base);
 
+	ev_eloop_rm_timer(vt->wait_timer);
 	close_tty(vt);
 	if (vt->libseat_efd)
 		ev_eloop_rm_fd(vt->libseat_efd);
@@ -242,21 +247,64 @@ static int vt_libseat_deactivate(struct uterm_vt *base)
 	return 0;
 }
 
+static int tty_is_active(struct uterm_vt_libseat *vt)
+{
+	struct vt_stat vts;
+
+	if (ioctl(vt->tty_fd, VT_GETSTATE, &vts)) {
+		log_warning("cannot get current VT state (%d): %m", errno);
+		return -EFAULT;
+	}
+
+	return vts.v_active == vt->tty_num;
+}
+
+static void vt_libseat_wait_poll(struct ev_timer *timer, uint64_t num, void *data)
+{
+	struct uterm_vt_libseat *vt = data;
+	int ret;
+
+	/* num is 0 when the timer source failed and was disabled */
+	ret = num ? tty_is_active(vt) : -EFAULT;
+	if (!ret)
+		return;
+
+	ev_eloop_rm_timer(vt->wait_timer);
+	vt->wait_timer = NULL;
+	vt_cb_waited(&vt->base, ret < 0 ? ret : seat_connect(vt));
+}
+
+/*
+ * Nothing owns our VT's switching until the seat is opened, so no signal
+ * says when it becomes active: poll its state from the event loop until it
+ * does, then open the seat, which seatd binds to the active VT.
+ */
 static int vt_libseat_wait(struct uterm_vt *base)
 {
 	struct uterm_vt_libseat *vt = to_libseat(base);
+	struct itimerspec spec = {
+		.it_value = {.tv_nsec = VT_WAIT_POLL_NS},
+		.it_interval = {.tv_nsec = VT_WAIT_POLL_NS},
+	};
+	int ret;
 
-	if (vt->tty_fd >= 0 && vt->tty_num > 0) {
-		log_info("waiting for VT %d to become active", vt->tty_num);
-		while (ioctl(vt->tty_fd, VT_WAITACTIVE, vt->tty_num) < 0) {
-			if (errno == EINTR)
-				continue;
-			log_warning("cannot wait for VT %d (%d): %m", vt->tty_num, errno);
-			return -EFAULT;
-		}
+	if (vt->tty_fd < 0 || vt->tty_num <= 0)
+		return seat_connect(vt);
+
+	ret = tty_is_active(vt);
+	if (ret < 0)
+		return ret;
+	if (ret)
+		return seat_connect(vt);
+
+	log_info("waiting for VT %d to become active", vt->tty_num);
+	ret = ev_eloop_new_timer(vt->base.eloop, &vt->wait_timer, &spec, vt_libseat_wait_poll, vt);
+	if (ret) {
+		log_error("cannot create VT wait timer: %d", ret);
+		return ret;
 	}
 
-	return seat_connect(vt);
+	return -EINPROGRESS;
 }
 
 static void vt_libseat_bell(struct uterm_vt *base)

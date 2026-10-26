@@ -121,6 +121,8 @@ static void real_sig_enter(struct ev_eloop *eloop, struct signalfd_siginfo *info
 	if (vts.v_active != vt->real_num)
 		return;
 
+	vt_cb_waited(&vt->base, 0);
+
 	if (vt->real_delayed) {
 		vt->real_delayed = false;
 		ev_eloop_unregister_idle_cb(vt->base.eloop, real_delayed, vt, EV_NORMAL);
@@ -187,6 +189,7 @@ static void real_vt_input(struct ev_fd *fd, int mask, void *data)
 		log_debug("HUP on VT %d", vt->real_num);
 		ev_fd_disable(fd);
 		vt->base.hup = true;
+		vt_cb_waited(&vt->base, -EPIPE);
 		vt_cb_hup(&vt->base);
 	}
 }
@@ -562,21 +565,28 @@ static void real_retry(struct uterm_vt *base)
 	}
 }
 
+/*
+ * The VT is in VT_PROCESS mode from real_open() on, so the kernel sends the
+ * acquire signal when it becomes active, and real_sig_enter() ends the wait.
+ */
 static int real_wait(struct uterm_vt *base)
 {
 	struct uterm_vt_real *vt = to_real(base);
+	struct vt_stat vts;
 
 	if (vt->base.hup)
 		return -EPIPE;
 
-	while (ioctl(vt->real_fd, VT_WAITACTIVE, vt->real_num) < 0) {
-		if (errno == EINTR)
-			continue;
-		log_warning("cannot wait for VT %d (%d): %m", vt->real_num, errno);
+	if (ioctl(vt->real_fd, VT_GETSTATE, &vts)) {
+		log_warning("cannot get current VT state (%d): %m", errno);
 		return -EFAULT;
 	}
 
-	return 0;
+	if (vts.v_active == vt->real_num)
+		return 0;
+
+	log_info("waiting for VT %d to become active", vt->real_num);
+	return -EINPROGRESS;
 }
 
 static void real_bell(struct uterm_vt *base)

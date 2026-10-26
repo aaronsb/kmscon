@@ -69,6 +69,17 @@ void vt_cb_hup(struct uterm_vt *vt)
 		vt->cb.hup(vt, vt->data);
 }
 
+void vt_cb_waited(struct uterm_vt *vt, int error)
+{
+	uterm_vt_wait_cb cb = vt->wait_cb;
+
+	if (!cb)
+		return;
+
+	vt->wait_cb = NULL;
+	cb(vt, error, vt->wait_data);
+}
+
 SHL_EXPORT
 struct uterm_vt *uterm_vt_allocate(struct ev_eloop *eloop, bool libseat, struct input *input,
 				   const char *vt_name, struct uterm_vt_cb *cb, void *data)
@@ -104,6 +115,7 @@ void uterm_vt_deallocate(struct uterm_vt *vt)
 	if (!vt)
 		return;
 
+	vt->wait_cb = NULL;
 	if (vt->ops->destroy)
 		vt->ops->destroy(vt);
 
@@ -154,16 +166,32 @@ int uterm_vt_deactivate(struct uterm_vt *vt)
 	return vt->ops->deactivate(vt);
 }
 
+/*
+ * Wait for the VT to become the active VT without blocking the event loop.
+ * Returns 0 if it is active now, and @cb is not called. Returns -EINPROGRESS
+ * if it is not: @cb is then called from the event loop when it is, with 0, or
+ * with a negative error if the wait failed. Deallocating the VT drops a
+ * pending wait. Any other return is an error.
+ */
 SHL_EXPORT
-int uterm_vt_wait(struct uterm_vt *vt)
+int uterm_vt_wait(struct uterm_vt *vt, uterm_vt_wait_cb cb, void *data)
 {
-	if (!vt)
+	int ret;
+
+	if (!vt || !cb)
 		return -EINVAL;
+	if (vt->wait_cb)
+		return -EALREADY;
+	if (!vt->ops->wait)
+		return 0;
 
-	if (vt->ops->wait)
-		return vt->ops->wait(vt);
+	vt->wait_cb = cb;
+	vt->wait_data = data;
+	ret = vt->ops->wait(vt);
+	if (ret != -EINPROGRESS)
+		vt->wait_cb = NULL;
 
-	return 0;
+	return ret;
 }
 
 SHL_EXPORT

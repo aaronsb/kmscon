@@ -90,15 +90,28 @@ static unsigned int open_fds(void)
 	return n;
 }
 
-/* turns of the loop until the request out ends, at most @ms */
+static uint64_t now_ns(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
+}
+
+/*
+ * turns of the loop until the request out ends, at most @ms by the clock (a
+ * turn that another event ends is shorter than 10 ms), then one more turn
+ * for a timer due by then
+ */
 static void wait_reply(struct image_host *h, unsigned int ms)
 {
+	uint64_t end = now_ns() + (uint64_t)ms * 1000000;
 	unsigned int calls = got.calls;
 
-	while (ms && got.calls == calls) {
+	while (got.calls == calls && now_ns() < end)
 		ev_eloop_dispatch(loop, 10);
-		ms -= ms < 10 ? ms : 10;
-	}
+	if (got.calls == calls)
+		ev_eloop_dispatch(loop, 0);
 	assert(got.calls == calls + 1 && !image_host_busy(h));
 }
 

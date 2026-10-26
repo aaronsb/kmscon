@@ -17,12 +17,19 @@ import sys
 import unicodedata
 
 
-def cjk(lines, cols):
-    rng = random.Random(2026)
+def ideographs(rng):
+    """6000 ideographs of the URO block in an order rng shuffles, and their
+    weights by Zipf's law, the first commonest. The showcase's CJK stream
+    (fork/showcase/effects.py) draws from them too."""
     chars = [chr(c) for c in range(0x4E00, 0x9FF0)]
     rng.shuffle(chars)
     chars = chars[:6000]
-    weights = [1.0 / (rank + 1) for rank in range(len(chars))]
+    return chars, [1.0 / (rank + 1) for rank in range(len(chars))]
+
+
+def cjk(lines, cols):
+    rng = random.Random(2026)
+    chars, weights = ideographs(rng)
     per_line = cols // 2
     for n in range(lines):
         text = "".join(rng.choices(chars, weights, k=per_line - 6))

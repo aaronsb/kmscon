@@ -97,7 +97,8 @@ cue() {
 : "${ACT5_STUTTER:=2}"           #   then, over the halted frame, the sound's last moment repeats shorter each time, a skipping buffer, this long (0: none)
 : "${ACT5_HOLD:=0.5}"            #   then the halted frame stays this long, silent
 
-: "${ACT6_FIRE:=5.217}"          # the fire wipe (3 bars of music/act6-fire.js)
+: "${ACT6_FIRE:=5.217}"          # the fire wipe (3 bars of music/act6-fire.js), a CJK stream rising behind it
+: "${ACT6_CJK:=3.478}"           #   then the stream full screen (2 bars)
 : "${ACT6_CPS:=16}"
 : "${ACT6_CATS:=8.696}"          #   the cats (5 bars of music/act6-cats.js)
 : "${ACT6_DENSITY:=0.55}"        #   share of the screen's cat spots filled
@@ -163,7 +164,7 @@ ACT_WHAT=(""
 	"libcaca's img2txt in 80x25 at ${ACT3_FPS} fps (a real 80x25 grid where CSI 8;25;80 t takes, else a framed region), then it freezes, broken"
 	"\"wait a minute... don't we have ... LIBSIXEL?\" typed over the frozen frame"
 	"sixel (DA1 attribute 4): mpv --vo=sixel plays it ${ACT5_SIZE} of the screen's height, sized from the cell size the terminal reports (XTWINOPS 16), it glitches to one channel and tears, and its last frame stays; else a placeholder"
-	"a fire wipe, \"hold on, we also have kitty. hold on, feeding the cats\", a crowd of colour cats"
+	"a fire wipe uncovering a stream of CJK text that then fills the screen, \"hold on, we also have kitty. hold on, feeding the cats\", a crowd of colour cats"
 	"kitty graphics (a=q): each frame transmitted once and placed up to three times (fork/showcase/kitty.py), one copy in the middle that slides left, then a second and a third sliding out from behind it, until the end card's cue, above a scroller of the fork's features over copper bars; else a placeholder above the scroller; --banner-only: the scroller alone")
 ACT_KMSCON=(""
 	"plays"
@@ -862,7 +863,7 @@ act_6() {
 	# a placeholder is text, and burns.
 	[ -z "$have_sixel" ] || clear_screen
 	cue_start act6-fire
-	fx effect fire --seconds "$ACT6_FIRE"
+	fx effect fire --seconds "$ACT6_FIRE" --cjk "$ACT6_CJK"
 	clear_screen
 	pause "$ACT_GAP"
 	fx type --row 3 --cps "$ACT6_CPS" --dots 0.4 --hold 0.4 \

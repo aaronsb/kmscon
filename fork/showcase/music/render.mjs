@@ -96,7 +96,15 @@ try {
     await tab.goto(`http://127.0.0.1:${server.address().port}/`);
     await tab.waitForFunction(() => window.ready);
     const download = tab.waitForEvent('download', { timeout: 600000 });
-    await tab.evaluate(([c, cps, end]) => window.renderCue(c, cps, end), [code, cps, end]);
+    try {
+      await tab.evaluate(([c, cps, end]) => window.renderCue(c, cps, end), [code, cps, end]);
+    } catch (e) {
+      download.catch(() => {});
+      await context.close();
+      console.error(`${basename(cue)}: ${e.message.split('\n')[0]}`);
+      failed++;
+      continue;
+    }
     const raw = join(work, `${basename(cue, '.js')}.wav`);
     await (await download).saveAs(raw);
     await context.close();

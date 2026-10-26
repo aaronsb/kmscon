@@ -1,6 +1,12 @@
-"""Act 7's video player (#75): Bad Apple!! through the kitty graphics
-protocol, written from its published spec alone
-(https://sw.kovidgoyal.net/kitty/graphics-protocol/, ADR-300's clean room).
+#!/usr/bin/env python3
+"""A video player through the kitty graphics protocol, written from its
+published spec alone (https://sw.kovidgoyal.net/kitty/graphics-protocol/,
+ADR-300's clean room): the spec-written client of kmscon's kitty acceptance
+runs (ADR-103's A5 to A7, #177) and of ADR-109's measurements. It began as
+act 7 of the Bad Apple!! showcase (#75), which moved to
+aaronsb/kmscon-showcase (#239) with a copy of its own; the two may drift.
+
+    kitty.py --video FILE [OPTIONS]      (kitty.py --help lists them)
 
 ffmpeg decodes the clip small, and each frame is transmitted once and placed
 up to three times, each copy a placement (p=1, 2, 3) scaled up by the
@@ -26,13 +32,14 @@ The transports (--transport; png by default, the cheapest inline one):
         and unlinks it
 
 Every command carries q=2, so the terminal sends nothing back into the
-show's input, and every placement C=1, so the cursor stays where it was.
+player's input, and every placement C=1, so the cursor stays where it was.
 Frames follow the soundtrack's clock (mpv's time-pos over its IPC socket,
 --audio-ipc), else a wall clock started with the soundtrack (--audio-started)
 or the monotonic clock, and are dropped, never delayed, when the terminal
 falls behind.
 """
 
+import argparse
 import base64
 import contextlib
 import functools
@@ -45,10 +52,12 @@ import socket
 import struct
 import subprocess
 import sys
+import termios
 import time
+import tty
 import zlib
 
-from screen import ESC, cup, geom, out, poll_keys, resized, wait
+from screen import ESC, Quit, cup, geom, out, poll_keys, resized, wait, watch_resize
 
 TRANSPORTS = ("raw", "zlib", "png", "shm")
 IMAGE_IDS = (7501, 7502)    # the two ids the frames alternate between
@@ -103,7 +112,7 @@ class Encoder:
     shm writes each frame to /dev/shm (where Linux keeps POSIX shared memory
     objects; shm_open("/name") opens /dev/shm/name) under a new name."""
 
-    def __init__(self, transport, w, h, level=1, prefix="kmscon-showcase"):
+    def __init__(self, transport, w, h, level=1, prefix="kmscon-kitty-player"):
         if transport not in TRANSPORTS:
             raise ValueError(f"no transport {transport!r}: {', '.join(TRANSPORTS)}")
         self.transport, self.w, self.h, self.level = transport, w, h, level
@@ -179,7 +188,7 @@ def unlink_shm(name):
 def query(transport):
     """The spec's a=q of one pixel in this transport, which loads and checks
     the data without storing it."""
-    e = Encoder(transport, 1, 1, prefix="kmscon-showcase-probe")
+    e = Encoder(transport, 1, 1, prefix="kmscon-kitty-player-probe")
     frame = b"\0" if transport == "png" else b"\0\0\0"
     cmd = e.transmit(QUERY_ID, frame).replace(f"a=t,i={QUERY_ID},q=2", f"a=q,i={QUERY_ID}", 1)
     return cmd, e
@@ -629,3 +638,69 @@ def cmd_kitty(a):
                 clock_name = "mpv" if clock.synced else "wall" if clock.fallback else "monotonic"
                 f.write(player.stats.line(f"kitty {transport} {w}x{h} copies={a.copies or 'moves'} clock={clock_name}")
                         + "\n")
+
+
+QUIT = 10  # the exit status for q
+
+
+def parser():
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p.add_argument("--video", required=True)
+    p.add_argument("--start", type=float, default=0)
+    p.add_argument("--seconds", type=float, default=0, help="0: to the end")
+    p.add_argument("--fade-in", type=float, default=0, help="seconds the picture fades in from black")
+    p.add_argument("--transport", default="png", choices=TRANSPORTS)
+    p.add_argument("--fallback", default="png,raw", help="transports to try when the first is refused")
+    p.add_argument("--width", type=int, default=0, help="frames are decoded this many pixels wide (0: a copy's own size, at most 2160 tall)")
+    p.add_argument("--level", type=int, default=1, help="zlib's level for zlib and png")
+    p.add_argument("--cell-w", type=int, default=10)
+    p.add_argument("--cell-h", type=int, default=20)
+    p.add_argument("--banner-rows", type=int, default=0, help="rows left free at the bottom")
+    p.add_argument("--gap", type=int, default=2, help="columns between copies")
+    p.add_argument("--slide-at", type=float, default=-1, help="seconds in that copy 1 slides left")
+    p.add_argument("--copy2-at", type=float, default=-1)
+    p.add_argument("--copy3-at", type=float, default=-1)
+    p.add_argument("--move", type=float, default=1.2, help="seconds each slide takes")
+    p.add_argument("--bounce", type=float, default=0.12, help="overshoot, a share of the distance")
+    p.add_argument("--copies", type=int, default=0, help="hold this many copies still (measuring)")
+    p.add_argument("--audio-ipc", default="", help="mpv's IPC socket: follow its time-pos")
+    p.add_argument("--audio-wait", type=float, default=3.0, help="seconds to wait for mpv's first answer")
+    p.add_argument("--audio-started", type=float, default=None,
+                   help="when the soundtrack started (seconds since the epoch): the clock until, or if never, mpv answers")
+    p.add_argument("--unpaced", action="store_true", help="every frame, as fast as the terminal takes them")
+    p.add_argument("--probe-timeout", type=float, default=1.0)
+    p.add_argument("--report", default="", help="a file to append the frame rate to")
+    return p
+
+
+def main():
+    """Runs the player with the terminal in cbreak mode, restored after.
+    q exits QUIT and Ctrl-C 130."""
+    a = parser().parse_args()
+    saved = None
+    if os.isatty(1):
+        watch_resize()
+    if os.isatty(0):
+        try:
+            saved = termios.tcgetattr(0)
+            tty.setcbreak(0)
+        except termios.error:
+            saved = None
+    try:
+        cmd_kitty(a)
+    except Quit:
+        out(f"{ESC}[0m")
+        return QUIT
+    except KeyboardInterrupt:
+        out(f"{ESC}[0m")
+        return 130
+    except BrokenPipeError:
+        return 141
+    finally:
+        if saved is not None:
+            termios.tcsetattr(0, termios.TCSADRAIN, saved)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

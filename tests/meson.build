@@ -679,12 +679,23 @@ test(
     timeout: 120,
 )
 
-# The Bad Apple!! showcase (fork/showcase/bad-apple.sh, #75): its act table,
-# its plan and refusals without a video or a terminal, and fx.py's helpers.
+# The demos' sound output picker (fork/demo/pick-audio.sh), against stand-ins
+# for mpv, pgrep, getent and id.
 test(
-    'showcase',
+    'demo_pick_audio',
     python,
-    args: [files('showcase/showcase.py'), '--root', meson.project_source_root()],
+    args: [files('demo/pick_audio.py'), '--root', meson.project_source_root()],
+    timeout: 60,
+)
+
+# The kitty graphics player of the acceptance runs
+# (fork/tools/kitty-player/kitty.py, #177): its layout and moves, and its
+# output on a model of the spec's image store, alone and on a pty with
+# stand-ins for ffmpeg and ffprobe.
+test(
+    'kitty_player',
+    python,
+    args: [files('tools/kitty_player.py'), '--root', meson.project_source_root()],
     timeout: 120,
 )
 

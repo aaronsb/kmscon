@@ -4,27 +4,23 @@ spec-written client of the kitty acceptance runs (ADR-103, #177), without a
 video, a terminal or ffmpeg: its layout, easing and moves, its output
 replayed on a model of the kitty graphics protocol's image store from the
 player alone in every transport and from kitty.py on a pty with stand-ins
-for ffmpeg and ffprobe, the soundtrack's clock, the shared memory probe and
-cleanup, and q and the signals ending it. These checks came with the player
-from the Bad Apple!! showcase's tests when the show moved to
-aaronsb/kmscon-showcase (#239).
+for ffmpeg and ffprobe, the shared memory probe and cleanup, and q and the
+signals ending it. These checks came with the player from the Bad Apple!!
+showcase's tests when the show moved to aaronsb/kmscon-showcase (#239).
 
     kitty_player.py --root SOURCE_ROOT
 """
 
 import argparse
 import base64
-import json
 import os
 import pty
 import re
 import select
 import signal
-import socket
 import struct
 import sys
 import tempfile
-import threading
 import time
 import zlib
 
@@ -303,50 +299,6 @@ def kitty_checks(root):
     check("shm: the probe's object has a name of its own",
           b"kmscon-kitty-player-probe-" in base64.b64decode(cmd.rsplit(";", 1)[1][:-2]), cmd)
 
-    # The soundtrack's clock: mpv answering time-pos 2 s ahead on an
-    # abstract socket (no path, so no length limit); no socket, with the
-    # soundtrack started a second ago; and no socket and no start time.
-    name = f"\0kmscon-kitty-player-test-{os.getpid()}"
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(name)
-    srv.listen(1)
-    t0 = time.monotonic()
-
-    def fake_mpv():
-        conn, _ = srv.accept()
-        with conn:
-            for line in conn.makefile("rb"):
-                req = json.loads(line)
-                conn.sendall(json.dumps({"request_id": req["request_id"], "error": "success",
-                                         "data": 46 + time.monotonic() - t0 + 2.0}).encode() + b"\n")
-    threading.Thread(target=fake_mpv, daemon=True).start()
-    clock = kitty.Clock(name, 46)
-    end = time.monotonic() + 2
-    while not clock.synced and time.monotonic() < end:
-        clock.now()
-        time.sleep(0.01)
-    got = clock.now() - (time.monotonic() - t0)
-    srv.close()
-    check("the clock follows mpv's time-pos over its IPC socket", clock.synced and abs(got - 2.0) < 0.1,
-          f"synced {clock.synced}, ahead {got:.3f} s")
-
-    started = time.time() - 1.0
-    clock = kitty.Clock("/tmp/" + "x" * 200, 46, wait=0.2, started=started)
-    first = clock.now()
-    while not clock.fallback and time.monotonic() < end + 2:
-        clock.now()
-        time.sleep(0.01)
-    drift = clock.now() - (time.time() - started)
-    check("a socket that cannot be made: the clock runs from the soundtrack's start, and says why",
-          abs(first - 1.0) < 0.1 and abs(drift) < 0.02 and "gave no position" in clock.fallback
-          and "wall clock" in clock.fallback, f"first {first:.3f}, drift {drift:.3f}, {clock.fallback!r}")
-    clock = kitty.Clock("/nonexistent/mpv.sock", 46, wait=0.2)
-    held = clock.now()
-    time.sleep(0.25)
-    after_wait = clock.now()
-    check("with no start time, the clock holds at 0 while it waits, then counts from when it was made",
-          held == 0.0 and 0.2 < after_wait < 0.4 and clock.fallback, f"{held}, {after_wait:.3f}")
-
     # kitty.py on a pty, with ffprobe and ffmpeg stood in for.
     with tempfile.TemporaryDirectory() as tmp:
         stubs = os.path.join(tmp, "bin")
@@ -465,13 +417,6 @@ def kitty_checks(root):
         took = time.monotonic() - start
         check("q ends kitty.py while the terminal is behind",
               os.waitstatus_to_exitcode(st) == 10 and took < 5, f"status {st}, {took:.1f} s")
-
-        # mpv's socket cannot be made: the player says so on stderr.
-        st, got, _ = run_player("--seconds", "0.6", "--transport", "png", "--audio-ipc", "/tmp/" + "x" * 200,
-                              "--audio-started", str(time.time()), "--audio-wait", "0.2", "--report", report)
-        check("kitty.py says on stderr when it falls back from mpv's clock",
-              os.waitstatus_to_exitcode(st) == 0 and b"kitty player: mpv's IPC socket" in got
-              and "clock=wall" in open(report).read(), repr(got[-300:]))
 
 
 def main():

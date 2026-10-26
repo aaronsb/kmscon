@@ -469,9 +469,7 @@ def main():
               and "--font-size=30" in words[:login],
               p.stdout + p.stderr)
 
-        # The demo's kit is one word of env's, after setpriv, like the label,
-        # and so is the user's runtime directory, where mpv finds the user's
-        # sound server.
+        # The demo's kit is one word of env's, after setpriv, like the label.
         p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
                             "--kit=sixel", "4"],
                            capture_output=True, text=True, timeout=30,
@@ -480,10 +478,9 @@ def main():
         unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
         words = shlex.split(unshare[2:]) if unshare else []
         env_at = words.index("/usr/bin/env") if "/usr/bin/env" in words else -1
-        check("run-vt.sh hands the demo its kit and the user's runtime directory in env's words",
+        check("run-vt.sh hands the demo its kit in env's words, and no runtime directory",
               p.returncode == 0 and env_at > 0 and "DEMO_KIT=sixel" in words[env_at:]
-              and f"XDG_RUNTIME_DIR=/run/user/{nobody.pw_uid}" in words[env_at:]
-              and not any(w.startswith("XDG_RUNTIME_DIR=") for w in words[:env_at])
+              and not any(w.startswith("XDG_RUNTIME_DIR=") for w in words)
               and words[-2:] == ["/bin/bash", os.path.join(copy, "fork/demo/demo.sh")],
               p.stdout + p.stderr)
 
@@ -516,7 +513,8 @@ def main():
               "Ctrl-Alt-F8" in tell and "log in" in tell
               and "DEMO_LABEL='dev build v10-test' fork/demo/demo.sh" in tell
               and "DEMO_KIT=sixel" in tell
-              and "github.com/aaronsb/kmscon-showcase" in tell and "./bad-apple.sh --audio" in tell
+              and "github.com/aaronsb/kmscon-showcase" in tell
+              and not any(w in tell.lower() for w in ("audio", "sound"))
               and "log out to end it" in tell and "Ctrl-C here ends it" in tell
               and os.path.realpath(copy) in tell, tell)
         # The VT's console units, whichever of kmsconvt@, getty@ or autovt@

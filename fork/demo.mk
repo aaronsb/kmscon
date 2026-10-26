@@ -41,8 +41,8 @@ vt-demo: demo ## Build, stage and run the demo on a free VT, then print its answ
 	fork/demo/vt-demo.sh
 
 # The same with kmscon's own login prompt (run-vt.sh --login) in place of the
-# demo: a logind session, which holds the sound cards while its VT is on
-# screen (#207). Blocks until the first logout, or Ctrl-C.
+# demo: a real login on the VT, a logind session (#207). Blocks until the
+# first logout, or Ctrl-C.
 .PHONY: vt-login
 vt-login: export VT_DEMO_VT = $(value VT)
 vt-login: export VT_DEMO_ARGS = $(value DEMO_ARGS)

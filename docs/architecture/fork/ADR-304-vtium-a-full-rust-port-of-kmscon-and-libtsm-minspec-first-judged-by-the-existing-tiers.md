@@ -40,6 +40,14 @@ basis:
     level: guided
     said: "the vtium repo, because rust, doesn't need the seperate lib repo, I think?"
     via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, who agreed
+  - operator: aaronsb
+    level: guided
+    said: "any sort of contribution needs to be able to pass the evaluation gauntlet with proofs"
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, on vtium's contribution policy
+  - operator: aaronsb
+    level: guided
+    said: "if the contribution adds something new, then the eval harness needs to be proven to be extended too"
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, on vtium's contribution policy, said after the statement above
   - precedent: ADR-303
   - precedent: ADR-301
   - precedent: ADR-103
@@ -82,10 +90,20 @@ considered:
   - operator: aaronsb
     said: "the vtium repo, because rust, doesn't need the seperate lib repo, I think?"
     via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, who agreed; also in basis, since Decision §1's one-repository paragraph rests on it
+  - operator: aaronsb
+    said: "Picked \"Any contribution, disclosed\": vtium accepts human- or LLM-written code, and each PR says how it was written; the maintainer's own code stays LLM-written under review."
+    via: Claude Code session, 2026-10-26, relayed by the team lead as the operator's pick among drafted options for vtium's contribution policy, not verbatim
+    paraphrase: true
+  - operator: aaronsb
+    said: "any sort of contribution needs to be able to pass the evaluation gauntlet with proofs"
+    via: Claude Code session, 2026-10-26, relayed by the team lead verbatim, on vtium's contribution policy; also in basis
+  - operator: aaronsb
+    said: "if the contribution adds something new, then the eval harness needs to be proven to be extended too"
+    via: Claude Code session, 2026-10-26, relayed by the team lead verbatim, on vtium's contribution policy, said after the statement above; also in basis
 observable:
   - "R0: tier 1's cases and the capability probes that feed libtsm bytes run through one replay program, whose input and output are written down, and the C implementation passes every golden through it"
   - "vtium's minspec build passes `make tier3-minimal`'s two variants, `2d-potato-min` and `2d-potato-min-psf`, pixel-exact"
-  - "vtium's README states the provenance, and its licence file quotes kmscon's and libtsm's copyright notices from its first commit"
+  - "vtium's README states the provenance and the contribution policy, its CONTRIBUTING and PR template ask each PR how its code was written and for its proofs, and its licence file quotes kmscon's and libtsm's copyright notices from its first commit"
   - "the minspec build's size and memory targets are written down before the first Rust build, and tier 3's report measures them on every run from that build"
 status: proposed
 date: 2026-10-26
@@ -100,7 +118,7 @@ related: [ADR-303, ADR-301, ADR-103]
 
 - **Decided:**
   - **vtium.** The fork's future is vtium, a full Rust port of kmscon and libtsm that leaves the fork's C code behind, in a new repository, vtium/vtium. It is named apart from kmscon because upstream plans a Rust kmscon of its own. It is a clean break from upstream kmscon. ADR-303 keeps governing the C fork and does not apply to vtium.
-  - **Licence and provenance.** vtium is MIT, as kmscon and libtsm are, and carries David Herrmann's and the other contributors' copyright notices from its first commit. Its README says all of its code is written by an LLM, under the operator's review, judged by the harness.
+  - **Licence and provenance.** vtium is MIT, as kmscon and libtsm are, and carries David Herrmann's and the other contributors' copyright notices from its first commit. Its README says the maintainer's code is written by an LLM, under the operator's review, and judged by the harness. Contributions are welcome however they were written, and each says how.
   - **Our own parser.** The escape-sequence parser is ported from the fork's libtsm. vtium depends on a crate only where it never needs to change the crate.
   - **Minspec first.** The first Rust kmscon is the minimal build as a vertical slice through every layer. Outline-font text comes next, then images, then the GPU path, then libseat, multi-monitor and the rest.
   - **One repository.** libtsm's role is carried by crates in vtium's workspace, so there is no separate library repository and no pin to bump.
@@ -108,6 +126,7 @@ related: [ADR-303, ADR-301, ADR-103]
   - **The tiers judge it.** Tier 3 judges the Rust kmscon unchanged. Tier 1 and the capability probes move behind a replay interface, built first in the C repositories (R0). Tier 2's pixel tests are ported with the renderer. Goldens drawn with bitmap fonts are kept, and goldens drawn with outline fonts are re-baselined when the Rust font layer lands, each changed golden reviewed on its own.
   - **The C fork is frozen.** It takes security fixes only, cherry-picked, and stays the reference implementation and the harness's control. Full upstream syncs stop.
   - **Evaluation is batched.** Items are built in bundles of work that does not collide, and each bundle gets one evaluation pass.
+  - **Contributions.** Any contribution is accepted, human- or LLM-written, if its PR says how it was written and proves it passes the gates and tiers that cover it. Anything new extends the harness in the same PR. The code of conduct is the Contributor Covenant 2.1.
 - **Trades away:** New features in the C fork until vtium replaces the part they belong to. Pixel parity with the C fork for outline-font text, whose goldens are re-baselined. The C fork's upstream syncs and ADR-303's route to showing the work upstream. The months the port takes, during which the capability batches tracked against the C fork wait.
 - **One-way?** No, expensive. The C fork stays intact as the reference, so stopping the port returns to it and loses only the freeze. The cost grows as features are built in Rust that the C fork does not have.
 - **Probes:**
@@ -151,7 +170,7 @@ vtium is MIT-licensed, as kmscon and libtsm are. The port is a derivative work, 
 
 Third-party notices carry over with what they cover: unifont's OFL-1.1 notice while vtium ships unifont, which the minspec build does; the solarized palettes' MIT notice if the palettes are ported; the Unicode License v3 for tables generated from the Unicode Character Database. CCAN's htable (LGPL-2.1) and terminology's UCS-4 to UTF-8 encoder are not ported, since Rust's standard library does both jobs, and their notices do not carry over.
 
-The README states the provenance: all code is written by an LLM, under the operator's review, and judged by the harness. This record states it too.
+The README states the provenance: the maintainer's code is written by an LLM, under the operator's review, and judged by the harness. Contributions disclose how they were written (point 9). This record states it too.
 
 ### 3. Dependencies, and the parser
 
@@ -214,6 +233,16 @@ The C kmscon and libtsm are the reference implementation and the harness's contr
 
 Work is cut into items of one form: the modules or files an item touches, the gates that judge it (named tests, tier cases and probes), what done looks like, and the items it depends on. A bundle is a set of items whose scopes do not overlap and that do not depend on one another, so parallel agents in separate worktrees can build them at once. An item merges into its bundle's branch once it builds and its own unit tests pass. The bundle then gets one evaluation pass: one review of the bundle, and the union of its items' gates run once. A failing item goes back to its builder or leaves the bundle. The bundle merges to `main` when the pass is clean. This keeps ADR-301's rule that a change to parsing, the screen or rendering lands on `main` only when the tiers agree; the change is the bundle. That reading of ADR-301 is the drafter's, and the operator raised no objection.
 
+### 9. Contributions
+
+vtium accepts any contribution, human- or LLM-written, and each PR says how its code was written. The maintainer's own code stays LLM-written, under the operator's review.
+
+Every contribution passes the gates and the tiers that cover it, and its PR carries the proofs: the commands run, their results, and a test seen red before the change and green after it. In the operator's words, "any sort of contribution needs to be able to pass the evaluation gauntlet with proofs".
+
+A contribution that adds something new extends the harness in the same PR: "if the contribution adds something new, then the eval harness needs to be proven to be extended too". The new case is shown red without the feature and green with it. A capability with no harness case that catches its absence is not accepted.
+
+The code of conduct is the Contributor Covenant, version 2.1. vtium's CONTRIBUTING file and PR template carry this policy.
+
 ## Consequences
 
 ### Positive
@@ -224,6 +253,7 @@ Work is cut into items of one form: the modules or files an item touches, the ga
 - The parser keeps the fork's fixes, and vtium carries no patched fork of a crate.
 - Bundled evaluation runs review and the slow gates once per bundle, where the C fork ran them once per change.
 - The font layer carries no C bindings to remove later.
+- A contribution's PR shows its own evidence, so review reads results; it does not reproduce them first.
 - One repository: a change to the parser or the screen and the console code that uses it land in one PR, with no pin to move and no mixed build.
 
 ### Negative
@@ -231,6 +261,7 @@ Work is cut into items of one form: the modules or files an item touches, the ga
 - C fork users get no new features until vtium replaces the part, and the C fork falls behind upstream while frozen.
 - Two implementations exist during the port. A security fix lands in the C fork and, where the part is ported, in vtium.
 - Outline-font text loses pixel parity with the C fork. Its tier 2 and tier 3 goldens are re-baselined when the Rust font layer lands, and for those pixels the review of each delta stands in for the C control. The minspec build is unaffected: it draws only PSF and unifont bitmaps.
+- A contribution that adds a capability costs a harness case as well as the code, which raises the bar for small additions.
 - A bundle that fails its pass holds back its other items until the failing one is fixed or removed.
 
 ### Neutral
@@ -258,7 +289,7 @@ Work is cut into items of one form: the modules or files an item touches, the ga
 
 ## Operator answers (2026-10-26)
 
-Relayed verbatim by the team lead. The words of every item are in `considered`, and item 9 is also in `basis`, since the Decision rests on it. The Decision above is written to match.
+Relayed verbatim by the team lead. The words of every item are in `considered`, the pick in item 10 as a paraphrase. Items 9 and 10 are also in `basis`, since the Decision rests on them. The Decision above is written to match.
 
 1. **Freeze** (probe 1): "p1 yes". The C fork gets security fixes only.
 2. **Interface** (probe 2): "p2 yes". vtium keeps the `kmscon.conf` keys and options the tests use.
@@ -269,3 +300,4 @@ Relayed verbatim by the team lead. The words of every item are in `considered`, 
 7. **Repository:** "q5 published". vtium/vtium is public, and its first CI run passed.
 8. **Upstream syncs during the freeze:** "q6 agree - it is likely not even in the same language". Full syncs stop, and a security fix is cherry-picked on its own.
 9. **One repository:** "the vtium repo, because rust, doesn't need the seperate lib repo, I think?". Agreed: libtsm's role is carried by workspace crates, and there is no library repository.
+10. **Contribution policy:** picked "Any contribution, disclosed", then "any sort of contribution needs to be able to pass the evaluation gauntlet with proofs" and "if the contribution adds something new, then the eval harness needs to be proven to be extended too". Point 9 of the Decision states the policy, and the README's premise becomes "the maintainer's code is LLM-written; contributions disclose".

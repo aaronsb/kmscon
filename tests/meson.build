@@ -166,10 +166,12 @@ test_asciinema = executable(
 test('test_asciinema', test_asciinema)
 
 # the pty holds the output its input callback leaves (ADR-103 step 3d)
+# malloc is wrapped to fail the ring's allocation partway through a write
 test_pty = executable(
     'test_pty',
     'test_pty.c',
     include_directories: misc_inc,
+    link_args: ['-Wl,--wrap=malloc'],
     dependencies: [libtsm_deps, shl_deps, eloop_deps],
 )
 test('test_pty', test_pty)

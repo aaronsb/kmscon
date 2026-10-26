@@ -111,7 +111,10 @@ static void image_reply(struct image_host *host, uint64_t id, unsigned int statu
 	};
 
 	(void)host;
+	/* the child asked for it: a reply it may leave unread, as a query's */
+	kmscon_pty_begin_reply(ti->pty);
 	tsm_vte_image_reply(ti->vte, id, &res);
+	kmscon_pty_end_reply(ti->pty);
 	ti->replied(ti->data);
 	kmscon_pty_resume(ti->pty);
 	if (ti->playing && !image_host_busy(ti->host))

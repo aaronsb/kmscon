@@ -79,7 +79,18 @@ int kmscon_pty_open(struct kmscon_pty *pty, unsigned short width, unsigned short
 		    unsigned int cell_w, unsigned int cell_h, bool drm);
 void kmscon_pty_close(struct kmscon_pty *pty);
 
+/*
+ * Queues what the child cannot take yet. Replies to the child are bounded:
+ * what the input callback writes, and what is written between
+ * kmscon_pty_begin_reply and kmscon_pty_end_reply (scopes nest). While the
+ * child leaves too many of them unread, its output is neither read nor fed,
+ * as in a pause, and past a ceiling they are dropped, each write whole, so
+ * each reply must be one write: libtsm writes each in one call. What is
+ * written otherwise (keys, pastes) is always queued. Closing drops the queue.
+ */
 int kmscon_pty_write(struct kmscon_pty *pty, const char *u8, size_t len);
+void kmscon_pty_begin_reply(struct kmscon_pty *pty);
+void kmscon_pty_end_reply(struct kmscon_pty *pty);
 void kmscon_pty_signal(struct kmscon_pty *pty, int signum);
 /* as kmscon_pty_open; a size the same as the last one sets nothing */
 void kmscon_pty_resize(struct kmscon_pty *pty, unsigned short width, unsigned short height,
@@ -95,8 +106,8 @@ int kmscon_pty_get_slave_owner(struct kmscon_pty *pty, uid_t *uid);
  * While paused, the pty neither reads nor hands its held output to the input
  * callback; a pause from inside the callback takes effect when it returns, and
  * what it did not take stays held. Resuming hands the held output over from
- * the next turn of the pty's loop, then reads again. Opening and closing the
- * pty clear the pause.
+ * the next turn of the pty's loop, then reads again, unless the child still
+ * leaves too many replies unread. Opening and closing the pty clear the pause.
  */
 void kmscon_pty_pause(struct kmscon_pty *pty);
 void kmscon_pty_resume(struct kmscon_pty *pty);

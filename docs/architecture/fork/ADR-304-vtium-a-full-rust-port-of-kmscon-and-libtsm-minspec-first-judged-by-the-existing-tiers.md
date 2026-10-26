@@ -79,6 +79,9 @@ considered:
   - operator: aaronsb
     said: "q6 agree - it is likely not even in the same language"
     via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, answering question 6 (upstream syncs during the freeze)
+  - operator: aaronsb
+    said: "the vtium repo, because rust, doesn't need the seperate lib repo, I think?"
+    via: Claude Code session, 2026-10-26, relayed verbatim by the team lead, who agreed; also in basis, since Decision §1's one-repository paragraph rests on it
 observable:
   - "R0: tier 1's cases and the capability probes that feed libtsm bytes run through one replay program, whose input and output are written down, and the C implementation passes every golden through it"
   - "vtium's minspec build passes `make tier3-minimal`'s two variants, `2d-potato-min` and `2d-potato-min-psf`, pixel-exact"
@@ -255,7 +258,7 @@ Work is cut into items of one form: the modules or files an item touches, the ga
 
 ## Operator answers (2026-10-26)
 
-Relayed verbatim by the team lead. The words of items 1 to 8 are in `considered` and those of item 9 in `basis`, and the Decision above is written to match.
+Relayed verbatim by the team lead. The words of every item are in `considered`, and item 9 is also in `basis`, since the Decision rests on it. The Decision above is written to match.
 
 1. **Freeze** (probe 1): "p1 yes". The C fork gets security fixes only.
 2. **Interface** (probe 2): "p2 yes". vtium keeps the `kmscon.conf` keys and options the tests use.

@@ -18,7 +18,7 @@
 #   but it actually supports none of those features.
 # - supports VT100 line-drawing
 # - does not support DECALN, failing the ECH and alternate-screen tests.
-# - supports X10 and X11 normal mouse events
+# - supports X10 and X11 normal mouse events, and SGR (1006) mouse events
 # - supports CBT, CHA, CHT, VPA, CNL, CPL, VPR but not HPA, HPR
 # - implements REP in a nonstandard manner
 # - supports SD and SU

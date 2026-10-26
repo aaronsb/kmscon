@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Capability probes: what kmscon's terminal does and what it is missing.
 
-  run.py --list FILE --probe EXE [--font-probe EXE --fonts DIR]
+  run.py --list FILE --probe EXE [--image-probe EXE] [--build FEATURE=true|false]...
+         [--font-probe EXE --fonts DIR]
          [--terminfo SRC --tic PATH --infocmp PATH [--tput PATH]]
 
 Every probe named in FILE (capabilities.list) is run and judged against the
@@ -11,11 +12,17 @@ status recorded there:
   missing  the probe must fail; the line names the issue that tracks the gap
 
 A missing probe that passes fails the run too, so the list is updated in the
-change that adds the feature. A probe one of the programs knows but the list
+change that adds the feature. A working probe may name a build feature in
+place of an issue, -Dimages: it must pass in a build with that feature and
+fail in one without, where a pass is as red as a missing probe's. --build
+says which features this build has; a feature the list names and --build
+does not fails the run. A probe one of the programs knows but the list
 does not name, or a name in the list no program knows, fails the run.
 
-Probes come from three places: test_capabilities (libtsm, through its public
-API), test_capabilities_font (the freetype backend) and the terminfo entry,
+Probes come from four places: test_capabilities (libtsm, through its public
+API), test_capabilities_images (sixel and kitty graphics through kmscon's own
+configuration and vte), test_capabilities_font (the freetype backend) and the
+terminfo entry,
 compiled with tic and read back with infocmp, for the capabilities listed in
 TERMINFO below, and expanded with tput, for the strings listed in
 TERMINFO_STRINGS. A source that was not built or has no tool is reported as
@@ -61,6 +68,8 @@ FONT_PROBES = ("font-freetype-italic", "font-freetype-synthetic-bold")
 STATUSES = ("works", "missing")
 # #N is an aaronsb/kmscon issue, libtsm#N an aaronsb/libtsm one
 ISSUE = re.compile(r"(libtsm)?#[0-9]+")
+# a meson feature a working probe needs (meson.options)
+FEATURE = re.compile(r"-D([a-z_]+)")
 
 
 def read_list(path):
@@ -80,8 +89,9 @@ def read_list(path):
                 sys.exit(f"{path}:{n}: status {status!r} is not one of {', '.join(STATUSES)}")
             if status == "missing" and not ISSUE.fullmatch(issue):
                 sys.exit(f"{path}:{n}: a missing probe names its issue (#N or libtsm#N)")
-            if status == "works" and issue != "-":
-                sys.exit(f"{path}:{n}: a working probe has no issue (-)")
+            if status == "works" and issue != "-" and not FEATURE.fullmatch(issue):
+                sys.exit(f"{path}:{n}: a working probe has no issue (-), or names the "
+                         f"build feature it needs (-Dname)")
             if name in seen:
                 sys.exit(f"{path}:{n}: {name} is already listed on line {seen[name]}")
             seen[name] = n
@@ -157,6 +167,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", required=True)
     ap.add_argument("--probe", required=True)
+    ap.add_argument("--image-probe")
+    ap.add_argument("--build", action="append", default=[])
     ap.add_argument("--font-probe")
     ap.add_argument("--fonts")
     ap.add_argument("--terminfo")
@@ -172,6 +184,18 @@ def main():
     probe = [args.probe]
     for name in program_probes(probe):
         runners[name] = lambda name=name: run_program(probe, name)
+
+    if args.image_probe:
+        image = [args.image_probe]
+        for name in program_probes(image):
+            runners[name] = lambda name=name: run_program(image, name)
+
+    build = {}
+    for b in args.build:
+        feature, _, value = b.partition("=")
+        if value not in ("true", "false"):
+            sys.exit(f"--build {b}: want FEATURE=true or FEATURE=false")
+        build[feature] = value == "true"
 
     if args.font_probe:
         font = [args.font_probe, args.fonts]
@@ -214,10 +238,21 @@ def main():
             print(f"FAIL {name}: {args.list}:{n} names a probe nothing defines")
             failures += 1
             continue
+        feature = FEATURE.fullmatch(issue)
+        if feature and feature.group(1) not in build:
+            print(f"FAIL {name}: {args.list}:{n} needs {issue}, which --build does not name")
+            failures += 1
+            continue
         passed, reason = runners[name]()
         if passed is None:
             print(f"FAIL {name}: {reason}")
             failures += 1
+        elif feature and not build[feature.group(1)]:
+            if passed:
+                print(f"FAIL {name}: passes in a build without {issue}")
+                failures += 1
+            else:
+                print(f"ok   {name}: absent, a build without {issue}: {reason}")
         elif status == "works" and not passed:
             print(f"FAIL {name}: listed as working, but {reason}")
             failures += 1

@@ -815,28 +815,6 @@ static void test_reply_feeds_a_request(void)
 	teardown();
 }
 
-/*
- * kmscon's blink setting reaches libtsm, so DECRQM ?12 matches what the
- * renderer does: the default cursor style blinks only while blink is on
- */
-static void test_cursor_blink_setting(void)
-{
-	bool saved = conf.blink;
-
-	conf.blink = false;
-	setup(__func__, real_helper);
-	tsm_vte_input(vte, "\e[?12$p", 7);
-	assert(strstr(out, "\e[?12;2$y"));
-	teardown();
-
-	conf.blink = true;
-	setup(__func__, real_helper);
-	tsm_vte_input(vte, "\e[?12$p", 7);
-	assert(strstr(out, "\e[?12;1$y"));
-	teardown();
-	conf.blink = saved;
-}
-
 int main(int argc, char **argv)
 {
 	char cmd[512];
@@ -858,7 +836,6 @@ int main(int argc, char **argv)
 	test_playback();
 	test_first_activation();
 	test_reply_feeds_a_request();
-	test_cursor_blink_setting();
 
 	snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
 	assert(!system(cmd));

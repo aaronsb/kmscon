@@ -174,117 +174,158 @@ test_pty = executable(
 )
 test('test_pty', test_pty)
 
-# kmscon-image-helper over its socket, with no libtsm (ADR-103): the real one,
-# and a build with stops between each check and the step it guards
-test_image_helper_bin = executable(
-    'test_image_helper_bin',
-    '../src/image_helper.c',
-    c_args: '-DIMAGE_HELPER_TEST',
-    include_directories: src_inc,
-    dependencies: [libpng_deps, zlib_deps],
-)
-test_image_helper = executable(
-    'test_image_helper',
-    'test_image_helper.c',
-    include_directories: src_inc,
-    dependencies: [libpng_deps, zlib_deps],
-)
-test(
-    'test_image_helper',
-    test_image_helper,
-    args: [
-        kmscon_image_helper,
-        test_image_helper_bin,
-        meson.current_build_dir(),
-    ],
-)
+# The image host, its helper and the helper's user: a build with images
+# only (ADR-103, The capability probes)
+if enable_images
+    # kmscon-image-helper over its socket, with no libtsm (ADR-103): the real one,
+    # and a build with stops between each check and the step it guards
+    test_image_helper_bin = executable(
+        'test_image_helper_bin',
+        '../src/image_helper.c',
+        c_args: '-DIMAGE_HELPER_TEST',
+        include_directories: src_inc,
+        dependencies: [libpng_deps, zlib_deps],
+    )
+    test_image_helper = executable(
+        'test_image_helper',
+        'test_image_helper.c',
+        include_directories: src_inc,
+        dependencies: [libpng_deps, zlib_deps],
+    )
+    test(
+        'test_image_helper',
+        test_image_helper,
+        args: [
+            kmscon_image_helper,
+            test_image_helper_bin,
+            meson.current_build_dir(),
+        ],
+    )
 
-# kmscon's side of the helper: the real one, and a stand-in whose replies
-# each break one of kmscon's checks
-fake_image_helper = executable(
-    'fake_image_helper',
-    'fake_image_helper.c',
-    include_directories: src_inc,
-)
-test_image_host = executable(
-    'test_image_host',
-    'test_image_host.c',
-    include_directories: src_inc,
-    dependencies: [shl_deps, eloop_deps],
-)
-test(
-    'test_image_host',
-    test_image_host,
-    args: [kmscon_image_helper, fake_image_helper, meson.current_build_dir()],
-    timeout: 60,
-)
+    # kmscon's side of the helper: the real one, and a stand-in whose replies
+    # each break one of kmscon's checks
+    fake_image_helper = executable(
+        'fake_image_helper',
+        'fake_image_helper.c',
+        include_directories: src_inc,
+    )
+    test_image_host = executable(
+        'test_image_host',
+        'test_image_host.c',
+        include_directories: src_inc,
+        dependencies: [shl_deps, eloop_deps],
+    )
+    test(
+        'test_image_host',
+        test_image_host,
+        args: [
+            kmscon_image_helper,
+            fake_image_helper,
+            meson.current_build_dir(),
+        ],
+        timeout: 60,
+    )
 
-# a reply memfd shrunk between kmscon's checks: fcntl is wrapped to hold the
-# window open while the stand-in shrinks and seals it
-test_image_host_race = executable(
-    'test_image_host_race',
-    'test_image_host_race.c',
-    '../src/image_host.c',
-    include_directories: src_inc,
-    link_args: ['-Wl,--wrap=fcntl', '-Wl,--wrap=fcntl64'],
-    dependencies: [shl_deps, eloop_deps],
-)
-test(
-    'test_image_host_race',
-    test_image_host_race,
-    args: [fake_image_helper, meson.current_build_dir()],
-)
+    # a reply memfd shrunk between kmscon's checks: fcntl is wrapped to hold the
+    # window open while the stand-in shrinks and seals it
+    test_image_host_race = executable(
+        'test_image_host_race',
+        'test_image_host_race.c',
+        '../src/image_host.c',
+        include_directories: src_inc,
+        link_args: ['-Wl,--wrap=fcntl', '-Wl,--wrap=fcntl64'],
+        dependencies: [shl_deps, eloop_deps],
+    )
+    test(
+        'test_image_host_race',
+        test_image_host_race,
+        args: [fake_image_helper, meson.current_build_dir()],
+    )
 
-# a terminal's kitty graphics host end to end: a pseudo-terminal into kmscon's
-# pty and a real vte, served by the real helper or the stand-in; the
-# session's user stood in for
-test_terminal_image = executable(
-    'test_terminal_image',
-    'test_terminal_image.c',
-    '../src/terminal_image.c',
-    '../src/terminal_vte.c',
-    '../src/image_host.c',
-    '../src/render/image_budget.c',
-    '../src/misc/asciinema.c',
+    # a terminal's kitty graphics host end to end: a pseudo-terminal into kmscon's
+    # pty and a real vte, served by the real helper or the stand-in; the
+    # session's user stood in for
+    test_terminal_image = executable(
+        'test_terminal_image',
+        'test_terminal_image.c',
+        '../src/terminal_image.c',
+        '../src/terminal_vte.c',
+        '../src/image_host.c',
+        '../src/render/image_budget.c',
+        '../src/misc/asciinema.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            subproject('libtsm').get_variable('libtsm_test_dep'),
+            shl_deps,
+            eloop_deps,
+            zlib_deps,
+        ],
+    )
+    test(
+        'test_terminal_image',
+        test_terminal_image,
+        args: [kmscon_image_helper, fake_image_helper],
+        timeout: 60,
+    )
+
+    # the helper's user, built without sd-login and with it, its calls stood in for
+    test_image_identity = executable(
+        'test_image_identity',
+        'test_image_identity.c',
+        '../src/image_identity.c',
+        c_args: '-DIMAGE_IDENTITY_SD_LOGIN=0',
+        include_directories: src_inc,
+        dependencies: [shl_deps],
+    )
+    test('test_image_identity', test_image_identity)
+    if sd_login_deps.found()
+        test_image_identity_sd_login = executable(
+            'test_image_identity_sd_login',
+            'test_image_identity.c',
+            '../src/image_identity.c',
+            c_args: '-DIMAGE_IDENTITY_SD_LOGIN=1',
+            include_directories: src_inc,
+            dependencies: [
+                shl_deps,
+                sd_login_deps.partial_dependency(
+                    compile_args: true,
+                    includes: true,
+                ),
+            ],
+        )
+        test('test_image_identity_sd_login', test_image_identity_sd_login)
+    endif
+else
+    # a terminal with no image host, its asciicast playback among it
+    test_terminal_image_none = executable(
+        'test_terminal_image_none',
+        'test_terminal_image_none.c',
+        '../src/terminal_image_none.c',
+        '../src/terminal_vte.c',
+        '../src/render/image_budget.c',
+        '../src/misc/asciinema.c',
+        include_directories: [src_inc, misc_inc],
+        dependencies: [
+            subproject('libtsm').get_variable('libtsm_test_dep'),
+            shl_deps,
+            eloop_deps,
+        ],
+    )
+    test('test_terminal_image_none', test_terminal_image_none, timeout: 60)
+endif
+
+# the vte kmscon makes from its settings, and the input modes terminal.c
+# asks it about (DECARM, focus, the pointer), in every build
+test_terminal_vte = executable(
+    'test_terminal_vte',
+    'test_terminal_vte.c',
     include_directories: [src_inc, misc_inc],
     dependencies: [
         subproject('libtsm').get_variable('libtsm_test_dep'),
         shl_deps,
-        eloop_deps,
-        zlib_deps,
     ],
 )
-test(
-    'test_terminal_image',
-    test_terminal_image,
-    args: [kmscon_image_helper, fake_image_helper],
-    timeout: 60,
-)
-
-# the helper's user, built without sd-login and with it, its calls stood in for
-test_image_identity = executable(
-    'test_image_identity',
-    'test_image_identity.c',
-    '../src/image_identity.c',
-    c_args: '-DIMAGE_IDENTITY_SD_LOGIN=0',
-    include_directories: src_inc,
-    dependencies: [shl_deps],
-)
-test('test_image_identity', test_image_identity)
-if sd_login_deps.found()
-    test_image_identity_sd_login = executable(
-        'test_image_identity_sd_login',
-        'test_image_identity.c',
-        '../src/image_identity.c',
-        c_args: '-DIMAGE_IDENTITY_SD_LOGIN=1',
-        include_directories: src_inc,
-        dependencies: [
-            shl_deps,
-            sd_login_deps.partial_dependency(compile_args: true, includes: true),
-        ],
-    )
-    test('test_image_identity_sd_login', test_image_identity_sd_login)
-endif
+test('test_terminal_vte', test_terminal_vte)
 
 test_issue = executable(
     'test_issue',
@@ -345,17 +386,6 @@ test_terminal_sync = executable(
 )
 test('test_terminal_sync', test_terminal_sync)
 
-# the input modes terminal.c asks a vte about (DECARM, focus) on a real vte
-test_terminal_vte = executable(
-    'test_terminal_vte',
-    'test_terminal_vte.c',
-    '../src/terminal_vte.c',
-    '../src/render/image_budget.c',
-    include_directories: [src_inc, misc_inc],
-    dependencies: [libtsm_deps, shl_deps],
-)
-test('test_terminal_vte', test_terminal_vte)
-
 # Braille, sextant and octant sprites against tests/box_model.h, at every cell
 # size to 32x64 (#76)
 test_font_box = executable(
@@ -384,12 +414,24 @@ test_capabilities = executable(
     'test_capabilities.c',
     dependencies: [libtsm_deps],
 )
+# sixel, kitty graphics and sixel's modes through kmscon's own configuration
+# and vte, judged against the build's images option (-Dimages in the list)
+test_capabilities_images = executable(
+    'test_capabilities_images',
+    'test_capabilities_images.c',
+    include_directories: [src_inc, misc_inc],
+    dependencies: [libtsm_deps, shl_deps],
+)
 caps_args = [
     files('capabilities/run.py'),
     '--list',
     files('capabilities/capabilities.list'),
     '--probe',
     test_capabilities,
+    '--image-probe',
+    test_capabilities_images,
+    '--build',
+    'images=' + (enable_images ? 'true' : 'false'),
 ]
 if enable_font_freetype
     test_capabilities_font = executable(
@@ -450,25 +492,39 @@ if enable_font_freetype and enable_video_drm2d
             htable_deps,
         ],
     )
-    test(
-        'tier2_pixels',
-        python,
-        args: [
-            files('tier2/run.py'),
-            '--render',
-            test_pixels,
-            '--fonts',
-            meson.current_source_dir() / 'fonts',
-            '--goldens',
-            meson.current_source_dir() / 'goldens/tier2',
-            '--out',
-            meson.project_build_root() / 'tier2',
-            '--report',
-            meson.project_build_root() / 'tier2-report.json',
-            '--root',
-            meson.project_source_root(),
-        ],
-    )
+    # tier 2 judges the default build, whose sixel and kitty screens need
+    # images; a build without them changes no drawing path (ADR-103, Tests)
+    if enable_images
+        test(
+            'tier2_pixels',
+            python,
+            args: [
+                files('tier2/run.py'),
+                '--render',
+                test_pixels,
+                '--fonts',
+                meson.current_source_dir() / 'fonts',
+                '--goldens',
+                meson.current_source_dir() / 'goldens/tier2',
+                '--out',
+                meson.project_build_root() / 'tier2',
+                '--report',
+                meson.project_build_root() / 'tier2-report.json',
+                '--root',
+                meson.project_source_root(),
+            ],
+        )
+    else
+        test(
+            'tier2_pixels',
+            python,
+            args: [
+                files('tier2/run.py'),
+                '--skip',
+                'tier 2 runs on a build with images (ADR-103)',
+            ],
+        )
+    endif
 
     test_blink = executable(
         'test_blink',

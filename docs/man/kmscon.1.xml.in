@@ -959,6 +959,13 @@
           reads and decodes none of them itself. Why the rules below are as
           they are is in the fork's docs/image-helper.md:
           <ulink url="https://github.com/aaronsb/kmscon/blob/main/docs/image-helper.md"/></para>
+    <para>A build may leave images out (meson
+          <option>-Dimages=disabled</option>, as the minimal build does):
+          then no image helper or <literal>kmscon-image</literal> entry is
+          installed, <option>--sixel</option> and
+          <option>--kitty-graphics</option> are turned off at start with a line
+          in the log, and <command>kmscon --version --verbose</command> lists
+          images as disabled.</para>
 
     <refsect2>
       <title>Who the helper runs as</title>

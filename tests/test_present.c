@@ -255,6 +255,7 @@ static void test_changed(void)
 	assert(draw_present(&o, con, vte) == 0);
 	assert(!kmscon_text_changed(o.txt, con));
 
+#ifdef BUILD_ENABLE_IMAGES
 	/*
 	 * A sixel of 8x8 cells of the screen's size, scaled into a picture of
 	 * four times its pixels: with no room in the budget, it is left out;
@@ -275,6 +276,7 @@ static void test_changed(void)
 	assert(!((struct bbulk *)o.txt->data)->starving);
 	assert(!kmscon_text_changed(o.txt, con));
 	image_budget_set_limit(IMAGE_BUDGET_AUTO);
+#endif
 
 	output_destroy(&o);
 	tsm_vte_unref(vte);

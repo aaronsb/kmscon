@@ -335,7 +335,14 @@ static void test_parse_images(void)
 
 	conf = parse_conf(&ctx, "\n");
 	assert(conf && conf->image_storage_limit == IMAGE_BUDGET_AUTO);
+#ifdef BUILD_ENABLE_IMAGES
 	assert(conf->sixel && conf->kitty_graphics && conf->private_color_registers);
+#else
+	/* a build without images turns both off, as given or by default */
+	assert(!conf->sixel && !conf->kitty_graphics && conf->private_color_registers);
+	conf = parse_conf(&ctx, "sixel\nkitty-graphics\n");
+	assert(conf && !conf->sixel && !conf->kitty_graphics);
+#endif
 	assert(conf->max_graphic_size.width == 10000 && conf->max_graphic_size.height == 10000);
 	assert(conf->num_color_registers == 1024);
 

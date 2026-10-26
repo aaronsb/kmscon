@@ -51,15 +51,19 @@ subdir('uterm')
 kmscon_srcs = [
     'seat.c',
     'config.c',
-    'image_host.c',
-    'image_identity.c',
     'main.c',
     'render_timer.c',
     'terminal.c',
-    'terminal_image.c',
     'terminal_sync.c',
     'terminal_vte.c',
 ]
+# terminal.c reaches the image host only through terminal_image.h, which a
+# build without images implements with no host (ADR-103, The images option)
+if enable_images
+    kmscon_srcs += ['image_host.c', 'image_identity.c', 'terminal_image.c']
+else
+    kmscon_srcs += ['terminal_image_none.c']
+endif
 kmscon_dep = [
     xkbcommon_deps,
     libtsm_deps,
@@ -78,13 +82,15 @@ endif
 
 # Reads kitty graphics files and decodes PNG and zlib as the session's user,
 # started by kmscon per terminal (ADR-103); it links nothing of kmscon's.
-kmscon_image_helper = executable(
-    'kmscon-image-helper',
-    'image_helper.c',
-    dependencies: [libpng_deps, zlib_deps],
-    install: true,
-    install_dir: moduledir,
-)
+if enable_images
+    kmscon_image_helper = executable(
+        'kmscon-image-helper',
+        'image_helper.c',
+        dependencies: [libpng_deps, zlib_deps],
+        install: true,
+        install_dir: moduledir,
+    )
+endif
 
 kmscon = executable(
     'kmscon',

@@ -19,6 +19,14 @@ rep                           works   -          REP repeats the last printed ch
 erase-colours-only            works   -          EL, SU, SD and RI blanks take the pen background only (libtsm#13)
 frame-age-per-caller          works   -          tsm_screen_frame_since keeps each display's changes (libtsm#14)
 
+# images (ADR-103), through kmscon's configuration and vte: working in a build
+# with -Dimages, and failing, as a missing probe must, in one without
+sixel                         works   -Dimages   DA1 attribute 4, and XTSMGRAPHICS reads the register count
+kitty-graphics                works   -Dimages   a kitty a=q with an id gets OK
+mode-80                       works   -Dimages   DECRQM ?80 (DECSDM) replies 1 or 2: offered while sixel is on (HOST_SIXEL)
+mode-1070                     works   -Dimages   DECRQM ?1070 (private sixel registers) replies 1 or 2
+mode-8452                     works   -Dimages   DECRQM ?8452 (sixel cursor right) replies 1 or 2
+
 # terminfo entry (scripts/terminfo/kmscon.ti) against what kmscon implements
 terminfo-cursor-shape         works   -          Ss/Se for DECSCUSR
 terminfo-italic               missing #94        sitm/ritm: SGR 3/23 are parsed (and drawn by pango)

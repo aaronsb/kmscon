@@ -56,14 +56,11 @@ sysusersdir = systemd_deps.get_variable(
 # Required dependencies
 #
 xkbcommon_deps = dependency('xkbcommon', version: '>=0.5.0')
-libtsm_deps = dependency('libtsm', version: '>=4.8.0', allow_fallback: true)
 libudev_deps = dependency('libudev', version: '>=172')
 dl_deps = dependency('dl')
 threads_deps = dependency('threads')
 math_deps = meson.get_compiler('c').find_library('m', required: false)
 zlib_deps = dependency('zlib')
-# kmscon-image-helper decodes PNG as the session's user (ADR-103)
-libpng_deps = dependency('libpng')
 
 python = find_program('python3')
 
@@ -128,10 +125,28 @@ if harfbuzz_raster_deps.found()
     )
 endif
 dbus_deps = dependency('dbus-1', disabler: true, required: get_option('dbus'))
+# Sixel and the kitty graphics protocol (ADR-103): kmscon-image-helper decodes
+# PNG and zlib as the session's user
+libpng_deps = dependency(
+    'libpng',
+    disabler: true,
+    required: get_option('images'),
+)
+# The same value as the feature loop's enable_images below, which comes too
+# late for the sd_login lookup
+images_allowed = get_option('images').require(
+    libpng_deps.found() and zlib_deps.found(),
+).allowed()
 # The image helper's user through logind (ADR-103): libsystemd's sd-login, or
-# libelogind's, which provides the same <systemd/sd-login.h>.
+# libelogind's, which provides the same <systemd/sd-login.h>. Not looked for
+# in a build without images, where -Dsd_login=enabled fails the configure.
 sd_login_deps = dependency('', required: false)
-if not get_option('sd_login').disabled()
+if get_option('sd_login').enabled() and not images_allowed
+    error(
+        'sd_login finds the image helper\'s user, and this build has no images',
+    )
+endif
+if images_allowed and not get_option('sd_login').disabled()
     sd_login_deps = dependency('libsystemd', required: false)
     if not sd_login_deps.found()
         sd_login_deps = dependency('libelogind', required: false)
@@ -170,6 +185,7 @@ foreach name, reqs : {
     'font_freetype': [freetype_deps, fontconfig_deps, harfbuzz_deps],
     'font_pango': [pango_deps, freetype_deps, fontconfig_deps, harfbuzz_deps],
     'dbus': [dbus_deps],
+    'images': [libpng_deps, zlib_deps],
     'sd_login': [sd_login_deps],
 }
     found = true
@@ -189,6 +205,28 @@ foreach name, reqs : {
         section: sections.get(name.split('_')[0], 'Miscellaneous'),
     )
 endforeach
+
+# libtsm builds its sixel decoder and kitty parser only for a kmscon with
+# images (ADR-103, libtsm's images option). default_options reach only a
+# libtsm built here, and only at its first configure: a system libtsm ignores
+# them (a build that needs libtsm without images sets
+# force_fallback_for=libtsm), and `meson configure -Dimages=...` on an
+# existing build leaves libtsm's setting as it was, so it is read back here.
+libtsm_deps = dependency(
+    'libtsm',
+    version: '>=4.8.0',
+    allow_fallback: true,
+    default_options: ['images=' + (enable_images ? 'true' : 'false')],
+)
+if libtsm_deps.type_name() == 'internal'
+    libtsm_images = subproject('libtsm').get_variable('images')
+    if libtsm_images != enable_images
+        error(
+            f'images is @enable_images@ and libtsm\'s images is @libtsm_images@:',
+            f'pass -Dlibtsm:images=@enable_images@ or set up a new build directory',
+        )
+    endif
+endif
 
 config.set('BUILD_ENABLE_DEBUG', get_option('extra_debug'))
 config.set_quoted('BUILD_MODULE_DIR', prefix / moduledir)
@@ -308,11 +346,13 @@ endforeach
 
 # The image helper's user before login: a system user with home / and no
 # login shell, created by systemd-sysusers (ADR-103, The image helper)
-install_data(
-    'scripts/sysusers.d/kmscon-image.conf',
-    install_dir: sysusersdir,
-    install_mode: 'rw-r--r--',
-)
+if enable_images
+    install_data(
+        'scripts/sysusers.d/kmscon-image.conf',
+        install_dir: sysusersdir,
+        install_mode: 'rw-r--r--',
+    )
+endif
 
 # kmscon.conf
 install_data(

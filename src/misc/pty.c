@@ -54,7 +54,9 @@
 
 /*
  * Replies are what the input callback writes back to the child while it
- * parses the child's output: answers to queries. msgbuf holds what the child
+ * parses the child's output, answers to queries, and what is written between
+ * kmscon_pty_begin_reply and kmscon_pty_end_reply, such as the image host's
+ * answers to the child's image requests. msgbuf holds what the child
  * has not read yet. Once replies there reach PTY_REPLY_HIGH, nothing more of
  * the child's output is read or fed until they drain below PTY_REPLY_LOW, so
  * a child that queries without reading stalls itself. A reply that would take
@@ -79,13 +81,13 @@ struct kmscon_pty {
 	/* io_buf[held_off, held_len) is what the input callback has not taken */
 	size_t held_off;
 	size_t held_len;
-	bool feeding;	/* held_idle is registered */
-	bool paused;	/* kmscon_pty_pause: nothing is read or fed */
-	size_t queued;	/* the bytes msgbuf holds */
-	size_t replies; /* at least the replies msgbuf holds, at most queued */
-	bool in_input;	/* the input callback is running */
-	bool backlog;	/* replies reached PTY_REPLY_HIGH: nothing is read or fed */
-	bool dropping;	/* a reply passed PTY_REPLY_MAX: the rest are dropped */
+	bool feeding;	       /* held_idle is registered */
+	bool paused;	       /* kmscon_pty_pause: nothing is read or fed */
+	size_t queued;	       /* the bytes msgbuf holds */
+	size_t replies;	       /* at least the replies msgbuf holds, at most queued */
+	unsigned int replying; /* the input callback or kmscon_pty_begin_reply */
+	bool backlog;	       /* replies reached PTY_REPLY_HIGH: nothing is read or fed */
+	bool dropping;	       /* a reply passed PTY_REPLY_MAX: the rest are dropped */
 	/* the size last set with TIOCSWINSZ */
 	struct winsize ws;
 
@@ -433,7 +435,7 @@ static void queue_drop(struct kmscon_pty *pty, size_t len)
 
 static void queue_write(struct kmscon_pty *pty, const char *u8, size_t len)
 {
-	if (pty->in_input && (pty->dropping || pty->replies + len > PTY_REPLY_MAX)) {
+	if (pty->replying && (pty->dropping || pty->replies + len > PTY_REPLY_MAX)) {
 		if (!pty->dropping)
 			log_warn("child %d does not read its input; dropping replies", pty->child);
 		pty->dropping = true;
@@ -444,7 +446,7 @@ static void queue_write(struct kmscon_pty *pty, const char *u8, size_t len)
 		return;
 	}
 	pty->queued += len;
-	if (!pty->in_input)
+	if (!pty->replying)
 		return;
 	pty->replies += len;
 	if (!pty->backlog && pty->replies >= PTY_REPLY_HIGH) {
@@ -503,6 +505,23 @@ static void feeding_stop(struct kmscon_pty *pty)
 	pty->feeding = false;
 }
 
+static void reply_end(struct kmscon_pty *pty)
+{
+	/* a backlog holds the drop until the drain; nothing is fed till then */
+	if (!--pty->replying && !pty->backlog)
+		pty->dropping = false;
+}
+
+static size_t call_input(struct kmscon_pty *pty, size_t off, size_t len)
+{
+	size_t n;
+
+	pty->replying++;
+	n = pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
+	reply_end(pty);
+	return n;
+}
+
 /*
  * Hands io_buf[@off, @len) to the input callback. What it does not take is
  * held: nothing more is read, and an idle source on the pty's loop hands the
@@ -512,20 +531,6 @@ static void feeding_stop(struct kmscon_pty *pty)
  * source until kmscon_pty_resume or the drain. Returns true when all of it was
  * taken and the pty is not stalled.
  */
-static size_t call_input(struct kmscon_pty *pty, size_t off, size_t len)
-{
-	bool was = pty->in_input;
-	size_t n;
-
-	pty->in_input = true;
-	n = pty->input_cb(pty, pty->io_buf + off, len - off, pty->data);
-	pty->in_input = was;
-	/* a backlog holds the drop until the drain; nothing is fed till then */
-	if (!was && !pty->backlog)
-		pty->dropping = false;
-	return n;
-}
-
 static bool feed(struct kmscon_pty *pty, size_t off, size_t len)
 {
 	off += call_input(pty, off, len);
@@ -778,6 +783,18 @@ void kmscon_pty_close(struct kmscon_pty *pty)
 	pty->replies = 0;
 	pty->backlog = false;
 	pty->dropping = false;
+}
+
+void kmscon_pty_begin_reply(struct kmscon_pty *pty)
+{
+	if (pty)
+		pty->replying++;
+}
+
+void kmscon_pty_end_reply(struct kmscon_pty *pty)
+{
+	if (pty && pty->replying)
+		reply_end(pty);
 }
 
 int kmscon_pty_write(struct kmscon_pty *pty, const char *u8, size_t len)

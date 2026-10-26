@@ -35,6 +35,7 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -515,10 +516,22 @@ static void test_prelogin(void)
 	teardown();
 }
 
+/* a helper test_pause stopped: killed if an assertion fails meanwhile */
+static pid_t stopped;
+
+static void kill_stopped(int sig)
+{
+	(void)sig;
+	if (stopped > 0)
+		kill(stopped, SIGKILL);
+}
+
 /*
  * The bytes after a command wait for its reply: a put of the image, text and
  * DA1 in the same write are parsed after it, in order, and nothing more is
- * read from the pty meanwhile.
+ * read from the pty meanwhile. The helper is started by a first transmission
+ * and stopped before the second, so its reply cannot arrive while the pause
+ * is checked.
  */
 static void test_pause(void)
 {
@@ -529,6 +542,15 @@ static void test_pause(void)
 	setup(__func__, real_helper);
 	n = snprintf(buf, sizeof(buf), "\033_Ga=t,t=f,f=32,s=2,v=1,i=12;%s\033\\",
 		     b64(path, strlen(path)));
+	send_client(buf, n);
+	run_until(have_answer);
+	answered(12, "OK");
+	run_until(idle);
+	replied = 0;
+	stopped = image_host_pid(ti.host);
+	assert(stopped > 0 && signal(SIGABRT, kill_stopped) != SIG_ERR);
+	assert(!kill(stopped, SIGSTOP));
+
 	n += snprintf(buf + n, sizeof(buf) - n, "\033_Ga=p,i=12,C=1;\033\\AB\033[c");
 	send_client(buf, n);
 	run_until(request_out);
@@ -541,6 +563,8 @@ static void test_pause(void)
 	ev_eloop_dispatch(pty->eloop, 20);
 	assert(pty->paused && !out_len && tsm_screen_get_cursor_x(con) == 0);
 
+	assert(!kill(stopped, SIGCONT));
+	stopped = 0;
 	run_until(idle);
 	/* the transmission's OK, then the put's, then DA1; then AB and CD */
 	assert(strstr(out, "\033_Gi=12;OK\033\\\033_Gi=12;OK\033\\\033[?") == out);

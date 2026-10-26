@@ -466,6 +466,13 @@ static void test_discard(void)
 	teardown();
 }
 
+/* DA1 is answered; before each turn, no request was out and the pty was not paused */
+static bool da1_unpaused(void)
+{
+	assert(!terminal_image_busy(&ti) && !pty->paused);
+	return out_len && out[out_len - 1] == 'c' && strstr(out, "\033[?");
+}
+
 /*
  * #167: the hook acts on a refusal before login. Each file medium is
  * answered in the same input call, no helper starts and the pty never
@@ -486,8 +493,9 @@ static void test_prelogin(void)
 	strcpy(p3, file_with_px("tty-graphics-protocol-prelogin-discard"));
 	kitty("a=f,t=t,f=32,s=2,v=1,i=10", b64(p3, strlen(p3)));
 	send_client("\033[c", 3);
-	ev_eloop_dispatch(pty->eloop, 100);
-	/* one turn read and answered all four, in order, with no request out */
+	/* the pty can read the four writes over several turns */
+	run_until(da1_unpaused);
+	/* all four answered, in order */
 	assert(strstr(out, "\033_Gi=8;EBADF:Failed to read image file\033\\"
 			   "\033_Gi=9;EBADF:Failed to read image file\033\\"
 			   "\033_Gi=10;EINVAL:invalid argument\033\\"

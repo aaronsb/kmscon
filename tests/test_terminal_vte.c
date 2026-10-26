@@ -7,6 +7,8 @@
  * (mode 8), and a real key press never is; a change of focus is reported once
  * while the program has set mode 1004, and a repeat of the last focus is not
  * reported again; a pointer at the text area's edge reaches libtsm inside it.
+ * XTVERSION names kmscon and its version, and XTGETTCAP answers from the
+ * kmscon entry's table only when the session's TERM is kmscon.
  */
 
 #undef NDEBUG
@@ -50,6 +52,57 @@ static void cursor_blink(bool blink, const char *want)
 	image_budget_remove_terminal(&images);
 	tsm_vte_unref(vte);
 	tsm_screen_unref(con);
+}
+
+/* @query's reply from a vte made with TERM @term */
+static void identify_reply(const char *term, const char *query, const char *want)
+{
+	struct kmscon_conf_t conf = {
+		.term = (char *)term,
+		.blink = true,
+		.grapheme_width = TSM_WIDTH_UNICODE,
+	};
+	struct image_budget_terminal images = {0};
+	struct tsm_screen *con;
+	struct tsm_vte *vte;
+
+	assert(tsm_screen_new(&con, NULL, NULL) == 0);
+	assert(tsm_screen_resize(con, 40, 10) == 0);
+	assert(terminal_vte_new(&vte, &images, con, &conf, vte_write, NULL) == 0);
+	out_len = 0;
+	out[0] = 0;
+	tsm_vte_input(vte, query, strlen(query));
+	if (strcmp(out, want)) {
+		fprintf(stderr, "TERM=%s, %s: replied \"%s\", want \"%s\"\n",
+			term ? term : "(none)", query + 1, out + 1, want + 1);
+		assert(!"identify_reply");
+	}
+	image_budget_remove_terminal(&images);
+	tsm_vte_unref(vte);
+	tsm_screen_unref(con);
+}
+
+/* XTVERSION and XTGETTCAP: kmscon's name, and its entry's table for TERM=kmscon */
+static void test_identify(void)
+{
+#if defined(TSM_VTE_XTVERSION) && defined(TSM_VTE_TERMCAP)
+	static const char version[] = "\eP>|kmscon(" BUILD_VERSION ")\e\\";
+
+	identify_reply("kmscon", "\e[>q", version);
+	identify_reply("xterm-256color", "\e[>q", version);
+	/* TN and Co, xterm's names outside a description, and two of the entry's
+	 * strings, escapes decoded and % sequences kept */
+	identify_reply("kmscon", "\eP+q544e;436f\e\\", "\eP1+r544e=6B6D73636F6E;436f=323536\e\\");
+	identify_reply("kmscon", "\eP+q536d756c78\e\\",
+		       "\eP1+r536d756c78=1B5B343A25703125646D\e\\");
+	identify_reply("kmscon", "\eP+q6b63757531\e\\", "\eP1+r6b63757531=1B5B41\e\\");
+	/* a boolean, and lines, which the table leaves out */
+	identify_reply("kmscon", "\eP+q5463\e\\", "\eP1+r5463\e\\");
+	identify_reply("kmscon", "\eP+q6c696e6573\e\\", "\eP0+r\e\\");
+	/* another TERM, or none: no table */
+	identify_reply("xterm-256color", "\eP+q544e\e\\", "\eP0+r\e\\");
+	identify_reply(NULL, "\eP+q544e\e\\", "\eP0+r\e\\");
+#endif
 }
 
 static char reply[256];
@@ -175,6 +228,7 @@ int main(void)
 	test_decarm();
 	test_focus();
 	test_pointer();
+	test_identify();
 	printf("test_terminal_vte: ok\n");
 	return 0;
 }

@@ -671,7 +671,8 @@ static void test_backlog(void)
 /*
  * Replies the child has read stop counting though user bytes wait behind
  * them: the review's case of #246, where they kept a backlog up with only
- * the newest replies unread until the whole paste drained.
+ * the newest replies unread until the whole paste drained. Replies queued
+ * behind user bytes keep counting while the child reads those.
  */
 static void test_backlog_exact(void)
 {
@@ -710,6 +711,19 @@ static void test_backlog_exact(void)
 	while (answered < sizeof(q) + 1500)
 		wait_turn(pty), assert(++turns < 1000);
 	assert(pty->replies == 1500 * reply_len && !pty->backlog);
+
+	/* the child reads part of the paste: the replies behind it still count */
+	got = 0;
+	want = 256 * 1024;
+	turns = 0;
+	while (got < want) {
+		n = read(slave, buf, want - got < sizeof(buf) ? want - got : sizeof(buf));
+		if (n > 0)
+			got += n;
+		wait_turn(pty);
+		assert(++turns < 1000);
+	}
+	assert(pty->replies == 1500 * reply_len);
 
 	kmscon_pty_close(pty);
 	close(slave);

@@ -544,7 +544,8 @@ static void test_pause(void)
 
 /*
  * The reply to a request goes to the pty as src/terminal.c sends it, behind
- * keys the client has not read: it is queued and counted as a reply.
+ * keys the client has not read: it is queued and counted as a reply, and a
+ * key after it is not.
  */
 static void test_reply_counted(void)
 {
@@ -565,6 +566,9 @@ static void test_reply_counted(void)
 	run_until(request_out);
 	run_until(idle);
 	assert(replied == 1 && pty->replies == sizeof(ok) - 1);
+	/* the reply's scope closed: a key after it is the user's */
+	assert(!pty->replying);
+	assert(kmscon_pty_write(pty, "k", 1) == 0 && pty->replies == sizeof(ok) - 1);
 	to_pty = false;
 	teardown();
 }

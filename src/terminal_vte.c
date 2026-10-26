@@ -99,3 +99,12 @@ bool terminal_vte_focus(struct tsm_vte *vte, bool *last, bool focus)
 	return false;
 #endif
 }
+
+unsigned int terminal_vte_pointer(int32_t pos, unsigned int size)
+{
+	if (pos <= 0 || !size)
+		return 0;
+	if ((unsigned int)pos >= size)
+		return size - 1;
+	return pos;
+}

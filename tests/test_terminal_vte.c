@@ -3,7 +3,8 @@
  * (src/terminal_vte.c), against a real libtsm vte: a key repeat is dropped
  * while the program has reset DECARM (mode 8), and a real key press never is;
  * a change of focus is reported once while the program has set mode 1004, and
- * a repeat of the last focus is not reported again.
+ * a repeat of the last focus is not reported again; a pointer at the text
+ * area's edge reaches libtsm inside it.
  */
 
 #undef NDEBUG
@@ -112,10 +113,21 @@ static void test_focus(void)
 	term_free(&t);
 }
 
+/* the pointer can sit at the width or height; libtsm is given the last pixel */
+static void test_pointer(void)
+{
+	assert(terminal_vte_pointer(0, 800) == 0);
+	assert(terminal_vte_pointer(799, 800) == 799);
+	assert(terminal_vte_pointer(800, 800) == 799);
+	assert(terminal_vte_pointer(-3, 800) == 0);
+	assert(terminal_vte_pointer(5, 0) == 0);
+}
+
 int main(void)
 {
 	test_decarm();
 	test_focus();
+	test_pointer();
 	printf("test_terminal_vte: ok\n");
 	return 0;
 }

@@ -1500,8 +1500,10 @@ static void forward_pointer_event(struct kmscon_terminal *term, struct input_poi
 	default:
 		return;
 	}
-	tsm_vte_handle_mouse(term->vte, term->pointer.posx, term->pointer.posy, term->pointer.x,
-			     term->pointer.y, button, event, 0);
+	tsm_vte_handle_mouse(term->vte, term->pointer.posx, term->pointer.posy,
+			     terminal_vte_pointer(term->pointer.x, term_min_width(term)),
+			     terminal_vte_pointer(term->pointer.y, term_min_height(term)), button,
+			     event, 0);
 }
 
 static void handle_pointer_button(struct kmscon_terminal *term, struct input_pointer_event *ev)

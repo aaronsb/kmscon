@@ -69,4 +69,13 @@ bool terminal_vte_drop_repeat(struct tsm_vte *vte, bool repeat);
  */
 bool terminal_vte_focus(struct tsm_vte *vte, bool *last, bool focus);
 
+/*
+ * A pointer coordinate for tsm_vte_handle_mouse: @pos, a pixel from the text
+ * area's origin, clamped to 0 .. @size - 1 for a text area @size pixels wide
+ * or high. The input layer's maximum is inclusive, so the pointer can sit at
+ * @size; libtsm reports pixels from 1 under mode 1016, so the clamp keeps the
+ * largest report at the width and height, as xterm's.
+ */
+unsigned int terminal_vte_pointer(int32_t pos, unsigned int size);
+
 #endif /* KMSCON_TERMINAL_VTE_H */

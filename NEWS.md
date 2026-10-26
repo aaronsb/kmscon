@@ -1,5 +1,66 @@
 = KMSCON Release News =
 
+## CHANGES with 10.1.0
+### Important Notes
+It's now possible to configure each monitor independantly, regarding
+resolution, refresh rate, and rotation. So the "mode" configuration can
+now be set multiple times, and have an optional prefix for GPU and
+connector. The "rotation" is removed, and replaced with "screen" which
+can also be specified multiple times.
+
+### Changes
+* systemd: prevent kmscon.service to run if /dev/tty0 is present by @kdj0c in https://github.com/kmscon/kmscon/pull/538
+* vt_libseat: Fix build error due to logging changes by @kdj0c in https://github.com/kmscon/kmscon/pull/540
+* workflows: build with libseat enabled by @kdj0c in https://github.com/kmscon/kmscon/pull/541
+* drm_shared: Fix crash if a plane has no properties by @kdj0c in https://github.com/kmscon/kmscon/pull/543
+* terminal: force screen redraw on seat switch by @kdj0c in https://github.com/kmscon/kmscon/pull/549
+* seat: deactivate terminal and input, when going into background mode by @kdj0c in https://github.com/kmscon/kmscon/pull/548
+* Term refactor by @kdj0c in https://github.com/kmscon/kmscon/pull/547
+* uterm: treat platform display controllers as primary GPUs by @MarkusVolk in https://github.com/kmscon/kmscon/pull/551
+* freetype: fix fallback font size. by @kdj0c in https://github.com/kmscon/kmscon/pull/552
+* freetype: filter out non-monospace fonts completely by @tagoh in https://github.com/kmscon/kmscon/pull/553
+* freetype: Fix memory leak when loading fallback font. by @kdj0c in https://github.com/kmscon/kmscon/pull/554
+* Install pam config into /usr/lib/pam.d/ by @WhyNotHugo in https://github.com/kmscon/kmscon/pull/555
+* terminal: don't wait for display before opening the pty by @kdj0c in https://github.com/kmscon/kmscon/pull/557
+* freetype: retain compatibility with older Fontconfig headers by @jtollet in https://github.com/kmscon/kmscon/pull/558
+* Small correctness fixes (psf, config, drm2d, drm3d) by @brunbjerg in https://github.com/kmscon/kmscon/pull/559
+* config: show freetype as the default font engine in --help by @brunbjerg in https://github.com/kmscon/kmscon/pull/561
+* libseat: fix activation and VT switching with seatd by @brunbjerg in https://github.com/kmscon/kmscon/pull/560
+* bbulk: clear stale double_width flag on overflow cells by @parkky0331 in https://github.com/kmscon/kmscon/pull/568
+* seat: Fix failure to wake the video device by @kdj0c in https://github.com/kmscon/kmscon/pull/564
+* conf: Parse all command line arguments by @kdj0c in https://github.com/kmscon/kmscon/pull/563
+* main: restore the previous vt when --switchvt is used. by @kdj0c in https://github.com/kmscon/kmscon/pull/569
+* terminfo: add cursor shape change support to terminfo file by @shmerl in https://github.com/kmscon/kmscon/pull/572
+* Seat refactor callback by @kdj0c in https://github.com/kmscon/kmscon/pull/570
+* text: use Left One Eighth Block for vertical bar cursor by @shmerl in https://github.com/kmscon/kmscon/pull/573
+* tests: freetype, abort test if no fonts are installed by @kdj0c in https://github.com/kmscon/kmscon/pull/574
+* drm_shared: Clear overlay planes, too by @kbroulik in https://github.com/kmscon/kmscon/pull/575
+* use calloc() instead of malloc() + memset() by @kdj0c in https://github.com/kmscon/kmscon/pull/576
+* fbdev: fix don't close fbdev fd by @kdj0c in https://github.com/kmscon/kmscon/pull/579
+* Better mode selection by @kdj0c in https://github.com/kmscon/kmscon/pull/542
+* debug: improve debug logs by @kdj0c in https://github.com/kmscon/kmscon/pull/580
+* terminal: print both pts and tty in the issue by @kdj0c in https://github.com/kmscon/kmscon/pull/585
+* terminal: Ignore pointer events when in background. by @kdj0c in https://github.com/kmscon/kmscon/pull/583
+* Freetype fix underscore not visible with DejaVu Sans Mono by @kdj0c in https://github.com/kmscon/kmscon/pull/584
+* Fix interaction with seatd by @cnt0 in https://github.com/kmscon/kmscon/pull/578
+* font: draw the unicode blocks 0x2580-0x259f directly by @kdj0c in https://github.com/kmscon/kmscon/pull/586
+* psf: minor refactor by @kdj0c in https://github.com/kmscon/kmscon/pull/590
+* fbdev: activate a display created while the video device is awake by @hosiet in https://github.com/kmscon/kmscon/pull/591
+* fbdev: consume full-redraw requests after presenting a frame by @hosiet in https://github.com/kmscon/kmscon/pull/592
+* terminal: If the font fails to load, retry with font_size of 16 by @kdj0c in https://github.com/kmscon/kmscon/pull/589
+* Specify the `Tc`, `setrgbb` and `setrgbf` terminfo capabilities by @mavit in https://github.com/kmscon/kmscon/pull/593
+
+## New Contributors
+* @MarkusVolk made their first contribution in https://github.com/kmscon/kmscon/pull/551
+* @tagoh made their first contribution in https://github.com/kmscon/kmscon/pull/553
+* @WhyNotHugo made their first contribution in https://github.com/kmscon/kmscon/pull/555
+* @brunbjerg made their first contribution in https://github.com/kmscon/kmscon/pull/559
+* @parkky0331 made their first contribution in https://github.com/kmscon/kmscon/pull/568
+* @shmerl made their first contribution in https://github.com/kmscon/kmscon/pull/572
+* @kbroulik made their first contribution in https://github.com/kmscon/kmscon/pull/575
+* @cnt0 made their first contribution in https://github.com/kmscon/kmscon/pull/578
+* @mavit made their first contribution in https://github.com/kmscon/kmscon/pull/593
+
 ## CHANGES with 10.0.4
 ### Important Notes
 * kmscon changed the default font size to 0, which means it will adjust the font size based on the monitors.

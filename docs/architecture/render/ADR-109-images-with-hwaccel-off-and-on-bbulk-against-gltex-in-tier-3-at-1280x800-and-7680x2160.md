@@ -200,7 +200,15 @@ make showcase BAD_APPLE=/path/to/video FROM=7 DEMO_ARGS='--mode=7680x2160 --no-u
 make showcase BAD_APPLE=/path/to/video FROM=7 DEMO_ARGS='--hwaccel --mode=7680x2160 --no-use-original-mode --render-timer=both'
 ```
 
-(Note 2026-10-26: `make showcase` is gone from kmscon (#239). The showcase plays from aaronsb/kmscon-showcase in a `make vt-login` session, with the same `DEMO_ARGS`: `BAD_APPLE=/path/to/video ./bad-apple.sh --from 7 --audio` once logged in.)
+(Note 2026-10-26: `make showcase` is gone from kmscon (#239). Act 7's player stays in kmscon as `fork/tools/kitty-player/kitty.py`; the show's copy in aaronsb/kmscon-showcase may drift from it, so a re-run measures kmscon's. Start a `make vt-login` session with the same `DEMO_ARGS` and, once logged in, run from the checkout:
+
+```sh
+python3 -c 'import fcntl, struct, termios; r, c, x, y = struct.unpack("4H", fcntl.ioctl(0, termios.TIOCGWINSZ, bytes(8))); print(x // c, y // r)'
+python3 fork/tools/kitty-player/kitty.py --video /path/to/video --start 46 --seconds 60 --fade-in 1.5 \
+    --slide-at 8 --copy2-at 16 --copy3-at 24 --banner-rows 12 --cell-w W --cell-h H --report /tmp/kitty-player.txt
+```
+
+The first line prints the session's cell in pixels, W and H; the player assumes 10x20 without them. The times are act 7's cue sheet: from 0:46 to the end card at 1:46, the moves at 0:54, 1:02 and 1:10. The run leaves out the scroller and the soundtrack that runs 6 and 7 had: the 12 rows stay empty (a banner screen in kmscon is #241), and the player follows the monotonic clock.)
 
 The first two run the demo's pages, the sixel acceptance pages (photographs, `mpv-sixel`, the tmux grids) among them; the last two run the showcase's act 7, the kitty player. Font options, if any are added, are the same in both runs of a pair. The figures come from the render timer's lines in each run's log, `/tmp/kmscon-demo/vt-demo-<time>-ttyN-<random>.log`, which also shows `backend [drm3d] text renderer [gltex]` when `hwaccel` took. The demo's cell differs from tier 3's 10x19, so the VT figures compare off with on, not with the tables above.
 

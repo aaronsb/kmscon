@@ -50,9 +50,11 @@ KNOWN_BOTTLENECKS = {}
 # A case compared with another case's golden: back from the scrollback, and
 # back from tty3 (vt-restore, with the last screen's).
 SAME_AS = {"photo-scrollforward": "photo-scroll", "vt-restore": SCREENS[-1]}
-# The screens that draw sixel or kitty pictures. Every variant draws them: both
-# renderers draw image placements, bbulk on the 2D variants and gltex on the
-# GL one (ADR-103 steps 3f and 4e, ADR-108).
+# The screens that draw sixel or kitty pictures. Every variant with images
+# draws them: both renderers draw image placements, bbulk on the 2D variants
+# and gltex on the GL one (ADR-103 steps 3f and 4e, ADR-108). A variant
+# without images ("images": False, the minimal build) shows each screen's
+# "not offered" page instead (t3_scenario.not_offered).
 IMAGE_SCREENS = ["sixel", "sixel-ramps", "sixel-article", "sixel-bound", "sixel-evict",
                  "photos", "photo-scroll", "mpv-sixel", "tmux-2x2", "tmux-3x3", "kitty",
                  "kitty-photo", "kitty-files", "kitty-layers", "flood"]

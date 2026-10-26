@@ -6,6 +6,10 @@
 #   make tier3-image    fetch, verify and provision the guest base image
 #   make tier3          install the package in a guest and run every variant
 #   make tier3-gl       the same for the GL (virgl) variant alone
+#   make tier3-minimal  the minimal build's package (make pkg-minimal) on the
+#                       potato machine, with unifont and with a PSF font
+#   make tier3-run      a run without rebuilding the package; PKG_DIR=
+#                       fork/build/pkg-minimal for the minimal variants
 #   make tier3-bless    rewrite the goldens from the last run's captures
 #
 # JOBS=N runs up to N variants at once, each in its own VM (the vCPUs and
@@ -101,8 +105,8 @@ tier3-minimal: tier3-image ## Tier 3 on the potato machine with the minimal buil
 		$(or $(VARIANTS),2d-potato-min 2d-potato-min-psf)
 
 .PHONY: tier3-run
-tier3-run: ## Tier 3 without rebuilding the package (VARIANTS=, JOBS= as for tier3)
-	$(T3_RUN) $(VARIANTS)
+tier3-run: ## Tier 3 without rebuilding the package (VARIANTS=, JOBS= as for tier3; PKG_DIR=fork/build/pkg-minimal for the minimal variants)
+	$(T3_RUN) $(if $(PKG_DIR),--pkg-dir $(PKG_DIR)) $(VARIANTS)
 
 .PHONY: tier3-bless
 tier3-bless: ## Copy the last tier 3 run's captures over the goldens

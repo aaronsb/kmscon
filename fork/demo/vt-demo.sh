@@ -21,9 +21,17 @@
 # health check, and with the answers of a dev build demo run in that login,
 # if any.
 #
+# VT_DEMO_GUIDE, as make vt-check sets it from GUIDE, runs the guided checks
+# of a guide in place of the demo (run-vt.sh --guide, #238): a path, or a name
+# in fork/demo/checks (NAME.guide). VT_DEMO_GUIDE_STEPS, from GUIDE_STEPS,
+# runs only those steps. The guide is checked here first, before sudo, and
+# the run ends with the health check and the lines it added to the results
+# log, /tmp/kmscon-demo/vt-check.log.
+#
 # VT_DEMO_DRY_RUN=1 picks the VT and prints the run-vt.sh command without
-# running it. For the tests, VT_DEMO_ACTIVE, VT_DEMO_LOGINCTL and
-# VT_DEMO_FEEDBACK replace the sysfs file, loginctl and the feedback file, and
+# running it. For the tests, VT_DEMO_ACTIVE, VT_DEMO_LOGINCTL,
+# VT_DEMO_FEEDBACK and VT_DEMO_CHECKLOG replace the sysfs file, loginctl, the
+# feedback file and the results log, and
 # VT_DEMO_SUDO (empty: no sudo) and VT_DEMO_RUN_VT replace sudo and run-vt.sh.
 # Those two decide what runs as root, so they count only in a dry run or with
 # VT_DEMO_TEST=1, never from a stale export in the operator's shell.
@@ -58,6 +66,27 @@ yes | 1)
 	;;
 *) die "VT_DEMO_LOGIN=$VT_DEMO_LOGIN: yes or 1 runs a login prompt" ;;
 esac
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+guide=
+if [ -n "${VT_DEMO_GUIDE:-}" ]; then
+	[ -z "${VT_DEMO_KIT:-}$login" ] || die "GUIDE runs the guided checks, with no KIT and no login"
+	guide=$VT_DEMO_GUIDE
+	[[ $guide == */* ]] || guide=$here/checks/$guide.guide
+	if [ ! -f "$guide" ]; then
+		names=
+		for g in "$here"/checks/*.guide; do
+			[ ! -e "$g" ] || names+=" $(basename "$g" .guide)"
+		done
+		die "GUIDE=$VT_DEMO_GUIDE: no guide $guide; the guides in fork/demo/checks:${names:- none}"
+	fi
+	guide=$(readlink -f -- "$guide")
+	GUIDE_STEPS=${VT_DEMO_GUIDE_STEPS:-} "$here/checks/guide.sh" --check "$guide" >/dev/null ||
+		die "GUIDE=$VT_DEMO_GUIDE: the guide or GUIDE_STEPS is refused (above)"
+	session=(--guide="$guide")
+	[ -z "${VT_DEMO_GUIDE_STEPS:-}" ] || session+=(--steps="$VT_DEMO_GUIDE_STEPS")
+elif [ -n "${VT_DEMO_GUIDE_STEPS:-}" ]; then
+	die "GUIDE_STEPS goes with GUIDE"
+fi
 if [ -n "${VT_DEMO_ARGS:-}" ]; then
 	printf '%s' "$VT_DEMO_ARGS" | xargs -r printf '%s\0' >/dev/null ||
 		die "DEMO_ARGS cannot be split into words: $VT_DEMO_ARGS"
@@ -72,7 +101,6 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
-here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 dry=${VT_DEMO_DRY_RUN:-}
 active_file=${VT_DEMO_ACTIVE:-/sys/class/tty/tty0/active}
 loginctl=${VT_DEMO_LOGINCTL:-loginctl}
@@ -85,6 +113,8 @@ fi
 # run-vt.sh starts the demo with a cleared environment, so the dev build's
 # answers always go to demo.sh's default file; DEMO_FEEDBACK would not reach it.
 feedback=${VT_DEMO_FEEDBACK:-/tmp/kmscon-demo/feedback.tsv}
+# The guided checks' results log, guide.sh's default for the same reason.
+checklog=${VT_DEMO_CHECKLOG:-/tmp/kmscon-demo/vt-check.log}
 
 # The VT on screen now: the desktop's, since this runs from it.
 active=$(cat "$active_file") || die "cannot read $active_file, so the VT on screen is unknown"
@@ -149,7 +179,7 @@ if [ -n "$dry" ]; then
 	printf '+'
 	printf ' %q' "${cmd[@]}"
 	printf '\n'
-	echo "  (kmscon's log would go to $log; the answers are read from $feedback)"
+	echo "  (kmscon's log would go to $log; the answers are read from ${guide:+$checklog}${guide:-$feedback})"
 	exit 0
 fi
 
@@ -165,6 +195,8 @@ log=$(mktemp --suffix=.log "${log%.log}") || die "cannot create a log in $dir"
 # Answers appended from here on belong to this run.
 before=0
 [ ! -f "$feedback" ] || before=$(stat -c %s "$feedback")
+checked=0
+[ ! -f "$checklog" ] || checked=$(stat -c %s "$checklog")
 
 banner
 # Ctrl-C, a closed terminal or SIGTERM reaches run-vt.sh, whose trap restores
@@ -204,6 +236,17 @@ fi
 echo "kmscon log: $log"
 echo
 
+# The guided checks' lines, from the run's header on.
+if [ -n "$guide" ]; then
+	added=
+	if [ -f "$checklog" ]; then
+		[ "$(stat -c %s "$checklog")" -ge "$checked" ] || checked=0
+		added=$(tail -c "+$((checked + 1))" "$checklog")
+	fi
+	[ -z "$added" ] || printf '%s\n\n' "$added"
+	echo "results: $(readlink -m "$checklog")"
+fi
+
 # The demo's answers; a login's, when a demo was run in it.
 if [ ${#session[@]} -eq 0 ] || { [ -n "$login" ] && [ -n "$run" ]; }; then
 	[ -z "$run" ] || "$here/feedback.sh" --file "$feedback" --run "$run"
@@ -219,6 +262,10 @@ fi
 if [ "$status" -ne 0 ]; then
 	echo "vt-demo: run-vt.sh exited with status $status: kmscon failed or the demo was cut short" >&2
 	exit "$status"
+fi
+if [ -n "$guide" ]; then
+	[ -n "$added" ] || die "no lines from this run in $checklog: the guided checks did not start"
+	exit 0
 fi
 [ ${#session[@]} -eq 0 ] || exit 0
 [ -n "$run" ] || die "no answers from this run in $feedback: the demo did not run, or q was pressed before any page was rated"

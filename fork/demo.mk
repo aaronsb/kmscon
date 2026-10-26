@@ -10,6 +10,12 @@
 #                       a free VT through sudo, for the demo (or the
 #                       showcase, aaronsb/kmscon-showcase) run by hand in a
 #                       logind session (VT=N, DEMO_ARGS=...)
+#   make vt-check GUIDE=NAME
+#                       make demo, then run the guided checks of
+#                       fork/demo/checks/NAME.guide on a free VT through sudo
+#                       and print the answers when they end; the agent starts
+#                       it, the operator switches to the VT and answers
+#                       (GUIDE_STEPS="4 8 9", VT=N, DEMO_ARGS=...)
 #
 # Or by hand, as root: sudo fork/demo/run-vt.sh [N]
 
@@ -50,4 +56,24 @@ vt-login: export VT_DEMO_ARGS = $(value DEMO_ARGS)
 vt-login: export VT_DEMO_KIT = $(value KIT)
 vt-login: export VT_DEMO_LOGIN = 1
 vt-login: demo ## Build, stage and run its kmscon with a login prompt on a free VT, until the logout (VT=N, DEMO_ARGS='...')
+	fork/demo/vt-demo.sh
+
+# The guided checks (run-vt.sh --guide, #238) in place of the demo: the agent
+# starts it, the operator switches to the VT, follows the steps and answers.
+# GUIDE is a name in fork/demo/checks or a path; GUIDE_STEPS runs only those
+# steps. Blocks until the last step, then prints the answers. Without GUIDE
+# it fails before the build.
+ifneq ($(filter vt-check,$(MAKECMDGOALS)),)
+ifeq ($(GUIDE),)
+$(error vt-check: GUIDE=NAME, a guide in fork/demo/checks: $(basename $(notdir $(wildcard fork/demo/checks/*.guide))))
+endif
+endif
+.PHONY: vt-check
+vt-check: export VT_DEMO_VT = $(value VT)
+vt-check: export VT_DEMO_ARGS = $(value DEMO_ARGS)
+vt-check: export VT_DEMO_GUIDE = $(value GUIDE)
+vt-check: export VT_DEMO_GUIDE_STEPS = $(value GUIDE_STEPS)
+# Passed on to be refused: a guide runs no demo.
+vt-check: export VT_DEMO_KIT = $(value KIT)
+vt-check: demo ## Build, stage and run a guide's VT checks on a free VT; the operator answers (GUIDE=NAME, GUIDE_STEPS='4 8 9')
 	fork/demo/vt-demo.sh

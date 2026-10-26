@@ -33,13 +33,15 @@ show-session)
 esac
 """
 
-# Appends the lines in $APPEND to the feedback file, prints $LOG, records its
-# arguments and exits with $STATUS, as run-vt.sh would around a real demo.
+# Appends the lines in $APPEND to the feedback file and those in $CHECKS to
+# the guided checks' results log, prints $LOG, records its arguments and exits
+# with $STATUS, as run-vt.sh would around a real demo or guide.
 FAKE_RUN_VT = """#!/bin/bash
 printf '%s\\n' "$@" >"$ARGS_OUT"
 printf '%b' "${LOG:-}"
 mkdir -p "${FEEDBACK%/*}"
 printf '%b' "${APPEND:-}" >>"$FEEDBACK"
+printf '%b' "${CHECKS:-}" >>"$CHECKLOG"
 exit "${STATUS:-0}"
 """
 
@@ -89,6 +91,7 @@ class Case:
             os.chmod(path, 0o755)
         self.active = os.path.join(tmp, "active")
         self.feedback = os.path.join(tmp, "out", "feedback.tsv")
+        self.checklog = os.path.join(tmp, "out", "vt-check.log")
         self.args_out = os.path.join(tmp, "args")
 
     def run(self, args, active="tty7", sessions=(), dry=True, gone=(), **fake):
@@ -102,10 +105,12 @@ class Case:
             VT_DEMO_SUDO="",
             VT_DEMO_RUN_VT=self.run_vt,
             VT_DEMO_FEEDBACK=self.feedback,
+            VT_DEMO_CHECKLOG=self.checklog,
             VT_DEMO_DRY_RUN="1" if dry else "",
             SESSIONS=" ".join(str(s) for s in sessions),
             GONE=" ".join(str(s) for s in gone),
             FEEDBACK=self.feedback,
+            CHECKLOG=self.checklog,
             ARGS_OUT=self.args_out,
         )
         env.update(fake)
@@ -133,7 +138,7 @@ def read(path):
 
 def esc(text):
     """APPEND's form: printf %b turns these escapes back."""
-    return text.replace("\t", "\\t").replace("\n", "\\n")
+    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
 
 
 def picked(p):
@@ -332,6 +337,65 @@ def main():
         check("a login run whose kmscon failed fails",
               p.returncode == 1 and "exited with status 1" in p.stderr, p.stdout + p.stderr)
 
+        # make vt-check (#238): run-vt.sh --guide with the guide's absolute
+        # path, and --steps, before the VT. A guide is named or a path, and is
+        # checked here, before sudo; it runs no demo and no login.
+        checks = os.path.join(root, "fork/demo/checks")
+        guide = os.path.join(checks, "focus-decarm-mouse.guide")
+
+        def plus(p):
+            cmd = next((l for l in p.stdout.splitlines() if l.startswith("+ ")), "")
+            return shlex.split(cmd[2:]) if cmd else []
+
+        p = c.run([], VT_DEMO_GUIDE="focus-decarm-mouse", VT_DEMO_GUIDE_STEPS="4 5", VT_DEMO_VT="8",
+                  VT_DEMO_ARGS="--dpms-timeout=15")
+        check("VT_DEMO_GUIDE reaches run-vt.sh as --guide and --steps before the VT",
+              p.returncode == 0
+              and plus(p)[1:] == [f"--guide={guide}", "--steps=4 5", "8", "--", "--dpms-timeout=15"]
+              and f"the answers are read from {c.checklog}" in p.stdout, p.stdout + p.stderr)
+        p = c.run(["6"], VT_DEMO_GUIDE=os.path.relpath(guide, tmp))
+        check("VT_DEMO_GUIDE takes a path, made absolute",
+              p.returncode == 0 and plus(p)[1:] == [f"--guide={guide}", "6", "--"], p.stdout + p.stderr)
+        bad = os.path.join(tmp, "bad.guide")
+        with open(bad, "w") as f:
+            f.write("title: t\nstep: s\ndo: Ctrl+Logo+Return\nexpect: e\n")
+        for env, why in (({"VT_DEMO_GUIDE": "nosuch"}, "no guide " + os.path.join(checks, "nosuch.guide")
+                          + "; the guides in fork/demo/checks: focus-decarm-mouse"),
+                         ({"VT_DEMO_GUIDE": bad}, "name the Super (Windows) key, not Logo"),
+                         ({"VT_DEMO_GUIDE": "focus-decarm-mouse", "VT_DEMO_GUIDE_STEPS": "4 9"},
+                          "'9' is not a step of this guide (1 to 7)"),
+                         ({"VT_DEMO_GUIDE_STEPS": "4"}, "GUIDE_STEPS goes with GUIDE"),
+                         ({"VT_DEMO_GUIDE": "focus-decarm-mouse", "VT_DEMO_KIT": "sixel"}, "with no KIT and no login"),
+                         ({"VT_DEMO_GUIDE": "focus-decarm-mouse", "VT_DEMO_LOGIN": "1"}, "with no KIT and no login")):
+            p = c.run(["6"], **env)
+            check(f"{' '.join(f'{k}={v}' for k, v in env.items())} is refused",
+                  p.returncode != 0 and why in p.stderr and "+ " not in p.stdout, p.stdout + p.stderr)
+
+        # A guided run prints the lines it added to the results log, after
+        # the health check, and fails when it added none.
+        with open(c.checklog, "w") as f:
+            f.write("=== an older run\n-- step 1 of 7: VT switch\n  answer: no\n")
+        checks_added = ("=== Focus reports, DECARM and mouse pixels (#233), 2026-10-26T10:00:00-05:00\n"
+                        "-- step 4 of 7: Mouse 1016: pixel reports from 1\n"
+                        "  [mouse]   1.538  #1               b'\\x1b[<0;1;1M'\n"
+                        "  answer: yes\n=== done 2026-10-26T10:01:00-05:00\n")
+        p = c.run(["6"], dry=False, VT_DEMO_GUIDE="focus-decarm-mouse", VT_DEMO_GUIDE_STEPS="4",
+                  CHECKS=esc(checks_added), APPEND="")
+        check("a guided run prints this run's lines and the results log",
+              p.returncode == 0 and checks_added in p.stdout and "an older run" not in p.stdout
+              and f"results: {c.checklog}" in p.stdout and "health: 0" in p.stdout
+              and p.stdout.find("health: 0") < p.stdout.find("=== Focus reports")
+              and read(c.args_out).splitlines() == [f"--guide={guide}", "--steps=4", "6", "--"],
+              p.stdout + p.stderr)
+        p = c.run(["6"], dry=False, VT_DEMO_GUIDE="focus-decarm-mouse", CHECKS="", APPEND="")
+        check("a guided run that added nothing fails, naming the results log",
+              p.returncode != 0 and f"no lines from this run in {c.checklog}" in p.stderr, p.stdout + p.stderr)
+        p = c.run(["6"], dry=False, VT_DEMO_GUIDE="focus-decarm-mouse", STATUS="1",
+                  CHECKS=esc("=== cut short\n"), APPEND="")
+        check("a guided run whose kmscon failed fails, after its lines",
+              p.returncode == 1 and "=== cut short" in p.stdout and "exited with status 1" in p.stderr,
+              p.stdout + p.stderr)
+
         # sudo and run-vt.sh come from the environment only in a dry run or
         # under VT_DEMO_TEST: a stale export must not decide what runs as root.
         stubs = os.path.join(tmp, "stubs")
@@ -364,6 +428,18 @@ def main():
                                env=base, capture_output=True, text=True, timeout=60) if make else None
             out = (p.stdout + p.stderr) if p else "make not found"
             check(f"make vt-login {' '.join(args) or '(no KIT)'} {'runs' if ok else 'is refused'}",
+                  p is not None and (p.returncode == 0) == ok and why in out, out)
+        # make vt-check hands GUIDE and GUIDE_STEPS on, and KIT to be refused;
+        # without GUIDE it fails before the build, naming the guides.
+        for args, ok, why in ((["GUIDE=focus-decarm-mouse", "GUIDE_STEPS=4 5"], True,
+                               f"run-vt.sh --guide={guide} --steps=4\\ 5 8 --"),
+                              (["GUIDE=focus-decarm-mouse", "KIT=sixel"], False, "with no KIT and no login"),
+                              ([], False, "vt-check: GUIDE=NAME, a guide in fork/demo/checks: focus-decarm-mouse")):
+            opts = ["-o", "demo", "-o", "pkg"] if args else []
+            p = subprocess.run([make or "make", "-s", "-C", root, *opts, "vt-check", "VT=8", *args],
+                               env=base, capture_output=True, text=True, timeout=60) if make else None
+            out = (p.stdout + p.stderr) if p else "make not found"
+            check(f"make vt-check {' '.join(args) or '(no GUIDE)'} {'runs' if ok else 'is refused'}",
                   p is not None and (p.returncode == 0) == ok and why in out, out)
 
         # run-vt.sh lets through only allowlisted kmscon options, by exact name
@@ -483,6 +559,51 @@ def main():
               and not any(w.startswith("XDG_RUNTIME_DIR=") for w in words)
               and words[-2:] == ["/bin/bash", os.path.join(copy, "fork/demo/demo.sh")],
               p.stdout + p.stderr)
+
+        # --guide (#238): the guided checks as the session, as the user after
+        # setpriv, with --oneshot, so the run ends after the last step. The
+        # guide's path, the VT, the desktop's VT and the steps are words of
+        # env's and guide.sh's; no demo variable is set.
+        cguide = os.path.join(copy, "fork/demo/checks/focus-decarm-mouse.guide")
+        p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
+                            f"--guide={cguide}", "--steps=4 5", "6", "--", "--dpms-timeout=15"],
+                           capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, SUDO_USER="nobody",
+                                    RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir")))
+        unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
+        words = shlex.split(unshare[2:]) if unshare else []
+        login, setpriv, env_at = at("--login"), at("/usr/bin/setpriv"), at("/usr/bin/env")
+        check("run-vt.sh --guide runs guide.sh on the guide as the user, with --oneshot",
+              p.returncode == 0 and 0 < login < setpriv < env_at
+              and "--oneshot" in words[:login] and "--dpms-timeout=15" in words[:login]
+              and words[env_at:] == ["/usr/bin/env", "GUIDE_VT=6", "GUIDE_DESKTOP=N", "GUIDE_STEPS=4 5",
+                                     "/bin/bash", os.path.join(copy, "fork/demo/checks/guide.sh"), cguide]
+              and "follow each step of " + cguide + " (steps 4 5)" in p.stdout
+              and "when the checks end" in p.stdout,
+              p.stdout + p.stderr)
+        p = subprocess.run(["bash", os.path.join(copy, "fork/demo/run-vt.sh"), "--dry-run",
+                            "--guide=fork/demo/checks/focus-decarm-mouse.guide", "6"],
+                           capture_output=True, text=True, timeout=30, cwd=copy,
+                           env=dict(os.environ, SUDO_USER="nobody",
+                                    RUN_VT_MODULEDIR=os.path.join(tmp, "moduledir")))
+        unshare = next((l for l in p.stdout.splitlines() if l.startswith("+ unshare ")), "")
+        words = shlex.split(unshare[2:]) if unshare else []
+        check("run-vt.sh --guide makes a relative path absolute, and without --steps sets no GUIDE_STEPS",
+              p.returncode == 0 and words[-1] == os.path.realpath(cguide)
+              and not any(w.startswith("GUIDE_STEPS=") for w in words), p.stdout + p.stderr)
+        for opts, why in ((["--guide=/x.guide", "--kit=sixel"], "--guide runs the guided checks"),
+                          (["--guide=/x.guide", "--login"], "--guide runs the guided checks"),
+                          (["--guide="], "--guide needs the guide's path"),
+                          (["--steps=4"], "--steps goes with --guide=FILE"),
+                          (["--guide=/x.guide", "--steps=0"], "--steps takes step numbers"),
+                          (["--guide=/x.guide", "--steps=4;5"], "--steps takes step numbers"),
+                          (["--guide=/x.guide", "--steps=4 $(id)"], "--steps takes step numbers"),
+                          (["--guide=/x.guide", "--steps="], None)):
+            p = subprocess.run(["bash", run_vt, "--dry-run", *opts, "8"], capture_output=True, text=True, timeout=30)
+            if why:
+                check(f"run-vt.sh refuses {' '.join(opts)}", p.returncode != 0 and why in p.stderr, p.stderr)
+            else:
+                check(f"run-vt.sh takes {' '.join(opts)} as all steps", "--steps" not in p.stderr, p.stderr)
 
         # --login (#207): kmscon's own login, /bin/login through PAM, as the
         # session, in the same mount namespace; no setpriv and no env, since

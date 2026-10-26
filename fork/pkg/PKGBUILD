@@ -87,7 +87,7 @@ prepare() {
 build() {
   # a profile's machine file carries its options, libtsm's fallback among
   # them; arch-meson's auto-features would turn its auto ones on
-  local options=(--auto-features enabled -D images=enabled --force-fallback-for=libtsm
+  local options=(--auto-features enabled -D images=enabled -D zlib=enabled --force-fallback-for=libtsm
                  -D libtsm:default_library=static)
   if [ -n "$_profile" ]; then
     options=(--native-file "kmscon/scripts/profiles/$_profile.ini")

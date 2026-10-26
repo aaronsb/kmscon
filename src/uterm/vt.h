@@ -42,6 +42,7 @@ struct uterm_vt;
 typedef void (*uterm_vt_activate_cb)(struct uterm_vt *vt, void *data);
 typedef int (*uterm_vt_deactivate_cb)(struct uterm_vt *vt, bool force, void *data);
 typedef void (*uterm_vt_hup_cb)(struct uterm_vt *vt, void *data);
+typedef void (*uterm_vt_wait_cb)(struct uterm_vt *vt, int error, void *data);
 
 struct uterm_vt_cb {
 	uterm_vt_activate_cb activate;
@@ -58,7 +59,7 @@ void uterm_vt_close_device(struct uterm_vt *vt, int fd, int fd_id);
 
 int uterm_vt_activate(struct uterm_vt *vt);
 int uterm_vt_deactivate(struct uterm_vt *vt);
-int uterm_vt_wait(struct uterm_vt *vt);
+int uterm_vt_wait(struct uterm_vt *vt, uterm_vt_wait_cb cb, void *data);
 void uterm_vt_retry(struct uterm_vt *vt);
 unsigned int uterm_vt_get_num(struct uterm_vt *vt);
 void uterm_vt_bell(struct uterm_vt *vt);

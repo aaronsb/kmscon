@@ -31,12 +31,17 @@ struct uterm_vt {
 	bool active;
 	bool hup;
 
+	/* a wait that returned -EINPROGRESS, ended by vt_cb_waited() */
+	uterm_vt_wait_cb wait_cb;
+	void *wait_data;
+
 	const struct uterm_vt_ops *ops;
 };
 
 void vt_cb_activate(struct uterm_vt *vt);
 int vt_cb_deactivate(struct uterm_vt *vt, bool force);
 void vt_cb_hup(struct uterm_vt *vt);
+void vt_cb_waited(struct uterm_vt *vt, int error);
 
 struct uterm_vt *uterm_vt_real_new(struct ev_eloop *eloop, struct input *input,
 				   const char *vt_name);

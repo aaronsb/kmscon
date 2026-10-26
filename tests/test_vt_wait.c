@@ -8,8 +8,11 @@
  * activation as it does at startup. A hangup on the VT ends it with -EPIPE.
  *
  * The real backend's wait ends on the VT's acquire signal, SIGUSR1, sent
- * here by the test. The libseat backend's ends when a poll from the loop
- * sees the VT active, and only then does it open the seat.
+ * here by the test; a wait that returned 0 leaves nothing for a later
+ * acquire to call. The libseat backend's ends when a poll from the loop
+ * sees the VT active, and only then does it open the seat; a seat that does
+ * not open fails the wait with its error, and the modes the enabled seat
+ * set are restored on exit.
  *
  * A pseudo-terminal slave stands in for the VT, and ioctl is wrapped
  * (-Wl,--wrap=ioctl) to answer the VT and keyboard calls as the kernel
@@ -103,7 +106,10 @@ void input_wake_up(struct input *input) {}
 static int input_dummy;
 #define INPUT ((struct input *)&input_dummy)
 
-/* what happened, in order: W the wait ended, A activated, H hangup, T SIGTERM */
+/*
+ * what happened, in order: W the wait ended, A activated, D deactivated,
+ * H hangup, T SIGTERM
+ */
 static char events[16];
 static int wait_error;
 
@@ -123,6 +129,7 @@ static void vt_activate(struct uterm_vt *vt, void *data)
 
 static int vt_deactivate(struct uterm_vt *vt, bool force, void *data)
 {
+	event('D');
 	return 0;
 }
 
@@ -172,8 +179,13 @@ static void setup(void)
 {
 	assert(ev_eloop_new(&eloop) == 0);
 	assert(ev_eloop_register_signal_cb(eloop, SIGTERM, sig_term, NULL) == 0);
+	/*
+	 * VT 0 is no VT to the libseat backend. pts 0, free now or freed by
+	 * another process later, is kept open for the rest of the run.
+	 */
 	num = open_pty(&master, path, sizeof(path));
-	assert(num > 0);
+	while (num == 0)
+		num = open_pty(&master, path, sizeof(path));
 	fake_active = num + 1;
 	fake_kbmode = K_XLATE;
 	fake_kdmode = KD_TEXT;
@@ -210,7 +222,19 @@ static void test_real_active_at_start(void)
 	ev_eloop_dispatch(eloop, 0);
 	assert(!strcmp(events, "A"));
 
+	/*
+	 * a switch away and back: the wait that returned 0 left no callback
+	 * behind for the next acquire to call, which would scan again
+	 */
+	kill(getpid(), SIGUSR2);
+	ev_eloop_dispatch(eloop, 1000);
+	kill(getpid(), SIGUSR1);
+	ev_eloop_dispatch(eloop, 1000);
+	assert(!strcmp(events, "ADA"));
+	assert(uterm_vt_wait(vt, waited, NULL) == 0);
+
 	uterm_vt_deallocate(vt);
+	assert(!strcmp(events, "ADAD"));
 	assert(vt_restored());
 	teardown();
 }
@@ -288,15 +312,26 @@ static void test_real_hup_while_waiting(void)
 #ifdef BUILD_ENABLE_LIBSEAT
 
 static int seat_opens;
-static int active_at_open; /* the VT active when the seat was opened */
-static int seat_pipe[2];   /* the seat's fd, which never becomes readable */
+static int active_at_open;  /* the VT active when the seat was opened */
+static int seat_open_errno; /* opening the seat fails with this, if set */
+static int seat_pipe[2];    /* the seat's fd, which never becomes readable */
 static int seat_dummy;
+static const struct libseat_seat_listener *seat_listener;
+static void *seat_userdata;
+
+#define SEAT ((struct libseat *)&seat_dummy)
 
 struct libseat *libseat_open_seat(const struct libseat_seat_listener *listener, void *userdata)
 {
 	seat_opens++;
 	active_at_open = fake_active;
-	return (struct libseat *)&seat_dummy;
+	if (seat_open_errno) {
+		errno = seat_open_errno;
+		return NULL;
+	}
+	seat_listener = listener;
+	seat_userdata = userdata;
+	return SEAT;
 }
 int libseat_disable_seat(struct libseat *seat)
 {
@@ -339,6 +374,7 @@ static void libseat_setup(void)
 	setup();
 	seat_opens = 0;
 	active_at_open = -1;
+	seat_open_errno = 0;
 }
 
 static void test_libseat_active_at_start(void)
@@ -380,6 +416,34 @@ static void test_libseat_activated_later(void)
 	assert(!strcmp(events, "TW") && wait_error == 0);
 	assert(seat_opens == 1 && active_at_open == num);
 
+	/* the seat manager enables the seat: kmscon takes the VT's modes */
+	seat_listener->enable_seat(SEAT, seat_userdata);
+	assert(!strcmp(events, "TWA"));
+	assert(fake_kbmode == K_OFF && fake_kdmode == KD_GRAPHICS);
+
+	uterm_vt_deallocate(vt);
+	assert(vt_restored());
+	teardown();
+}
+
+static void test_libseat_open_fails(void)
+{
+	struct uterm_vt *vt;
+	int turns;
+
+	libseat_setup();
+	seat_open_errno = EACCES;
+	vt = uterm_vt_allocate(eloop, true, INPUT, path, &vt_cb, NULL);
+	assert(vt);
+	assert(uterm_vt_wait(vt, waited, NULL) == -EINPROGRESS);
+
+	/* the VT becomes active, the seat does not open: the wait fails */
+	fake_active = num;
+	for (turns = 0; turns < 10 && !strchr(events, 'W'); turns++)
+		ev_eloop_dispatch(eloop, 300);
+	assert(!strcmp(events, "W") && wait_error == -EACCES);
+	assert(seat_opens == 1);
+
 	uterm_vt_deallocate(vt);
 	assert(vt_restored());
 	teardown();
@@ -411,12 +475,6 @@ static void test_libseat_exit_while_waiting(void)
 
 int main(void)
 {
-	char spare_path[64];
-	int spare;
-
-	/* VT 0 is no VT to the libseat backend: hold pts 0, if it is free */
-	open_pty(&spare, spare_path, sizeof(spare_path));
-
 	test_real_active_at_start();
 	test_real_activated_later();
 	test_real_sigterm_while_waiting();
@@ -425,6 +483,7 @@ int main(void)
 	assert(pipe2(seat_pipe, O_CLOEXEC) == 0);
 	test_libseat_active_at_start();
 	test_libseat_activated_later();
+	test_libseat_open_fails();
 	test_libseat_exit_while_waiting();
 	printf("test_vt_wait: ok (real, libseat)\n");
 #else

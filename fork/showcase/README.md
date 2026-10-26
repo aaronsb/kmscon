@@ -235,7 +235,7 @@ The dev image (`fork/dev.Dockerfile`) carries none of the media tools and needs 
 | `frames.py` | the video acts' frame caches (outlines, Braille, libcaca) and their player |
 | `kitty.py` | act 7's player: the kitty graphics commands, the transports, the copies' layout and moves, the soundtrack's clock |
 | `shades.py` | act 6's interlude, the cats in sunglasses: the row's layout, the drops and the slide in kitty graphics, and its emoji fallback |
-| `cats/` | the interlude's images: six Noto Emoji cat faces (`emoji_u*.svg`, from googlefonts/noto-emoji `2D/svg`, under `LICENSE-noto-emoji`) and pixel sunglasses (`sunglasses.svg`, the operator's) |
+| `cats/` | the interlude's images: six Noto Emoji cat faces (`emoji_u*.svg`, from googlefonts/noto-emoji `2D/svg`, under `LICENSE-noto-emoji`) and pixel sunglasses (`sunglasses.svg`, drawn new for the showcase by a Claude session at the operator's request) |
 | `music/` | the music cues ([Music](#music)): each cue's Strudel source (`.js`) and its rendering (`.ogg`), and `render.mjs`, which renders them |
 | `../showcase.mk` | `make showcase` |
 

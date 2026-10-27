@@ -5,6 +5,7 @@ Stdlib only. The work is split across the modules beside this one:
 
     t3_common.py     paths and the logger
     t3_qemu.py       one headless QEMU: QMP, VNC captures, key mapping
+    t3_impl.py       the implementation under test, the C reference or vtium, and its size
     t3_scenario.py   the variants and the scenario each runs
     t3_evaluate.py   the cases, their screen text and the compare with a golden
     t3_runner.py     the worker pool, the run lock and the report
@@ -20,6 +21,11 @@ worker process.
     t3.py run --pkg-dir DIR --pkg-name NAME --compare-only
                                           the same for another build, such as
                                           upstream's (fork/upstream.mk)
+    t3.py run --vtium PATH [VARIANT ...]  the same for vtium, an install tree or its
+                                          package files (--vtium for each), in place of
+                                          the C reference
+    t3.py standin --pkg-dir DIR OUT       unpack the C reference's newest packages in DIR
+                                          into OUT, an install tree that stands in for vtium's
     t3.py bless [VARIANT ...]             copy the last run's captures over the goldens
 
 Paths are relative to the repository root, which is two levels above this file.
@@ -34,8 +40,10 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import t3_impl  # noqa: E402
 import t3_runner  # noqa: E402
 import t3_scenario  # noqa: E402
 from t3_common import BASE, GUEST, PKGOUT, REPORT, ROOT, VM, Logger, base_image, rel  # noqa: E402
@@ -119,26 +127,16 @@ def run(args, log):
     variants = args.variants or t3_scenario.DEFAULT_VARIANTS
     t3_runner.raise_on_sigterm(log)
     with t3_runner.run_lock():
-        if args.pkg_target:
-            log("building the package: make %s" % args.pkg_target)
-            r = subprocess.run(["make", "--no-print-directory", args.pkg_target], cwd=ROOT)
-            if r.returncode:
-                raise SystemExit("package build failed with exit code %d" % r.returncode)
-        # every variant of a run installs the same packages, so a variant that
-        # needs other ones (the minimal build's) runs in a run of its own
-        for v in variants:
-            want = os.path.join(ROOT, "fork", "build", t3_scenario.package_target(v))
-            if not args.compare_only and os.path.realpath(args.pkg_dir) != os.path.realpath(want):
-                raise SystemExit("%s installs the packages of make %s, in %s; this run's are "
-                                 "in %s" % (v, t3_scenario.package_target(v), rel(want),
-                                            rel(args.pkg_dir)))
-        pkgs = t3_scenario.newest_packages(args.pkg_dir, args.pkg_name)
-        log("packages: %s" % ", ".join(map(os.path.basename, pkgs)))
-        results, interrupted = t3_runner.run_variants(variants, args.jobs, pkgs,
+        impl = c_reference(args, variants, log) if not args.vtium else t3_impl.vtium(args.vtium)
+        log("implementation: %s %s, %s installed"
+            % (impl["name"], " ".join(map(rel, impl["paths"])),
+               t3_impl.mib(impl["installed_bytes"])))
+        results, interrupted = t3_runner.run_variants(variants, args.jobs, impl,
                                                    args.deadline, log)
-        cases = t3_runner.write_report(variants, results)
+        cases = t3_runner.write_report(variants, results, impl)
     for c in cases:
         print("%-8s %s  (%d px)" % (c["status"], c["name"], c["stats"]["pixels"]))
+    print(summary(impl, {v: results[v][1] for v in variants}))
     print("report: %s" % rel(REPORT))
     if interrupted is not None:
         return 130 if isinstance(interrupted, KeyboardInterrupt) else 128 + signal.SIGTERM
@@ -148,6 +146,60 @@ def run(args, log):
         return 0 if all(c["actual"] for c in cases) else 1
     # "near" is a difference within the case's reviewed tolerance: it passes.
     return 0 if all(c["status"] in ("pass", "near") for c in cases) else 1
+
+
+def c_reference(args, variants, log):
+    """The C reference's packages: built by the package target first when
+    the run names one, and refused for a variant that installs another
+    target's."""
+    if args.pkg_target:
+        log("building the package: make %s" % args.pkg_target)
+        r = subprocess.run(["make", "--no-print-directory", args.pkg_target], cwd=ROOT)
+        if r.returncode:
+            raise SystemExit("package build failed with exit code %d" % r.returncode)
+    # every variant of a run installs the same packages, so a variant that
+    # needs other ones (the minimal build's) runs in a run of its own
+    for v in variants:
+        want = os.path.join(ROOT, "fork", "build", t3_scenario.package_target(v))
+        if not args.compare_only and os.path.realpath(args.pkg_dir) != os.path.realpath(want):
+            raise SystemExit("%s installs the packages of make %s, in %s; this run's are "
+                             "in %s" % (v, t3_scenario.package_target(v), rel(want),
+                                        rel(args.pkg_dir)))
+    pkgs = t3_scenario.newest_packages(args.pkg_dir, args.pkg_name)
+    log("packages: %s" % ", ".join(map(os.path.basename, pkgs)))
+    return t3_impl.c_reference(pkgs)
+
+
+def summary(impl, metas):
+    """Which implementation ran, its size on disk, and each variant's
+    resident memory after the first screen and at its peak."""
+    def kib(n):
+        return t3_impl.mib(None if n is None else n * 1024)
+
+    name = {t3_impl.C: "the C reference", t3_impl.VTIUM: "vtium"}[impl["name"]]
+    lines = ["implementation: %s, %s %s: %s installed"
+             % (name, impl["kind"], " ".join(map(rel, impl["paths"])),
+                t3_impl.mib(impl["installed_bytes"]))]
+    for v, meta in metas.items():
+        r = meta["resident"]
+        lines.append("%s: resident %s after %s, peak %s after %s"
+                     % (v, kib(r["first_kib"]), r["first_screen"], kib(r["peak_kib"]),
+                        r["peak_screen"] or "none"))
+    return "\n".join(lines)
+
+
+def standin(args, log):
+    """Unpack the C reference's newest packages in --pkg-dir into OUT: an
+    install tree laid out as vtium's is, for `run --vtium OUT`."""
+    if os.path.lexists(args.out):
+        shutil.rmtree(args.out)
+    os.makedirs(args.out)
+    for p in t3_scenario.newest_packages(args.pkg_dir, args.pkg_name):
+        with tarfile.open(p, "r:zst") as t:
+            t.extractall(args.out, filter=lambda m, path: None if m.name.removeprefix("./") in
+                         t3_impl.PKG_META else tarfile.tar_filter(m, path))
+        log("unpacked %s into %s" % (os.path.basename(p), rel(args.out)))
+    return 0
 
 
 def bless(args, log):
@@ -196,7 +248,16 @@ def main(argv=None):
     r.add_argument("--compare-only", action="store_true",
                    help="fail only a case without a capture, for a build the goldens "
                         "do not describe, such as upstream's")
+    r.add_argument("--vtium", action="append", metavar="PATH",
+                   help="run vtium in place of the C reference: one install tree, laid out "
+                        "as the guest's root, or its package files (.pkg.tar.zst), each "
+                        "named by a --vtium of its own")
     r.add_argument("variants", nargs="*", help="any of: " + ", ".join(t3_scenario.VARIANTS))
+    st = sub.add_parser("standin")
+    st.add_argument("--pkg-dir", default=PKGOUT, metavar="DIR",
+                    help="where the C reference's packages are (default %s)" % rel(PKGOUT))
+    st.add_argument("--pkg-name", default="kmscon-aaronsb", metavar="NAME")
+    st.add_argument("out", help="the install tree to write; replaced if it exists")
     b = sub.add_parser("bless")
     b.add_argument("variants", nargs="*")
     args = ap.parse_args(argv)
@@ -208,7 +269,10 @@ def main(argv=None):
         ap.error("a variant is named twice; each has one work directory")
     if getattr(args, "jobs", 1) < 1:
         ap.error("--jobs must be at least 1")
-    return {"provision": provision, "run": run, "bless": bless}[args.cmd](args, log)
+    if getattr(args, "vtium", None) and (args.pkg_target or args.compare_only):
+        ap.error("--vtium installs vtium, not a package target's build")
+    return {"provision": provision, "run": run, "standin": standin,
+            "bless": bless}[args.cmd](args, log)
 
 
 if __name__ == "__main__":

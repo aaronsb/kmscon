@@ -16,14 +16,18 @@ import os
 import pickle
 import re
 import sys
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import t3  # noqa: E402
 import t3_bench  # noqa: E402
 import t3_evaluate  # noqa: E402
+import t3_impl  # noqa: E402
 import t3_qemu  # noqa: E402
+import t3_runner  # noqa: E402
 import t3_scenario  # noqa: E402
 import t3img  # noqa: E402
 import t3_common  # noqa: E402
@@ -307,6 +311,11 @@ class PackagesTest(unittest.TestCase):
         if self.env is not None:
             os.environ["T3_LIBTSM_REV"] = self.env
 
+    def impl(self, name=t3_impl.C, kind="packages", paths=None, **more):
+        """An implementation as t3_impl makes one, without reading files."""
+        return dict({"name": name, "kind": kind, "paths": self.UP if paths is None else paths,
+                     "bytes": [], "installed_bytes": 0}, **more)
+
     def test_newest_of_one_name(self):
         # Each build's packages are told apart by name, so the fork's never
         # stand in for upstream's; the newest build of each is taken.
@@ -327,13 +336,13 @@ class PackagesTest(unittest.TestCase):
 
     def test_install_checked(self):
         os.environ["T3_LIBTSM_REV"] = "ef2365d"
-        got = t3_scenario.check_install(self.LINE, self.UP)
+        got = t3_scenario.check_install(self.LINE, self.impl())
         self.assertEqual(got, {"packages": ["kmscon-upstream 10.0.4.r68.g7d33779-1",
                                             "kmscon-upstream-terminfo 10.0.4.r68.g7d33779-1"],
                                "libtsm": LIBTSM})
         # A dirty libtsm passes only when the run declares it.
         os.environ["T3_LIBTSM_REV"] = "ef2365d+dirty"
-        t3_scenario.check_install(self.LINE.replace(LIBTSM, LIBTSM + "+dirty"), self.UP)
+        t3_scenario.check_install(self.LINE.replace(LIBTSM, LIBTSM + "+dirty"), self.impl())
 
     def test_install_refused(self):
         # Another build's package in the guest, a package built from another
@@ -342,19 +351,226 @@ class PackagesTest(unittest.TestCase):
         os.environ["T3_LIBTSM_REV"] = "ef2365d"
         line = self.LINE.replace("; libtsm", "kmscon-aaronsb 10.0.4-1 ; libtsm")
         with self.assertRaisesRegex(RuntimeError, "kmscon-aaronsb installed"):
-            t3_scenario.check_install(line, self.UP)
+            t3_scenario.check_install(line, self.impl())
         for libtsm in (LIBTSM + "+dirty", "unknown", "none"):
             with self.assertRaisesRegex(RuntimeError, "built with libtsm %s," % re.escape(libtsm)):
-                t3_scenario.check_install(self.LINE.replace(LIBTSM, libtsm), self.UP)
+                t3_scenario.check_install(self.LINE.replace(LIBTSM, libtsm), self.impl())
         with self.assertRaisesRegex(RuntimeError, "cannot read"):
-            t3_scenario.check_install("TIER3-INSTALL-OK", self.UP)
+            t3_scenario.check_install("TIER3-INSTALL-OK", self.impl())
         for want in ("06331b1", "ef2365d+dirty"):
             os.environ["T3_LIBTSM_REV"] = want
             with self.assertRaisesRegex(RuntimeError, "built with libtsm ef2365d0"):
-                t3_scenario.check_install(self.LINE, self.UP)
+                t3_scenario.check_install(self.LINE, self.impl())
         os.environ.pop("T3_LIBTSM_REV")
         with self.assertRaisesRegex(RuntimeError, "names no libtsm commit"):
-            t3_scenario.check_install(self.LINE, self.UP)
+            t3_scenario.check_install(self.LINE, self.impl())
+
+
+def write_tree(root, files):
+    """Write {relative path: text} under `root`."""
+    for name, text in files.items():
+        os.makedirs(os.path.join(root, os.path.dirname(name)), exist_ok=True)
+        with open(os.path.join(root, name), "w") as f:
+            f.write(text)
+
+
+def write_package(path, files):
+    """A package archive holding {relative path: text} and pacman's
+    metadata files, as makepkg writes one."""
+    with tarfile.open(path, "w:zst") as t:
+        for name, text in dict({".PKGINFO": "size = 7\n", ".MTREE": "x"}, **files).items():
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+
+
+class ImplementationTest(unittest.TestCase):
+    """The implementation under test (t3_impl.py, `t3.py run --vtium`): the C
+    reference's packages, or vtium as an install tree or package files, with
+    its size on disk measured the same way for each."""
+
+    UNIT = t3_impl.VT_UNIT
+    TREE = {"usr/bin/vtium": "12345678", UNIT: "[Service]\n", "usr/share/doc/x": "abc"}
+    LINE = "[  12.3] TIER3-INSTALL-OK packages: ; libtsm: none; tree: %s"
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.tree = os.path.join(self.dir.name, "tree")
+        write_tree(self.tree, self.TREE)
+        self.tar = os.path.join(self.dir.name, "out", "tree.tar")
+
+    def test_tree(self):
+        # The bytes of the regular files a tree installs; a link counts nothing.
+        os.symlink("vtium", os.path.join(self.tree, "usr/bin/kmscon"))
+        impl = t3_impl.vtium([self.tree], self.tar)
+        self.assertEqual((impl["name"], impl["kind"]), ("vtium", "tree"))
+        self.assertEqual(impl["installed_bytes"], 8 + 10 + 3)
+        self.assertEqual(t3_impl.packages(impl), [])
+        # packed for the disc owned by root, without the tree's own directory
+        with tarfile.open(impl["tar"]) as t:
+            members = t.getmembers()
+        self.assertEqual({m.name for m in members},
+                         {"usr", "usr/bin", "usr/bin/vtium", "usr/bin/kmscon", "usr/lib",
+                          "usr/lib/systemd", "usr/lib/systemd/system", self.UNIT, "usr/share",
+                          "usr/share/doc", "usr/share/doc/x"})
+        self.assertEqual({(m.uid, m.gid, m.uname, m.gname) for m in members},
+                         {(0, 0, "root", "root")})
+        # the same tree gives the same archive, so the digest names the tree
+        again = t3_impl.vtium([self.tree], self.tar + "2")
+        self.assertEqual(again["tree_sha256"], impl["tree_sha256"])
+        self.assertRegex(impl["tree_sha256"], r"^[0-9a-f]{64}$")
+        d = t3_impl.describe(impl)
+        self.assertEqual(d["installed_bytes"], 21)
+        self.assertEqual(d["paths"], [{"path": t3_common.rel(self.tree), "bytes": 21}])
+        self.assertEqual(d["tree_sha256"], impl["tree_sha256"])
+
+    def test_packages(self):
+        # A package's bytes are its installed files', which is the size its
+        # .PKGINFO records; pacman's metadata is not installed.
+        main = os.path.join(self.dir.name, "vtium-1-1-x86_64.pkg.tar.zst")
+        terminfo = os.path.join(self.dir.name, "vtium-terminfo-1-1-x86_64.pkg.tar.zst")
+        write_package(main, {"usr/bin/vtium": "12345678", self.UNIT: "u"})
+        write_package(terminfo, {"usr/share/terminfo/k/kmscon": "ti"})
+        self.assertEqual(t3_impl.contents("packages", main), {"usr/bin/vtium": 8, self.UNIT: 1})
+        impl = t3_impl.vtium([terminfo, main])
+        self.assertEqual((impl["kind"], impl["paths"]), ("packages", [main, terminfo]))
+        self.assertEqual((impl["bytes"], impl["installed_bytes"]), ([9, 2], 11))
+        self.assertEqual(t3_impl.packages(impl), [main, terminfo])
+        self.assertEqual(t3_impl.c_reference([main])["name"], "c")
+
+    def test_refused(self):
+        # A tree beside packages, a file that is no package, a missing package,
+        # or a build without the VT unit the guest starts.
+        pkg = os.path.join(self.dir.name, "vtium-1-1-x86_64.pkg.tar.zst")
+        write_package(pkg, {"usr/bin/vtium": "x"})
+        for paths, why in (([self.tree, pkg], "is neither"),
+                           ([os.path.join(self.tree, "usr/bin/vtium")], "is neither"),
+                           ([pkg + ".missing.pkg.tar.zst"], "no vtium package"),
+                           ([pkg], "installs no /usr/lib/systemd/system/kmsconvt@")):
+            with self.subTest(why):
+                with self.assertRaisesRegex(SystemExit, why):
+                    t3_impl.vtium(paths, self.tar)
+        os.unlink(os.path.join(self.tree, self.UNIT))
+        with self.assertRaisesRegex(SystemExit, "installs no"):
+            t3_impl.vtium([self.tree], self.tar)
+
+    def test_install_checked(self):
+        # vtium's tree: no kmscon, libtsm or vtium package in the guest, and
+        # the tree the run packed; vtium has no libtsm to check.
+        os.environ.pop("T3_LIBTSM_REV", None)
+        impl = t3_impl.vtium([self.tree], self.tar)
+        sha = impl["tree_sha256"]
+        self.assertEqual(t3_scenario.check_install(self.LINE % sha, impl),
+                         {"packages": [], "libtsm": "none", "tree": sha})
+        with self.assertRaisesRegex(RuntimeError, "the guest installed tree 0+, the run's is"):
+            t3_scenario.check_install(self.LINE % ("0" * 64), impl)
+        with self.assertRaisesRegex(RuntimeError, "kmscon-aaronsb installed, not only the "
+                                                  r"run's packages \(none"):
+            t3_scenario.check_install((self.LINE % sha).replace(
+                "packages: ;", "packages: kmscon-aaronsb 10-1 ;"), impl)
+        # vtium's packages: those on the disc and no other
+        pkg = os.path.join(self.dir.name, "vtium-1-1-x86_64.pkg.tar.zst")
+        write_package(pkg, {self.UNIT: "u"})
+        impl = t3_impl.vtium([pkg])
+        line = "TIER3-INSTALL-OK packages: vtium 1-1 ; libtsm: none; tree: none"
+        self.assertEqual(t3_scenario.check_install(line, impl),
+                         {"packages": ["vtium 1-1"], "libtsm": "none"})
+
+    def test_disc(self):
+        # A tree goes on the disc as tree.tar, packages in pkg/.
+        impl = t3_impl.vtium([self.tree], self.tar)
+        with mock.patch.object(t3_scenario, "make_iso"):
+            t3_scenario.build_pkg_disc("2d-potato-min", self.dir.name, impl)
+        disc = os.path.join(self.dir.name, "disc")
+        self.assertIn("tree.tar", os.listdir(disc))
+        self.assertNotIn("pkg", os.listdir(disc))
+        with open(os.path.join(disc, "kmscon.conf")) as f:
+            self.assertIn("render-timer=log", f.read())
+        pkg = os.path.join(self.dir.name, "kmscon-aaronsb-1-1-x86_64.pkg.tar.zst")
+        write_package(pkg, {"usr/bin/kmscon": "x"})
+        with mock.patch.object(t3_scenario, "make_iso"):
+            t3_scenario.build_pkg_disc("2d-potato-min", self.dir.name, t3_impl.c_reference([pkg]))
+        self.assertEqual(os.listdir(os.path.join(disc, "pkg")), [os.path.basename(pkg)])
+        self.assertNotIn("tree.tar", os.listdir(disc))
+
+    def test_resident(self):
+        # ADR-304's minspec figures: after the first screen, and the peak
+        # with the screen it followed.
+        got = t3_scenario.resident({"sgr": 10547, "s1-scroll": 16077, "cjk": 15900})
+        self.assertEqual(got, {"first_screen": "sgr", "first_kib": 10547,
+                               "peak_kib": 16077, "peak_screen": "s1-scroll"})
+        self.assertEqual(t3_scenario.resident({}), {"first_screen": "sgr", "first_kib": None,
+                                                    "peak_kib": None, "peak_screen": None})
+        self.assertEqual(t3_scenario.failure_meta("x", {"kind": "tree", "paths": []})["resident"],
+                         t3_scenario.resident({}))
+
+    def test_summary(self):
+        impl = t3_impl.vtium([self.tree], self.tar)
+        impl["installed_bytes"] = 1870998
+        metas = {"2d-potato-min": {"resident": t3_scenario.resident({"sgr": 10547,
+                                                                     "s1-scroll": 16077})},
+                 "2d-potato-min-psf": {"resident": t3_scenario.resident({})}}
+        self.assertEqual(t3.summary(impl, metas).splitlines(), [
+            "implementation: vtium, tree %s: 1.78 MiB installed" % t3_common.rel(self.tree),
+            "2d-potato-min: resident 10.30 MiB after sgr, peak 15.70 MiB after s1-scroll",
+            "2d-potato-min-psf: resident none after sgr, peak none after none"])
+
+    def test_vtium_process(self):
+        # vtium's process logs as vtium[pid]; its render-timer and startup
+        # lines are read as the C reference's are.
+        line = timer_line(100.5, 60, 60).replace("kmscon[505]", "vtium[505]")
+        self.assertEqual(t3_bench.timer_lines(line)[0]["pid"], 505)
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("[    6.663227] vtium[459]: log: vtium Revision 0.1\n"
+                    "[    6.700000] kmscon[459]: terminal: Display a with backend [x]\n"
+                    "[    6.739898] vtium[459]: terminal: Display b with backend [drm2d] "
+                    "text renderer [bbulk]\n")
+        try:
+            self.assertEqual(t3_scenario.kmscon_startup_ms(f.name), 76.7)
+        finally:
+            os.unlink(f.name)
+        with open(os.path.join(t3_common.GUEST, "t3")) as f:
+            self.assertIn("pidof kmscon vtium", f.read())
+
+    def test_tools(self):
+        # A vtium run names no libtsm; the C reference's names the run's.
+        env = {"T3_LIBTSM_REV": "3ec40dc", "T3_LIBTSM_REPO": "r", "T3_KMSCON_REV": "b1f7a7c5"}
+        with mock.patch.dict(os.environ, env):
+            c = t3_runner.run_tools({"name": t3_impl.C})
+            v = t3_runner.run_tools({"name": t3_impl.VTIUM})
+        self.assertEqual((c["libtsm"], c["libtsm_repo"], c["kmscon"]), ("3ec40dc", "r", "b1f7a7c5"))
+        self.assertEqual((v["libtsm"], v["libtsm_repo"], v["kmscon"]), (None, None, "b1f7a7c5"))
+
+    def test_option(self):
+        # --vtium installs vtium, so it takes no package target; it may be
+        # given once per path, before the variants.
+        with mock.patch.object(t3, "run", side_effect=lambda args, log: args) as run:
+            args = t3.main(["run", "--vtium", "a", "--vtium", "b", "2d-potato-min"])
+        self.assertEqual((args.vtium, args.variants), (["a", "b"], ["2d-potato-min"]))
+        self.assertTrue(run.called)
+        with contextlib.redirect_stderr(io.StringIO()):
+            for extra in (["--pkg-target", "pkg-minimal"], ["--compare-only"]):
+                with self.subTest(extra), self.assertRaises(SystemExit):
+                    t3.main(["run", "--vtium", "a"] + extra)
+
+    def test_standin(self):
+        # The C reference's newest packages unpacked as an install tree,
+        # without pacman's metadata: it then runs as a vtium tree.
+        pkgdir = os.path.join(self.dir.name, "pkg")
+        os.makedirs(pkgdir)
+        write_package(os.path.join(pkgdir, "kmscon-aaronsb-1-1-x86_64.pkg.tar.zst"),
+                      {"usr/bin/kmscon": "x", self.UNIT: "u"})
+        write_package(os.path.join(pkgdir, "kmscon-aaronsb-terminfo-1-1-x86_64.pkg.tar.zst"),
+                      {"usr/share/terminfo/k/kmscon": "ti"})
+        out = os.path.join(self.dir.name, "standin")
+        write_tree(out, {"stale": "from an earlier run"})
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(t3.main(["standin", "--pkg-dir", pkgdir, out]), 0)
+        self.assertEqual(t3_impl.contents("tree", out),
+                         {"usr/bin/kmscon": 1, self.UNIT: 1, "usr/share/terminfo/k/kmscon": 2})
+        self.assertEqual(t3_impl.vtium([out], self.tar)["installed_bytes"], 4)
 
 
 class BaseImageTest(unittest.TestCase):
@@ -500,7 +716,7 @@ class VariantTest(unittest.TestCase):
 
     def test_failed_variant_fails_every_case(self):
         # A variant that could not run fails every case, the image ones too.
-        meta = t3_scenario.failure_meta("no boot", [])
+        meta = t3_scenario.failure_meta("no boot", {"kind": "tree", "paths": []})
         for variant in ("gl-1280x800", "2d-1280x800"):
             cases = {c["name"].split("/", 1)[1]: c
                      for c in t3_scenario.evaluate_variant(variant, {}, meta, LOG)}

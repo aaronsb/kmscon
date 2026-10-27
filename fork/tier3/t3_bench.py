@@ -18,9 +18,10 @@ the lines whose seconds overlap the window.
 import re
 import statistics
 
-# "[   12.345678] kmscon[505]: terminal: render-timer: display=... key=value ..."
-# A console line can follow other output on the same line, such as a prompt.
-_TIMER = re.compile(r"\[\s*(\d+\.\d+)\] kmscon\[(\d+)\]: terminal: render-timer: (.*)$")
+# "[   12.345678] kmscon[505]: terminal: render-timer: display=... key=value ...",
+# or vtium[505] for vtium's process. A console line can follow other output
+# on the same line, such as a prompt.
+_TIMER = re.compile(r"\[\s*(\d+\.\d+)\] (?:kmscon|vtium)\[(\d+)\]: terminal: render-timer: (.*)$")
 _BENCH = re.compile(r"T3-BENCH (\S+)((?: \w+=\S+)+)\s*$")
 
 # kmscon logs this for a key it does not know, as a build without the

@@ -10,7 +10,7 @@
 clear
 printf '\033[3J'
 T3_EVENTS=/dev/ttyS1 bash /usr/local/share/tier3/"$1".sh
-# kmscon's resident memory, VmRSS in kB of each kmscon process, for the record
-echo "T3-RSS $1 $(for p in $(pidof kmscon); do
+# The console's resident memory, VmRSS in kB of each kmscon or vtium process
+echo "T3-RSS $1 $(for p in $(pidof kmscon vtium); do
     awk '/^VmRSS:/ { printf "%s ", $2 }' /proc/$p/status; done)" > /dev/ttyS1
 echo "T3-DONE $1" > /dev/ttyS1

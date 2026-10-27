@@ -9,6 +9,7 @@ import subprocess
 import time
 
 import t3_bench
+import t3_impl
 from t3_common import BASE, GUEST, RUNDIR, rel
 from t3_evaluate import BENCHMARKS, CASES, IMAGE_SCREENS, KEYED, KEYS_AFTER, SCREENS, evaluate
 from t3_qemu import Qemu, make_iso, not_blank, wait_stable
@@ -157,21 +158,34 @@ def package_name(path):
     return os.path.basename(path).rsplit("-", 3)[0]
 
 
-def check_install(line, pkgs):
-    """The packages and libtsm commit the guest reported installing
+def check_install(line, impl):
+    """The packages, libtsm commit and tree the guest reported installing
     (guest/setup's TIER3-INSTALL-OK line), as metadata. Raises when the
-    guest holds a kmscon or libtsm package that is not on the disc, or the
-    package was built from another libtsm than the run names, an unknown one,
-    or one with changes the run does not declare: each would let one build's
-    results stand for another's."""
-    m = re.search(r"TIER3-INSTALL-OK packages: (.*?); libtsm: (\S+)", line)
+    guest holds a kmscon, libtsm or vtium package that is not on the disc, or
+    a tree other than the run's; or when the C reference's package was built
+    from another libtsm than the run names, an unknown one, or one with
+    changes the run does not declare: each would let one build's results
+    stand for another's. vtium has no libtsm, so its libtsm is recorded as
+    the guest found it and not checked."""
+    m = re.search(r"TIER3-INSTALL-OK packages: (.*?); libtsm: ([^\s;]+)(?:; tree: (\S+))?", line)
     if not m:
         raise RuntimeError("cannot read the installed packages from %r" % line)
     installed = m.group(1).split()
     names = installed[::2]
+    pkgs = t3_impl.packages(impl)
     if sorted(names) != sorted(package_name(p) for p in pkgs):
         raise RuntimeError("the guest has %s installed, not only the run's packages %s"
-                           % (" ".join(names), " ".join(map(os.path.basename, pkgs))))
+                           % (" ".join(names) or "nothing", " ".join(map(os.path.basename, pkgs))
+                              or "(none: the run installs a tree)"))
+    out = {"packages": [" ".join(installed[i:i + 2]) for i in range(0, len(installed), 2)],
+           "libtsm": m.group(2)}
+    if impl["kind"] == "tree":
+        if m.group(3) != impl["tree_sha256"]:
+            raise RuntimeError("the guest installed tree %s, the run's is %s"
+                               % (m.group(3), impl["tree_sha256"]))
+        out["tree"] = m.group(3)
+    if impl["name"] != t3_impl.C:
+        return out
     libtsm, want = m.group(2), os.environ.get("T3_LIBTSM_REV") or ""
     if not want:
         raise RuntimeError("the run names no libtsm commit (T3_LIBTSM_REV), so the package's "
@@ -181,16 +195,21 @@ def check_install(line, pkgs):
     if not re.fullmatch(r"[0-9a-f]{40}", got_rev) or not got_rev.startswith(want_rev) \
             or got_dirty != want_dirty:
         raise RuntimeError("the package was built with libtsm %s, the run names %s" % (libtsm, want))
-    return {"packages": [" ".join(installed[i:i + 2]) for i in range(0, len(installed), 2)],
-            "libtsm": libtsm}
+    return out
 
 
-def build_pkg_disc(variant, work, pkgs):
+def build_pkg_disc(variant, work, impl):
+    """The T3PKG disc: the implementation (packages in pkg/, or a tree as
+    tree.tar), the variant's config, the screens and guest/setup."""
     disc = os.path.join(work, "disc")
     shutil.rmtree(disc, ignore_errors=True)
-    os.makedirs(os.path.join(disc, "pkg"))
-    for p in pkgs:
-        shutil.copy(p, os.path.join(disc, "pkg"))
+    os.makedirs(disc)
+    if impl["kind"] == "tree":
+        shutil.copy(impl["tar"], os.path.join(disc, "tree.tar"))
+    else:
+        os.makedirs(os.path.join(disc, "pkg"))
+        for p in impl["paths"]:
+            shutil.copy(p, os.path.join(disc, "pkg"))
     shutil.copy(os.path.join(GUEST, VARIANTS[variant]["conf"]),
                 os.path.join(disc, "kmscon.conf"))
     shutil.copytree(os.path.join(GUEST, "screens"), os.path.join(disc, "screens"))
@@ -251,9 +270,9 @@ def not_offered(events, name, window):
 
 
 def resident_kb(vm):
-    """kmscon's resident memory in kB after each screen, by screen: the largest
-    VmRSS of the kmscon processes guest/t3 found (one, on tty2, until the VT
-    switch)."""
+    """The console's resident memory in kB after each screen, by screen: the
+    largest VmRSS of the kmscon or vtium processes guest/t3 found (one, on
+    tty2, until the VT switch)."""
     with open(vm.events, "rb") as f:
         events = f.read().decode(errors="replace").splitlines()
     out = {}
@@ -266,18 +285,29 @@ def resident_kb(vm):
     return out
 
 
+def resident(rss_kb):
+    """ADR-304's minspec memory figures from `resident_kb`: the resident set
+    after the first screen, and the peak over every screen with the screen
+    it followed (s1-scroll, once its lines fill the scrollback, for the C
+    reference's minimal build). VmRSS is in KiB; None where nothing was read."""
+    first = SCREENS[0]
+    peak = max(rss_kb, key=rss_kb.get) if rss_kb else None
+    return {"first_screen": first, "first_kib": rss_kb.get(first),
+            "peak_kib": rss_kb.get(peak), "peak_screen": peak}
+
+
 def kmscon_startup_ms(serial):
-    """Milliseconds from the first kmscon's first log line (its revision) to
-    its "Display ... with backend" line, the display set up and its terminal
+    """Milliseconds from the first console process's first log line (its
+    revision) to its "Display ... with backend" line, the display set up and its terminal
     drawing, by the kernel's timestamps on the console; None without both.
     The time before kmscon logs (exec and dynamic linking) is not in it."""
     with open(serial, "rb") as f:
         text = f.read().decode(errors="replace")
-    first = re.search(r"\[\s*([0-9.]+)\] kmscon\[(\d+)\]: log: kmscon Revision", text)
+    first = re.search(r"\[\s*([0-9.]+)\] (kmscon|vtium)\[(\d+)\]: log: \w+ Revision", text)
     if not first:
         return None
-    shown = re.search(r"\[\s*([0-9.]+)\] kmscon\[%s\]: terminal: Display .* with backend"
-                      % first.group(2), text)
+    shown = re.search(r"\[\s*([0-9.]+)\] %s\[%s\]: terminal: Display .* with backend"
+                      % (first.group(2), first.group(3)), text)
     if not shown:
         return None
     return round((float(shown.group(1)) - float(first.group(1))) * 1000, 1)
@@ -291,8 +321,9 @@ def kmscon_cell(serial):
     return [int(m.group(1)), int(m.group(2))] if m else None
 
 
-def run_variant(variant, timing, pkgs, log):
-    """Boot one variant with the packages `pkgs` and drive the scenario.
+def run_variant(variant, timing, impl, log):
+    """Boot one variant with the implementation `impl` (t3_impl) and drive the
+    scenario.
 
     Returns ({case: capture path}, metadata). A scenario that fails part way
     keeps the captures taken before the failure; metadata carries the error,
@@ -316,7 +347,7 @@ def run_variant(variant, timing, pkgs, log):
     work = os.path.join(RUNDIR, variant)
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
-    iso = build_pkg_disc(variant, work, pkgs)
+    iso = build_pkg_disc(variant, work, impl)
     disk = os.path.join(work, "run.qcow2")
     subprocess.run(["qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2",
                     "-b", BASE, disk], check=True)
@@ -328,7 +359,7 @@ def run_variant(variant, timing, pkgs, log):
     try:
         line = vm.wait_serial("TIER3-INSTALL-OK", timeout=180)
         log(line)
-        installed = check_install(line, pkgs)
+        installed = check_install(line, impl)
         phase("install")
         # The VT switch spawns kmscon only once logind is up and the boot
         # has reached its login prompts; systemd reports both on the console.
@@ -417,11 +448,13 @@ def run_variant(variant, timing, pkgs, log):
     displays = kmscon_displays(vm.serial)
     with open(os.path.join(GUEST, v["conf"])) as f:
         conf = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-    meta = {"packages": [os.path.basename(p) for p in pkgs], "installed": installed,
+    rss = resident_kb(vm)
+    meta = {"packages": [os.path.basename(p) for p in t3_impl.packages(impl)],
+            "installed": installed,
             "kmscon": displays, "errors": errors, "device": v["device"], "config": conf,
             "cell": kmscon_cell(vm.serial), "cpus": v["cpus"], "memory_mb": v["memory_mb"],
             "bench": bench_figures(vm, caps, conf, v.get("images", True)),
-            "rss_kb": resident_kb(vm),
+            "rss_kb": rss, "resident": resident(rss),
             "startup_ms": kmscon_startup_ms(vm.serial)}
     want = "text renderer [%s]" % v["renderer"]
     if not displays or not all(want in d for d in displays):
@@ -432,20 +465,20 @@ def run_variant(variant, timing, pkgs, log):
     return caps, meta
 
 
-def failure_meta(error, pkgs):
+def failure_meta(error, impl):
     """A variant's metadata when it produced no captures, in the same shape
     as a variant that ran."""
-    return {"packages": [os.path.basename(p) for p in pkgs], "kmscon": [],
-            "errors": {}, "error": error, "timing": {}}
+    return {"packages": [os.path.basename(p) for p in t3_impl.packages(impl)], "kmscon": [],
+            "errors": {}, "error": error, "timing": {}, "resident": resident({})}
 
 
-def failed_variant(variant, error, pkgs, log):
+def failed_variant(variant, error, impl, log):
     log("%s: %s" % (variant, error))
-    meta = failure_meta(error, pkgs)
+    meta = failure_meta(error, impl)
     return evaluate_variant(variant, {}, meta, log), meta
 
 
-def variant_job(variant, pkgs, log):
+def variant_job(variant, impl, log):
     """Drive and evaluate one variant: (its case entries, its metadata).
 
     `log` is the run's logger; the variant's lines carry its name. A variant
@@ -455,10 +488,10 @@ def variant_job(variant, pkgs, log):
     log = log.labelled(variant)
     timing = {}
     try:
-        caps, meta = run_variant(variant, timing, pkgs, log)
+        caps, meta = run_variant(variant, timing, impl, log)
     except Exception as e:
         log(str(e))
-        caps, meta = {}, failure_meta(str(e), pkgs)
+        caps, meta = {}, failure_meta(str(e), impl)
     start = time.time()
     cases = evaluate_variant(variant, caps, meta, log)
     timing["evaluate"] = round(time.time() - start, 1)

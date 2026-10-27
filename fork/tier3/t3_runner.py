@@ -16,6 +16,7 @@ import sys
 import time
 import uuid
 
+import t3_impl
 import t3_qemu
 import t3_scenario
 from t3_common import LOCK, REPORT, RUNDIR, rel
@@ -39,13 +40,13 @@ def raise_on_sigterm(log):
     signal.signal(signal.SIGTERM, terminate)
 
 
-def _worker(variant, pkgs, log, conn):
+def _worker(variant, impl, log, conn):
     """A worker process: reports each QEMU it starts and stops, then its
     result."""
     raise_on_sigterm(log.labelled(variant))
     t3_qemu.on_qemu = lambda event, pid: conn.send((event, pid))
     try:
-        conn.send(("result", t3_scenario.variant_job(variant, pkgs, log)))
+        conn.send(("result", t3_scenario.variant_job(variant, impl, log)))
     except Terminated:
         sys.exit(128 + signal.SIGTERM)
     finally:
@@ -55,11 +56,11 @@ def _worker(variant, pkgs, log, conn):
 class Job:
     """One variant's worker process and what it has reported."""
 
-    def __init__(self, ctx, variant, pkgs, log):
+    def __init__(self, ctx, variant, impl, log):
         self.variant = variant
         self.log = log
         self.conn, child = ctx.Pipe(duplex=False)
-        self.proc = ctx.Process(target=_worker, args=(variant, pkgs, log, child),
+        self.proc = ctx.Process(target=_worker, args=(variant, impl, log, child),
                                 name="t3-" + variant)
         self.proc.start()
         child.close()
@@ -109,7 +110,7 @@ class Job:
                 pass
 
 
-def run_concurrently(variants, jobs, pkgs, deadline, results, log):
+def run_concurrently(variants, jobs, impl, deadline, results, log):
     """Fill `results` with {variant: variant_job's result}, running at most
     `jobs` variants at once.
 
@@ -132,7 +133,7 @@ def run_concurrently(variants, jobs, pkgs, deadline, results, log):
                         and any(t3_scenario.uses_virgl(j.variant) for j in running)):
                     continue
                 pending.remove(variant)
-                running.append(Job(ctx, variant, pkgs, log))
+                running.append(Job(ctx, variant, impl, log))
             multiprocessing.connection.wait(
                 [j.conn for j in running] + [j.proc.sentinel for j in running], timeout=5)
             for job in list(running):
@@ -150,11 +151,11 @@ def run_concurrently(variants, jobs, pkgs, deadline, results, log):
                 elif overdue:
                     results[job.variant] = t3_scenario.failed_variant(
                         job.variant, "no result within the %d s deadline; worker stopped"
-                        % deadline, pkgs, log)
+                        % deadline, impl, log)
                 else:
                     results[job.variant] = t3_scenario.failed_variant(
                         job.variant, "worker exited with code %s before reporting"
-                        % job.proc.exitcode, pkgs, log)
+                        % job.proc.exitcode, impl, log)
     finally:
         if running:  # interrupted: a second SIGTERM must not cut the cleanup short
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -163,7 +164,7 @@ def run_concurrently(variants, jobs, pkgs, deadline, results, log):
             job.finish()
 
 
-def run_variants(variants, jobs, pkgs, deadline, log):
+def run_variants(variants, jobs, impl, deadline, log):
     """Run every variant, one at a time in this process or up to `jobs` at
     once in workers: ({variant: (case entries, metadata)}, the interruption
     or None).
@@ -178,9 +179,9 @@ def run_variants(variants, jobs, pkgs, deadline, log):
                 # A signal during a variant is logged with its name, as a
                 # worker's is.
                 raise_on_sigterm(log.labelled(v))
-                results[v] = t3_scenario.variant_job(v, pkgs, log)
+                results[v] = t3_scenario.variant_job(v, impl, log)
         else:
-            run_concurrently(variants, jobs, pkgs, deadline, results, log)
+            run_concurrently(variants, jobs, impl, deadline, results, log)
     except (Terminated, KeyboardInterrupt) as e:
         interrupted = e
     if jobs == 1:
@@ -188,7 +189,7 @@ def run_variants(variants, jobs, pkgs, deadline, log):
     for v in variants:
         if v not in results:
             results[v] = t3_scenario.failed_variant(
-                v, "run interrupted: %s" % (interrupted or "no result"), pkgs, log)
+                v, "run interrupted: %s" % (interrupted or "no result"), impl, log)
     log("%d variant(s) done, %d at a time" % (len(variants), jobs))
     return results, interrupted
 
@@ -219,12 +220,17 @@ TOOL_ENV = {"kmscon": "T3_KMSCON_REV", "libtsm": "T3_LIBTSM_REV",
             "guest_image_sha256": "T3_IMAGE_SHA256", "guest_archive": "T3_ARCHIVE"}
 
 
-def run_tools():
-    """The commits and pins behind a run; null where the caller gave none."""
-    return {k: os.environ.get(v) or None for k, v in TOOL_ENV.items()}
+def run_tools(impl):
+    """The commits and pins behind a run; null where the caller gave none.
+    A vtium run has no libtsm, so its libtsm fields are null, and kmscon's
+    name the checkout whose harness and goldens judged it."""
+    tools = {k: os.environ.get(v) or None for k, v in TOOL_ENV.items()}
+    if impl["name"] != t3_impl.C:
+        tools["libtsm"] = tools["libtsm_repo"] = None
+    return tools
 
 
-def write_report(variants, results):
+def write_report(variants, results, impl):
     """Write the run's report and return its case entries."""
     # The report lists variants in the requested order, whatever order
     # they finished in, so a concurrent run's report matches a serial one's.
@@ -232,8 +238,8 @@ def write_report(variants, results):
     meta = {v: results[v][1] for v in variants}
     # A fresh id per run lets a comparison tell two runs from one run
     # saved twice.
-    report = {"tier": 3, "run_id": uuid.uuid4().hex, "tools": run_tools(),
-              "cases": cases, "variants": meta}
+    report = {"tier": 3, "run_id": uuid.uuid4().hex, "tools": run_tools(impl),
+              "implementation": t3_impl.describe(impl), "cases": cases, "variants": meta}
     os.makedirs(os.path.dirname(REPORT), exist_ok=True)
     with open(REPORT, "w") as f:
         json.dump(report, f, indent=2)

@@ -11,6 +11,12 @@
 #   make tier3-run      a run without rebuilding the package; PKG_DIR=
 #                       fork/build/pkg-minimal for the minimal variants
 #   make tier3-bless    rewrite the goldens from the last run's captures
+#   make tier3-standin  the minimal package unpacked as an install tree, which
+#                       stands in for vtium's in VTIUM= until vtium boots
+#
+# VTIUM=PATH runs vtium in place of the C reference in tier3, tier3-minimal
+# and tier3-run: an install tree laid out as the guest's root, or its package
+# files. Nothing is built; the goldens and the scenario are the same.
 #
 # JOBS=N runs up to N variants at once, each in its own VM (the vCPUs and
 # memory each variant names in fork/tier3/t3_scenario.py);
@@ -45,6 +51,9 @@ T3_ENV = T3_KMSCON_REV=$(call T3_REV,$(1)) T3_LIBTSM_REV=$(call T3_REV,$(2),all)
 	T3_IMAGE=$(T3_IMAGE) T3_IMAGE_SHA256=$(T3_IMAGE_SHA256) T3_ARCHIVE=$(T3_ARCHIVE)
 T3_RUN = $(call T3_ENV,.,$(or $(LIBTSM),subprojects/libtsm),https://github.com/aaronsb/kmscon,https://github.com/aaronsb/libtsm) \
 	$(T3_PY) $(T3_DIR)/t3.py run --jobs $(JOBS) --deadline $(T3_DEADLINE)
+# The implementation a run installs: vtium at VTIUM, or else the C
+# reference's package, built first by the target named in $(1) when there is one.
+T3_IMPL = $(if $(VTIUM),$(addprefix --vtium ,$(VTIUM)),$(if $(1),--pkg-target $(1)) $(2))
 
 # Pinned guest: the official Arch Linux cloud image, verified against the
 # arch-boxes signing key, and the Arch Linux Archive snapshot its packages
@@ -78,7 +87,7 @@ tier3-image: $(T3_VM)/images/$(T3_IMAGE) ## Fetch, verify and provision the tier
 
 .PHONY: tier3
 tier3: tier3-image ## Tier 3: every variant, or VARIANTS="2d-1280x800 gl-1280x800 ..."; JOBS=N runs N at once
-	$(T3_RUN) --pkg-target pkg $(VARIANTS)
+	$(T3_RUN) $(call T3_IMPL,pkg) $(VARIANTS)
 
 .PHONY: tier3-gl
 tier3-gl: tier3-image ## Tier 3 on the GL variant (virgl) alone
@@ -101,12 +110,21 @@ pkg-minimal: image ## Build the minimal build's package (scripts/profiles/minima
 
 .PHONY: tier3-minimal
 tier3-minimal: tier3-image ## Tier 3 on the potato machine with the minimal build: unifont and a PSF font
-	$(T3_RUN) --pkg-target pkg-minimal --pkg-dir $(T3_MINPKGOUT) \
+	$(T3_RUN) $(call T3_IMPL,pkg-minimal,--pkg-dir $(T3_MINPKGOUT)) \
 		$(or $(VARIANTS),2d-potato-min 2d-potato-min-psf)
 
 .PHONY: tier3-run
 tier3-run: ## Tier 3 without rebuilding the package (VARIANTS=, JOBS= as for tier3; PKG_DIR=fork/build/pkg-minimal for the minimal variants)
-	$(T3_RUN) $(if $(PKG_DIR),--pkg-dir $(PKG_DIR)) $(VARIANTS)
+	$(T3_RUN) $(call T3_IMPL,,$(if $(PKG_DIR),--pkg-dir $(PKG_DIR))) $(VARIANTS)
+
+# The C reference's minimal build as an install tree, laid out as vtium's
+# is: make tier3-minimal VTIUM=fork/build/vtium-standin runs the vtium path
+# end to end before vtium boots.
+T3_STANDIN := fork/build/vtium-standin
+
+.PHONY: tier3-standin
+tier3-standin: pkg-minimal ## Unpack the minimal package into fork/build/vtium-standin, a stand-in for vtium's install tree
+	$(T3_PY) $(T3_DIR)/t3.py standin --pkg-dir $(T3_MINPKGOUT) $(T3_STANDIN)
 
 .PHONY: tier3-bless
 tier3-bless: ## Copy the last tier 3 run's captures over the goldens

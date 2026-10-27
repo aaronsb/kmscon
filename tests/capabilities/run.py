@@ -300,7 +300,7 @@ class Probe:
         self.size, self.view, self.placeholder = None, "screen", None
         self.needs, self.fixtures = set(), []
         self.steps = []  # (key, argument, line number), in file order
-        self.examples = {}  # index of a want-re or reply-re step -> (example, line number)
+        self.examples = {}  # index of a want-re, reject-re or reply-re step -> (example, line number)
 
 
 def read_probes(path, spec):
@@ -362,8 +362,9 @@ def read_probes(path, spec):
             elif key == "example":
                 data = unquote(arg)
                 if data is None or not probe.steps or probe.steps[-1][0] not in (
-                        "want-re", "reply-re") or len(probe.steps) - 1 in probe.examples:
-                    sys.exit(f'{where}: want example "..." once, after a want-re or reply-re')
+                        "want-re", "reject-re", "reply-re") or len(probe.steps) - 1 in probe.examples:
+                    sys.exit(f'{where}: want example "..." once, after a want-re, reject-re '
+                             f'or reply-re')
                 probe.examples[len(probe.steps) - 1] = (data, n)
             else:
                 sys.exit(f"{where}: {key!r} is not a key of probes.replay")
@@ -405,10 +406,12 @@ def masked(line):
 
 def check_expectations(path, probe, spec, missing):
     """Exits naming the line when a want or reject line, or the example of a
-    want-re, is one the spec's grammar does not allow in the probe's view
-    (the keys the spec reserves are allowed in a missing probe only), when a
-    want-re or reply-re does not match its example, or when a missing probe
-    gives one no example. A masked count, N, stands for a nonzero digit."""
+    want-re or reject-re, is one the spec's grammar does not allow in the
+    probe's view (the keys the spec reserves are allowed in a missing probe
+    only), when a want-re, reject-re or reply-re does not match its example,
+    or when a reject-re, or a missing probe's want-re or reply-re, has no
+    example. A masked count, N, stands for a nonzero digit, so a reject-re
+    of a count or flag the runner masks matches no example the grammar takes."""
     exact = "damage-exact" in probe.needs
 
     def parses(line, n):
@@ -428,15 +431,18 @@ def check_expectations(path, probe, spec, missing):
     for i, (key, arg, n) in enumerate(probe.steps):
         if key in ("want", "reject"):
             parses(arg, n)
-        if key not in ("want-re", "reply-re"):
+        if key not in ("want-re", "reject-re", "reply-re"):
             continue
         if i not in probe.examples:
+            if key == "reject-re":
+                sys.exit(f"{path}:{n}: a reject-re needs an example line after it, a line "
+                         f"it rejects, so a pattern that can match nothing is refused")
             if missing:
                 sys.exit(f"{path}:{n}: a missing probe's {key} needs an example line after it, "
                          f"a reply or line the feature would print")
             continue
         example, m = probe.examples[i]
-        if key == "want-re":
+        if key != "reply-re":
             example = example.decode("utf-8", "replace")
             parses(example, m)
         if not arg.fullmatch(example):
@@ -529,10 +535,10 @@ class Replay:
             elif blocks:
                 blocks[-1].append(line)
         if len(blocks) != len(cuts) + 1:
-            return False, f"the replay printed {len(blocks)} blocks, want {len(cuts) + 1}"
+            return None, f"the replay printed {len(blocks)} blocks, want {len(cuts) + 1}"
         for k, cut in enumerate(cuts):
             if blocks[k][0] != f"checkpoint {cut}":
-                return False, f"block {k + 1} is {blocks[k][0]!r}, want 'checkpoint {cut}'"
+                return None, f"block {k + 1} is {blocks[k][0]!r}, want 'checkpoint {cut}'"
 
         # assertions on test lines take them in order: the next one each
         # matches is after the last one matched in its block

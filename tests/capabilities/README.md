@@ -31,17 +31,17 @@ A stanza opens with `probe NAME`, builds a byte stream and the cuts of INTERFACE
 | `want LINE` | The block holds LINE. |
 | `want-re REGEX` | A line of the block matches REGEX whole. |
 | `reject LINE` | The block does not hold LINE. |
-| `reject-re REGEX` | No line of the block matches REGEX whole. |
+| `reject-re REGEX` | No line of the block matches REGEX whole. Takes an `example`. |
 | `reply "..."` | The block's replies, its `reply` lines decoded and joined, are these bytes. |
 | `reply-re "..."` | The replies match these bytes, read as a regular expression, whole. A metacharacter meant literally takes a backslash, written `\\`. |
-| `example "..."` | Follows a `want-re` or `reply-re`: a line or reply, written as for `send`, that the expression must match. Required in a missing probe. |
+| `example "..."` | Follows a `want-re`, `reject-re` or `reply-re`: a line or reply, written as for `send`, that the expression must match. Required after a `reject-re`, and in a missing probe. |
 | `placeholder REASON` | The probe has nothing to run, and fails with REASON. |
 
 A `test` line belongs to the block whose `checkpoint` follows it, and the `want` and `want-re` assertions on `test` lines take them in order: each matches a line after the one the assertion before it matched. A regular expression uses no backreference or lookaround, as in INTERFACE.md's grammar.
 
-Every line the replay prints must parse under the spec's grammar for the view, or the probe fails. Unless the probe needs `damage-exact` and the replay declares it, the output and the `want` and `reject` lines are masked as INTERFACE.md's "Comparing with the goldens" says: a nonzero `changed` or `frame-since` count becomes `N`, and a placement's `changed` flag goes. An expectation writes such a count as `N`.
+Every line the replay prints must parse under the spec's grammar for the view, and the replay must print a block at each cut, headed by its `checkpoint` line, and one at the end. Otherwise the replay could not judge the probe, which fails the run whatever the list records. Unless the probe needs `damage-exact` and the replay declares it, the output and the `want` and `reject` lines are masked as INTERFACE.md's "Comparing with the goldens" says: a nonzero `changed` or `frame-since` count becomes `N`, and a placement's `changed` flag goes. An expectation writes such a count as `N`.
 
-`run.py` checks every stanza before anything runs. Each `want` and `reject` line, and each `want-re` example, must parse under the spec's grammar for the probe's view, with the reserved keys (`overline`, `superscript`, `subscript`) allowed only in a missing probe, and each `want-re` and `reply-re` must match its example. A missing probe's expectations are then lines and replies the feature could print, so a typo reads as malformed instead of as still missing. An exact `reply` has no grammar to check it against, and a typo in one reads as still missing. A nonzero count or a placement's `changed` flag in a probe that does not need `damage-exact` is refused with the advice to write `N`. Each assertion follows a `check` with no input between, and each probe has a `want`, `want-re`, `reply` or `reply-re`.
+`run.py` checks every stanza before anything runs. Each `want` and `reject` line, and each `want-re` and `reject-re` example, must parse under the spec's grammar for the probe's view, with the reserved keys (`overline`, `superscript`, `subscript`) allowed only in a missing probe, and each `want-re`, `reject-re` and `reply-re` must match its example. A missing probe's expectations are then lines and replies the feature could print, so a typo reads as malformed instead of as still missing. A `reject-re` is then a pattern some printable line matches: a typo, or a pattern written against a count or flag the runner masks, would otherwise reject nothing and always pass. An exact `reply` has no grammar to check it against, and a typo in one reads as still missing. A nonzero count or a placement's `changed` flag in a probe that does not need `damage-exact` is refused with the advice to write `N`. Each assertion follows a `check` with no input between, and each probe has a `want`, `want-re`, `reply` or `reply-re`.
 
 ## Terminfo probes
 

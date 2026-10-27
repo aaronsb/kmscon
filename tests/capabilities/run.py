@@ -535,10 +535,10 @@ class Replay:
             elif blocks:
                 blocks[-1].append(line)
         if len(blocks) != len(cuts) + 1:
-            return False, f"the replay printed {len(blocks)} blocks, want {len(cuts) + 1}"
+            return None, f"the replay printed {len(blocks)} blocks, want {len(cuts) + 1}"
         for k, cut in enumerate(cuts):
             if blocks[k][0] != f"checkpoint {cut}":
-                return False, f"block {k + 1} is {blocks[k][0]!r}, want 'checkpoint {cut}'"
+                return None, f"block {k + 1} is {blocks[k][0]!r}, want 'checkpoint {cut}'"
 
         # assertions on test lines take them in order: the next one each
         # matches is after the last one matched in its block

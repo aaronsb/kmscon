@@ -42,6 +42,7 @@ want attr 0 3-3 underline=dotted
 want attr 0 4-4 underline=dashed
 want attr 0 5-5 underline=double
 reject-re attr 0 6-.*
+example "attr 0 6-6 underline"
 
 # SGR 58/59; 4;58;5;196 sets an underline colour, never blink; 58:2::r:g:b is
 # the form kmscon.ti's Setulc sends
@@ -92,6 +93,7 @@ send "\e[>4;1mA\e[?4mB"
 check
 want row 0 |AB|
 reject-re attr 0 .*
+example "attr 0 0-0 underline"
 
 # grapheme clusters: one cell holds e and U+0301, so x is the second cell
 probe cluster
@@ -186,6 +188,7 @@ check
 want attr 0 0-0 superscript
 want attr 0 1-1 subscript
 reject-re attr 0 2-.*
+example "attr 0 2-2 subscript"
 
 # --- modes and reports ---
 
